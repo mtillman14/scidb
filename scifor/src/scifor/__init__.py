@@ -29,8 +29,6 @@ from .merge import Merge
 from .column_selection import ColumnSelection
 from .pathinput import PathInput
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
-from .files import MatFile, CsvFile
-
 __version__ = "0.1.0"
 
 __all__ = [
@@ -49,7 +47,4 @@ __all__ = [
     "ColFilter",
     "CompoundFilter",
     "NotFilter",
-    # File I/O
-    "MatFile",
-    "CsvFile",
 ]

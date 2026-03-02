@@ -98,37 +98,7 @@ These move from `scirun-lib` into `scifor`. Their semantics are unchanged:
 
 `scirun-lib` re-exports all of these for backwards compatibility.
 
-### 7. File I/O classes — `MatFile`, `CsvFile`
-
-Single class with both `load()` and `save()`. These can be used as either inputs
-or outputs to `for_each`.
-
-```python
-class MatFile:
-    def __init__(self, path_template: str):
-        # e.g. "data/{subject}/{session}.mat"
-        self.path_template = path_template
-
-    def load(self, **metadata):
-        import scipy.io
-        path = self.path_template.format(**metadata)
-        return scipy.io.loadmat(path)
-
-    def save(self, data, **metadata):
-        import scipy.io
-        path = self.path_template.format(**metadata)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        scipy.io.savemat(path, {"data": data})
-
-class CsvFile:
-    def load(self, **metadata): ...
-    def save(self, data, **metadata): ...
-```
-
-`PathInput` remains separate — it passes the resolved path string *to* `fn` rather
-than loading data itself.
-
-### 8. Filters — `Col` for standalone, `VariableFilter` for DB
+### 7. Filters — `Col` for standalone, `VariableFilter` for DB
 
 `scifor` defines a lightweight filter hierarchy for operating on column names:
 
@@ -150,26 +120,25 @@ In MATLAB, `scifor.Col("side") == "R"` mirrors the Python syntax.
 
 The `&`, `|`, `~` operator syntax is identical between both filter systems.
 
-### 9. `ForEachConfig` / version keys — DB-only, dropped in standalone
+### 8. `ForEachConfig` / version keys — DB-only, dropped in standalone
 
 `ForEachConfig` is not part of `scifor`. In `scirun-lib`'s DB wrapper, version
 keys are still computed and embedded in save metadata as today. Standalone
 users do not get version keys (no lineage database).
 
-### 10. Return value and output protocol
+### 9. Return value and output protocol
 
 `for_each` returns a DataFrame of results in both modes (unchanged). For saving
 outputs, any object with `.save(data, **metadata)` works. Built-in options:
-`MatFile`, `CsvFile`, `BaseVariable` (DB-backed). The `outputs=` parameter
+`BaseVariable` (DB-backed). The `outputs=` parameter
 remains optional — if omitted or empty, `for_each` just returns the result
 DataFrame without saving.
 
-### 11. `db=` kwarg passthrough
+### 10. `db=` kwarg passthrough
 
 `db=` continues to be passed to `.load()` and `.save()` calls on objects that
-accept it (i.e., `BaseVariable`). Standalone objects (`MatFile`, `CsvFile`,
-`DataFrameInput`-like logic) accept `**kwargs` and ignore `db=`. No change
-to the call sites in the loop.
+accept it (i.e., `BaseVariable`). Standalone objects accept `**kwargs` and
+ignore `db=`. No change to the call sites in the loop.
 
 ---
 
@@ -182,11 +151,10 @@ scifor/
   src/scifor/
     __init__.py          # exports: for_each, set_schema, get_schema,
                          #          Fixed, Merge, ColumnSelection, PathInput,
-                         #          Col, MatFile, CsvFile
+                         #          Col
     schema.py            # set_schema(), get_schema(), _schema_keys global
     foreach.py           # core for_each loop
     filters.py           # Col, ColFilter, CompoundFilter, NotFilter
-    files.py             # MatFile, CsvFile
     fixed.py             # Fixed (moved from scirun-lib)
     merge.py             # Merge (moved from scirun-lib)
     column_selection.py  # ColumnSelection (moved from scirun-lib)
@@ -196,7 +164,7 @@ scifor/
 ```
 
 No dependencies on `scidb`, `sciduck`, `pipelinedb-lib`, or `thunk-lib`.
-Optional soft dependencies: `pandas`, `numpy`, `scipy` (for file I/O).
+Optional soft dependencies: `pandas`, `numpy`.
 
 ### Modified: `scirun-lib`
 
@@ -295,13 +263,6 @@ scifor.Col("side") == "R"
 
 Applied as logical row indexing on MATLAB tables.
 
-### File I/O
-
-```matlab
-% +scifor/MatFile.m  — load() and save() using MATLAB's load/save
-% +scifor/CsvFile.m  — load() and save() using readtable/writetable
-```
-
 ---
 
 ## Import paths after refactor
@@ -314,7 +275,6 @@ Applied as logical row indexing on MATLAB tables.
 | `ColumnSelection` | `scidb` / `scirun` | `scidb` / `scifor` |
 | `PathInput` | `scidb` / `scirun` | `scidb` / `scifor` |
 | `Col` | — | `scifor` only |
-| `MatFile`, `CsvFile` | — | `scifor` only |
 | `set_schema` | — | `scifor` only |
 
 `scidb` re-exports everything a user needs — the only import path that changes is
@@ -329,13 +289,12 @@ not part of the public API.
 2. Implement `scifor.schema` (`set_schema` / `get_schema`)
 3. Move `Fixed`, `Merge`, `ColumnSelection`, `PathInput` from `scirun-lib` → `scifor`; delete from `scirun-lib`; update `scidb.__init__` to import them from `scifor`
 4. Implement `scifor.filters` (`Col`, `ColFilter`, `CompoundFilter`, `NotFilter`)
-5. Implement `scifor.files` (`MatFile`, `CsvFile`)
-6. Implement `scifor.foreach` — core loop with DataFrame detection and filtering
+5. Implement `scifor.foreach` — core loop with DataFrame detection and filtering
 7. Refactor `scirun-lib/foreach.py` into DB-specific preamble + delegation to `scifor`
 8. Update `scidb.configure_database()` to call `scifor.set_schema()`
 9. Update `scidb.__init__` imports if needed
 10. Python tests: new `scifor` tests (no DB); verify existing `scirun-lib` and `scidb` tests still pass
-11. MATLAB: implement `+scifor` package (`set_schema`, `get_schema`, `Col`, `MatFile`, `CsvFile`)
+11. MATLAB: implement `+scifor` package (`set_schema`, `get_schema`, `Col`)
 12. MATLAB: update `scidb.configure_database` to call `scifor.set_schema`
 13. MATLAB: update `+scidb/for_each.m` for table input detection and filtering
 14. MATLAB tests: new standalone table-based tests; verify existing tests pass

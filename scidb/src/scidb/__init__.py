@@ -43,7 +43,7 @@ from .exceptions import (
 
 # Re-export from scirun (for_each) and scifor (wrappers)
 from scirun import for_each
-from scifor import Fixed, Merge, ColumnSelection, PathInput, Col, MatFile, CsvFile, set_schema, get_schema
+from scifor import Fixed, Merge, ColumnSelection, PathInput, Col, set_schema, get_schema
 
 from .thunk import ThunkOutput, Thunk, thunk
 from .variable import BaseVariable
@@ -65,8 +65,6 @@ __all__ = [
     "PathInput",
     # Standalone / DataFrame support
     "Col",
-    "MatFile",
-    "CsvFile",
     "set_schema",
     "get_schema",
     # Thunk system

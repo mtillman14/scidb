@@ -2,7 +2,7 @@ classdef TestScifor < matlab.unittest.TestCase
 %TESTSCIFOR  Tests for the +scifor package (standalone, no database required).
 %
 %   Tests: set_schema/get_schema, Col/ColFilter/CompoundFilter/NotFilter,
-%   MatFile, CsvFile, and table input detection in scidb.for_each.
+%   and table input detection in scidb.for_each.
 
     methods (TestMethodSetup)
         function resetSchema(~)
@@ -122,95 +122,6 @@ classdef TestScifor < matlab.unittest.TestCase
             f = scifor.Col("speed") >= 2.0;
             mask = f.apply(tbl);
             tc.verifyEqual(mask, [false; true; true]);
-        end
-    end
-
-    % =====================================================================
-    % CsvFile tests
-    % =====================================================================
-
-    methods (Test)
-        function test_csvfile_save_and_load(tc)
-            tmp = tempname();
-            mkdir(tmp);
-            template = fullfile(tmp, '{subject}', '{session}.csv');
-            f = scifor.CsvFile(template);
-
-            data = table([1; 2; 3], 'VariableNames', {'value'});
-            f.save(data, 'subject', 1, 'session', 'pre');
-
-            loaded = f.load('subject', 1, 'session', 'pre');
-            tc.verifyEqual(loaded.value, data.value);
-            rmdir(tmp, 's');
-        end
-
-        function test_csvfile_extra_kwargs_ignored(tc)
-            tmp = tempname();
-            mkdir(tmp);
-            template = fullfile(tmp, '{subject}.csv');
-            f = scifor.CsvFile(template);
-
-            data = table([10], 'VariableNames', {'x'});
-            % db= and __ keys should not raise
-            f.save(data, 'subject', 1, 'db', [], '__fn', 'myfn');
-            loaded = f.load('subject', 1, 'db', []);
-            tc.verifyEqual(loaded.x, 10);
-            rmdir(tmp, 's');
-        end
-
-        function test_csvfile_creates_directories(tc)
-            tmp = tempname();
-            template = fullfile(tmp, 'nested', 'dir', '{subject}.csv');
-            f = scifor.CsvFile(template);
-            data = table([1], 'VariableNames', {'x'});
-            f.save(data, 'subject', 1);
-            tc.verifyTrue(isfile(fullfile(tmp, 'nested', 'dir', '1.csv')));
-            rmdir(tmp, 's');
-        end
-    end
-
-    % =====================================================================
-    % MatFile tests
-    % =====================================================================
-
-    methods (Test)
-        function test_matfile_save_and_load_struct(tc)
-            tmp = tempname();
-            mkdir(tmp);
-            template = fullfile(tmp, '{subject}.mat');
-            f = scifor.MatFile(template);
-
-            s.arr = [1 2 3];
-            f.save(s, 'subject', 1);
-            loaded = f.load('subject', 1);
-            tc.verifyTrue(isfield(loaded, 'arr'));
-            rmdir(tmp, 's');
-        end
-
-        function test_matfile_save_numeric(tc)
-            tmp = tempname();
-            mkdir(tmp);
-            template = fullfile(tmp, '{subject}.mat');
-            f = scifor.MatFile(template);
-
-            arr = [10 20 30];
-            f.save(arr, 'subject', 1);
-            loaded = f.load('subject', 1);
-            tc.verifyTrue(isfield(loaded, 'data'));
-            rmdir(tmp, 's');
-        end
-
-        function test_matfile_extra_kwargs_ignored(tc)
-            tmp = tempname();
-            mkdir(tmp);
-            template = fullfile(tmp, '{subject}.mat');
-            f = scifor.MatFile(template);
-
-            s.x = 42;
-            % Extra kwargs should not raise
-            f.save(s, 'subject', 1, 'db', [], '__fn', 'fn');
-            f.load('subject', 1, 'db', []);
-            rmdir(tmp, 's');
         end
     end
 

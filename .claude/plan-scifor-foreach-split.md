@@ -235,29 +235,6 @@ scidb.for_each(@fn, inputs, outputs, subject=[1 2 3], session=["A" "B"])
 
 ---
 
-## What Happens to CsvFile / MatFile?
-
-CsvFile and MatFile are I/O classes — they load/save files. Since scifor.for_each no longer does I/O, they **cannot be direct inputs to scifor.for_each**.
-
-**Option chosen**: CsvFile/MatFile remain in the scifor package as standalone utilities. Users who want to use them with for_each load the data first:
-
-```matlab
-% Load all data into a table, then use for_each on the table
-all_data = table();
-for subj = [1,2,3]
-    for sess = ["A","B"]
-        row = scifor.CsvFile("data/{subject}/{session}.csv").load(subject=subj, session=sess);
-        row.subject = subj; row.session = sess;
-        all_data = [all_data; row];
-    end
-end
-result = scifor.for_each(@fn, struct('data', all_data), subject=[1 2 3], session=["A" "B"])
-```
-
-This is verbose but keeps scifor.for_each pure. A convenience helper could be added later (e.g. `scifor.load_all(CsvFile, subject=[1 2 3], session=["A" "B"])` → table).
-
----
-
 ## Empty-List Resolution
 
 Currently, `subject=[]` queries the database for all distinct values. In pure scifor:
@@ -343,7 +320,6 @@ Currently a 10-line passthrough. Becomes a substantial function that:
 - `+scidb/Fixed.m` — stays as-is (wraps BaseVariable, used by scidb.for_each)
 - `+scidb/Merge.m` — stays as-is (wraps BaseVariables, used by scidb.for_each)
 - `+scifor/Col.m`, `ColFilter.m`, `CompoundFilter.m`, `NotFilter.m` — no changes
-- `+scifor/CsvFile.m`, `+scifor/MatFile.m` — no changes (standalone I/O utilities, just not used as for_each inputs)
 - `+scifor/set_schema.m`, `+scifor/get_schema.m`, `+scifor/schema_store_.m` — no changes
 
 ---

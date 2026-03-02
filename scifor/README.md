@@ -2,9 +2,6 @@
 
 Standalone `for_each` batch execution utilities for data pipelines.
 
-Works with plain DataFrames, file I/O, or any custom `.load()`/`.save()` implementation.
-No database required.
-
 Available in both **Python** and **MATLAB**.
 
 ## What `for_each()` replaces
@@ -13,6 +10,7 @@ A typical pipeline iterates over every combination of subjects and sessions,
 loads data, processes it, and saves results. Written by hand:
 
 **Python**
+
 ```python
 subjects = [1, 2, 3]
 sessions = ["pre", "post"]
@@ -26,6 +24,7 @@ for subject in subjects:
 ```
 
 **MATLAB**
+
 ```matlab
 subjects = [1, 2, 3];
 sessions = ["pre", "post"];
@@ -43,37 +42,39 @@ end
 With `for_each()`, the same pipeline becomes:
 
 **Python**
+
 ```python
-from scifor import set_schema, for_each, CsvFile
+import pandas as pd
+from scifor import set_schema, for_each
 
 set_schema(["subject", "session"])
 
-raw      = CsvFile("data/{subject}/{session}.csv")
-filtered = CsvFile("results/{subject}/{session}.csv")
+raw_df = pd.DataFrame({
+    "subject": [1, 1, 2, 2, 3, 3] * 2,
+    "session": ["pre", "post"] * 6,
+    "emg": [...],
+})
 
 results = for_each(
     bandpass_filter,
-    inputs={"emg": raw},
-    outputs=[filtered],
+    inputs={"emg": raw_df},
     subject=[1, 2, 3],
     session=["pre", "post"],
 )
 ```
 
 **MATLAB**
+
 ```matlab
 scifor.set_schema(["subject", "session"]);
 
-raw      = scifor.CsvFile("data/{subject}/{session}.csv");
-filtered = scifor.CsvFile("results/{subject}/{session}.csv");
-
 results = scifor.for_each(@bandpass_filter, ...
-    struct('emg', raw), {filtered}, ...
+    struct('emg', raw_tbl), ...
     'subject', [1, 2, 3], ...
     'session', ["pre", "post"]);
 ```
 
-The function body stays clean. `for_each()` handles the loop, the I/O, and
+The function body stays clean. `for_each()` handles the loop and
 returns a table of results indexed by subject and session.
 
 ## Python Usage
@@ -90,12 +91,9 @@ raw_df = pd.DataFrame({
     "emg": [...],
 })
 
-filtered = CsvFile("results/{subject}/{session}.csv")
-
 results = for_each(
     my_fn,
     inputs={"signal": raw_df},
-    outputs=[filtered],
     subject=[1, 2],
     session=["pre", "post"],
 )
@@ -113,24 +111,14 @@ backward compatibility.
 scifor.set_schema(["subject", "session"]);
 
 % Run a function over all subject/session combinations
-% Inputs can be plain tables, scifor.CsvFile, scifor.MatFile, or constants
-filtered = scifor.CsvFile("results/{subject}/{session}.csv");
-
+% Inputs can be plain tables or constants
 results = scifor.for_each(@my_fn, ...
     struct('signal', raw_tbl), ...
-    {filtered}, ...
     'subject', [1, 2], ...
     'session', ["pre", "post"]);
 
 % Column-based filtering
 f = (scifor.Col("side") == "R") & (scifor.Col("speed") > 1.5);
-results = scifor.for_each(@my_fn, struct('data', raw_tbl), {filtered}, ...
+results = scifor.for_each(@my_fn, struct('data', raw_tbl), ...
     'subject', [1, 2], 'where', f);
-
-% File-backed I/O without a database
-csv = scifor.CsvFile('/data/{subject}/{session}.csv');
-mat = scifor.MatFile('/data/{subject}/{session}.mat');
-
-results = scifor.for_each(@my_fn, struct('signal', csv), {mat}, ...
-    'subject', [1, 2], 'session', ["pre", "post"]);
 ```
