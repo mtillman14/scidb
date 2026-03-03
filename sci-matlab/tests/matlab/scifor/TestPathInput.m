@@ -109,6 +109,53 @@ classdef TestPathInput < matlab.unittest.TestCase
             testCase.verifyTrue(contains(path, "data.mat"));
         end
 
+        %% Absolute path template tests (no root_folder needed)
+
+        function test_absolute_template_no_root_folder(testCase)
+            pi = scifor.PathInput("/data/{subject}/trial_{trial}.mat");
+            path = pi.load('subject', 1, 'trial', 2);
+            testCase.verifyEqual(path, "/data/1/trial_2.mat");
+        end
+
+        function test_absolute_template_ignores_root_folder(testCase)
+            % When template resolves to absolute path, root_folder is ignored
+            pi = scifor.PathInput("/data/{subject}/file.mat", ...
+                'root_folder', '/other/root');
+            path = pi.load('subject', 5);
+            testCase.verifyEqual(path, "/data/5/file.mat");
+        end
+
+        function test_absolute_template_string_placeholder(testCase)
+            pi = scifor.PathInput("/mnt/share/{group}/{subject}.csv");
+            path = pi.load('group', 'control', 'subject', 'p01');
+            testCase.verifyEqual(path, "/mnt/share/control/p01.csv");
+        end
+
+        function test_absolute_template_no_placeholders(testCase)
+            pi = scifor.PathInput("/fixed/path/data.mat");
+            path = pi.load();
+            testCase.verifyEqual(path, "/fixed/path/data.mat");
+        end
+
+        function test_absolute_template_returns_string(testCase)
+            pi = scifor.PathInput("/data/{x}.mat");
+            path = pi.load('x', 1);
+            testCase.verifyClass(path, 'string');
+        end
+
+        function test_absolute_template_regex(testCase)
+            % Create temp files under an absolute path and use regex
+            sub_dir = fullfile(testCase.tmp_dir, 'abs_regex');
+            mkdir(sub_dir);
+            fclose(fopen(fullfile(sub_dir, 'result_final.csv'), 'w'));
+
+            template = testCase.tmp_dir + "/abs_regex/result_final\.csv";
+            pi = scifor.PathInput(template, 'regex', true);
+            path = pi.load();
+            expected = string(fullfile(sub_dir, 'result_final.csv'));
+            testCase.verifyEqual(path, expected);
+        end
+
         %% Regex tests
 
         function test_regex_basic(testCase)

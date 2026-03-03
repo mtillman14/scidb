@@ -41,6 +41,8 @@ function varargout = for_each(fn, inputs, varargin)
 %                       level below the deepest iterated key. (default: false)
 %       where         - Optional scifor.ColFilter to apply to table rows
 %                       after combo filtering. (default: [])
+%       categorical   - If true, convert metadata columns in result
+%                       tables to categorical. (default: false)
 %       output_names  - Cell array of strings for result column names
 %                       (one per output). Defaults to {'output'} for each.
 %       _all_combos   - Pre-built cell array of combo structs (from DB
@@ -288,8 +290,13 @@ function varargout = for_each(fn, inputs, varargin)
 
         for p = 1:n_inputs
             if ~data_idx(p)
-                % Constant — use value directly
-                loaded{p} = inputs.(input_names{p});
+                % Constant — use value directly, or resolve PathInput
+                val = inputs.(input_names{p});
+                if isa(val, 'scifor.PathInput')
+                    loaded{p} = val.load(meta_nv{:});
+                else
+                    loaded{p} = val;
+                end
                 continue;
             end
 
@@ -348,6 +355,10 @@ function varargout = for_each(fn, inputs, varargin)
                 try
                     dist_key_char = char(distribute_key);
                     if istable(raw_value)
+                        % Expand single-row tables with cell-array columns
+                        if height(raw_value) == 1
+                            raw_value = expand_single_row_for_distribute(raw_value);
+                        end
                         if ismember(dist_key_char, raw_value.Properties.VariableNames)
                             dist_values = raw_value.(dist_key_char);
                             data_tbl = raw_value;
@@ -401,7 +412,7 @@ function varargout = for_each(fn, inputs, varargin)
         output_tables = cell(1, n_outputs);
         for o = 1:n_outputs
             output_tables{o} = build_single_output_table( ...
-                collected_per_output{o}, resolved_output_names{o});
+                collected_per_output{o}, resolved_output_names{o}, opts.categorical, schema_keys);
         end
         n_return = max(nargout, 1);
         for o = 1:n_return
@@ -820,11 +831,13 @@ end
 % Return value helpers
 % =========================================================================
 
-function tbl = build_single_output_table(collected, output_name)
+function tbl = build_single_output_table(collected, output_name, categorical_flag, schema_keys)
 %BUILD_SINGLE_OUTPUT_TABLE  Build one result table for a single output.
 %
 %   collected - cell array of {metadata_struct, value} pairs for one output
 %   output_name - column name for non-table values (e.g., 'output')
+%   categorical_flag - if true, convert metadata columns to categorical
+%   schema_keys - string array of schema keys (for sort order)
 %
 %   If all values are tables → flatten mode (metadata + data columns).
 %   Otherwise → nested mode (metadata + single data column).
@@ -905,6 +918,23 @@ function tbl = build_single_output_table(collected, output_name)
         end
         tbl.(output_name) = normalize_cell_column(col_data);
     end
+
+    % Sort by schema columns and convert to categorical if requested
+    if categorical_flag
+        % Sort rows by schema columns in schema key order
+        sort_cols = intersect(schema_keys, string(meta_fields'), 'stable');
+        if ~isempty(sort_cols)
+            tbl = sort_by_schema_columns(tbl, sort_cols);
+        end
+
+        % Convert to categorical with order matching sorted rows
+        for f = 1:numel(meta_fields)
+            col = tbl.(meta_fields{f});
+            str_col = string(col);
+            unique_vals = unique(str_col, 'stable');
+            tbl.(meta_fields{f}) = categorical(str_col, unique_vals);
+        end
+    end
 end
 
 
@@ -945,6 +975,53 @@ function pieces = split_for_distribute(data)
 end
 
 
+function expanded = expand_single_row_for_distribute(tbl)
+%EXPAND_SINGLE_ROW_FOR_DISTRIBUTE  Expand a height-1 table for distribute.
+%   Cell columns containing multi-element arrays are expanded into rows.
+%   The target expansion length is the most common length among expandable
+%   columns. Columns that match the target length are expanded in-place.
+%   All other columns (scalars, mismatched-length cells) are replicated
+%   to preserve a consistent column set across iterations.
+
+    col_names = tbl.Properties.VariableNames;
+    n_cols = numel(col_names);
+
+    expandable = false(1, n_cols);
+    lengths = zeros(1, n_cols);
+
+    for i = 1:n_cols
+        val = tbl.(col_names{i});
+        if iscell(val) && isscalar(val)
+            inner = val{1};
+            if numel(inner) > 1
+                expandable(i) = true;
+                lengths(i) = numel(inner);
+            end
+        end
+    end
+
+    if ~any(expandable)
+        % Nothing to expand — return as-is
+        expanded = tbl;
+        return;
+    end
+
+    target_len = mode(lengths(expandable));
+
+    expanded = table();
+    for i = 1:n_cols
+        if expandable(i) && lengths(i) == target_len
+            % Expand matching cell-array columns into individual rows
+            inner = tbl.(col_names{i}){1};
+            expanded.(col_names{i}) = inner(:);
+        else
+            % Replicate scalar and mismatched-length columns
+            expanded.(col_names{i}) = repmat(tbl.(col_names{i}), target_len, 1);
+        end
+    end
+end
+
+
 % =========================================================================
 % Option parsing
 % =========================================================================
@@ -956,6 +1033,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.as_table = string.empty;
     opts.distribute = false;
     opts.where = [];
+    opts.categorical = false;
     opts.output_names = {};
     opts.all_combos = [];
 
@@ -988,6 +1066,10 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "distribute"
                     opts.distribute = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "categorical"
+                    opts.categorical = logical(varargin{i+1});
                     i = i + 2;
                     continue;
                 case "where"
@@ -1184,11 +1266,44 @@ end
 % Utility
 % =========================================================================
 
+function tbl = sort_by_schema_columns(tbl, sort_cols)
+%SORT_BY_SCHEMA_COLUMNS  Sort table rows by schema columns, numeric-aware.
+%   Numeric columns sort numerically. String columns that contain only
+%   numeric-like values (e.g., "1", "10", "2") sort numerically rather
+%   than alphabetically. Other string columns sort alphabetically.
+    n = height(tbl);
+    if n <= 1
+        return;
+    end
+    sort_matrix = zeros(n, numel(sort_cols));
+    for i = 1:numel(sort_cols)
+        col = tbl.(char(sort_cols(i)));
+        if isnumeric(col)
+            sort_matrix(:, i) = col;
+        else
+            str_col = string(col);
+            nums = str2double(str_col);
+            if all(~isnan(nums))
+                % All values are numeric-like strings — sort numerically
+                sort_matrix(:, i) = nums;
+            else
+                % Non-numeric strings — sort alphabetically via rank
+                [~, ~, sort_matrix(:, i)] = unique(str_col);
+            end
+        end
+    end
+    [~, order] = sortrows(sort_matrix);
+    tbl = tbl(order, :);
+end
+
+
 function col = normalize_cell_column(col_data)
 %NORMALIZE_CELL_COLUMN  Convert a cell column to its native type.
     n = numel(col_data);
     all_scalar_numeric = true;
     all_string = true;
+    all_scalar_struct = n > 0;
+    ref_fields = {};
     for i = 1:n
         v = col_data{i};
         if ~((isnumeric(v) || islogical(v)) && isscalar(v))
@@ -1197,11 +1312,24 @@ function col = normalize_cell_column(col_data)
         if ~(isstring(v) || ischar(v))
             all_string = false;
         end
+        if all_scalar_struct
+            if isstruct(v) && isscalar(v)
+                if i == 1
+                    ref_fields = sort(fieldnames(v));
+                elseif ~isequal(sort(fieldnames(v)), ref_fields)
+                    all_scalar_struct = false;
+                end
+            else
+                all_scalar_struct = false;
+            end
+        end
     end
     if all_scalar_numeric
         col = cell2mat(col_data);
     elseif all_string
         col = string(col_data);
+    elseif all_scalar_struct
+        col = reshape([col_data{:}], [], 1);
     else
         col = col_data;
     end

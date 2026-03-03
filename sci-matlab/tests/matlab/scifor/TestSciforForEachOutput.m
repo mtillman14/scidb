@@ -74,18 +74,18 @@ classdef TestSciforForEachOutput < matlab.unittest.TestCase
             tc.verifyEqual(result.output{1}, eye(3));
         end
 
-        function test_struct_output_in_cell_column(tc)
-        %   Struct output → stored in 'output' cell column.
+        function test_struct_output_as_struct_array(tc)
+        %   Scalar struct output → stored in 'output' as struct array.
             scifor.set_schema(["subject"]);
 
             result = scifor.for_each( ...
                 @() struct('a', 1, 'b', 2), struct(), subject=[1]);
 
             tc.verifyTrue(ismember('output', result.Properties.VariableNames));
-            tc.verifyTrue(iscell(result.output));
-            s = result.output{1};
-            tc.verifyEqual(s.a, 1);
-            tc.verifyEqual(s.b, 2);
+            tc.verifyTrue(isstruct(result.output));
+            tc.verifyFalse(iscell(result.output));
+            tc.verifyEqual(result.output(1).a, 1);
+            tc.verifyEqual(result.output(1).b, 2);
         end
 
         function test_logical_scalar_output(tc)
@@ -471,6 +471,99 @@ classdef TestSciforForEachOutput < matlab.unittest.TestCase
             % Second output: 3 pieces
             tc.verifyEqual(height(r2), 3);
             tc.verifyEqual(r2.output, [100; 200; 300]);
+        end
+
+        function test_distribute_expands_single_row_table_cells(tc)
+        %   distribute + height-1 table with cell-array columns: cells
+        %   are expanded into rows, scalar columns are replicated.
+            scifor.set_schema(["subject", "cycle"]);
+
+            fn = @() table({[10;20;30]}, {[100;200;300]}, 42, ...
+                'VariableNames', {'A', 'B', 'scalar_col'});
+
+            result = scifor.for_each(fn, struct(), ...
+                distribute=true, subject=[1]);
+
+            % 3 rows from the 3-element vectors
+            tc.verifyEqual(height(result), 3);
+            tc.verifyEqual(result.cycle, [1; 2; 3]);
+            % Expanded columns present
+            tc.verifyTrue(ismember('A', result.Properties.VariableNames));
+            tc.verifyTrue(ismember('B', result.Properties.VariableNames));
+            tc.verifyEqual(result.A, [10; 20; 30]);
+            tc.verifyEqual(result.B, [100; 200; 300]);
+            % Scalar column replicated
+            tc.verifyTrue(ismember('scalar_col', result.Properties.VariableNames));
+            tc.verifyEqual(result.scalar_col, [42; 42; 42]);
+        end
+
+        function test_distribute_single_row_with_logical_cells(tc)
+        %   distribute + height-1 table with logical cell columns.
+            scifor.set_schema(["subject", "cycle"]);
+
+            fn = @() table({[true;false;true]}, {[1.1;2.2;3.3]}, ...
+                'VariableNames', {'flags', 'vals'});
+
+            result = scifor.for_each(fn, struct(), ...
+                distribute=true, subject=[1]);
+
+            tc.verifyEqual(height(result), 3);
+            tc.verifyEqual(result.flags, [true; false; true]);
+            tc.verifyEqual(result.vals, [1.1; 2.2; 3.3]);
+        end
+
+        function test_distribute_single_row_replicates_mismatched_lengths(tc)
+        %   distribute + cell columns of different lengths: matching-length
+        %   columns are expanded, mismatched columns are replicated as cells.
+            scifor.set_schema(["subject", "cycle"]);
+
+            fn = @() table({[10;20;30]}, {[100;200;300]}, {[1;2]}, ...
+                'VariableNames', {'A', 'B', 'short'});
+
+            result = scifor.for_each(fn, struct(), ...
+                distribute=true, subject=[1]);
+
+            % A and B have length 3 (most common) → expanded
+            tc.verifyEqual(height(result), 3);
+            tc.verifyEqual(result.A, [10; 20; 30]);
+            tc.verifyEqual(result.B, [100; 200; 300]);
+            % short has length 2 → replicated as cell
+            tc.verifyTrue(ismember('short', result.Properties.VariableNames));
+            tc.verifyTrue(iscell(result.short));
+            tc.verifyEqual(result.short{1}, [1;2]);
+        end
+
+        function test_distribute_single_row_no_expandable_keeps_original(tc)
+        %   distribute + height-1 table with only scalar cells: no expansion,
+        %   produces 1 distributed row as before.
+            scifor.set_schema(["subject", "cycle"]);
+
+            fn = @() table(42, "hello", 'VariableNames', {'num', 'str'});
+
+            result = scifor.for_each(fn, struct(), ...
+                distribute=true, subject=[1]);
+
+            % No cell-array vectors → table stays height-1 → 1 cycle
+            tc.verifyEqual(height(result), 1);
+            tc.verifyEqual(result.cycle, 1);
+        end
+
+        function test_distribute_single_row_consistent_across_passes(tc)
+        %   distribute + multiple passes with different cell lengths:
+        %   all passes produce the same column set (no vertcat error).
+            scifor.set_schema(["subject", "cycle"]);
+
+            tbl = table([1;2], {[10;20;30];[100;200]}, {[1;2;3];[4;5]}, ...
+                'VariableNames', {'subject', 'A', 'B'});
+
+            result = scifor.for_each(@(data) data, ...
+                struct('data', tbl), as_table=true, ...
+                distribute=true, subject=[1 2]);
+
+            % subject=1: 3 cycles, subject=2: 2 cycles → 5 total
+            tc.verifyEqual(height(result), 5);
+            tc.verifyTrue(ismember('A', result.Properties.VariableNames));
+            tc.verifyTrue(ismember('B', result.Properties.VariableNames));
         end
 
         function test_pass_metadata_with_output_table(tc)

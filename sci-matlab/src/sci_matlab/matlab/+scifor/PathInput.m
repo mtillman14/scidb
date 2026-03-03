@@ -83,7 +83,11 @@ classdef PathInput < handle
             end
 
             % Resolve to absolute path
-            if strlength(obj.root_folder) > 0
+            resolved_is_abs = startsWith(resolved, "/") || ...
+                ~isempty(regexp(resolved, '^[A-Za-z]:', 'once'));
+            if resolved_is_abs
+                filepath = string(resolved);
+            elseif strlength(obj.root_folder) > 0
                 filepath = string(fullfile(obj.root_folder, resolved));
             else
                 filepath = string(fullfile(pwd, resolved));
@@ -102,7 +106,11 @@ classdef PathInput < handle
                     pattern = extractAfter(resolved, slash_idx);
                 end
 
-                if strlength(obj.root_folder) > 0
+                dir_is_abs = startsWith(dir_template, "/") || ...
+                    ~isempty(regexp(dir_template, '^[A-Za-z]:', 'once'));
+                if dir_is_abs
+                    dir_path = string(dir_template);
+                elseif strlength(obj.root_folder) > 0
                     dir_path = string(fullfile(obj.root_folder, dir_template));
                 else
                     dir_path = string(fullfile(pwd, dir_template));
