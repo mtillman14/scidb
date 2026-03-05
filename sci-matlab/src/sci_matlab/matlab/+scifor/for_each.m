@@ -61,6 +61,13 @@ function varargout = for_each(fn, inputs, varargin)
 %           struct('raw', data_table, 'smoothing', 0.2), ...
 %           subject=[1 2 3], session=["A" "B"])
 
+    % --- Fix struct-array inputs from struct() cell-array gotcha ---
+    %   struct('a', tbl, 'b', {'x','y'}) creates a 1x2 struct array
+    %   instead of a scalar struct with a cell field. Collapse it.
+    if ~isscalar(inputs)
+        inputs = collapse_struct_array(inputs);
+    end
+
     % --- Parse options vs metadata name-value pairs ---
     [meta_args, opts] = split_options(varargin{:});
 
@@ -148,6 +155,15 @@ function varargout = for_each(fn, inputs, varargin)
                 end
             end
         end
+    end
+
+    % --- Determine effective keys for filtering/extraction ---
+    %   No schema set → iteration keys are the source of truth.
+    %   Schema set    → schema keys are the source of truth.
+    if isempty(schema_keys)
+        effective_keys = meta_keys;
+    else
+        effective_keys = schema_keys;
     end
 
     % --- Validate distribute parameter and resolve target key ---
@@ -304,7 +320,7 @@ function varargout = for_each(fn, inputs, varargin)
             wants_table = ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set);
 
             try
-                loaded{p} = prepare_input(var_spec, metadata, schema_keys, wants_table, where_filter);
+                loaded{p} = prepare_input(var_spec, metadata, effective_keys, wants_table, where_filter);
             catch err
                 fprintf('[skip] %s: failed to filter %s: %s\n', ...
                     metadata_str, input_names{p}, err.message);
@@ -412,7 +428,7 @@ function varargout = for_each(fn, inputs, varargin)
         output_tables = cell(1, n_outputs);
         for o = 1:n_outputs
             output_tables{o} = build_single_output_table( ...
-                collected_per_output{o}, resolved_output_names{o}, opts.categorical, schema_keys);
+                collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys);
         end
         n_return = max(nargout, 1);
         for o = 1:n_return
@@ -809,6 +825,32 @@ function values = distinct_values_from_inputs(inputs, key)
         values = num2cell(unique(cell2mat(all_values)));
     else
         values = unique(all_values);
+    end
+end
+
+
+function s = collapse_struct_array(arr)
+%COLLAPSE_STRUCT_ARRAY  Convert a non-scalar struct array back to a scalar struct.
+%   When users write struct('a', tbl, 'b', {'x','y'}), MATLAB creates a
+%   struct array instead of a scalar struct with cell fields. This undoes
+%   that by collecting each field's values into a cell array, or unwrapping
+%   if all elements are identical (i.e. the field was a replicated scalar).
+    fnames = fieldnames(arr);
+    s = struct();
+    for i = 1:numel(fnames)
+        vals = {arr.(fnames{i})};
+        all_same = true;
+        for j = 2:numel(vals)
+            if ~isequal(vals{1}, vals{j})
+                all_same = false;
+                break;
+            end
+        end
+        if all_same
+            s.(fnames{i}) = vals{1};
+        else
+            s.(fnames{i}) = vals;
+        end
     end
 end
 

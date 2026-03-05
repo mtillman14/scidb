@@ -65,6 +65,37 @@
     | `db` | `DatabaseManager \| []` | `[]` | Use a specific database instead of the global one. |
     | `subject=...` etc. | numeric or string array | — | Metadata iterables. Cartesian product is computed. Pass empty array `[]` to use all distinct values in the database. |
 
+### Reusing metadata iterables
+
+The metadata name-value pairs (`subject=[1 2 3], trial=["A" "B"]`) can be stored in a cell array and expanded with `{:}` for reuse across multiple `for_each` calls:
+
+=== "Python"
+
+    ```python
+    meta = dict(subject=[1, 2, 3], trial=["A", "B"])
+
+    for_each(fn1, inputs1, outputs1, **meta)
+    for_each(fn2, inputs2, outputs2, **meta)
+    ```
+
+=== "MATLAB"
+
+    ```matlab
+    meta = {'subject', [1 2 3], 'trial', ["A" "B"]};
+
+    scifor.for_each(@fn1, inputs1, meta{:})
+    scifor.for_each(@fn2, inputs2, meta{:})
+    ```
+
+    You can also build the list programmatically:
+
+    ```matlab
+    meta = {};
+    meta = [meta, {'subject', [1 2 3]}];
+    meta = [meta, {'trial', ["A" "B"]}];
+    scifor.for_each(@fn, inputs, meta{:})
+    ```
+
 ### Returns
 
 Nothing. Outputs are saved to the database and logged to stdout.

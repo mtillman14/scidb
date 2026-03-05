@@ -369,6 +369,37 @@ Pass an empty array `[]` for a metadata key to automatically use all distinct va
         session=["A"]);
     ```
 
+## Reusing Metadata Iterables
+
+When multiple `for_each` calls share the same metadata values, store the name-value pairs and expand them to avoid repetition:
+
+=== "Python"
+
+    ```python
+    meta = dict(subject=[1, 2, 3], session=["pre", "post"])
+
+    for_each(fn1, inputs={"signal": RawEMG},    outputs=[FilteredEMG], **meta)
+    for_each(fn2, inputs={"data": FilteredEMG},  outputs=[Metric],      **meta)
+    ```
+
+=== "MATLAB"
+
+    ```matlab
+    meta = {'subject', [1 2 3], 'session', ["pre" "post"]};
+
+    scidb.for_each(@fn1, struct('signal', RawEMG()),   {FilteredEMG()}, meta{:})
+    scidb.for_each(@fn2, struct('data', FilteredEMG()), {Metric()},      meta{:})
+    ```
+
+    You can also build the list programmatically:
+
+    ```matlab
+    meta = {};
+    meta = [meta, {'subject', [1 2 3]}];
+    meta = [meta, {'session', ["pre" "post"]}];
+    scidb.for_each(@fn, inputs, outputs, meta{:})
+    ```
+
 ## Distribute: Splitting Outputs Across the Schema
 
 Use `distribute=True` when a function returns a vector or table that should be split into individual records at the next-deeper schema level. For example, with schema `[subject, trial, cycle]` and iteration at the `trial` level, each element of the output vector becomes a separate `cycle` record.
