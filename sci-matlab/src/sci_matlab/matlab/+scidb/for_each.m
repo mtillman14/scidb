@@ -123,8 +123,69 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % --- Propagate schema keys to scifor ---
     propagate_schema(opts.db);
 
-    % --- Parse inputs struct — separate loadable from constants ---
+    % --- Resolve ColName wrappers before the loadable/constant split ---
     input_names = fieldnames(inputs);
+
+    % Resolve database for ColName lookups (only if needed)
+    has_colname = false;
+    for p = 1:numel(input_names)
+        if isa(inputs.(input_names{p}), 'scifor.ColName') || isa(inputs.(input_names{p}), 'scidb.ColName')
+            has_colname = true;
+            break;
+        end
+    end
+
+    if has_colname
+        if isempty(opts.db)
+            py_db_colname = py.scidb.database.get_database();
+        else
+            py_db_colname = opts.db;
+        end
+
+        for p = 1:numel(input_names)
+            var_spec = inputs.(input_names{p});
+            if isa(var_spec, 'scifor.ColName')
+                % scifor.ColName wrapping a table in scidb context
+                inner = var_spec.data;
+                if isa(inner, 'scidb.BaseVariable')
+                    type_name = class(inner);
+                    py_class = scidb.internal.ensure_registered(type_name);
+                    inputs.(input_names{p}) = char(py.sci_matlab.bridge.get_data_column_name(py_class, py_db_colname));
+                elseif istable(inner)
+                    % Resolve from table columns like scifor does
+                    propagate_schema(opts.db);
+                    sk = scifor.get_schema();
+                    tbl_cols = string(inner.Properties.VariableNames);
+                    data_cols = setdiff(tbl_cols, sk, 'stable');
+                    if numel(data_cols) == 1
+                        inputs.(input_names{p}) = char(data_cols(1));
+                    elseif isempty(data_cols)
+                        error('scidb:ColName', ...
+                            'ColName(%s): table has no data columns.', input_names{p});
+                    else
+                        error('scidb:ColName', ...
+                            'ColName(%s): table has %d data columns (%s), expected exactly 1.', ...
+                            input_names{p}, numel(data_cols), strjoin(data_cols, ', '));
+                    end
+                else
+                    error('scidb:ColName', ...
+                        'ColName in scidb.for_each requires a BaseVariable or table.');
+                end
+            elseif isa(var_spec, 'scidb.ColName')
+                inner = var_spec.var_type;
+                if isa(inner, 'scidb.BaseVariable')
+                    type_name = class(inner);
+                    py_class = scidb.internal.ensure_registered(type_name);
+                    inputs.(input_names{p}) = char(py.sci_matlab.bridge.get_data_column_name(py_class, py_db_colname));
+                else
+                    error('scidb:ColName', ...
+                        'scidb.ColName requires a BaseVariable instance.');
+                end
+            end
+        end
+    end
+
+    % --- Parse inputs struct — separate loadable from constants ---
     n_inputs = numel(input_names);
 
     loadable_idx = false(1, n_inputs);

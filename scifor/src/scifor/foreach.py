@@ -4,6 +4,7 @@ import traceback
 from itertools import product
 from typing import Any, Callable
 
+from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .merge import Merge
@@ -91,6 +92,9 @@ def for_each(
                 f"Schema order: {schema_keys}"
             )
         distribute_key = schema_keys[deepest_idx + 1]
+
+    # Resolve ColName wrappers before the data/constant split
+    inputs = _resolve_colnames(inputs, schema_keys)
 
     # Separate data inputs from constants
     data_inputs = {}
@@ -238,6 +242,48 @@ def _is_dataframe(value: Any) -> bool:
         return isinstance(value, pd.DataFrame)
     except ImportError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# ColName resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_colnames(inputs: dict[str, Any], schema_keys: list[str]) -> dict[str, Any]:
+    """Replace ColName wrappers with the resolved column name string.
+
+    For each ColName(df) in inputs:
+    1. Get the inner DataFrame
+    2. Compute data_cols = columns not in schema_keys
+    3. If exactly 1 data column -> replace with the string name
+    4. Otherwise -> raise ValueError
+    """
+    resolved = {}
+    for param_name, var_spec in inputs.items():
+        if isinstance(var_spec, ColName):
+            df = var_spec.data
+            if not _is_dataframe(df):
+                raise TypeError(
+                    f"ColName({param_name}) expected a DataFrame, "
+                    f"got {type(df).__name__}"
+                )
+            data_cols = [c for c in df.columns if c not in schema_keys]
+            if len(data_cols) == 1:
+                resolved[param_name] = data_cols[0]
+            elif len(data_cols) == 0:
+                raise ValueError(
+                    f"ColName({param_name}): DataFrame has no data columns "
+                    f"(all columns are schema keys). "
+                    f"Columns: {list(df.columns)}, schema keys: {schema_keys}"
+                )
+            else:
+                raise ValueError(
+                    f"ColName({param_name}): DataFrame has {len(data_cols)} "
+                    f"data columns ({data_cols}), expected exactly 1. "
+                    f"Schema keys: {schema_keys}"
+                )
+        else:
+            resolved[param_name] = var_spec
+    return resolved
 
 
 # ---------------------------------------------------------------------------

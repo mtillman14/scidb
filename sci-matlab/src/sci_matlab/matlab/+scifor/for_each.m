@@ -179,8 +179,34 @@ function varargout = for_each(fn, inputs, varargin)
         distribute_key = schema_keys(deepest_idx + 1);
     end
 
-    % --- Parse inputs struct — separate data inputs from constants ---
+    % --- Resolve ColName wrappers before the data/constant split ---
     input_names = fieldnames(inputs);
+    for p = 1:numel(input_names)
+        var_spec = inputs.(input_names{p});
+        if isa(var_spec, 'scifor.ColName')
+            inner_tbl = var_spec.data;
+            if ~istable(inner_tbl)
+                error('scifor:ColName', ...
+                    'ColName(%s) expected a table, got %s', ...
+                    input_names{p}, class(inner_tbl));
+            end
+            tbl_cols = string(inner_tbl.Properties.VariableNames);
+            data_cols = setdiff(tbl_cols, schema_keys, 'stable');
+            if numel(data_cols) == 1
+                inputs.(input_names{p}) = char(data_cols(1));
+            elseif isempty(data_cols)
+                error('scifor:ColName', ...
+                    'ColName(%s): table has no data columns (all columns are schema keys). Columns: %s, schema keys: %s', ...
+                    input_names{p}, strjoin(tbl_cols, ', '), strjoin(schema_keys, ', '));
+            else
+                error('scifor:ColName', ...
+                    'ColName(%s): table has %d data columns (%s), expected exactly 1. Schema keys: %s', ...
+                    input_names{p}, numel(data_cols), strjoin(data_cols, ', '), strjoin(schema_keys, ', '));
+            end
+        end
+    end
+
+    % --- Parse inputs struct — separate data inputs from constants ---
     n_inputs = numel(input_names);
 
     data_idx = false(1, n_inputs);

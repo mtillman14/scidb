@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 import scifor
-from scifor import set_schema, for_each, Fixed, Merge, ColumnSelection, Col
+from scifor import set_schema, for_each, Fixed, Merge, ColumnSelection, Col, ColName
 
 
 def setup_function():
@@ -563,3 +563,80 @@ def test_flatten_mode_dataframe_outputs():
     assert len(result) == 6
     assert "subject" in result.columns
     assert "val" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# ColName resolution
+# ---------------------------------------------------------------------------
+
+def test_colname_single_data_column():
+    """ColName(df) resolves to the one non-schema data column name."""
+    set_schema(["subject", "session"])
+    df = make_df()  # has columns: subject, session, emg
+    received = []
+
+    def fn(table, col_name):
+        received.append(col_name)
+        return table[col_name].mean()
+
+    result = for_each(
+        fn,
+        inputs={"table": df, "col_name": ColName(df)},
+        as_table=True,
+        subject=[1],
+        session=["pre"],
+    )
+    assert received[0] == "emg"
+
+
+def test_colname_multiple_data_columns_errors():
+    """ColName raises ValueError when the DataFrame has 2+ data columns."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 2],
+        "emg": [0.1, 0.2],
+        "force": [1.0, 2.0],
+    })
+    with pytest.raises(ValueError, match="2 data columns"):
+        for_each(
+            lambda table, col_name: 0,
+            inputs={"table": df, "col_name": ColName(df)},
+            subject=[1],
+        )
+
+
+def test_colname_no_data_columns_errors():
+    """ColName raises ValueError when all columns are schema keys."""
+    set_schema(["subject", "session"])
+    df = pd.DataFrame({"subject": [1], "session": ["pre"]})
+    with pytest.raises(ValueError, match="no data columns"):
+        for_each(
+            lambda table, col_name: 0,
+            inputs={"table": df, "col_name": ColName(df)},
+            subject=[1],
+            session=["pre"],
+        )
+
+
+def test_colname_with_other_inputs():
+    """ColName works alongside regular table and constant inputs."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 2],
+        "velocity": [3.0, 4.0],
+    })
+    received = []
+
+    def fn(table, col_name, scale):
+        received.append((col_name, scale))
+        return table[col_name].iloc[0] * scale
+
+    result = for_each(
+        fn,
+        inputs={"table": df, "col_name": ColName(df), "scale": 2.0},
+        as_table=True,
+        subject=[1, 2],
+    )
+    assert len(received) == 2
+    assert received[0] == ("velocity", 2.0)
+    assert received[1] == ("velocity", 2.0)
