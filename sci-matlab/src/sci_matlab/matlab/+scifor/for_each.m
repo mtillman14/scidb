@@ -321,34 +321,8 @@ function varargout = for_each(fn, inputs, varargin)
 
         for p = 1:n_inputs
             if ~data_idx(p)
-                % Constant — use value directly, or resolve PathInput
-                val = inputs.(input_names{p});
-                if isa(val, 'scifor.PathInput')
-                    loaded{p} = val.load(meta_nv{:});
-                elseif isa(val, 'scifor.Fixed') && isa(val.data, 'scifor.PathInput')
-                    % Fixed(PathInput) — apply fixed overrides, then resolve
-                    fixed_nv = meta_nv;
-                    fixed_fields = fieldnames(val.fixed_metadata);
-                    for f = 1:numel(fixed_fields)
-                        key_name = fixed_fields{f};
-                        key_val = val.fixed_metadata.(key_name);
-                        replaced = false;
-                        for nvi = 1:2:numel(fixed_nv)
-                            if strcmp(fixed_nv{nvi}, key_name)
-                                fixed_nv{nvi+1} = key_val;
-                                replaced = true;
-                                break;
-                            end
-                        end
-                        if ~replaced
-                            fixed_nv{end+1} = key_name; %#ok<AGROW>
-                            fixed_nv{end+1} = key_val; %#ok<AGROW>
-                        end
-                    end
-                    loaded{p} = val.data.load(fixed_nv{:});
-                else
-                    loaded{p} = val;
-                end
+                % Constant — pass value directly to user function
+                loaded{p} = inputs.(input_names{p});
                 continue;
             end
 
@@ -386,7 +360,7 @@ function varargout = for_each(fn, inputs, varargin)
                 result = {};
             elseif n_outputs > 1
                 fn_nargout = nargout(fn);
-                if fn_nargout >= n_outputs
+                if fn_nargout >= n_outputs || fn_nargout < 0
                     % True multi-output function
                     result = cell(1, n_outputs);
                     [result{1:n_outputs}] = fn(loaded{:});
@@ -401,10 +375,7 @@ function varargout = for_each(fn, inputs, varargin)
                     end
                 end
             else
-                result = fn(loaded{:});
-                if ~iscell(result)
-                    result = {result};
-                end
+                result = {fn(loaded{:})};
             end
         catch err
             fprintf('[skip] %s: %s raised: %s\n', ...
@@ -432,6 +403,12 @@ function varargout = for_each(fn, inputs, varargin)
                         else
                             dist_values = (1:height(raw_value))';
                             data_tbl = raw_value;
+                        end
+                        % Strip columns that overlap with metadata keys
+                        meta_field_names = fieldnames(metadata);
+                        overlap = intersect(meta_field_names, data_tbl.Properties.VariableNames, 'stable');
+                        if ~isempty(overlap)
+                            data_tbl = removevars(data_tbl, overlap);
                         end
                         for rowIdx = 1:height(data_tbl)
                             dist_meta = metadata;
@@ -566,8 +543,8 @@ function result = prepare_input(var_spec, metadata, schema_keys, as_table, where
         filtered = apply_where_filter(filtered, where_filter);
     end
 
-    % No matching rows → skip this combo
-    if height(filtered) == 0
+    % No matching rows → skip this combo (unless as_table, where empty table is valid)
+    if height(filtered) == 0 && ~as_table
         error('scifor:NoData', 'No data for this combo after filtering.');
     end
 
@@ -707,6 +684,10 @@ function result = apply_column_selection_on_table(tbl, cols)
 
     if numel(cols) == 1
         result = tbl.(char(cols(1)));
+        % Scalar cell extraction (consistent with extract_data)
+        if height(tbl) == 1 && iscell(result) && isscalar(result)
+            result = result{1};
+        end
     else
         result = tbl(:, cellstr(cols));
     end
@@ -823,6 +804,16 @@ function result = prepare_merge(merge_spec, metadata, schema_keys, where_filter)
     end
 
     merged = merge_parts_columnwise(parts);
+
+    % Apply where filter to merged result
+    if ~isempty(where_filter)
+        merged = apply_where_filter(merged, where_filter);
+    end
+
+    % No rows after merge/filter → skip this combo
+    if height(merged) == 0
+        error('scifor:NoData', 'No data for this combo after merge.');
+    end
 
     % Add back constant schema columns (those not already in the merged table)
     nr = height(merged);
