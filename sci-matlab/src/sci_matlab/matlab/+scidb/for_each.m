@@ -260,7 +260,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             if isempty(meta_values)
                 raw_combos = {{}};
             else
-                raw_combos = cartesian_product(meta_values);
+                raw_combos = scidb.internal.cartesian_product(meta_values);
             end
             original_count = numel(raw_combos);
             keep = true(1, original_count);
@@ -608,14 +608,14 @@ function tbl = thunk_outputs_to_table(results, var_inst)
                     col_data{i} = missing;
                 end
             end
-            tbl.(meta_fields{f}) = normalize_cell_column(col_data);
+            tbl.(meta_fields{f}) = scidb.internal.normalize_cell_column(col_data);
         end
 
         data_col = cell(n, 1);
         for i = 1:n
             data_col{i} = results(i).data;
         end
-        tbl.(view_name) = normalize_cell_column(data_col);
+        tbl.(view_name) = scidb.internal.normalize_cell_column(data_col);
     end
 end
 
@@ -869,7 +869,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
     if isempty(meta_values)
         combos = {{}};
     else
-        combos = cartesian_product(meta_values);
+        combos = scidb.internal.cartesian_product(meta_values);
     end
     total = numel(combos);
 
@@ -1577,51 +1577,3 @@ end
 % =========================================================================
 % Utility
 % =========================================================================
-
-function combos = cartesian_product(value_cells)
-%CARTESIAN_PRODUCT  Compute Cartesian product of cell arrays.
-    n = numel(value_cells);
-    if n == 0
-        combos = {{}};
-        return;
-    end
-
-    sizes = cellfun(@numel, value_cells);
-    idx_args = arrayfun(@(s) 1:s, sizes, 'UniformOutput', false);
-    grids = cell(1, n);
-    [grids{:}] = ndgrid(idx_args{:});
-
-    total = prod(sizes);
-    combos = cell(1, total);
-    for t = 1:total
-        combo = cell(1, n);
-        for d = 1:n
-            combo{d} = value_cells{d}{grids{d}(t)};
-        end
-        combos{t} = combo;
-    end
-end
-
-
-function col = normalize_cell_column(col_data)
-%NORMALIZE_CELL_COLUMN  Convert a cell column to its native type.
-    n = numel(col_data);
-    all_scalar_numeric = true;
-    all_string = true;
-    for i = 1:n
-        v = col_data{i};
-        if ~(isnumeric(v) && isscalar(v))
-            all_scalar_numeric = false;
-        end
-        if ~((isstring(v) && isscalar(v)) || ischar(v))
-            all_string = false;
-        end
-    end
-    if all_scalar_numeric
-        col = cell2mat(col_data);
-    elseif all_string
-        col = string(col_data);
-    else
-        col = col_data;
-    end
-end

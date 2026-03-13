@@ -245,7 +245,7 @@ function varargout = for_each(fn, inputs, varargin)
     elseif isempty(meta_values)
         combos = {{}};
     else
-        combos = cartesian_product(meta_values);
+        combos = scidb.internal.cartesian_product(meta_values);
     end
 
     total = numel(combos);
@@ -1069,7 +1069,7 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
                     col_data{r} = {missing};
                 end
             end
-            tbl.(meta_fields{f}) = normalize_cell_column(col_data);
+            tbl.(meta_fields{f}) = scidb.internal.normalize_cell_column(col_data);
         end
 
         % Single output column
@@ -1077,7 +1077,7 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
         for r = 1:n_rows
             col_data{r} = collected{r}{2};
         end
-        tbl.(output_name) = normalize_cell_column(col_data);
+        tbl.(output_name) = scidb.internal.normalize_cell_column(col_data);
     end
 
     % Sort by schema columns and convert to categorical if requested
@@ -1394,30 +1394,6 @@ end
 % Cartesian product
 % =========================================================================
 
-function combos = cartesian_product(value_cells)
-%CARTESIAN_PRODUCT  Compute Cartesian product of cell arrays.
-    n = numel(value_cells);
-    if n == 0
-        combos = {{}};
-        return;
-    end
-
-    sizes = cellfun(@numel, value_cells);
-    idx_args = arrayfun(@(s) 1:s, sizes, 'UniformOutput', false);
-    grids = cell(1, n);
-    [grids{:}] = ndgrid(idx_args{:});
-
-    total = prod(sizes);
-    combos = cell(1, total);
-    for t = 1:total
-        combo = cell(1, n);
-        for d = 1:n
-            combo{d} = value_cells{d}{grids{d}(t)};
-        end
-        combos{t} = combo;
-    end
-end
-
 
 % =========================================================================
 % Utility
@@ -1451,43 +1427,4 @@ function tbl = sort_by_schema_columns(tbl, sort_cols)
     end
     [~, order] = sortrows(sort_matrix);
     tbl = tbl(order, :);
-end
-
-
-function col = normalize_cell_column(col_data)
-%NORMALIZE_CELL_COLUMN  Convert a cell column to its native type.
-    n = numel(col_data);
-    all_scalar_numeric = true;
-    all_string = true;
-    all_scalar_struct = n > 0;
-    ref_fields = {};
-    for i = 1:n
-        v = col_data{i};
-        if ~((isnumeric(v) || islogical(v)) && isscalar(v))
-            all_scalar_numeric = false;
-        end
-        if ~((isstring(v) && isscalar(v)) || ischar(v))
-            all_string = false;
-        end
-        if all_scalar_struct
-            if isstruct(v) && isscalar(v)
-                if i == 1
-                    ref_fields = sort(fieldnames(v));
-                elseif ~isequal(sort(fieldnames(v)), ref_fields)
-                    all_scalar_struct = false;
-                end
-            else
-                all_scalar_struct = false;
-            end
-        end
-    end
-    if all_scalar_numeric
-        col = cell2mat(col_data);
-    elseif all_string
-        col = string(col_data);
-    elseif all_scalar_struct
-        col = reshape([col_data{:}], [], 1);
-    else
-        col = col_data;
-    end
 end
