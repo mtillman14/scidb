@@ -123,62 +123,6 @@ def get_raw_value(data: Any) -> Any:
     return data
 
 
-def find_unsaved_variables(
-    thunk_output: ThunkOutput,
-    max_depth: int = 100,
-) -> list[tuple[Any, str]]:
-    """
-    Find all unsaved BaseVariables in the upstream chain of a ThunkOutput.
-
-    Traverses the in-memory lineage chain to find any BaseVariable that
-    hasn't been saved (has no record_id). This is used by strict lineage mode
-    to validate that all intermediates are saved.
-
-    Args:
-        thunk_output: The ThunkOutput to start traversal from
-        max_depth: Maximum recursion depth to prevent infinite loops
-
-    Returns:
-        List of (variable, path) tuples where:
-        - variable: The unsaved BaseVariable instance
-        - path: String describing how we got there (e.g., "filter() -> arg_0")
-    """
-    unsaved = []
-    visited = set()
-
-    def traverse(thunk_or_var: Any, path: str, depth: int) -> None:
-        if depth <= 0:
-            return
-
-        # Avoid cycles
-        obj_id = id(thunk_or_var)
-        if obj_id in visited:
-            return
-        visited.add(obj_id)
-
-        if isinstance(thunk_or_var, ThunkOutput):
-            # Traverse into the pipeline thunk's inputs
-            pt = thunk_or_var.pipeline_thunk
-            func_name = pt.thunk.fcn.__name__
-            for name, value in pt.inputs.items():
-                input_path = f"{func_name}() -> {name}" if not path else f"{path} -> {func_name}() -> {name}"
-                traverse(value, input_path, depth - 1)
-
-        elif is_trackable_variable(thunk_or_var):
-            record_id = getattr(thunk_or_var, "record_id", None)
-            if record_id is None:
-                # Found an unsaved variable
-                unsaved.append((thunk_or_var, path))
-
-                # Check if it wraps a ThunkOutput - if so, continue traversing
-                inner_data = getattr(thunk_or_var, "data", None)
-                if isinstance(inner_data, ThunkOutput):
-                    traverse(inner_data, path, depth - 1)
-
-    traverse(thunk_output, "", max_depth)
-    return unsaved
-
-
 def get_upstream_lineage(
     thunk_output: ThunkOutput,
     max_depth: int = 100,
@@ -186,8 +130,8 @@ def get_upstream_lineage(
     """
     Get lineage information for all upstream computations.
 
-    Traverses the full in-memory chain, extracting lineage even for
-    unsaved intermediate variables (ephemeral mode).
+    Traverses the full in-memory chain, extracting lineage for all
+    upstream computations.
 
     Args:
         thunk_output: The ThunkOutput to start from

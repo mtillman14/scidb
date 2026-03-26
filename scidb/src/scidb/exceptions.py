@@ -31,12 +31,3 @@ class ReservedMetadataKeyError(SciStackError):
     pass
 
 
-class UnsavedIntermediateError(SciStackError):
-    """Raised when strict lineage mode detects an unsaved intermediate variable.
-
-    In strict mode, all upstream BaseVariables must be saved before saving
-    downstream results. This ensures complete data provenance and enables
-    cache hits at every step.
-    """
-
-    pass

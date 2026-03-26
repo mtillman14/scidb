@@ -127,7 +127,6 @@ class PipelineDB:
 
         Args:
             output_record_id: Unique ID referencing data in external storage (e.g., SciDuck)
-                             or "ephemeral:..." prefix for unsaved intermediates
             output_type: Variable class name (e.g., "ProcessedData")
             function_name: Name of the function that produced this output
             function_hash: Hash of the function's source code
@@ -320,57 +319,6 @@ class PipelineDB:
                 })
 
         return structure
-
-    def save_ephemeral(
-        self,
-        ephemeral_id: str,
-        variable_type: str,
-        function_name: str,
-        function_hash: str,
-        inputs: list[dict[str, Any]],
-        constants: list[dict[str, Any]],
-        user_id: str | None = None,
-        schema_keys: dict[str, Any] | None = None,
-    ) -> None:
-        """
-        Save ephemeral lineage (no data stored in external storage).
-
-        Ephemeral entries track the computation graph for unsaved intermediate
-        variables. The ephemeral_id should have an "ephemeral:" prefix.
-
-        This method is idempotent: if a record with the same ephemeral_id
-        already exists, it is left unchanged (no update is performed).
-
-        Args:
-            ephemeral_id: ID with "ephemeral:" prefix (e.g., "ephemeral:abc123")
-            variable_type: Variable class name
-            function_name: Name of the function that produced this output
-            function_hash: Hash of the function's source code
-            inputs: List of input specifications
-            constants: List of constant values
-            user_id: Optional user ID
-            schema_keys: Optional dict of schema keys
-        """
-        # Check if already exists
-        cursor = self._conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM lineage WHERE output_record_id = ?",
-            [ephemeral_id],
-        )
-        if cursor.fetchone():
-            return
-
-        self.save_lineage(
-            output_record_id=ephemeral_id,
-            output_type=variable_type,
-            function_name=function_name,
-            function_hash=function_hash,
-            inputs=inputs,
-            constants=constants,
-            lineage_hash=None,  # Ephemeral entries don't need lineage hash
-            user_id=user_id,
-            schema_keys=schema_keys,
-        )
 
     def has_lineage(self, output_record_id: str) -> bool:
         """

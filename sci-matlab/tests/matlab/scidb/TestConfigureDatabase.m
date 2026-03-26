@@ -82,13 +82,6 @@ classdef TestConfigureDatabase < matlab.unittest.TestCase
             testCase.verifyEqual(result, [1; 2; 3]);
         end
 
-        function test_lineage_mode_ephemeral(testCase)
-            db_path = fullfile(testCase.test_dir, 'test.duckdb');            
-            db = scidb.configure_database(db_path, ["subject"], ...
-                'lineage_mode', 'ephemeral');
-            testCase.verifyNotEmpty(db);
-        end
-
         function test_reconfigure_database(testCase)
             % Configuring twice should work (replaces global singleton)
             db_path1 = fullfile(testCase.test_dir, 'test1.duckdb');            

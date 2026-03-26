@@ -88,13 +88,6 @@ ORDER BY rm.timestamp
 | `get_pipeline_structure()` | Returns the unique set of `(function, input_types → output_type)` edges across all stored lineage. |
 | `has_lineage(cls, **meta)` | Returns True if the latest matching record has a `lineage_hash`. |
 
-## Ephemeral Lineage
-
-Unsaved intermediates (thunk outputs that are passed to another thunk but
-never explicitly saved) get an `ephemeral:<hash>` ID.  This is stored in
-`_lineage` with `output_record_id = ephemeral_id` so the chain can be
-reconstructed.  Ephemeral entries are never in `_record_metadata`.
-
 ## Python vs MATLAB Argument Names
 
 Python `@thunk`-decorated functions use `inspect.signature()` to capture

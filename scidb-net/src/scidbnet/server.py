@@ -40,8 +40,6 @@ from ._types import (
     ProvenanceResponse,
     RegisterRequest,
     RegisterResponse,
-    SaveEphemeralLineageRequest,
-    SaveEphemeralLineageResponse,
     SaveResponse,
 )
 from .serialization import (
@@ -61,14 +59,12 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
 def create_app(
     dataset_db_path: str,
     dataset_schema_keys: list[str],
-    lineage_mode: str = "strict",
 ) -> FastAPI:
     """Create a FastAPI application wrapping a DatabaseManager.
 
     Args:
         dataset_db_path: Path to DuckDB database file.
         dataset_schema_keys: List of metadata keys defining the dataset schema.
-        lineage_mode: "strict" or "ephemeral".
 
     Returns:
         Configured FastAPI application.
@@ -78,7 +74,6 @@ def create_app(
     db = DatabaseManager(
         dataset_db_path=dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
-        lineage_mode=lineage_mode,
     )
     # Store on app state so tests can access it
     app.state.db = db
@@ -268,20 +263,6 @@ def create_app(
         result = db.has_lineage(req.record_id)
         return HasLineageResponse(has_lineage=result)
 
-    @app.post("/api/v1/save_ephemeral_lineage")
-    async def save_ephemeral_lineage(
-        req: SaveEphemeralLineageRequest,
-    ) -> SaveEphemeralLineageResponse:
-        lineage = LineageRecord.from_dict(req.lineage)
-        db.save_ephemeral_lineage(
-            ephemeral_id=req.ephemeral_id,
-            variable_type=req.variable_type,
-            lineage=lineage,
-            user_id=req.user_id,
-            schema_keys=req.schema_keys,
-        )
-        return SaveEphemeralLineageResponse(ok=True)
-
     @app.post("/api/v1/export_to_csv")
     async def export_to_csv(req: ExportToCsvRequest) -> ExportToCsvResponse:
         cls = _get_or_create_type(req.type_name)
@@ -306,9 +287,6 @@ def create_app(
         for record in records:
             output_record_id = record["output_record_id"]
             output_type = record["output_type"]
-
-            if output_record_id.startswith("ephemeral:"):
-                continue
 
             cls = _get_or_create_type(output_type)
             try:
@@ -344,7 +322,6 @@ def main():
 
     dataset_db_path = os.environ.get("SCIDB_DATASET_DB_PATH")
     schema_keys_json = os.environ.get("SCIDB_DATASET_SCHEMA_KEYS")
-    lineage_mode = os.environ.get("SCIDB_LINEAGE_MODE", "strict")
 
     if not dataset_db_path or not schema_keys_json:
         raise SystemExit(
@@ -357,7 +334,6 @@ def main():
     app = create_app(
         dataset_db_path=dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
-        lineage_mode=lineage_mode,
     )
 
     host = os.environ.get("SCIDB_HOST", "0.0.0.0")

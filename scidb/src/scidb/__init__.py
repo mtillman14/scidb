@@ -29,7 +29,6 @@ from .exceptions import (
     NotRegisteredError,
     ReservedMetadataKeyError,
     SciStackError,
-    UnsavedIntermediateError,
 )
 
 # Batch execution (Layer 2 — DB-backed, no lineage)
@@ -77,5 +76,4 @@ __all__ = [
     "NotFoundError",
     "DatabaseNotConfiguredError",
     "ReservedMetadataKeyError",
-    "UnsavedIntermediateError",
 ]

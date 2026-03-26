@@ -167,7 +167,6 @@ environment variables for the CLI.
 |---|---|---|---|---|
 | `SCIDB_DATASET_DB_PATH` | `dataset_db_path` | Yes | — | Path to the DuckDB file for data and lineage storage |
 | `SCIDB_DATASET_SCHEMA_KEYS` | `dataset_schema_keys` | Yes | — | JSON list of metadata keys (e.g. `'["subject", "session"]'`) |
-| `SCIDB_LINEAGE_MODE` | `lineage_mode` | No | `"strict"` | `"strict"` or `"ephemeral"` |
 | `SCIDB_HOST` | — | No | `"0.0.0.0"` | Bind address (CLI only) |
 | `SCIDB_PORT` | — | No | `8000` | Port number (CLI only) |
 
@@ -223,7 +222,6 @@ All endpoints live under `/api/v1/`.
 | POST | `/provenance_by_schema` | Get all provenance by schema keys |
 | GET | `/pipeline_structure` | Get pipeline DAG structure |
 | POST | `/has_lineage` | Check if a variable has lineage |
-| POST | `/save_ephemeral_lineage` | Save temporary lineage record |
 | POST | `/export_to_csv` | Export variables to CSV (server-side) |
 | POST | `/find_by_lineage` | Cache lookup by lineage hash |
 | POST | `/close` | Close the server-side database |

@@ -40,7 +40,6 @@ from .inputs import InputKind, ClassifiedInput, classify_input, is_trackable_var
 from .lineage import (
     LineageRecord,
     extract_lineage,
-    find_unsaved_variables,
     get_raw_value,
     get_upstream_lineage,
 )
@@ -64,7 +63,6 @@ __all__ = [
     # Lineage
     "LineageRecord",
     "extract_lineage",
-    "find_unsaved_variables",
     "get_raw_value",
     "get_upstream_lineage",
     # Hashing

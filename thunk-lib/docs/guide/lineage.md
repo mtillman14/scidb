@@ -82,18 +82,6 @@ for record in chain:
 #   Constants: 1
 ```
 
-## Finding Unsaved Variables
-
-Use `find_unsaved_variables()` to find any `BaseVariable` in the upstream chain that hasn't been saved (has no `record_id`). This is used by strict lineage mode to validate that all intermediates are saved:
-
-```python
-from thunk import find_unsaved_variables
-
-unsaved = find_unsaved_variables(result)
-for variable, path in unsaved:
-    print(f"Unsaved: {type(variable).__name__} at {path}")
-```
-
 ## LineageRecord Structure
 
 ```python

@@ -173,4 +173,3 @@ Data is stored using **DuckDB native types** (via SciDuck), providing:
 | `NotFoundError` | No data matches the query |
 | `DatabaseNotConfiguredError` | `get_database()` called before `configure_database()` |
 | `ReservedMetadataKeyError` | Using reserved key in metadata |
-| `UnsavedIntermediateError` | Strict lineage mode with unsaved intermediates |

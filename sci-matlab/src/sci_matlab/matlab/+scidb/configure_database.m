@@ -1,20 +1,14 @@
-function db = configure_database(dataset_db_path, dataset_schema_keys, options)
+function db = configure_database(dataset_db_path, dataset_schema_keys)
 %SCIDB.CONFIGURE_DATABASE  Set up the SciStack database connection.
 %
 %   db = scidb.configure_database(DB_PATH, SCHEMA_KEYS)
 %   configures the global database connection with DuckDB for data and
 %   lineage storage.
 %
-%   db = scidb.configure_database(..., lineage_mode="ephemeral")
-%   allows unsaved intermediate variables in lineage chains.
-%
 %   Arguments:
 %       dataset_db_path     - Path to the DuckDB database file (string)
 %       dataset_schema_keys - Metadata keys defining the dataset schema
 %                             (string array, e.g. ["subject", "session"])
-%
-%   Name-Value Arguments:
-%       lineage_mode - "strict" (default) or "ephemeral"
 %
 %   Example:
 %       scidb.configure_database( ...
@@ -24,7 +18,6 @@ function db = configure_database(dataset_db_path, dataset_schema_keys, options)
     arguments
         dataset_db_path     string
         dataset_schema_keys string
-        options.lineage_mode string = "strict"
     end
 
     % Convert keys to row vector
@@ -43,8 +36,7 @@ function db = configure_database(dataset_db_path, dataset_schema_keys, options)
     % Call Python's configure_database
     db = py.scidb.configure_database( ...
         char(dataset_db_path), ...
-        py_schema_keys, ...
-        pyargs('lineage_mode', char(options.lineage_mode)));
+        py_schema_keys);
 
     % Verify the Python environment is working
     py_db = py.scidb.database.get_database();

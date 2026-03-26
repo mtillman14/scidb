@@ -68,7 +68,6 @@ def main():
         db = configure_database(
             db_path,
             dataset_schema_keys=["subject", "intervention", "speed", "timepoint", "trial", "cycle"],
-            lineage_mode="ephemeral",
         )
 
         metadata_cols = ["subject", "intervention", "speed", "timepoint", "trial", "cycle"]

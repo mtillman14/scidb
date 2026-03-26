@@ -185,7 +185,6 @@ Structured provenance information.
 
 - `extract_lineage(thunk_output)`: Get `LineageRecord` for an output
 - `get_upstream_lineage(thunk_output)`: Get full upstream lineage as list of dicts
-- `find_unsaved_variables(thunk_output)`: Find unsaved variables in upstream chain
 - `get_raw_value(data)`: Unwrap `ThunkOutput` or return as-is
 - `canonical_hash(obj)`: Deterministic hash for any Python object (re-exported from `canonicalhash`)
 

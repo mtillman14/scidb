@@ -140,9 +140,8 @@ def _save_thunk_output(
     db: Any | None,
 ) -> str | None:
     """Save a ThunkOutput with full lineage tracking."""
-    from thunk import ThunkOutput, extract_lineage, find_unsaved_variables, get_raw_value
+    from thunk import ThunkOutput, extract_lineage, get_raw_value
     from scidb.database import get_database, get_user_id
-    from scidb.exceptions import UnsavedIntermediateError
     from datetime import datetime
 
     active_db = db
@@ -181,40 +180,6 @@ def _save_thunk_output(
         )
         return generated_id
 
-    # Handle unsaved intermediates
-    unsaved = find_unsaved_variables(data)
-
-    if active_db.lineage_mode == "strict" and unsaved:
-        var_descriptions = []
-        for var, path in unsaved:
-            var_type = type(var).__name__
-            var_descriptions.append(f"  - {var_type} (path: {path})")
-        vars_str = "\n".join(var_descriptions)
-        raise UnsavedIntermediateError(
-            f"Strict lineage mode requires all intermediate variables to be saved.\n"
-            f"Found {len(unsaved)} unsaved variable(s) in the computation chain:\n"
-            f"{vars_str}\n\n"
-            f"Either save these variables first, or use lineage_mode='ephemeral' "
-            f"in configure_database() to allow unsaved intermediates."
-        )
-
-    elif active_db.lineage_mode == "ephemeral" and unsaved:
-        user_id = get_user_id()
-        schema_keys = active_db._split_metadata(metadata).get("schema")
-        for var, path in unsaved:
-            inner_data = getattr(var, "data", None)
-            if isinstance(inner_data, ThunkOutput):
-                ephemeral_id = f"ephemeral:{inner_data.hash[:32]}"
-                var_type = type(var).__name__
-                intermediate_lineage = extract_lineage(inner_data)
-                active_db.save_ephemeral_lineage(
-                    ephemeral_id=ephemeral_id,
-                    variable_type=var_type,
-                    lineage=_lineage_to_dict(intermediate_lineage),
-                    user_id=user_id,
-                    schema_keys=schema_keys,
-                )
-
     lineage_record = extract_lineage(data)
     lineage_dict = _lineage_to_dict(lineage_record)
     lineage_hash = data.hash
@@ -237,7 +202,7 @@ def save(variable_class, data, db=None, **metadata) -> str | None:
 
     This is the scihist-level save that handles ThunkOutput:
     - If ``data`` is a ThunkOutput, extracts lineage and saves with full
-      provenance tracking (respecting lineage_mode strict/ephemeral).
+      provenance tracking.
     - Otherwise, delegates to ``variable_class.save(data, **metadata)``.
 
     Args:

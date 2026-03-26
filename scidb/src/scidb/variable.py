@@ -240,7 +240,6 @@ class BaseVariable(metaclass=VariableMeta):
             ReservedMetadataKeyError: If metadata contains reserved keys
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
-            UnsavedIntermediateError: If strict mode and unsaved intermediates exist
             ValueError: If index length doesn't match DataFrame row count
 
         Example:

@@ -340,7 +340,6 @@ def get_user_id() -> str | None:
 def configure_database(
     dataset_db_path: str | Path,
     dataset_schema_keys: list[str],
-    lineage_mode: str = "strict",
 ) -> "DatabaseManager":
     """
     Configure the global database connection.
@@ -355,25 +354,13 @@ def configure_database(
             logical location of data and are used for the folder hierarchy.
             Any metadata keys not in this list are treated as version parameters
             that distinguish different computational versions of the same data.
-        lineage_mode: How to handle intermediate variables in lineage tracking.
-            - "strict" (default): All upstream BaseVariables must be saved
-              before saving downstream results. Raises UnsavedIntermediateError
-              if an unsaved intermediate is detected.
-            - "ephemeral": Allows unsaved intermediates. Stores the computation
-              graph (function, inputs) without storing actual data for unsaved
-              variables. Enables full provenance tracking with smaller database
-              size, but cache hits won't work for ephemeral intermediates.
 
     Returns:
         The DatabaseManager instance
-
-    Raises:
-        ValueError: If lineage_mode is not "strict" or "ephemeral"
     """
     db = DatabaseManager(
         dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
-        lineage_mode=lineage_mode,
     )
     for cls in BaseVariable._all_subclasses.values():
         db.register(cls)
@@ -421,13 +408,10 @@ class DatabaseManager:
         loaded = RawSignal.load(subject=1, session=1)
     """
 
-    VALID_LINEAGE_MODES = ("strict", "ephemeral")
-
     def __init__(
         self,
         dataset_db_path: str | Path,
         dataset_schema_keys: list[str],
-        lineage_mode: str = "strict",
     ):
         """
         Initialize database connection.
@@ -438,19 +422,8 @@ class DatabaseManager:
                 (e.g., ["subject", "visit", "channel"]). These keys identify the
                 logical location of data. Any other metadata keys are treated as
                 version parameters.
-            lineage_mode: How to handle intermediate variables ("strict" or "ephemeral")
-
-        Raises:
-            ValueError: If lineage_mode is not valid
         """
-        if lineage_mode not in self.VALID_LINEAGE_MODES:
-            raise ValueError(
-                f"lineage_mode must be one of {self.VALID_LINEAGE_MODES}, "
-                f"got '{lineage_mode}'"
-            )
-
         self.dataset_db_path = Path(dataset_db_path)
-        self.lineage_mode = lineage_mode
 
         if isinstance(dataset_schema_keys, (set, frozenset)):
             raise TypeError(
@@ -1549,34 +1522,6 @@ class DatabaseManager:
              lineage.get("function_hash"), inputs_json, constants_json, timestamp],
         )
 
-    def save_ephemeral_lineage(
-        self,
-        ephemeral_id: str,
-        variable_type: str,
-        lineage: dict,
-        user_id: str | None = None,
-        schema_keys: dict | None = None,
-    ) -> None:
-        """Save an ephemeral lineage row to DuckDB _lineage table.
-
-        Args:
-            lineage: Dict with keys 'function_name', 'function_hash',
-                     'inputs', 'constants'.
-        """
-        inputs_json = json.dumps(lineage.get("inputs", []), sort_keys=True)
-        constants_json = json.dumps(lineage.get("constants", {}), sort_keys=True)
-        timestamp = datetime.now().isoformat()
-
-        self._duck._execute(
-            "INSERT INTO _lineage "
-            "(output_record_id, lineage_hash, target, function_name, function_hash, "
-            " inputs, constants, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (output_record_id) DO NOTHING",
-            [ephemeral_id, ephemeral_id, variable_type, lineage.get("function_name"),
-             lineage.get("function_hash"), inputs_json, constants_json, timestamp],
-        )
-
     def _load_with_where(
         self,
         variable_class: Type[BaseVariable],
@@ -2068,10 +2013,6 @@ class DatabaseManager:
         results = []
         has_generated = False
         for record_id, variable_name in records:
-            # Skip ephemeral entries (no data stored)
-            if record_id.startswith("ephemeral:"):
-                continue
-
             # Track generated entries (lineage-only, no data stored)
             if record_id.startswith("generated:"):
                 has_generated = True

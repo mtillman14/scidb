@@ -19,17 +19,6 @@ Creates and globally registers the database. Call this once at startup — it co
     )
     ```
 
-    With lineage mode:
-
-    ```python
-    db = configure_database(
-        "experiment.duckdb",
-        dataset_schema_keys=["subject", "session"],
-        lineage_mode="strict",   # default: raise error on unsaved intermediates
-        # lineage_mode="ephemeral"  # allow unsaved intermediates without error
-    )
-    ```
-
 === "MATLAB"
 
     ```matlab
@@ -44,7 +33,6 @@ Creates and globally registers the database. Call this once at startup — it co
 |-----------|------|-------------|
 | `dataset_db_path` | `str \| Path` | Path to the DuckDB database file (created if it doesn't exist) |
 | `dataset_schema_keys` | `list[str]` | **Required.** Keys that identify dataset location vs. computational variants |
-| `lineage_mode` | `str` | `"strict"` (default) or `"ephemeral"` |
 
 **Returns:** `DatabaseManager`
 
@@ -258,4 +246,3 @@ Adding the same variable to the same group twice is a no-op (idempotent).
 | `NotRegisteredError` | Loading a variable type that has never been saved |
 | `NotFoundError` | No records match the metadata query |
 | `ReservedMetadataKeyError` | Using a reserved key (`record_id`, `id`, etc.) in metadata |
-| `UnsavedIntermediateError` | Strict lineage mode detects unsaved intermediate `ThunkOutput`s |

@@ -467,67 +467,6 @@ class TestGetLineage:
         assert result is None
 
 
-class TestSaveEphemeral:
-    """Tests for save_ephemeral method."""
-
-    def test_save_ephemeral(self, temp_db):
-        """Should save ephemeral lineage."""
-        temp_db.save_ephemeral(
-            ephemeral_id="ephemeral:abc123",
-            variable_type="IntermediateData",
-            function_name="transform",
-            function_hash="thash",
-            inputs=[{"name": "x", "record_id": "input_1", "type": "Raw"}],
-            constants=[],
-            user_id="user",
-        )
-
-        result = temp_db.get_lineage("ephemeral:abc123")
-        assert result is not None
-        assert result["output_type"] == "IntermediateData"
-
-    def test_save_ephemeral_with_schema_keys(self, temp_db):
-        """Should save ephemeral lineage with schema keys."""
-        temp_db.save_ephemeral(
-            ephemeral_id="ephemeral:with_schema",
-            variable_type="IntermediateData",
-            function_name="transform",
-            function_hash="thash",
-            inputs=[],
-            constants=[],
-            schema_keys={"subject": "S01"},
-        )
-
-        result = temp_db.get_lineage("ephemeral:with_schema")
-        assert result["schema_keys"] == {"subject": "S01"}
-
-    def test_ephemeral_idempotent(self, temp_db):
-        """Should not update if ephemeral already exists."""
-        temp_db.save_ephemeral(
-            ephemeral_id="ephemeral:xyz",
-            variable_type="TypeA",
-            function_name="func1",
-            function_hash="hash1",
-            inputs=[],
-            constants=[],
-        )
-
-        # Try to save again with different data
-        temp_db.save_ephemeral(
-            ephemeral_id="ephemeral:xyz",
-            variable_type="TypeB",
-            function_name="func2",
-            function_hash="hash2",
-            inputs=[{"x": 1}],
-            constants=[],
-        )
-
-        # Should still have original data
-        result = temp_db.get_lineage("ephemeral:xyz")
-        assert result["output_type"] == "TypeA"
-        assert result["function_name"] == "func1"
-
-
 class TestHasLineage:
     """Tests for has_lineage method."""
 

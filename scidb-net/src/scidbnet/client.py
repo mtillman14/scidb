@@ -145,7 +145,7 @@ class RemoteDatabaseManager:
     ) -> str:
         """Save data as a variable, handling ThunkOutput extraction client-side."""
         from scidb.thunk import ThunkOutput
-        from scidb.lineage import extract_lineage, find_unsaved_variables, get_raw_value
+        from scidb.lineage import extract_lineage, get_raw_value
 
         lineage = None
         lineage_hash = None
@@ -317,24 +317,6 @@ class RemoteDatabaseManager:
         """Check if a variable has lineage information."""
         result = self._post_json("has_lineage", {"record_id": record_id})
         return result["has_lineage"]
-
-    def save_ephemeral_lineage(
-        self,
-        ephemeral_id: str,
-        variable_type: str,
-        lineage: Any,
-        user_id: str | None = None,
-        schema_keys: dict | None = None,
-    ) -> None:
-        """Save an ephemeral lineage record."""
-        lineage_dict = lineage.to_dict() if hasattr(lineage, "to_dict") else lineage
-        self._post_json("save_ephemeral_lineage", {
-            "ephemeral_id": ephemeral_id,
-            "variable_type": variable_type,
-            "lineage": lineage_dict,
-            "user_id": user_id,
-            "schema_keys": schema_keys,
-        })
 
     def export_to_csv(
         self,

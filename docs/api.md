@@ -67,7 +67,6 @@ db = DatabaseManager(
 | ---------------------- | ------------- | ---------------------------------------------------------------- |
 | `dataset_db_path`      | `str \| Path` | Path to DuckDB database file                                     |
 | `dataset_schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location       |
-| `lineage_mode`         | `str`         | `"strict"` (default) or `"ephemeral"`                            |
 
 **Methods:**
 
@@ -82,7 +81,6 @@ db = DatabaseManager(
 | `get_provenance(variable_class, version=None, **metadata)`     | Get immediate lineage info                                       |
 | `has_lineage(record_id)`                                       | Check if lineage exists                                          |
 | `find_by_lineage(pipeline_thunk)`                              | Find cached outputs by computation lineage                       |
-| `save_ephemeral_lineage(ephemeral_id, variable_type, lineage)` | Save ephemeral lineage for unsaved intermediates                 |
 | `export_to_csv(variable_class, path, **metadata)`              | Export matching records to CSV                                   |
 | `close()`                                                      | Close connections and reset Thunk.query                          |
 
@@ -90,7 +88,7 @@ db = DatabaseManager(
 
 ## Configuration Functions
 
-### `configure_database(dataset_db_path, dataset_schema_keys, lineage_mode="strict")`
+### `configure_database(dataset_db_path, dataset_schema_keys)`
 
 Configure the global database.
 
@@ -107,7 +105,6 @@ db = configure_database(
 | ---------------------- | ------------- | ---------------------------------------------------------------- |
 | `dataset_db_path`      | `str \| Path` | Path to DuckDB database file                                     |
 | `dataset_schema_keys`  | `list[str]`   | **Required.** Metadata keys that identify dataset location       |
-| `lineage_mode`         | `str`         | `"strict"` (default) or `"ephemeral"`                            |
 
 **Returns:** `DatabaseManager`
 
@@ -308,7 +305,6 @@ Provenance data structure.
 | `NotFoundError`              | No matching data                             |
 | `DatabaseNotConfiguredError` | Global DB not configured                     |
 | `ReservedMetadataKeyError`   | Using reserved metadata key                  |
-| `UnsavedIntermediateError`   | Strict mode detected unsaved intermediates   |
 
 ---
 

@@ -100,18 +100,6 @@ class HasLineageResponse(BaseModel):
     has_lineage: bool
 
 
-class SaveEphemeralLineageRequest(BaseModel):
-    ephemeral_id: str
-    variable_type: str
-    lineage: dict
-    user_id: str | None = None
-    schema_keys: dict | None = None
-
-
-class SaveEphemeralLineageResponse(BaseModel):
-    ok: bool
-
-
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------

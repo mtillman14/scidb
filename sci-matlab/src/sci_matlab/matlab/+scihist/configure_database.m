@@ -16,7 +16,7 @@ function db = configure_database(db_path, schema_keys, varargin)
 %       schema_keys - String array of metadata keys that form the dataset
 %                     schema (e.g. ["subject", "session"])
 %       varargin    - Additional name-value pairs forwarded to
-%                     scidb.configure_database (e.g. lineage_mode="strict")
+%                     scidb.configure_database
 %
 %   Returns:
 %       DB - The configured DatabaseManager Python object.

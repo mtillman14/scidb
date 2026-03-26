@@ -19,10 +19,6 @@
     options:
       show_root_heading: true
 
-::: thunk.lineage.find_unsaved_variables
-    options:
-      show_root_heading: true
-
 ::: thunk.lineage.get_raw_value
     options:
       show_root_heading: true
