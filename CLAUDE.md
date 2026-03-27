@@ -8,7 +8,6 @@ There are several submodules in this package. Here are the folders that they are
 - sci-matlab: MATLAB wrapper
 - scidb-net (optional)
 - sciduck: DuckDB database layer
-- scirun-lib: The highest level user-facing abstractions for batch run/essential convenience operations
 - scidb: The core user-facing abstractions
 - scilineage: Lineage package
 

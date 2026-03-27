@@ -142,7 +142,7 @@ Loosely coupled batch execution utilities. Runs functions over combinations of m
 User-facing API:
 
 ```python
-from scirun import for_each, Fixed
+from scihist import for_each, Fixed
 
 for_each(
     process_data,

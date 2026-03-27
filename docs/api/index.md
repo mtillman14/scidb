@@ -7,7 +7,7 @@ SciStack's public API spans three packages that work together. The same concepts
 | Package | Purpose | Import |
 |---------|---------|--------|
 | `scidb` | Core: variables, database, lineage | `from scidb import ...` / `scidb.*` |
-| `scirun` | Batch processing (`for_each`) | `from scidb import for_each` / `scidb.for_each(...)` |
+| `scihist` | Batch processing (`for_each`) with lineage | `from scihist import for_each` / `scihist.for_each(...)` |
 | `sci-matlab` | MATLAB wrapper | `addpath(...)` then `scidb.*` |
 
 ## API Sections

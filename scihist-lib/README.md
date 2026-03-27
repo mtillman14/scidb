@@ -7,7 +7,7 @@ Provides utilities for running functions over combinations of metadata, automati
 ## Usage
 
 ```python
-from scirun import for_each, Fixed
+from scihist import for_each, Fixed
 
 for_each(
     process_data,

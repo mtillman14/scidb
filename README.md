@@ -67,7 +67,7 @@ Each layer can be used independently. `scifor` is useful when your data is alrea
 pip install scistack
 ```
 
-This pulls in all core dependencies (`sciduckdb`, `thunk`, `scipathgen`, `canonicalhash`, `scirun`).
+This pulls in all core dependencies (`sciduckdb`, `scipathgen`, `canonicalhash`, `scihist`).
 
 For development (editable installs of all packages):
 
