@@ -54,11 +54,16 @@ const styles: Record<string, React.CSSProperties> = {
 
 export default function App() {
   const [schema, setSchema] = useState<{ keys: string[] }>({ keys: [] })
+  const [dbName, setDbName] = useState('')
 
   useEffect(() => {
     fetch('/api/schema')
       .then((r) => r.json())
       .then(setSchema)
+      .catch(console.error)
+    fetch('/api/info')
+      .then((r) => r.json())
+      .then((d) => setDbName(d.db_name))
       .catch(console.error)
   }, [])
 
@@ -67,7 +72,7 @@ export default function App() {
       <header style={styles.header}>
         <span style={styles.title}>SciStack</span>
         <span style={styles.separator}>|</span>
-        <span style={styles.dbName}>pipeline</span>
+        <span style={styles.dbName}>{dbName || 'loading…'}</span>
         {schema.keys.length > 0 && (
           <span style={styles.schemaKeys}>
             schema: [{schema.keys.join(', ')}]

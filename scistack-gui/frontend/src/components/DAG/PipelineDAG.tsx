@@ -42,8 +42,12 @@ export default function PipelineDAG() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
 
   const fetchPipeline = useCallback(async () => {
-    const res = await fetch('/api/pipeline')
-    const data = await res.json()
+    const [pipelineRes, layoutRes] = await Promise.all([
+      fetch('/api/pipeline'),
+      fetch('/api/layout'),
+    ])
+    const data = await pipelineRes.json()
+    const savedPositions: Record<string, { x: number; y: number }> = await layoutRes.json()
 
     // Initialise all variants as checked (selected for running).
     const initialised = data.nodes.map((node: Node) => ({
@@ -56,8 +60,6 @@ export default function PipelineDAG() {
       },
     }))
 
-    // savedPositions will come from the layout endpoint later (Task 6).
-    const savedPositions: Record<string, { x: number; y: number }> = {}
     const laidOut = applyDagreLayout(initialised, data.edges, savedPositions)
     setNodes(laidOut)
     setEdges(data.edges)
@@ -72,10 +74,12 @@ export default function PipelineDAG() {
     if (msg.type === 'dag_updated') fetchPipeline()
   }, [fetchPipeline]))
 
-  // When the user stops dragging a node, we'll persist the position.
-  // For now just log it — Task 6 will wire this to PUT /api/layout/{id}.
   const onNodeDragStop = useCallback((_: unknown, node: Node) => {
-    console.log('Node moved:', node.id, node.position)
+    fetch(`/api/layout/${encodeURIComponent(node.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(node.position),
+    })
   }, [])
 
   return (

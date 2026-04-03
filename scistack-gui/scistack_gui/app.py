@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from scistack_gui.api.pipeline import router as pipeline_router
 from scistack_gui.api.schema import router as schema_router
 from scistack_gui.api.run import router as run_router
+from scistack_gui.api.layout import router as layout_router
 from scistack_gui.api.ws import router as ws_router
 
 
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(pipeline_router, prefix="/api")
     app.include_router(schema_router, prefix="/api")
     app.include_router(run_router, prefix="/api")
+    app.include_router(layout_router, prefix="/api")
     app.include_router(ws_router)
 
     # Serve the pre-built React frontend if the static folder exists.

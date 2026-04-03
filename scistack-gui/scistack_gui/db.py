@@ -11,6 +11,7 @@ import scidb
 from scidb.database import DatabaseManager
 
 _db: DatabaseManager | None = None
+_db_path: Path | None = None
 
 
 def read_schema_keys(db_path: Path) -> list[str]:
@@ -37,10 +38,18 @@ def init_db(db_path: Path) -> DatabaseManager:
     Open an existing SciStack database. Called once at startup.
     Reads schema keys from the DB itself so the user doesn't need to supply them.
     """
-    global _db
+    global _db, _db_path
     schema_keys = read_schema_keys(db_path)
     _db = scidb.configure_database(db_path, schema_keys)
+    _db_path = db_path
     return _db
+
+
+def get_db_path() -> Path:
+    """Returns the path to the open database file."""
+    if _db_path is None:
+        raise RuntimeError("Database not initialised. Call init_db() first.")
+    return _db_path
 
 
 def get_db() -> DatabaseManager:
