@@ -11,13 +11,29 @@ Positions are set to (0, 0) here; the layout endpoint overwrites them with
 saved positions, and the frontend assigns dagre positions for new nodes.
 """
 
+import inspect
 from collections import defaultdict
 from fastapi import APIRouter, Depends
 from scidb.database import DatabaseManager
 from scistack_gui.db import get_db
 from scistack_gui import layout as layout_store
+from scistack_gui import registry
 
 router = APIRouter()
+
+
+def _fn_params_from_registry(fn_name: str) -> list[str]:
+    """Return non-private parameter names from the registered function's signature."""
+    fn = registry._functions.get(fn_name)
+    if fn is None:
+        return []
+    try:
+        return [
+            name for name in inspect.signature(fn).parameters
+            if not name.startswith('_')
+        ]
+    except (ValueError, TypeError):
+        return []
 
 
 def _get_record_counts(db: DatabaseManager, var_types: set[str]) -> dict[str, int]:
@@ -46,13 +62,15 @@ def _build_graph(db: DatabaseManager) -> dict:
     """
     variants: list[dict] = db.list_pipeline_variants()
     all_var_types: set[str] = set()
-    # function_name → set of (input_var_type, ...) tuples (for deduplicating edges)
-    fn_inputs: dict[str, set] = defaultdict(set)
+    # function_name → dict of param_name → type_name (variable inputs only)
+    fn_input_params: dict[str, dict] = defaultdict(dict)
     fn_outputs: dict[str, set] = defaultdict(set)
     # constant_name → {str(value): total_record_count}
     const_counts: dict[str, dict] = defaultdict(lambda: defaultdict(int))
     # constant_name → set of function names that use it
     const_fns: dict[str, set] = defaultdict(set)
+    # function_name → set of constant param names
+    fn_constants: dict[str, set] = defaultdict(set)
 
     for v in variants:
         fn = v["function_name"]
@@ -64,13 +82,13 @@ def _build_graph(db: DatabaseManager) -> dict:
         all_var_types.add(out)
         all_var_types.update(inputs.values())
 
-        for in_type in inputs.values():
-            fn_inputs[fn].add(in_type)
+        fn_input_params[fn].update(inputs)  # param_name → type_name
         fn_outputs[fn].add(out)
 
         for k, val in constants.items():
             const_counts[k][str(val)] += count
             const_fns[k].add(fn)
+            fn_constants[fn].add(k)
 
     # Add any variables in the DB that weren't in any for_each run
     try:
@@ -119,20 +137,33 @@ def _build_graph(db: DatabaseManager) -> dict:
             "record_count": v["record_count"],
         })
 
-    for fn in sorted(fn_inputs.keys()):
+    for fn in sorted(fn_input_params.keys()):
+        input_params = dict(sorted(fn_input_params[fn].items()))
+        constant_params = sorted(fn_constants[fn])
+        # Fill in any params the DB didn't capture (e.g. never run via for_each)
+        known = set(input_params) | set(constant_params)
+        for name in _fn_params_from_registry(fn):
+            if name not in known:
+                input_params[name] = ""
         nodes.append({
             "id": f"fn__{fn}",
             "type": "functionNode",
             "position": {"x": 0, "y": 0},
-            "data": {"label": fn, "variants": fn_variants.get(fn, [])},
+            "data": {
+                "label": fn,
+                "variants": fn_variants.get(fn, []),
+                "input_params": input_params,
+                "output_types": sorted(fn_outputs[fn]),
+                "constant_params": constant_params,
+            },
         })
 
     # --- Build edges (deduplicated) ---
     edges = []
     seen_edges: set[tuple] = set()
 
-    for fn, in_types in fn_inputs.items():
-        for in_type in in_types:
+    for fn, params in fn_input_params.items():
+        for param_name, in_type in params.items():
             key = (f"var__{in_type}", f"fn__{fn}")
             if key not in seen_edges:
                 seen_edges.add(key)
@@ -140,6 +171,7 @@ def _build_graph(db: DatabaseManager) -> dict:
                     "id": f"e__{in_type}__{fn}",
                     "source": f"var__{in_type}",
                     "target": f"fn__{fn}",
+                    "targetHandle": f"in__{param_name}",
                 })
 
     for fn, out_types in fn_outputs.items():
@@ -151,6 +183,7 @@ def _build_graph(db: DatabaseManager) -> dict:
                     "id": f"e__{fn}__{out_type}",
                     "source": f"fn__{fn}",
                     "target": f"var__{out_type}",
+                    "sourceHandle": f"out__{out_type}",
                 })
 
     for const_name, fns in const_fns.items():
@@ -162,7 +195,24 @@ def _build_graph(db: DatabaseManager) -> dict:
                     "id": f"e__{const_name}__{fn}",
                     "source": f"const__{const_name}",
                     "target": f"fn__{fn}",
+                    "targetHandle": f"const__{const_name}",
                 })
+
+    # Merge in manually-created edges (tagged so the frontend can delete them).
+    for me in layout_store.read_manual_edges():
+        if any(e["id"] == me["id"] for e in edges):
+            continue
+        edge: dict = {
+            "id": me["id"],
+            "source": me["source"],
+            "target": me["target"],
+            "data": {"manual": True},
+        }
+        if me.get("sourceHandle"):
+            edge["sourceHandle"] = me["sourceHandle"]
+        if me.get("targetHandle"):
+            edge["targetHandle"] = me["targetHandle"]
+        edges.append(edge)
 
     # Merge in manually-placed nodes that aren't already present from DB data.
     existing_ids = {n["id"] for n in nodes}
@@ -180,15 +230,24 @@ def _build_graph(db: DatabaseManager) -> dict:
             # the node doesn't appear twice after a dag_updated refresh.
             layout_store.graduate_manual_node(node_id, db_node_by_label[key])
             continue
+        fn_label = meta["label"]
+        extra: dict = {}
+        if meta["type"] == "variableNode":
+            extra = {"total_records": 0}
+        elif meta["type"] == "constantNode":
+            extra = {"values": []}
+        elif meta["type"] == "functionNode":
+            sig_params = _fn_params_from_registry(fn_label)
+            extra = {
+                "input_params": {p: "" for p in sig_params},
+                "output_types": [],
+                "constant_params": [],
+            }
         nodes.append({
             "id": node_id,
             "type": meta["type"],
             "position": {"x": 0, "y": 0},
-            "data": {
-                "label": meta["label"],
-                **({"total_records": 0} if meta["type"] == "variableNode" else {}),
-                **({"values": []} if meta["type"] == "constantNode" else {}),
-            },
+            "data": {"label": fn_label, **extra},
         })
 
     return {"nodes": nodes, "edges": edges}

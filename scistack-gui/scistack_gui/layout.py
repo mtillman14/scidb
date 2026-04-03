@@ -30,15 +30,16 @@ def _load() -> dict:
     """Load and normalise the layout file to the current format."""
     p = _layout_path()
     if not p.exists():
-        return {"positions": {}, "manual_nodes": {}, "constants": []}
+        return {"positions": {}, "manual_nodes": {}, "constants": [], "manual_edges": []}
     with p.open() as f:
         raw = json.load(f)
     # Migrate legacy flat format: { "node_id": {"x":..,"y":..}, ... }
     if raw and "positions" not in raw:
-        return {"positions": raw, "manual_nodes": {}, "constants": []}
+        return {"positions": raw, "manual_nodes": {}, "constants": [], "manual_edges": []}
     raw.setdefault("positions", {})
     raw.setdefault("manual_nodes", {})
     raw.setdefault("constants", [])
+    raw.setdefault("manual_edges", [])
     return raw
 
 
@@ -93,6 +94,24 @@ def write_constant(name: str) -> None:
 def delete_constant(name: str) -> None:
     data = _load()
     data["constants"] = [c for c in data["constants"] if c != name]
+    _save(data)
+
+
+def read_manual_edges() -> list[dict]:
+    return _load()["manual_edges"]
+
+
+def write_manual_edge(edge: dict) -> None:
+    data = _load()
+    # Replace existing entry with same id, or append.
+    data["manual_edges"] = [e for e in data["manual_edges"] if e["id"] != edge["id"]]
+    data["manual_edges"].append(edge)
+    _save(data)
+
+
+def delete_manual_edge(edge_id: str) -> None:
+    data = _load()
+    data["manual_edges"] = [e for e in data["manual_edges"] if e["id"] != edge_id]
     _save(data)
 
 

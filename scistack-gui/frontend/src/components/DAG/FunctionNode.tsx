@@ -16,6 +16,9 @@ import type { Variant } from './VariableNode'
 
 interface FunctionNodeData {
   label: string
+  input_params?: Record<string, string>  // param_name → type_name
+  output_types?: string[]
+  constant_params?: string[]
 }
 
 interface Props {
@@ -80,9 +83,39 @@ export default function FunctionNode({ id, data }: Props) {
     })
   }, [id, data.label, getNodes, getEdges, startRun])
 
+  const inputParams = data.input_params ?? {}
+  const outTypes = data.output_types ?? []
+  const constParams = data.constant_params ?? []
+  // All left-side handles: variable inputs first (by param name), then constants
+  const leftHandles = [
+    ...Object.entries(inputParams).map(([param, type]) => ({
+      id: `in__${param}`,
+      label: param,
+      title: type ? `${param}: ${type}` : param,
+    })),
+    ...constParams.map(c => ({ id: `const__${c}`, label: c, title: c })),
+  ]
+
+  const handleStyle = (index: number, total: number): React.CSSProperties => ({
+    top: `${((index + 1) / (total + 1)) * 100}%`,
+    transform: 'translateY(-50%)',
+  })
+
   return (
     <div style={styles.container}>
-      <Handle type="target" position={Position.Left} />
+      {leftHandles.length > 0
+        ? leftHandles.map((h, i) => (
+            <Handle
+              key={h.id}
+              id={h.id}
+              type="target"
+              position={Position.Left}
+              style={handleStyle(i, leftHandles.length)}
+              title={h.title}
+            />
+          ))
+        : <Handle type="target" position={Position.Left} />
+      }
 
       <div style={styles.label}>{data.label}</div>
 
@@ -94,7 +127,19 @@ export default function FunctionNode({ id, data }: Props) {
         {running ? '⏳ Running…' : '▶ Run'}
       </button>
 
-      <Handle type="source" position={Position.Right} />
+      {outTypes.length > 0
+        ? outTypes.map((t, i) => (
+            <Handle
+              key={t}
+              id={`out__${t}`}
+              type="source"
+              position={Position.Right}
+              style={handleStyle(i, outTypes.length)}
+              title={t}
+            />
+          ))
+        : <Handle type="source" position={Position.Right} />
+      }
     </div>
   )
 }

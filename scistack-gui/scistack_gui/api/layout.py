@@ -11,6 +11,13 @@ from scistack_gui import layout as layout_store
 class ConstantCreate(BaseModel):
     name: str
 
+
+class EdgeCreate(BaseModel):
+    source: str
+    target: str
+    source_handle: str | None = None
+    target_handle: str | None = None
+
 router = APIRouter()
 
 
@@ -57,4 +64,22 @@ def post_constant(body: ConstantCreate):
 @router.delete("/constants/{name}")
 def delete_constant(name: str):
     layout_store.delete_constant(name)
+    return {"ok": True}
+
+
+@router.put("/edges/{edge_id}")
+def put_edge(edge_id: str, body: EdgeCreate):
+    layout_store.write_manual_edge({
+        "id": edge_id,
+        "source": body.source,
+        "target": body.target,
+        "sourceHandle": body.source_handle,
+        "targetHandle": body.target_handle,
+    })
+    return {"ok": True}
+
+
+@router.delete("/edges/{edge_id}")
+def delete_edge(edge_id: str):
+    layout_store.delete_manual_edge(edge_id)
     return {"ok": True}

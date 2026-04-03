@@ -15,6 +15,7 @@
 import { useEffect, useCallback } from 'react'
 import {
   ReactFlow,
+  addEdge,
   useNodesState,
   useEdgesState,
   useReactFlow,
@@ -23,6 +24,8 @@ import {
   MiniMap,
   type Node,
   type Edge,
+  type EdgeChange,
+  type Connection,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -43,17 +46,16 @@ const nodeTypes = {
 
 export default function PipelineDAG() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
+  const [edges, setEdges, onEdgesChangeBase] = useEdgesState<Edge>([])
   const { screenToFlowPosition } = useReactFlow()
   const { selectedNode, setSelectedNode } = useSelectedNode()
 
   const fetchPipeline = useCallback(async () => {
-    const [pipelineRes, layoutRes] = await Promise.all([
-      fetch('/api/pipeline'),
-      fetch('/api/layout'),
-    ])
-    const data = await pipelineRes.json()
-    const layoutData = await layoutRes.json()
+    // Fetch pipeline first — _build_graph has a side effect (graduate_manual_node)
+    // that writes to layout.json. Layout must be read AFTER that write, otherwise
+    // savedPositions will have stale keys and dagre will recalculate positions.
+    const data = await fetch('/api/pipeline').then(r => r.json())
+    const layoutData = await fetch('/api/layout').then(r => r.json())
     const savedPositions: Record<string, { x: number; y: number }> =
       layoutData.positions ?? layoutData  // handle both new and legacy format
 
@@ -153,6 +155,37 @@ export default function PipelineDAG() {
     }
   }, [])
 
+  const onConnect = useCallback((connection: Connection) => {
+    const edgeId = `manual__${Math.random().toString(36).slice(2, 8)}`
+    const edge: Edge = {
+      ...connection,
+      id: edgeId,
+      data: { manual: true },
+    }
+    setEdges(prev => addEdge(edge, prev))
+    fetch(`/api/edges/${encodeURIComponent(edgeId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: connection.source,
+        target: connection.target,
+        source_handle: connection.sourceHandle ?? null,
+        target_handle: connection.targetHandle ?? null,
+      }),
+    })
+  }, [setEdges])
+
+  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+    for (const change of changes) {
+      if (change.type === 'remove' && change.id.startsWith('manual__')) {
+        fetch(`/api/edges/${encodeURIComponent(change.id)}`, { method: 'DELETE' })
+      }
+    }
+    // DB-derived edges represent real data — block removal so they don't
+    // flicker away and reappear on the next pipeline refresh.
+    onEdgesChangeBase(changes.filter(c => c.type !== 'remove' || c.id.startsWith('manual__')))
+  }, [onEdgesChangeBase])
+
   return (
     <div
       style={{ width: '100%', height: '100%' }}
@@ -166,6 +199,7 @@ export default function PipelineDAG() {
         onEdgesChange={onEdgesChange}
         onNodeDragStop={onNodeDragStop}
         onNodesDelete={onNodesDelete}
+        onConnect={onConnect}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}

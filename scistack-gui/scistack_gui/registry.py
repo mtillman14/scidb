@@ -19,7 +19,7 @@ def register_module(module) -> None:
     Variable classes: all BaseVariable subclasses currently in memory
       (they self-register on definition via BaseVariable._all_subclasses).
     """
-    for name, obj in inspect.getmembers(module, inspect.isfunction):
+    for name, obj in inspect.getmembers(module, lambda o: callable(o) and not inspect.isclass(o)):
         if not name.startswith('_'):
             _functions[name] = obj
     # BaseVariable subclasses are already in _all_subclasses after import —
