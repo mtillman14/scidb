@@ -73,6 +73,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         fn_name = 'unknown';
     end
 
+    scidb.Log.info('===== for_each(%s) start =====', fn_name);
+
     % Parse metadata iterables
     if mod(numel(meta_args), 2) ~= 0
         error('scidb:for_each', 'Metadata arguments must be name-value pairs.');
@@ -115,6 +117,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             if isempty(mat_vals)
                 scidb.Log.warn('no values found for ''%s'' in database, 0 iterations', ...
                     meta_keys(i));
+            else
+                scidb.Log.info('resolved %s=[] -> %d values', meta_keys(i), numel(mat_vals));
             end
             meta_values{i} = mat_vals;
         end
@@ -336,6 +340,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 
     % --- Load all inputs into MATLAB tables ---
     scifor_inputs = struct();
+    load_total_tic = tic;
     for p = 1:n_inputs
         param_name = input_names{p};
         var_spec = inputs.(param_name);
@@ -343,24 +348,32 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         if ~loadable_idx(p)
             % Constant — pass through
             scifor_inputs.(param_name) = var_spec;
+            scidb.Log.debug('input ''%s'': constant %s', param_name, class(var_spec));
             continue;
         end
 
         % Already a MATLAB table — pass through
         if istable(var_spec)
             scifor_inputs.(param_name) = var_spec;
+            scidb.Log.info('input ''%s'': MATLAB table %dx%d (pass-through)', ...
+                param_name, height(var_spec), width(var_spec));
             continue;
         end
 
         % Convert scidb wrappers to loaded tables with scifor wrappers
+        input_tic = tic;
         try
             scifor_inputs.(param_name) = convert_input(var_spec, py_db, where_nv, db_nv);
+            input_elapsed = toc(input_tic);
+            log_loaded_input(param_name, var_spec, scifor_inputs.(param_name), input_elapsed);
         catch err
             scidb.Log.err('failed to load input ''%s'': %s', param_name, err.message);
             result_tbl = [];
             return;
         end
     end
+    load_total_elapsed = toc(load_total_tic);
+    scidb.Log.info('loaded %d inputs in %.3fs', n_inputs, load_total_elapsed);
 
     % --- Build metadata NV args for scifor ---
     scifor_meta_nv = {};
@@ -472,6 +485,67 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % --- Flatten nested table outputs for return ---
     % _nest_table_outputs was forced for saving; un-nest for caller
     result_tbl = flatten_nested_table_outputs(result_tbl, output_names);
+end
+
+
+% =========================================================================
+% Input load logging
+% =========================================================================
+
+function log_loaded_input(param_name, var_spec, loaded, elapsed)
+%LOG_LOADED_INPUT  Log details about a loaded input.
+    type_name = input_type_name(var_spec);
+    if istable(loaded)
+        scidb.Log.info('input ''%s'': loaded %s -> %d rows, %d cols in %.3fs', ...
+            param_name, type_name, height(loaded), width(loaded), elapsed);
+    elseif isa(loaded, 'scifor.Merge')
+        scidb.Log.info('input ''%s'': loaded %s in %.3fs', ...
+            param_name, type_name, elapsed);
+    elseif isa(loaded, 'scifor.Fixed')
+        scidb.Log.info('input ''%s'': loaded %s in %.3fs', ...
+            param_name, type_name, elapsed);
+    elseif isa(loaded, 'scifor.ColumnSelection')
+        scidb.Log.info('input ''%s'': loaded %s in %.3fs', ...
+            param_name, type_name, elapsed);
+    else
+        scidb.Log.info('input ''%s'': loaded %s in %.3fs', ...
+            param_name, type_name, elapsed);
+    end
+end
+
+
+function name = input_type_name(var_spec)
+%INPUT_TYPE_NAME  Get a human-readable type name for a var_spec.
+    if isa(var_spec, 'scidb.Merge')
+        parts = cell(1, numel(var_spec.var_specs));
+        for i = 1:numel(var_spec.var_specs)
+            parts{i} = input_type_name(var_spec.var_specs{i});
+        end
+        name = sprintf('Merge(%s)', strjoin(parts, ', '));
+    elseif isa(var_spec, 'scidb.Fixed')
+        inner_name = input_type_name(var_spec.var_type);
+        ff = fieldnames(var_spec.fixed_metadata);
+        if isempty(ff)
+            name = sprintf('Fixed(%s)', inner_name);
+        else
+            kv_parts = cell(1, numel(ff));
+            for f = 1:numel(ff)
+                val = var_spec.fixed_metadata.(ff{f});
+                if isnumeric(val)
+                    kv_parts{f} = sprintf('%s=%g', ff{f}, val);
+                else
+                    kv_parts{f} = sprintf('%s=%s', ff{f}, string(val));
+                end
+            end
+            name = sprintf('Fixed(%s, %s)', inner_name, strjoin(kv_parts, ', '));
+        end
+    elseif isa(var_spec, 'scidb.BaseVariable')
+        name = class(var_spec);
+    elseif isa(var_spec, 'scifor.PathInput')
+        name = 'PathInput';
+    else
+        name = class(var_spec);
+    end
 end
 
 

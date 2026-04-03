@@ -1,6 +1,7 @@
 """DB-backed for_each wrapper — loads inputs, delegates loop to scifor, saves outputs."""
 
 import json
+import time
 import warnings
 from typing import Any, Callable
 
@@ -123,6 +124,9 @@ def for_each(
     Returns:
         A pandas DataFrame of results, or None when dry_run=True.
     """
+    fn_name = getattr(fn, "__name__", repr(fn))
+    Log.info(f"===== for_each({fn_name}) start =====")
+
     # Resolve empty lists to all distinct values from the database
     needs_resolve = [k for k, v in metadata_iterables.items()
                      if isinstance(v, list) and len(v) == 0]
@@ -145,6 +149,8 @@ def for_each(
                 msg = f"no values found for '{key}' in database, 0 iterations"
                 print(f"[warn] {msg}")
                 Log.warn(msg)
+            else:
+                Log.info(f"resolved {key}=[] -> {len(values)} values")
             metadata_iterables[key] = values
 
     # Propagate schema keys to scifor so distribute and DataFrame detection work
@@ -215,6 +221,7 @@ def for_each(
     import pandas as pd
     from itertools import product as _iproduct
 
+    Log.debug("building variant tracking (rid->branch_params mapping)")
     rid_to_bp: dict = {}   # {record_id: branch_params_dict}
     rid_keys: list = []    # __rid_{param_name} column names added to this call's schema
 
@@ -235,6 +242,9 @@ def for_each(
         rid_col = f"__rid_{param_name}"
         loaded_inputs[param_name] = data.rename(columns={"__record_id": rid_col})
         rid_keys.append(rid_col)
+
+    Log.debug(f"variant tracking: {len(rid_to_bp)} record_ids mapped, "
+              f"{len(rid_keys)} rid keys: {rid_keys}")
 
     # Strip __branch_params from all DataFrames (now tracked via rid_to_bp)
     for param_name, data in list(loaded_inputs.items()):
@@ -282,6 +292,8 @@ def for_each(
         rid_per_combo[rid_col] = mapping
 
     # Expand each base combo with all valid rid-combos for that schema location
+    Log.debug(f"expanding combos: {len(base_combos)} base combos, "
+              f"{len(rid_per_combo)} rid dimensions")
     full_combos: list = []
     for combo in base_combos:
         schema_vals = tuple(str(combo.get(k, "")) for k in _lookup_keys)
@@ -309,10 +321,22 @@ def for_each(
         else:
             full_combos.append(combo)
 
+    if len(full_combos) != len(base_combos):
+        Log.info(f"expanded {len(base_combos)} base combos -> "
+                 f"{len(full_combos)} full combos (rid variants)")
+    else:
+        Log.debug(f"{len(full_combos)} combos (no rid expansion needed)")
+
     # Apply pre-combo hook (e.g. skip_computed from scihist): filter out any
     # combos where the hook returns True.
     if _pre_combo_hook is not None:
+        pre_hook_count = len(full_combos)
         full_combos = [c for c in full_combos if not _pre_combo_hook(c)]
+        skipped = pre_hook_count - len(full_combos)
+        if skipped > 0:
+            msg = f"skip_computed: {skipped}/{pre_hook_count} combos skipped"
+            print(f"[info] {msg}")
+            Log.info(msg)
 
     # Temporarily extend scifor's schema to include __rid_* keys so _filter_df_for_combo
     # treats them as schema columns (not data columns), giving single-row filtered DFs.
@@ -397,15 +421,57 @@ def _convert_inputs(
     Returns a dict suitable for scifor.for_each (DataFrames + constants).
     """
     result = {}
+    total_t0 = time.perf_counter()
     for param_name, var_spec in inputs.items():
         if isinstance(var_spec, ColName):
             result[param_name] = _resolve_colname_from_db(var_spec, db)
         elif _is_loadable(var_spec):
-            result[param_name] = _load_input(var_spec, db, where)
+            t0 = time.perf_counter()
+            loaded = _load_input(var_spec, db, where)
+            elapsed = time.perf_counter() - t0
+            result[param_name] = loaded
+            _log_loaded_input(param_name, var_spec, loaded, elapsed)
         else:
             # Constant — pass through unchanged
             result[param_name] = var_spec
+            Log.debug(f"input '{param_name}': constant {type(var_spec).__name__}")
+    total_elapsed = time.perf_counter() - total_t0
+    Log.info(f"loaded {len(result)} inputs in {total_elapsed:.3f}s")
     return result
+
+
+def _log_loaded_input(param_name: str, var_spec: Any, loaded: Any, elapsed: float) -> None:
+    """Log details about a loaded input."""
+    import pandas as pd
+
+    type_name = _input_type_name(var_spec)
+
+    if isinstance(loaded, pd.DataFrame):
+        Log.info(f"input '{param_name}': loaded {type_name} -> "
+                 f"{len(loaded)} rows, {len(loaded.columns)} cols in {elapsed:.3f}s")
+    elif isinstance(loaded, (PerComboLoader, PerComboLoaderMerge)):
+        Log.info(f"input '{param_name}': {type_name} (per-combo loader, will load during iteration)")
+    else:
+        Log.info(f"input '{param_name}': loaded {type_name} in {elapsed:.3f}s")
+
+
+def _input_type_name(var_spec: Any) -> str:
+    """Get a human-readable type name for a var_spec."""
+    if isinstance(var_spec, Merge):
+        return var_spec.__name__
+    if isinstance(var_spec, Fixed):
+        inner = var_spec.var_type
+        inner_name = _input_type_name(inner)
+        fixed_str = ", ".join(f"{k}={v}" for k, v in var_spec.fixed_metadata.items())
+        return f"Fixed({inner_name}, {fixed_str})"
+    if isinstance(var_spec, ColumnSelection):
+        inner_name = _input_type_name(var_spec.var_type)
+        return f"ColumnSelection({inner_name}, {var_spec.columns})"
+    if isinstance(var_spec, type):
+        return var_spec.__name__
+    if hasattr(var_spec, '__name__'):
+        return var_spec.__name__
+    return type(var_spec).__name__
 
 
 def _convert_inputs_for_display(inputs: dict[str, Any]) -> dict[str, Any]:
