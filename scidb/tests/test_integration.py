@@ -1,5 +1,6 @@
 """Integration tests for scidb - full end-to-end workflows."""
 
+import json
 import numpy as np
 import pandas as pd
 import pytest
@@ -652,3 +653,112 @@ class TestLoadAsTable:
         assert isinstance(result, list)
         assert len(result) == 2
 
+
+
+class TestLineageFcnPipelineMetadata:
+    """@lineage_fcn saves write __fn/__inputs/__constants to _record_metadata."""
+
+    def test_single_constant_fn_writes_version_keys(self, db):
+        """A function with only constant inputs writes __fn and __constants."""
+        from scilineage import lineage_fcn
+
+        class RawSignal(BaseVariable):
+            pass
+
+        @lineage_fcn
+        def load_signal(source: str):
+            return np.array([1.0, 2.0, 3.0])
+
+        result = load_signal("/data/signal.csv")
+        RawSignal.save(result, subject=1)
+
+        variants = db.list_pipeline_variants()
+        assert len(variants) == 1
+        v = variants[0]
+        assert v["function_name"] == "load_signal"
+        assert v["output_type"] == "RawSignal"
+        assert v["constants"]["source"] == "/data/signal.csv"
+        assert v["input_types"] == {}
+
+    def test_chained_fn_writes_input_types(self, db):
+        """Downstream save picks up _scidb_variable_type from upstream result."""
+        from scilineage import lineage_fcn
+
+        class RawData(BaseVariable):
+            pass
+
+        class ProcessedData(BaseVariable):
+            pass
+
+        @lineage_fcn
+        def load_raw(path: str):
+            return np.array([1.0, 2.0])
+
+        @lineage_fcn
+        def process(data, scale: float):
+            return data * scale
+
+        raw_result = load_raw("/data/raw.csv")
+        RawData.save(raw_result, subject=1)
+
+        proc_result = process(raw_result, 2.0)
+        ProcessedData.save(proc_result, subject=1)
+
+        variants = db.list_pipeline_variants()
+        fn_names = {v["function_name"] for v in variants}
+        assert fn_names == {"load_raw", "process"}
+
+        proc_v = next(v for v in variants if v["function_name"] == "process")
+        assert proc_v["input_types"] == {"data": "RawData"}
+        assert proc_v["constants"]["scale"] == "2.0"
+
+    def test_loaded_variable_as_input_populates_input_types(self, db):
+        """A BaseVariable loaded from DB and passed to @lineage_fcn is typed correctly."""
+        from scilineage import lineage_fcn
+
+        class Raw(BaseVariable):
+            pass
+
+        class Processed(BaseVariable):
+            pass
+
+        @lineage_fcn
+        def load_raw(path: str):
+            return np.array([1.0, 2.0])
+
+        @lineage_fcn
+        def process(data, scale: float):
+            return data * scale
+
+        # Save raw via lineage_fcn (or plain save — doesn't matter)
+        Raw.save(np.array([1.0, 2.0]), subject=1)
+
+        # Load it back as a BaseVariable and pass to a downstream function
+        loaded = Raw.load(subject=1)
+        proc_result = process(loaded, 2.0)
+        Processed.save(proc_result, subject=1)
+
+        variants = db.list_pipeline_variants()
+        proc_v = next(v for v in variants if v["function_name"] == "process")
+        # Type name must be populated even though we used a loaded variable, not a
+        # tagged LineageFcnResult
+        assert proc_v["input_types"] == {"data": "Raw"}
+
+    def test_list_pipeline_variants_sees_lineage_fcn(self, db):
+        """list_pipeline_variants returns entries for @lineage_fcn-saved variables."""
+        from scilineage import lineage_fcn
+
+        class Signal(BaseVariable):
+            pass
+
+        @lineage_fcn
+        def generate(amplitude: float):
+            return np.ones(10) * amplitude
+
+        result = generate(3.5)
+        Signal.save(result, subject=1)
+
+        variants = db.list_pipeline_variants()
+        assert len(variants) == 1
+        assert variants[0]["function_name"] == "generate"
+        assert variants[0]["record_count"] == 1

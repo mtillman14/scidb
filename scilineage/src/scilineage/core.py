@@ -20,6 +20,7 @@ For multi-output functions:
     first, second = split(data)  # Each is a separate LineageFcnResult
 """
 
+import inspect
 from functools import wraps
 from hashlib import sha256
 from typing import Any, Callable
@@ -151,12 +152,19 @@ class LineageFcnInvocation:
         self.unwrap = fcn.unwrap
         self.inputs: dict[str, Any] = {}
 
-        # Capture positional args
-        for i, arg in enumerate(args):
-            self.inputs[f"arg_{i}"] = arg
-
-        # Capture keyword args
-        self.inputs.update(kwargs)
+        # Bind args to their proper parameter names using the function signature.
+        # Does NOT apply defaults — only explicitly-passed values are captured,
+        # consistent with for_each() which records only what the caller supplied.
+        # Falls back to arg_N naming if binding fails (shouldn't happen for normal
+        # functions, but guards against edge cases like C-extension callables).
+        try:
+            sig = inspect.signature(fcn.fcn)
+            bound = sig.bind(*args, **kwargs)
+            self.inputs = dict(bound.arguments)
+        except (TypeError, ValueError):
+            for i, arg in enumerate(args):
+                self.inputs[f"arg_{i}"] = arg
+            self.inputs.update(kwargs)
 
         self.outputs: tuple[LineageFcnResult, ...] = ()
 

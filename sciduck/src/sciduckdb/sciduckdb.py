@@ -16,6 +16,7 @@ import pandas as pd
 import numpy as np
 import json
 import datetime
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -449,6 +450,7 @@ class SciDuck:
     def __init__(self, db_path: Union[str, Path], dataset_schema: List[str]):
         self.db_path = str(db_path)
         self.dataset_schema = list(dataset_schema)
+        self._lock = threading.Lock()
         self.con = duckdb.connect(self.db_path)
         self._init_metadata_tables()
 
@@ -457,31 +459,47 @@ class SciDuck:
     # ------------------------------------------------------------------
 
     def _execute(self, sql: str, params=None):
-        if params:
-            return self.con.execute(sql, params)
-        return self.con.execute(sql)
+        # NOTE: DuckDB's Python connection returns itself from execute(), so
+        # execute() and fetchXxx() share the same connection state.  All callers
+        # that fetch results must hold _lock for the entire execute+fetch sequence.
+        # Use _fetchall / _fetchdf for queries that return rows; call _execute
+        # directly (under _lock) only for DDL/DML that needs no fetch.
+        with self._lock:
+            if params:
+                return self.con.execute(sql, params)
+            return self.con.execute(sql)
 
     def _executemany(self, sql: str, params_list):
-        return self.con.executemany(sql, params_list)
+        with self._lock:
+            return self.con.executemany(sql, params_list)
 
     def _begin(self):
-        self.con.execute("BEGIN TRANSACTION")
+        with self._lock:
+            self.con.execute("BEGIN TRANSACTION")
 
     def _commit(self):
-        self.con.execute("COMMIT")
+        with self._lock:
+            self.con.execute("COMMIT")
 
     def _rollback(self):
-        self.con.execute("ROLLBACK")
+        with self._lock:
+            self.con.execute("ROLLBACK")
 
     def _fetchall(self, sql: str, params=None) -> list:
-        return self._execute(sql, params).fetchall()
+        with self._lock:
+            if params:
+                return self.con.execute(sql, params).fetchall()
+            return self.con.execute(sql).fetchall()
 
     def fetchall(self, sql: str, params=None) -> list:
         """Public alias for _fetchall — accessible from MATLAB (underscore methods are not)."""
         return self._fetchall(sql, params)
 
     def _fetchdf(self, sql: str, params=None) -> pd.DataFrame:
-        return self._execute(sql, params).fetchdf()
+        with self._lock:
+            if params:
+                return self.con.execute(sql, params).fetchdf()
+            return self.con.execute(sql).fetchdf()
 
     def _table_exists(self, name: str) -> bool:
         rows = self._fetchall(

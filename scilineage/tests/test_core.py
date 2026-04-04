@@ -107,7 +107,8 @@ class TestLineageFcnInvocation:
 
         result = process(5, 10)
         inv = result.invoked
-        assert inv.inputs == {"arg_0": 5, "arg_1": 10}
+        # Positional args are bound to their proper parameter names
+        assert inv.inputs == {"x": 5, "y": 10}
 
     def test_captures_kwargs(self):
         @lineage_fcn
@@ -333,8 +334,8 @@ class TestChaining:
         result = step2(step1(5))
         inv = result.invoked
 
-        # Input should be a LineageFcnResult
-        input_val = inv.inputs["arg_0"]
+        # Input should be a LineageFcnResult bound to parameter name "x"
+        input_val = inv.inputs["x"]
         assert isinstance(input_val, LineageFcnResult)
         assert input_val.data == 6
 
@@ -365,3 +366,32 @@ class TestChaining:
 
         result = check_type(produce(5))
         assert result.data == 12
+
+    def test_positional_args_get_param_names(self):
+        """Positional args should be bound to their proper parameter names."""
+        @lineage_fcn
+        def add(a, b):
+            return a + b
+
+        result = add(3, 7)
+        assert result.invoked.inputs == {"a": 3, "b": 7}
+
+    def test_kwargs_get_param_names(self):
+        """Keyword args should always use their proper names."""
+        @lineage_fcn
+        def scale(data, factor=1):
+            return data * factor
+
+        result = scale(5, factor=3)
+        assert result.invoked.inputs["data"] == 5
+        assert result.invoked.inputs["factor"] == 3
+
+    def test_star_args_bound_as_tuple(self):
+        """*args functions: positional values are grouped as a tuple under 'args'."""
+        @lineage_fcn
+        def variadic(*args):
+            return sum(args)
+
+        result = variadic(1, 2, 3)
+        # inspect.signature.bind() groups *args into a tuple under the param name
+        assert result.invoked.inputs == {"args": (1, 2, 3)}

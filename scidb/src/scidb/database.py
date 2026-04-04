@@ -375,6 +375,64 @@ def get_user_id() -> str | None:
     return os.environ.get("SCIDB_USER_ID")
 
 
+def _build_lineage_version_keys(result: Any) -> dict:
+    """
+    Build _record_metadata version_keys from a LineageFcnResult.
+
+    Produces the same ``__fn`` / ``__fn_hash`` / ``__inputs`` / ``__constants``
+    format that ``for_each`` writes, so ``list_pipeline_variants()`` and the
+    GUI pipeline graph work without changes.
+
+    Three kinds of inputs are recognised:
+    - ``LineageFcnResult`` with ``_scidb_variable_type`` tag: upstream result
+      that was saved before this call — type name comes from the tag.
+    - ``BaseVariable`` instance: a loaded (saved) variable passed directly —
+      type name comes from ``type(input_val).__name__``.  Works regardless of
+      save order since the type is intrinsic to the object.
+    - Everything else: treated as a constant.
+    """
+    import hashlib
+    import inspect as _inspect
+
+    try:
+        from scilineage.core import LineageFcnResult
+    except ImportError:
+        return {}
+
+    fn = result.invoked.fcn.fcn
+    fn_name = fn.__name__
+
+    try:
+        src = _inspect.getsource(fn)
+    except (OSError, TypeError):
+        src = fn_name
+    fn_hash = hashlib.sha256(src.encode()).hexdigest()[:16]
+
+    input_types: dict = {}   # param_name → BaseVariable type name
+    constants: dict = {}     # param_name → scalar value
+
+    for param_name, input_val in result.invoked.inputs.items():
+        if isinstance(input_val, LineageFcnResult):
+            vtype = getattr(input_val, "_scidb_variable_type", None)
+            if vtype:
+                input_types[param_name] = vtype
+            # No tag → upstream was never saved; skip the edge silently
+        elif isinstance(input_val, BaseVariable):
+            # Loaded variable passed directly — type is always available
+            input_types[param_name] = type(input_val).__name__
+        else:
+            constants[param_name] = input_val
+
+    keys: dict = {"__fn": fn_name, "__fn_hash": fn_hash}
+    if input_types:
+        keys["__inputs"] = json.dumps(input_types, sort_keys=True)
+    if constants:
+        keys["__constants"] = json.dumps(
+            {k: str(v) for k, v in sorted(constants.items())},
+        )
+    return keys
+
+
 def configure_database(
     dataset_db_path: str | Path,
     dataset_schema_keys: list[str],
@@ -1535,6 +1593,7 @@ class DatabaseManager:
         """
         lineage_hash = None
         lineage_dict = None
+        pipeline_version_keys: dict = {}
 
         try:
             from scilineage.core import LineageFcnResult
@@ -1544,6 +1603,19 @@ class DatabaseManager:
                 # find_by_lineage(invocation) can look it up via compute_lineage_hash()
                 lineage_hash = data.invoked.hash
                 lineage_dict = extract_lineage(data).to_dict()
+
+                # Build version_keys in the same format as for_each() so that
+                # list_pipeline_variants() and the GUI can see this function.
+                pipeline_version_keys = _build_lineage_version_keys(data)
+
+                # Tag the result object with its variable type name.  Downstream
+                # saves that receive this result as an input can then read the tag
+                # to populate __inputs in their own version_keys.
+                try:
+                    data._scidb_variable_type = variable_class.__name__
+                except (AttributeError, TypeError):
+                    pass
+
                 data = data.data
         except ImportError:
             pass
@@ -1556,8 +1628,12 @@ class DatabaseManager:
 
         instance = variable_class(raw_data)
 
+        # Merge pipeline version_keys (from @lineage_fcn) into metadata so that
+        # _split_metadata puts them in version_keys → _record_metadata.
+        save_metadata = {**metadata, **pipeline_version_keys} if pipeline_version_keys else metadata
+
         record_id = self.save(
-            instance, metadata, lineage=lineage_dict, lineage_hash=lineage_hash, index=index,
+            instance, save_metadata, lineage=lineage_dict, lineage_hash=lineage_hash, index=index,
         )
 
         instance.record_id = record_id

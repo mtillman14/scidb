@@ -770,3 +770,115 @@
 [15:00:08.337] [INFO] [save] subject=S01, sample_interval=5, window_seconds=60: RollingVO2
 [15:00:08.346] [INFO] [save] subject=S02, sample_interval=5, window_seconds=60: RollingVO2
 [15:00:08.354] [INFO] [save] subject=S03, sample_interval=5, window_seconds=60: RollingVO2
+[15:09:23.813] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[15:09:31.238] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[15:14:02.328] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[15:40:36.004] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[15:40:55.755] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[15:40:55.762] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.006s
+[15:40:55.762] [INFO] loaded 3 inputs in 0.006s
+[15:40:55.763] [INFO] ================================================================
+[15:40:55.763] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[15:40:55.763] [INFO] subject=[3 values]
+[15:40:55.763] [INFO] ================================================================
+[15:40:55.763] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 30}
+[15:40:55.763] [INFO] subject=['S01', 'S02', 'S03']
+[15:40:55.763] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:40:55.764] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:40:55.764] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:40:55.764] [INFO] ────────────────────────────────────────────────────────────────
+[15:40:55.764] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[15:40:55.764] [INFO] ================================================================
+[15:40:55.776] [INFO] [save] subject=S01, sample_interval=5, window_seconds=30: RollingVO2
+[15:40:55.785] [INFO] [save] subject=S02, sample_interval=5, window_seconds=30: RollingVO2
+[15:40:55.793] [INFO] [save] subject=S03, sample_interval=5, window_seconds=30: RollingVO2
+[15:40:55.793] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[15:40:55.797] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.004s
+[15:40:55.798] [INFO] loaded 3 inputs in 0.004s
+[15:40:55.798] [INFO] ================================================================
+[15:40:55.798] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[15:40:55.798] [INFO] subject=[3 values]
+[15:40:55.798] [INFO] ================================================================
+[15:40:55.798] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 60}
+[15:40:55.798] [INFO] subject=['S01', 'S02', 'S03']
+[15:40:55.799] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:40:55.799] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:40:55.800] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:40:55.800] [INFO] ────────────────────────────────────────────────────────────────
+[15:40:55.800] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[15:40:55.800] [INFO] ================================================================
+[15:40:55.809] [INFO] [save] subject=S01, sample_interval=5, window_seconds=60: RollingVO2
+[15:40:55.817] [INFO] [save] subject=S02, sample_interval=5, window_seconds=60: RollingVO2
+[15:40:55.825] [INFO] [save] subject=S03, sample_interval=5, window_seconds=60: RollingVO2
+[15:41:05.005] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[15:41:05.010] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.005s
+[15:41:05.010] [INFO] loaded 3 inputs in 0.005s
+[15:41:05.011] [INFO] ================================================================
+[15:41:05.011] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[15:41:05.011] [INFO] subject=[3 values]
+[15:41:05.011] [INFO] ================================================================
+[15:41:05.011] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 30}
+[15:41:05.011] [INFO] subject=['S01', 'S02', 'S03']
+[15:41:05.012] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:05.012] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:05.012] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:05.012] [INFO] ────────────────────────────────────────────────────────────────
+[15:41:05.012] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[15:41:05.013] [INFO] ================================================================
+[15:41:05.023] [INFO] [save] subject=S01, sample_interval=5, window_seconds=30: RollingVO2
+[15:41:05.034] [INFO] [save] subject=S02, sample_interval=5, window_seconds=30: RollingVO2
+[15:41:05.043] [INFO] [save] subject=S03, sample_interval=5, window_seconds=30: RollingVO2
+[15:41:05.043] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[15:41:05.048] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.005s
+[15:41:05.048] [INFO] loaded 3 inputs in 0.005s
+[15:41:05.048] [INFO] ================================================================
+[15:41:05.048] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[15:41:05.048] [INFO] subject=[3 values]
+[15:41:05.049] [INFO] ================================================================
+[15:41:05.049] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 60}
+[15:41:05.049] [INFO] subject=['S01', 'S02', 'S03']
+[15:41:05.049] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:05.049] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:05.050] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:05.050] [INFO] ────────────────────────────────────────────────────────────────
+[15:41:05.050] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[15:41:05.050] [INFO] ================================================================
+[15:41:05.058] [INFO] [save] subject=S01, sample_interval=5, window_seconds=60: RollingVO2
+[15:41:05.066] [INFO] [save] subject=S02, sample_interval=5, window_seconds=60: RollingVO2
+[15:41:05.074] [INFO] [save] subject=S03, sample_interval=5, window_seconds=60: RollingVO2
+[15:41:06.213] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[15:41:06.219] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.006s
+[15:41:06.219] [INFO] loaded 3 inputs in 0.006s
+[15:41:06.220] [INFO] ================================================================
+[15:41:06.220] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[15:41:06.220] [INFO] subject=[3 values]
+[15:41:06.220] [INFO] ================================================================
+[15:41:06.220] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 30}
+[15:41:06.220] [INFO] subject=['S01', 'S02', 'S03']
+[15:41:06.220] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:06.221] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:06.221] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:06.221] [INFO] ────────────────────────────────────────────────────────────────
+[15:41:06.221] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[15:41:06.221] [INFO] ================================================================
+[15:41:06.231] [INFO] [save] subject=S01, sample_interval=5, window_seconds=30: RollingVO2
+[15:41:06.239] [INFO] [save] subject=S02, sample_interval=5, window_seconds=30: RollingVO2
+[15:41:06.247] [INFO] [save] subject=S03, sample_interval=5, window_seconds=30: RollingVO2
+[15:41:06.247] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[15:41:06.251] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.004s
+[15:41:06.251] [INFO] loaded 3 inputs in 0.004s
+[15:41:06.252] [INFO] ================================================================
+[15:41:06.252] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[15:41:06.252] [INFO] subject=[3 values]
+[15:41:06.252] [INFO] ================================================================
+[15:41:06.252] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 60}
+[15:41:06.252] [INFO] subject=['S01', 'S02', 'S03']
+[15:41:06.253] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:06.253] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:06.253] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[15:41:06.253] [INFO] ────────────────────────────────────────────────────────────────
+[15:41:06.253] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[15:41:06.253] [INFO] ================================================================
+[15:41:06.262] [INFO] [save] subject=S01, sample_interval=5, window_seconds=60: RollingVO2
+[15:41:06.270] [INFO] [save] subject=S02, sample_interval=5, window_seconds=60: RollingVO2
+[15:41:06.277] [INFO] [save] subject=S03, sample_interval=5, window_seconds=60: RollingVO2

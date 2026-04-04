@@ -37,8 +37,8 @@ class TestExtractLineage:
         # Both inputs should be constants (literals)
         assert len(lineage.constants) == 2
         names = {c["name"] for c in lineage.constants}
-        assert "arg_0" in names
-        assert "arg_1" in names
+        assert "x" in names
+        assert "factor" in names
 
     def test_lineage_fcn_inputs_captured(self):
         @lineage_fcn

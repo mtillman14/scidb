@@ -9,9 +9,8 @@ signals, computes rolling averages, and extracts peak metrics.
 Framework features showcased:
   - BaseVariable: Type-safe data storage with automatic and custom serialization
   - configure_database: DuckDB (data) + SQLite (lineage) dual-backend setup
-  - @thunk: Automatic lineage tracking and computation caching
-  - ThunkOutput: Transparent data flow between processing steps
-  - Provenance queries: Tracing how results were computed
+  - for_each: Run a function over all schema combinations, tracking variants
+  - Provenance queries: Listing pipeline variants and upstream lineage
 
 Usage:
     cd examples/vo2max
@@ -29,11 +28,13 @@ from pathlib import Path
 # All core framework components come from the `scidb` package:
 #   - BaseVariable: Base class for defining storable data types
 #   - configure_database: One-call setup for DuckDB + SQLite backends
-#   - thunk: Decorator that adds lineage tracking to any function
-#   - ThunkOutput: Wrapper around function results that carries lineage info
+#   - for_each: Run a function for every combination of schema values,
+#               loading inputs automatically and saving outputs automatically.
+#               Constants passed in `inputs` are tracked as pipeline variants
+#               so the GUI can show them as ConstantNodes.
 # =============================================================================
 
-from scidb import BaseVariable, configure_database, thunk, ThunkOutput
+from scidb import BaseVariable, configure_database, for_each
 
 
 # =============================================================================
@@ -74,7 +75,7 @@ class CombinedData(BaseVariable):
 
     Overrides to_db()/from_db() because the data is a pandas DataFrame
     and we want to preserve the multi-column structure in storage.
-    """    
+    """
 
     def to_db(self) -> pd.DataFrame:
         # Return the DataFrame directly — each column becomes a DuckDB column
@@ -105,35 +106,43 @@ class MaxVO2(BaseVariable):
 
 
 # =============================================================================
-# STEP 2: DEFINE PROCESSING FUNCTIONS  [scidb.thunk / @thunk decorator]
+# STEP 2: DEFINE PROCESSING FUNCTIONS
 #
-# The @thunk decorator wraps each function so that:
-#   1. A hash of the function's bytecode is computed (detects code changes)
-#   2. All inputs are classified when called (ThunkOutput vs saved variable
-#      vs raw constant) and recorded for lineage
-#   3. The function executes and its result is wrapped in a ThunkOutput
-#   4. If caching is enabled (via configure_database), identical computations
-#      are looked up by lineage hash and returned from the database
+# Plain functions (no decorator needed). for_each handles:
+#   1. Iterating over all schema combinations (e.g. subject="S01")
+#   2. Loading input variables and passing their .data to the function
+#   3. Passing constants straight through to the function
+#   4. Saving the return value as the output variable type
+#   5. Recording version_keys (inputs + constants) in _record_metadata for
+#      provenance and GUI pipeline-graph construction
 #
-# By default, @thunk auto-unwraps inputs: if you pass a ThunkOutput or a
-# BaseVariable, the function receives the raw .data value. This keeps
-# processing logic clean — no framework types leak into your math.
+# Because for_each auto-unwraps BaseVariable inputs, these functions receive
+# plain numpy arrays / DataFrames — no framework types in the math.
 # =============================================================================
 
-@thunk
-def load_csv(path: str) -> np.ndarray:
+def load_time(data_dir: str) -> np.ndarray:
     """
-    Load a single-column CSV file and return values as a numpy array.
+    Load time data from a CSV file in data_dir.
 
-    Even file I/O functions benefit from @thunk — the lineage record captures
-    the file path as a constant, so you can trace any downstream result back
-    to its source file.
+    data_dir is a constant — the GUI renders it as a ConstantNode that feeds
+    into this function node, making it clear where the raw data comes from.
     """
-    df = pd.read_csv(path)
+    df = pd.read_csv(Path(data_dir) / "time_sec.csv")
     return df.iloc[:, 0].values
 
 
-@thunk
+def load_heart_rate(data_dir: str) -> np.ndarray:
+    """Load heart rate data from a CSV file in data_dir."""
+    df = pd.read_csv(Path(data_dir) / "heart_rate_bpm.csv")
+    return df.iloc[:, 0].values
+
+
+def load_vo2(data_dir: str) -> np.ndarray:
+    """Load VO2 data from a CSV file in data_dir."""
+    df = pd.read_csv(Path(data_dir) / "vo2_ml_min.csv")
+    return df.iloc[:, 0].values
+
+
 def combine_signals(
     time: np.ndarray,
     hr: np.ndarray,
@@ -142,10 +151,8 @@ def combine_signals(
     """
     Combine three 1D arrays into a single DataFrame.
 
-    Because @thunk auto-unwraps inputs, `time`, `hr`, and `vo2` arrive as
-    plain numpy arrays even though we pass ThunkOutputs from load_csv().
-    The lineage system still tracks that these inputs came from those
-    load_csv() calls.
+    for_each loads RawTime, RawHeartRate, and RawVO2 for each subject,
+    joins them by schema key, and passes their data here as plain arrays.
     """
     return pd.DataFrame({
         "time_sec": time,
@@ -154,7 +161,6 @@ def combine_signals(
     })
 
 
-@thunk
 def compute_rolling_vo2(
     combined: pd.DataFrame,
     window_seconds: int = 30,
@@ -163,10 +169,9 @@ def compute_rolling_vo2(
     """
     Compute a rolling average of VO2 over a specified time window.
 
-    The constant arguments (window_seconds, sample_interval) are captured
-    in the lineage record. If you change the window size, the lineage hash
-    changes, so the framework knows it's a different computation and won't
-    serve a stale cached result.
+    window_seconds and sample_interval are constants — the GUI renders them
+    as ConstantNodes feeding into this function node.  Changing them creates
+    a new pipeline variant, tracked separately in _record_metadata.
     """
     window_size = window_seconds // sample_interval  # 30s / 5s = 6 samples
     rolling_avg = (
@@ -177,13 +182,11 @@ def compute_rolling_vo2(
     return rolling_avg.values
 
 
-@thunk
 def compute_max_hr(combined: pd.DataFrame) -> float:
     """Extract the peak heart rate from the combined dataset."""
     return float(combined["heart_rate_bpm"].max())
 
 
-@thunk
 def compute_max_vo2(rolling_vo2: np.ndarray) -> float:
     """
     Compute VO2 max as the mean of the two highest 30-second rolling averages.
@@ -210,13 +213,9 @@ if __name__ == "__main__":
     #   - SQLite file: stores lineage/provenance records (via PipelineDB)
     #
     # dataset_schema_keys defines which metadata keys represent the "location"
-    # of data. Here, "subject" identifies which person's test this is. Any
-    # other metadata keys become version parameters that distinguish different
-    # computational versions of the same data.
+    # of data. Here, "subject" identifies which person's test this is.
     #
-    # This call also:
-    #   - Auto-registers all BaseVariable subclasses defined above
-    #   - Enables thunk caching (sets Thunk.query to the DatabaseManager)
+    # This call also auto-registers all BaseVariable subclasses defined above.
     # -------------------------------------------------------------------------
 
     project_folder = Path(__file__).parent
@@ -241,83 +240,91 @@ if __name__ == "__main__":
     print()
 
     # -------------------------------------------------------------------------
-    # 3b. Load raw data from CSVs  [@thunk + BaseVariable.save]
+    # 3b. Load raw data from CSVs  [for_each with constant data_dir]
     #
-    # load_csv() is @thunk-decorated, so each call returns a ThunkOutput
-    # (not a raw array). The ThunkOutput wraps:
-    #   .data          — the actual numpy array
-    #   .pipeline_thunk — metadata about the function call and its inputs
-    #   .hash          — a lineage-based hash for cache lookups
+    # Each loading function takes data_dir as a constant — the path to the
+    # CSV files.  for_each records data_dir in _record_metadata so the GUI
+    # shows:  ConstantNode(data_dir) → FunctionNode(load_vo2) → VariableNode(RawVO2)
     #
-    # When you pass a ThunkOutput to BaseVariable.save(), the framework:
-    #   1. Extracts the raw data
-    #   2. Extracts the lineage record (function name, hash, inputs)
-    #   3. Stores both in the database
-    #   4. Registers the lineage hash for future cache lookups
+    # Without this step, RawVO2 would be a root VariableNode in the GUI with
+    # no upstream, which doesn't represent a real pipeline.
     # -------------------------------------------------------------------------
 
     print("--- Loading raw data from CSVs ---")
 
-    time_data = load_csv(str(data_dir / "time_sec.csv"))
-    hr_data = load_csv(str(data_dir / "heart_rate_bpm.csv"))
-    vo2_data = load_csv(str(data_dir / "vo2_ml_min.csv"))
+    data_dir_str = str(data_dir)
 
-    # Each result is a ThunkOutput, not a plain numpy array
-    print(f"  time_data type:      {type(time_data).__name__}")
-    print(f"  time_data.data shape: {time_data.data.shape}")
-    print(f"  HR range:  [{hr_data.data.min():.0f}, {hr_data.data.max():.0f}] bpm")
-    print(f"  VO2 range: [{vo2_data.data.min():.0f}, {vo2_data.data.max():.0f}] mL/min")
-
-    # Save raw data to the database with metadata
-    RawTime.save(time_data, subject="S01")
-    RawHeartRate.save(hr_data, subject="S01")
-    RawVO2.save(vo2_data, subject="S01")
+    for_each(
+        load_time,
+        inputs={"data_dir": data_dir_str},
+        outputs=[RawTime],
+        subject=["S01"],
+    )
+    for_each(
+        load_heart_rate,
+        inputs={"data_dir": data_dir_str},
+        outputs=[RawHeartRate],
+        subject=["S01"],
+    )
+    for_each(
+        load_vo2,
+        inputs={"data_dir": data_dir_str},
+        outputs=[RawVO2],
+        subject=["S01"],
+    )
 
     print("  Saved raw data for subject S01.")
     print()
 
     # -------------------------------------------------------------------------
-    # 3c. Combine signals  [@thunk chaining + ThunkOutput flow]
+    # 3c. Combine signals  [for_each with multiple variable inputs]
     #
-    # Passing ThunkOutputs to another @thunk function automatically extends
-    # the lineage chain. combine_signals() receives raw numpy arrays (auto-
-    # unwrapped by @thunk), but the framework records that its inputs came
-    # from the three load_csv() calls.
+    # for_each loads RawTime, RawHeartRate, and RawVO2 for each subject,
+    # joins them by the "subject" schema key, and passes their data as plain
+    # arrays to combine_signals().
     # -------------------------------------------------------------------------
 
     print("--- Combining signals ---")
 
-    combined = combine_signals(time_data, hr_data, vo2_data)
+    for_each(
+        combine_signals,
+        inputs={"time": RawTime, "hr": RawHeartRate, "vo2": RawVO2},
+        outputs=[CombinedData],
+        subject=["S01"],
+    )
 
-    print(f"  Combined shape: {combined.data.shape}")
-    print(f"  Columns: {list(combined.data.columns)}")
-
-    # Save with custom to_db() serialization (CombinedData overrides it)
-    CombinedData.save(combined, subject="S01")
+    loaded_combined = CombinedData.load(subject="S01")
+    print(f"  Combined shape: {loaded_combined.data.shape}")
+    print(f"  Columns: {list(loaded_combined.data.columns)}")
     print("  Saved combined data.")
     print()
 
     # -------------------------------------------------------------------------
-    # 3d. Compute rolling VO2 averages  [@thunk with constant parameters]
+    # 3d. Compute rolling VO2 averages  [for_each with constants]
     #
-    # window_seconds=30 and sample_interval=5 are captured as constants in
-    # the lineage record. Changing them produces a different lineage hash,
-    # so cached results from other window sizes won't be reused.
+    # window_seconds=30 and sample_interval=5 are constants — the GUI renders
+    # them as ConstantNodes.  Running again with different values (e.g.
+    # window_seconds=60) would create a new pipeline variant, tracked
+    # separately in _record_metadata.
     # -------------------------------------------------------------------------
 
     print("--- Computing 30-second rolling VO2 averages ---")
 
-    rolling_vo2 = compute_rolling_vo2(combined, window_seconds=30, sample_interval=5)
+    for_each(
+        compute_rolling_vo2,
+        inputs={"combined": CombinedData, "window_seconds": 30, "sample_interval": 5},
+        outputs=[RollingVO2],
+        subject=["S01"],
+    )
 
-    print(f"  Rolling VO2 shape: {rolling_vo2.data.shape}")
-    print(f"  Rolling VO2 range: [{rolling_vo2.data.min():.0f}, {rolling_vo2.data.max():.0f}] mL/min")
-
-    RollingVO2.save(rolling_vo2, subject="S01")
+    loaded_rolling = RollingVO2.load(subject="S01")
+    print(f"  Rolling VO2 shape: {loaded_rolling.data.shape}")
+    print(f"  Rolling VO2 range: [{loaded_rolling.data.min():.0f}, {loaded_rolling.data.max():.0f}] mL/min")
     print("  Saved rolling VO2 averages.")
     print()
 
     # -------------------------------------------------------------------------
-    # 3e. Compute peak metrics  [@thunk with scalar results]
+    # 3e. Compute peak metrics  [for_each with scalar results]
     #
     # Scalar results (float, int) are stored natively by SciDuck — no need
     # for custom to_db()/from_db() overrides on MaxHeartRate or MaxVO2.
@@ -325,14 +332,23 @@ if __name__ == "__main__":
 
     print("--- Computing peak metrics ---")
 
-    max_hr = compute_max_hr(combined)
-    max_vo2 = compute_max_vo2(rolling_vo2)
+    for_each(
+        compute_max_hr,
+        inputs={"combined": CombinedData},
+        outputs=[MaxHeartRate],
+        subject=["S01"],
+    )
+    for_each(
+        compute_max_vo2,
+        inputs={"rolling_vo2": RollingVO2},
+        outputs=[MaxVO2],
+        subject=["S01"],
+    )
 
-    print(f"  Max HR:  {max_hr.data:.0f} bpm")
-    print(f"  Max VO2: {max_vo2.data:.1f} mL/min")
-
-    MaxHeartRate.save(max_hr, subject="S01")
-    MaxVO2.save(max_vo2, subject="S01")
+    loaded_max_hr = MaxHeartRate.load(subject="S01")
+    loaded_max_vo2 = MaxVO2.load(subject="S01")
+    print(f"  Max HR:  {loaded_max_hr.data:.0f} bpm")
+    print(f"  Max VO2: {loaded_max_vo2.data:.1f} mL/min")
     print("  Saved peak metrics.")
     print()
 
@@ -340,7 +356,6 @@ if __name__ == "__main__":
     # 3f. Verify: Load data back  [BaseVariable.load]
     #
     # load() queries by metadata and returns the latest matching record.
-    # The loaded variable has .data, .record_id, .metadata, and .lineage_hash.
     # -------------------------------------------------------------------------
 
     print("--- Verifying saved data ---")
@@ -352,61 +367,30 @@ if __name__ == "__main__":
     print(f"  Loaded Max VO2:  {loaded_max_vo2.data:.1f} mL/min  (record: {loaded_max_vo2.record_id[:16]}...)")
     print(f"  Loaded Max HR:   {loaded_max_hr.data:.0f} bpm  (record: {loaded_max_hr.record_id[:16]}...)")
     print(f"  Loaded combined: {loaded_combined.data.shape}  (record: {loaded_combined.record_id[:16]}...)")
-    print(f"  Max VO2 lineage hash: {loaded_max_vo2.lineage_hash[:16]}...")
     print()
 
     # -------------------------------------------------------------------------
-    # 3g. Query provenance  [DatabaseManager.get_provenance]
+    # 3g. Query pipeline variants  [DatabaseManager.list_pipeline_variants]
     #
-    # Provenance tells you which function and inputs produced a saved result.
-    # This is stored in the SQLite lineage database (PipelineDB backend).
+    # list_pipeline_variants() reads from _record_metadata to show all
+    # function/input/constant combinations that were run.  This is the same
+    # data the GUI uses to construct the pipeline graph.
     # -------------------------------------------------------------------------
 
-    print("--- Provenance ---")
+    print("--- Pipeline variants ---")
 
-    prov = db.get_provenance(MaxVO2, subject="S01")
-    if prov:
-        print(f"  MaxVO2 was computed by: {prov['function_name']}()")
-        print(f"  Function hash: {prov['function_hash'][:16]}...")
-        print(f"  Inputs:")
-        for inp in prov["inputs"]:
-            print(f"    - {inp.get('name', '?')}: kind={inp.get('kind', '?')}, type={inp.get('type', '?')}")
-        for const in prov.get("constants", []):
-            print(f"    - {const.get('name', '?')}: value={const.get('value_repr', '?')} (constant)")
-
-    prov_hr = db.get_provenance(MaxHeartRate, subject="S01")
-    if prov_hr:
-        print(f"  MaxHeartRate was computed by: {prov_hr['function_name']}()")
+    variants = db.list_pipeline_variants()
+    for v in variants:
+        fn = v["function_name"]
+        out = v["output_type"]
+        inputs_str = ", ".join(f"{k}={val}" for k, val in v["input_types"].items())
+        consts_str = ", ".join(f"{k}={val}" for k, val in v["constants"].items())
+        all_params = ", ".join(filter(None, [inputs_str, consts_str]))
+        print(f"  {fn}({all_params}) → {out}  [{v['record_count']} record(s)]")
     print()
 
     # -------------------------------------------------------------------------
-    # 3h. Demonstrate caching  [Thunk.query / lineage-based cache]
-    #
-    # Re-running the same computation with the same inputs produces the same
-    # lineage hash. The framework detects this and returns the cached result
-    # from the database instead of re-executing the function.
-    # -------------------------------------------------------------------------
-
-    print("--- Caching demo ---")
-    print("  Re-loading saved variables and re-running the pipeline...")
-
-    # Re-load saved variables from the database
-    reloaded_time = RawTime.load(subject="S01")
-    reloaded_hr = RawHeartRate.load(subject="S01")
-    reloaded_vo2 = RawVO2.load(subject="S01")
-
-    # Re-run the pipeline — the framework checks for cache hits by lineage hash
-    combined_2 = combine_signals(reloaded_time, reloaded_hr, reloaded_vo2)
-    rolling_2 = compute_rolling_vo2(combined_2, window_seconds=30, sample_interval=5)
-    max_vo2_2 = compute_max_vo2(rolling_2)
-
-    print(f"  Re-computed Max VO2: {max_vo2_2.data:.1f} mL/min")
-    print(f"  Original Max VO2:   {loaded_max_vo2.data:.1f} mL/min")
-    print(f"  Values match: {abs(max_vo2_2.data - loaded_max_vo2.data) < 0.01}")
-    print()
-
-    # -------------------------------------------------------------------------
-    # 3i. List all saved versions  [BaseVariable.list_versions]
+    # 3h. List all saved versions  [BaseVariable.list_versions]
     # -------------------------------------------------------------------------
 
     print("--- Saved versions ---")
@@ -419,5 +403,8 @@ if __name__ == "__main__":
     print("Pipeline complete!")
     print(f"  Data stored in:    {db_dir / 'vo2max_data.duckdb'}")
     print(f"  Lineage stored in: {db_dir / 'vo2max_lineage.db'}")
+    print()
+    print("To explore in the GUI:")
+    print(f"  scistack-gui {db_dir / 'vo2max_data.duckdb'} --module {Path(__file__)}")
 
     db.close()
