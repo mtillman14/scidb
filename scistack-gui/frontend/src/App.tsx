@@ -16,6 +16,7 @@ import PipelineDAG from "./components/DAG/PipelineDAG";
 import Sidebar from "./components/Sidebar/Sidebar";
 import { RunLogProvider } from "./context/RunLogContext";
 import { SelectedNodeProvider } from "./context/SelectedNodeContext";
+import { callBackend } from "./api";
 
 const styles: Record<string, React.CSSProperties> = {
   root: {
@@ -88,8 +89,7 @@ export default function App() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const res = await fetch("/api/refresh", { method: "POST" });
-      const data = await res.json();
+      const data = await callBackend("refresh_module") as { ok?: boolean; error?: string };
       if (!data.ok) {
         console.error("Refresh failed:", data.error);
       }
@@ -101,13 +101,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/schema")
-      .then((r) => r.json())
-      .then(setSchema)
+    callBackend("get_schema")
+      .then((d) => setSchema(d as { keys: string[] }))
       .catch(console.error);
-    fetch("/api/info")
-      .then((r) => r.json())
-      .then((d) => setDbName(d.db_name))
+    callBackend("get_info")
+      .then((d) => setDbName((d as { db_name: string }).db_name))
       .catch(console.error);
   }, []);
 

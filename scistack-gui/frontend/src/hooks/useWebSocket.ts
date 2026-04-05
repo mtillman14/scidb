@@ -12,11 +12,15 @@ type MessageHandler = (msg: Record<string, unknown>) => void
 
 const WS_URL = `ws://${window.location.hostname}:8765/ws`
 
+// Detect VS Code Webview — if present, WebSocket is not used.
+const _isVSCode = typeof acquireVsCodeApi === 'function'
+
 // Module-level singleton so all hook instances share one connection.
 let _socket: WebSocket | null = null
 const _handlers = new Set<MessageHandler>()
 
-function getSocket(): WebSocket {
+function getSocket(): WebSocket | null {
+  if (_isVSCode) return null  // No WebSocket in VS Code Webview mode
   if (_socket && _socket.readyState <= WebSocket.OPEN) return _socket
 
   _socket = new WebSocket(WS_URL)
@@ -48,8 +52,11 @@ export function useWebSocket(onMessage: MessageHandler) {
   }, [])
 
   useEffect(() => {
+    if (_isVSCode) return  // No WebSocket in VS Code mode
     getSocket()
     _handlers.add(stableHandler)
     return () => { _handlers.delete(stableHandler) }
   }, [stableHandler])
 }
+
+declare function acquireVsCodeApi(): unknown

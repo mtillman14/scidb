@@ -10,7 +10,8 @@
 
 import { useState, useCallback, useRef } from 'react'
 import { Handle, Position, useReactFlow } from '@xyflow/react'
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { callBackend } from '../../api'
+import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useRunLog } from '../../context/RunLogContext'
 import type { Variant } from './VariableNode'
 
@@ -42,12 +43,16 @@ export default function FunctionNode({ id, data }: Props) {
   // finishes before the first render cycle completes.
   const runIdRef = useRef<string | null>(null)
 
-  useWebSocket(useCallback((msg) => {
-    if (msg.run_id !== runIdRef.current) return
-    if (msg.type === 'run_output') {
-      appendLine(msg.run_id as string, msg.text as string)
-    } else if (msg.type === 'run_done') {
-      finishRun(msg.run_id as string)
+  useBackendMessage(useCallback((msg) => {
+    // Support both WebSocket format (msg.type) and JSON-RPC notification format (msg.method)
+    const msgType = (msg.type ?? msg.method) as string
+    const runId = (msg.run_id ?? (msg.params as Record<string, unknown>)?.run_id) as string | undefined
+    if (runId !== runIdRef.current) return
+    if (msgType === 'run_output') {
+      const text = (msg.text ?? (msg.params as Record<string, unknown>)?.text) as string
+      appendLine(runId!, text)
+    } else if (msgType === 'run_done') {
+      finishRun(runId!)
       setRunning(false)
     }
   }, [appendLine, finishRun]))
@@ -79,14 +84,10 @@ export default function FunctionNode({ id, data }: Props) {
       }
     }
 
-    await fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        function_name: data.label,
-        variants: checkedVariants,
-        run_id: newRunId,
-      }),
+    await callBackend('start_run', {
+      function_name: data.label,
+      variants: checkedVariants,
+      run_id: newRunId,
     })
   }, [id, data.label, getNodes, getEdges, startRun])
 

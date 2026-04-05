@@ -8,6 +8,7 @@
 import { useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import type { ConstantValue } from '../DAG/ConstantNode'
+import { callBackend } from '../../api'
 
 interface Props {
   id: string
@@ -33,7 +34,7 @@ export default function ConstantSettingsPanel({ id, label, values }: Props) {
         : node
     ))
     setDraft('')
-    fetch(`/api/constants/${encodeURIComponent(label)}/pending/${encodeURIComponent(v)}`, { method: 'PUT' })
+    callBackend('put_pending_constant', { name: label, value: v })
   }
 
   const removeValue = (index: number) => {
@@ -44,7 +45,7 @@ export default function ConstantSettingsPanel({ id, label, values }: Props) {
       return { ...node, data: { ...node.data, values: updated } }
     }))
     if (v.record_count === 0) {
-      fetch(`/api/constants/${encodeURIComponent(label)}/pending/${encodeURIComponent(v.value)}`, { method: 'DELETE' })
+      callBackend('delete_pending_constant', { name: label, value: v.value })
     }
   }
 

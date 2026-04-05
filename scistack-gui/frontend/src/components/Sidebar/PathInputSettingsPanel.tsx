@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useReactFlow } from '@xyflow/react'
+import { callBackend } from '../../api'
 
 interface Props {
   id: string
@@ -47,11 +48,8 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
     // Debounced save to backend.
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
-      fetch(`/api/path-inputs/${encodeURIComponent(label)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: label, template: newTemplate, root_folder: rootVal }),
-      }).catch(err => console.error('[PathInputSettings] PUT error:', err))
+      callBackend('update_path_input', { name: label, template: newTemplate, root_folder: rootVal })
+        .catch(err => console.error('[PathInputSettings] save error:', err))
     }, 400)
   }
 

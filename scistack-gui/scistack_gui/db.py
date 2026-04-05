@@ -51,6 +51,21 @@ def init_db(db_path: Path) -> DatabaseManager:
     return _db
 
 
+def create_db(db_path: Path, schema_keys: list[str]) -> DatabaseManager:
+    """
+    Create a new SciStack database at db_path with the given schema keys.
+    The parent directory must already exist. Fails if the file already exists.
+    """
+    global _db, _db_path
+    if db_path.exists():
+        raise FileExistsError(f"Database already exists: {db_path}")
+    if not schema_keys:
+        raise ValueError("schema_keys must not be empty")
+    _db = scidb.configure_database(db_path, schema_keys)
+    _db_path = db_path
+    return _db
+
+
 def get_db_path() -> Path:
     """Returns the path to the open database file."""
     if _db_path is None:

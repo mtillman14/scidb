@@ -7,7 +7,8 @@
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { callBackend } from '../../api'
+import { useBackendMessage } from '../../hooks/useBackendMessage'
 
 interface Registry {
   functions: string[]
@@ -33,9 +34,8 @@ export default function EditTab() {
   const varInputRef = useRef<HTMLInputElement>(null)
 
   function fetchRegistry() {
-    fetch('/api/registry')
-      .then(r => r.json())
-      .then(setRegistry)
+    callBackend('get_registry')
+      .then(d => setRegistry(d as Registry))
       .catch(console.error)
   }
 
@@ -46,29 +46,24 @@ export default function EditTab() {
   }, [])
 
   // Re-fetch registry when the backend signals a refresh (e.g. module reload).
-  useWebSocket(useCallback((msg) => {
-    if (msg.type === 'dag_updated') {
+  useBackendMessage(useCallback((msg) => {
+    if (msg.type === 'dag_updated' || msg.method === 'dag_updated') {
       fetchRegistry()
       fetchPathInputs()
     }
   }, []))
 
   function fetchConstants() {
-    fetch('/api/constants')
-      .then(r => r.json())
-      .then(setConstants)
+    callBackend('get_constants')
+      .then(d => setConstants(d as string[]))
       .catch(console.error)
   }
 
   function fetchPathInputs() {
-    fetch('/api/path-inputs')
-      .then(r => {
-        console.log('[PathInputs] GET status:', r.status)
-        return r.json()
-      })
-      .then((items: Array<{ name: string }>) => {
-        console.log('[PathInputs] fetched:', items)
-        setPathInputs(items.map(i => i.name))
+    callBackend('get_path_inputs')
+      .then((items) => {
+        const arr = items as Array<{ name: string }>
+        setPathInputs(arr.map(i => i.name))
       })
       .catch(err => console.error('[PathInputs] fetch error:', err))
   }
@@ -88,11 +83,7 @@ export default function EditTab() {
   const commitConstDraft = () => {
     const name = constDraft.trim()
     if (name) {
-      fetch('/api/constants', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      }).then(fetchConstants)
+      callBackend('create_constant', { name }).then(fetchConstants)
     }
     setConstDraft('')
     setAddingConst(false)
@@ -108,19 +99,15 @@ export default function EditTab() {
       return
     }
     setVarSubmitting(true)
-    fetch('/api/variables/create', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    })
-      .then(r => r.json())
+    callBackend('create_variable', { name })
       .then(data => {
-        if (data.ok) {
+        const d = data as { ok?: boolean; error?: string }
+        if (d.ok) {
           setVarDraft('')
           setAddingVar(false)
           setVarError('')
         } else {
-          setVarError(data.error || 'Failed')
+          setVarError(d.error || 'Failed')
           varInputRef.current?.focus()
         }
       })
@@ -133,22 +120,10 @@ export default function EditTab() {
 
   const commitPiDraft = () => {
     const name = piDraft.trim()
-    console.log('[PathInputs] commitPiDraft called, name:', JSON.stringify(name))
     if (name) {
-      fetch('/api/path-inputs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      })
-        .then(r => {
-          console.log('[PathInputs] POST status:', r.status)
-          return r.json()
-        })
-        .then(data => {
-          console.log('[PathInputs] POST response:', data)
-          fetchPathInputs()
-        })
-        .catch(err => console.error('[PathInputs] POST error:', err))
+      callBackend('create_path_input', { name })
+        .then(() => fetchPathInputs())
+        .catch(err => console.error('[PathInputs] create error:', err))
     }
     setPiDraft('')
     setAddingPI(false)

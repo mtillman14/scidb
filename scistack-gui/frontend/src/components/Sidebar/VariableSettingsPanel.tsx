@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { callBackend } from '../../api'
 
 interface VariantSummary {
   label: string
@@ -36,12 +37,8 @@ export default function VariableSettingsPanel({ label }: Props) {
   useEffect(() => {
     setData(null)
     setError(null)
-    fetch(`/api/variables/${encodeURIComponent(label)}/records`)
-      .then(r => {
-        if (!r.ok) return r.json().then(e => Promise.reject(e.detail ?? 'Error'))
-        return r.json()
-      })
-      .then(setData)
+    callBackend('get_variable_records', { name: label })
+      .then(d => setData(d as VariableRecordsResponse))
       .catch(err => setError(String(err)))
   }, [label])
 

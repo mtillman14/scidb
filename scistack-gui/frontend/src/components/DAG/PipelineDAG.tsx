@@ -34,7 +34,8 @@ import FunctionNode from './FunctionNode'
 import ConstantNode from './ConstantNode'
 import PathInputNode from './PathInputNode'
 import { applyDagreLayout } from '../../layout'
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { callBackend } from '../../api'
+import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 
 // Tell React Flow which React component to render for each node "type" string.
@@ -57,8 +58,8 @@ export default function PipelineDAG() {
     // Fetch pipeline first — _build_graph has a side effect (graduate_manual_node)
     // that writes to layout.json. Layout must be read AFTER that write, otherwise
     // savedPositions will have stale keys and dagre will recalculate positions.
-    const data = await fetch('/api/pipeline').then(r => r.json())
-    const layoutData = await fetch('/api/layout').then(r => r.json())
+    const data = await callBackend('get_pipeline') as { nodes: Node[]; edges: Edge[] }
+    const layoutData = await callBackend('get_layout') as Record<string, unknown>
     const savedPositions: Record<string, { x: number; y: number }> =
       layoutData.positions ?? layoutData  // handle both new and legacy format
 
@@ -101,8 +102,8 @@ export default function PipelineDAG() {
   }, [fetchPipeline])
 
   // Refresh DAG whenever the backend signals that data changed.
-  useWebSocket(useCallback((msg) => {
-    if (msg.type === 'dag_updated') fetchPipeline()
+  useBackendMessage(useCallback((msg) => {
+    if (msg.type === 'dag_updated' || msg.method === 'dag_updated') fetchPipeline()
   }, [fetchPipeline]))
 
   // Keep selectedNode data fresh after DAG refreshes.
@@ -143,8 +144,7 @@ export default function PipelineDAG() {
     const buildFnData = async () => {
       if (nodeType !== 'functionNode') return { run_state: 'red' as const }
       try {
-        const res = await fetch(`/api/function/${encodeURIComponent(label)}/params`)
-        const { params } = await res.json() as { params: string[] }
+        const { params } = await callBackend('get_function_params', { name: label }) as { params: string[] }
         const input_params: Record<string, string> = {}
         for (const p of params) input_params[p] = ''
         return { input_params, output_types: [] as string[], constant_params: [] as string[], run_state: 'red' as const }
@@ -172,24 +172,16 @@ export default function PipelineDAG() {
     })
 
     // Persist so it survives a DAG refresh.
-    fetch(`/api/layout/${encodeURIComponent(nodeId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ x: position.x, y: position.y, node_type: nodeType, label }),
-    })
+    callBackend('put_layout', { node_id: nodeId, x: position.x, y: position.y, node_type: nodeType, label })
   }, [screenToFlowPosition, setNodes])
 
   const onNodeDragStop = useCallback((_: unknown, node: Node) => {
-    fetch(`/api/layout/${encodeURIComponent(node.id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(node.position),
-    })
+    callBackend('put_layout', { node_id: node.id, x: node.position.x, y: node.position.y })
   }, [])
 
   const onNodesDelete = useCallback((deleted: Node[]) => {
     for (const node of deleted) {
-      fetch(`/api/layout/${encodeURIComponent(node.id)}`, { method: 'DELETE' })
+      callBackend('delete_layout', { node_id: node.id })
     }
   }, [])
 
@@ -201,22 +193,19 @@ export default function PipelineDAG() {
       data: { manual: true },
     }
     setEdges(prev => addEdge(edge, prev))
-    fetch(`/api/edges/${encodeURIComponent(edgeId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source: connection.source,
-        target: connection.target,
-        source_handle: connection.sourceHandle ?? null,
-        target_handle: connection.targetHandle ?? null,
-      }),
+    callBackend('put_edge', {
+      edge_id: edgeId,
+      source: connection.source,
+      target: connection.target,
+      source_handle: connection.sourceHandle ?? null,
+      target_handle: connection.targetHandle ?? null,
     })
   }, [setEdges])
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     for (const change of changes) {
       if (change.type === 'remove' && change.id.startsWith('manual__')) {
-        fetch(`/api/edges/${encodeURIComponent(change.id)}`, { method: 'DELETE' })
+        callBackend('delete_edge', { edge_id: change.id })
       }
     }
     // DB-derived edges represent real data — block removal so they don't

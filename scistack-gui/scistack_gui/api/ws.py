@@ -43,7 +43,15 @@ def push_message(msg: dict) -> None:
     Thread-safe: called from a background thread to enqueue a message.
     Uses call_soon_threadsafe so the put is scheduled on the event loop
     thread rather than called directly from the background thread.
+
+    In JSON-RPC server mode (VS Code extension), delegates to notify.py
+    instead of the WebSocket queue.
     """
+    from scistack_gui.notify import _enabled as _jsonrpc_mode
+    if _jsonrpc_mode:
+        from scistack_gui.notify import push_message as _jsonrpc_push
+        _jsonrpc_push(dict(msg))  # copy to avoid mutating caller's dict
+        return
     if _loop is None:
         return   # No WebSocket client connected yet; drop the message
     _loop.call_soon_threadsafe(get_queue().put_nowait, msg)
@@ -90,7 +98,15 @@ async def _listen(websocket: WebSocket):
 
 
 async def broadcast(msg: dict) -> None:
-    """Send a message to all connected clients from async context."""
+    """Send a message to all connected clients from async context.
+
+    In JSON-RPC server mode (VS Code extension), delegates to notify.py.
+    """
+    from scistack_gui.notify import _enabled as _jsonrpc_mode
+    if _jsonrpc_mode:
+        from scistack_gui.notify import push_message as _jsonrpc_push
+        _jsonrpc_push(dict(msg))
+        return
     for client in list(_clients):
         try:
             await client.send_json(msg)

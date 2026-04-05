@@ -1,0 +1,49 @@
+{
+  "name": "scistack-gui",
+  "displayName": "SciStack Pipeline GUI",
+  "description": "Visual pipeline builder for SciStack scientific data processing",
+  "version": "0.1.0",
+  "publisher": "scistack",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Data Science", "Visualization"],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "scistack.openPipeline",
+        "title": "SciStack: Open Pipeline"
+      },
+      {
+        "command": "scistack.refreshModule",
+        "title": "SciStack: Refresh Module"
+      }
+    ],
+    "configuration": {
+      "title": "SciStack",
+      "properties": {
+        "scistack.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Python interpreter with scistack-gui installed. Leave empty to auto-detect from the Python extension."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
+    "build:webview": "cd ../frontend && VITE_BUILD_TARGET=webview npx vite build",
+    "build:all": "npm run build && npm run build:webview",
+    "package": "npm run build:all && vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^2.24.0"
+  }
+}
