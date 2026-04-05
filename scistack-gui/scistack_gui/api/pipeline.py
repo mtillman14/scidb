@@ -24,6 +24,43 @@ from scistack_gui.api import ws
 router = APIRouter()
 
 
+def _parse_path_input(value: str) -> dict | None:
+    """If *value* (from __inputs) represents a PathInput, return parsed info.
+
+    Handles two formats:
+    - New: JSON with ``__type: "PathInput"`` (from PathInput.to_key())
+    - Legacy: repr string like ``PathInput('{subject}/...', root_folder=...)``
+
+    Returns ``{"template": ..., "root_folder": ...}`` or ``None``.
+    """
+    import re
+
+    # New JSON format
+    if value.startswith("{"):
+        try:
+            parsed = json.loads(value)
+            if parsed.get("__type") == "PathInput":
+                return {
+                    "template": parsed["template"],
+                    "root_folder": parsed.get("root_folder"),
+                }
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Legacy repr format: PathInput('...', root_folder=PosixPath('...'))
+    if value.startswith("PathInput("):
+        m = re.match(r"PathInput\('([^']*)'", value)
+        if m:
+            template = m.group(1)
+            root_match = re.search(
+                r"root_folder=(?:Posix|Windows|Pure\w*)?Path\('([^']*)'\)", value
+            )
+            root = root_match.group(1) if root_match else None
+            return {"template": template, "root_folder": root}
+
+    return None
+
+
 def _fn_params_from_registry(fn_name: str) -> list[str]:
     """Return non-private parameter names from the registered function's signature."""
     fn = registry._functions.get(fn_name)
@@ -237,6 +274,8 @@ def _build_graph(db: DatabaseManager) -> dict:
     const_fns: dict[str, set] = defaultdict(set)
     # function_name → set of constant param names
     fn_constants: dict[str, set] = defaultdict(set)
+    # param_name → {"template": ..., "root_folder": ..., "functions": set}
+    path_inputs: dict[str, dict] = {}
 
     for v in variants:
         fn = v["function_name"]
@@ -246,9 +285,20 @@ def _build_graph(db: DatabaseManager) -> dict:
         count = v["record_count"]
 
         all_var_types.add(out)
-        all_var_types.update(inputs.values())
 
-        fn_input_params[fn].update(inputs)  # param_name → type_name
+        # Separate PathInput entries from normal variable inputs.
+        for param_name, type_val in inputs.items():
+            pi = _parse_path_input(type_val)
+            if pi is not None:
+                existing = path_inputs.get(param_name)
+                if existing is None:
+                    path_inputs[param_name] = {**pi, "functions": {fn}}
+                else:
+                    existing["functions"].add(fn)
+            else:
+                all_var_types.add(type_val)
+                fn_input_params[fn][param_name] = type_val
+
         fn_outputs[fn].add(out)
 
         for k, val in constants.items():
@@ -318,6 +368,20 @@ def _build_graph(db: DatabaseManager) -> dict:
             "type": "constantNode",
             "position": {"x": 0, "y": 0},
             "data": {"label": const_name, "values": values},
+        })
+
+    # --- PathInput nodes ---
+    for param_name in sorted(path_inputs.keys()):
+        pi = path_inputs[param_name]
+        nodes.append({
+            "id": f"pathInput__{param_name}",
+            "type": "pathInputNode",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": param_name,
+                "template": pi["template"],
+                "root_folder": pi.get("root_folder"),
+            },
         })
 
     # Build per-function variant list for the settings panel.
@@ -395,6 +459,18 @@ def _build_graph(db: DatabaseManager) -> dict:
                     "targetHandle": f"const__{const_name}",
                 })
 
+    for param_name, pi in path_inputs.items():
+        for fn in pi["functions"]:
+            key = (f"pathInput__{param_name}", f"fn__{fn}")
+            if key not in seen_edges:
+                seen_edges.add(key)
+                edges.append({
+                    "id": f"e__{param_name}__{fn}",
+                    "source": f"pathInput__{param_name}",
+                    "target": f"fn__{fn}",
+                    "targetHandle": f"in__{param_name}",
+                })
+
     # Merge in manually-created edges (tagged so the frontend can delete them).
     for me in layout_store.read_manual_edges():
         if any(e["id"] == me["id"] for e in edges):
@@ -441,6 +517,8 @@ def _build_graph(db: DatabaseManager) -> dict:
             extra = {"total_records": 0, "run_state": "red"}
         elif meta["type"] == "constantNode":
             extra = {"values": []}
+        elif meta["type"] == "pathInputNode":
+            extra = {"template": "", "root_folder": None}
         elif meta["type"] == "functionNode":
             sig_params = _fn_params_from_registry(fn_label)
             # Infer output_types and input_params from manual edges so that
@@ -495,6 +573,13 @@ def _build_graph(db: DatabaseManager) -> dict:
 @router.get("/pipeline")
 def get_pipeline(db: DatabaseManager = Depends(get_db)):
     return _build_graph(db)
+
+
+@router.get("/function/{fn_name}/params")
+def get_function_params(fn_name: str):
+    """Return parameter names from the registered function's signature."""
+    params = _fn_params_from_registry(fn_name)
+    return {"params": params}
 
 
 @router.put("/constants/{name}/pending/{value}")

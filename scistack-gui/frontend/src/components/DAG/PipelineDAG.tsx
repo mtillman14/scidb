@@ -32,6 +32,7 @@ import '@xyflow/react/dist/style.css'
 import VariableNode from './VariableNode'
 import FunctionNode from './FunctionNode'
 import ConstantNode from './ConstantNode'
+import PathInputNode from './PathInputNode'
 import { applyDagreLayout } from '../../layout'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
@@ -42,6 +43,7 @@ const nodeTypes = {
   variableNode: VariableNode,
   functionNode: FunctionNode,
   constantNode: ConstantNode,
+  pathInputNode: PathInputNode,
 }
 
 export default function PipelineDAG() {
@@ -96,7 +98,7 @@ export default function PipelineDAG() {
   }, [nodes])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
-    if (node.type === 'functionNode' || node.type === 'constantNode' || node.type === 'variableNode') {
+    if (node.type === 'functionNode' || node.type === 'constantNode' || node.type === 'variableNode' || node.type === 'pathInputNode') {
       setSelectedNode(node)
     } else {
       setSelectedNode(null)
@@ -119,22 +121,38 @@ export default function PipelineDAG() {
     const { nodeType, label } = JSON.parse(raw) as { nodeType: string; label: string }
 
     const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const prefix = nodeType === 'functionNode' ? 'fn' : nodeType === 'constantNode' ? 'const' : 'var'
+    const prefix = nodeType === 'functionNode' ? 'fn' : nodeType === 'constantNode' ? 'const' : nodeType === 'pathInputNode' ? 'pathInput' : 'var'
     const nodeId = `${prefix}__${label}__${Math.random().toString(36).slice(2, 8)}`
 
-    setNodes(prev => {
-      const newNode: Node = {
-        id: nodeId,
-        type: nodeType,
-        position,
-        data: {
-          label,
-          ...(nodeType === 'variableNode' ? { total_records: 0, run_state: 'red' } : {}),
-          ...(nodeType === 'functionNode' ? { run_state: 'red' } : {}),
-          ...(nodeType === 'constantNode' ? { values: [] } : {}),
-        },
+    const buildFnData = async () => {
+      if (nodeType !== 'functionNode') return { run_state: 'red' as const }
+      try {
+        const res = await fetch(`/api/function/${encodeURIComponent(label)}/params`)
+        const { params } = await res.json() as { params: string[] }
+        const input_params: Record<string, string> = {}
+        for (const p of params) input_params[p] = ''
+        return { input_params, output_types: [] as string[], constant_params: [] as string[], run_state: 'red' as const }
+      } catch {
+        return { run_state: 'red' as const }
       }
-      return [...prev, newNode]
+    }
+
+    buildFnData().then(fnExtra => {
+      setNodes(prev => {
+        const newNode: Node = {
+          id: nodeId,
+          type: nodeType,
+          position,
+          data: {
+            label,
+            ...(nodeType === 'variableNode' ? { total_records: 0, run_state: 'red' } : {}),
+            ...(nodeType === 'functionNode' ? fnExtra : {}),
+            ...(nodeType === 'constantNode' ? { values: [] } : {}),
+            ...(nodeType === 'pathInputNode' ? { template: '', root_folder: null } : {}),
+          },
+        }
+        return [...prev, newNode]
+      })
     })
 
     // Persist so it survives a DAG refresh.

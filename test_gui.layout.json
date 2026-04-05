@@ -55,10 +55,25 @@
     "var__MaxHR_50Perc": {
       "x": 1488.5561677620153,
       "y": -124.52000775749212
+    },
+    "pathInput__cosmed_data__bbmk24": {
+      "x": 85.10706874598003,
+      "y": -123.08653567054029
+    },
+    "fn__compute_perc_max_hr__ff5eb9": {
+      "x": 1074.002435261423,
+      "y": -268.1061075757379
     }
   },
   "constants": [
     "new1"
   ],
-  "pipeline_db_migrated": true
+  "pipeline_db_migrated": true,
+  "path_inputs": [
+    {
+      "name": "cosmed_data",
+      "template": "",
+      "root_folder": null
+    }
+  ]
 }

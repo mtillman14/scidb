@@ -18,6 +18,7 @@ import pandas as pd
 from pathlib import Path
 
 from scidb import BaseVariable, configure_database, for_each
+# from scilineage.src.scilineage import lineage_fcn
 
 # ------------------------------------------------------------------
 # Variable types — defined at module level so scistack-gui can import
@@ -82,6 +83,11 @@ def compute_80_perc_max_hr(max_hr):
 def compute_50_perc_max_hr(max_hr):
     """Max HR * 0.5"""
     return max_hr * 0.5
+
+# @lineage_fcn
+def compute_perc_max_hr(max_hr: int, perc: float):
+    """Max HR * perc"""
+    return max_hr * perc
 
 
 # ------------------------------------------------------------------

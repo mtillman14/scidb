@@ -17,6 +17,7 @@ import EditTab from './EditTab'
 import FunctionSettingsPanel from './FunctionSettingsPanel'
 import ConstantSettingsPanel from './ConstantSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
+import PathInputSettingsPanel from './PathInputSettingsPanel'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import type { Node } from '@xyflow/react'
 import type { ConstantValue } from '../DAG/ConstantNode'
@@ -46,6 +47,16 @@ function isVariableNode(node: Node | null): node is Node & { data: { label: stri
   return node?.type === 'variableNode'
 }
 
+interface PathInputNodeData {
+  label: string
+  template: string
+  root_folder: string | null
+}
+
+function isPathInputNode(node: Node | null): node is Node & { data: PathInputNodeData } {
+  return node?.type === 'pathInputNode'
+}
+
 /** Compute the Cartesian product of value arrays. */
 function cartesian(arrays: string[][]): string[][] {
   if (arrays.length === 0) return []
@@ -65,14 +76,14 @@ export default function Sidebar() {
 
   // Auto-switch to Node tab when a function, constant, or variable node is selected; revert when deselected.
   useEffect(() => {
-    if (isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode)) {
+    if (isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode)) {
       setActiveTab('Node')
     } else if (activeTab === 'Node') {
       setActiveTab('Runs')
     }
   }, [selectedNode])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode)
+  const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode)
   const tabs: Tab[] = hasNodeTab ? ['Runs', 'Edit', 'Node'] : ['Runs', 'Edit']
 
   // Compute variant combinations from constant nodes connected to the selected function node.
@@ -148,6 +159,14 @@ export default function Sidebar() {
         {activeTab === 'Node' && isVariableNode(selectedNode) && (
           <VariableSettingsPanel
             label={(selectedNode.data as { label: string }).label}
+          />
+        )}
+        {activeTab === 'Node' && isPathInputNode(selectedNode) && (
+          <PathInputSettingsPanel
+            id={selectedNode.id}
+            label={(selectedNode.data as PathInputNodeData).label}
+            template={(selectedNode.data as PathInputNodeData).template}
+            root_folder={(selectedNode.data as PathInputNodeData).root_folder}
           />
         )}
       </div>

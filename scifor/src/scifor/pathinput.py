@@ -1,5 +1,6 @@
 """Path template input for for_each."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,14 @@ class PathInput:
         self.path_template = path_template
         self.root_folder = Path(root_folder) if root_folder is not None else None
         self.__name__ = f"PathInput({path_template!r})"
+
+    def to_key(self) -> str:
+        """Return a structured JSON string for version_keys serialization."""
+        return json.dumps({
+            "__type": "PathInput",
+            "template": self.path_template,
+            "root_folder": str(self.root_folder) if self.root_folder is not None else None,
+        })
 
     def load(self, db=None, **metadata: Any) -> Path:
         """Resolve the template with the given metadata and return the path.

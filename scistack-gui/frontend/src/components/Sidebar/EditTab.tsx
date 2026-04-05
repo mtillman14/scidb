@@ -21,6 +21,11 @@ export default function EditTab() {
   const [constDraft, setConstDraft] = useState('')
   const constInputRef = useRef<HTMLInputElement>(null)
 
+  const [pathInputs, setPathInputs] = useState<string[]>([])
+  const [addingPI, setAddingPI] = useState(false)
+  const [piDraft, setPiDraft] = useState('')
+  const piInputRef = useRef<HTMLInputElement>(null)
+
   const [addingVar, setAddingVar] = useState(false)
   const [varDraft, setVarDraft] = useState('')
   const [varError, setVarError] = useState('')
@@ -37,11 +42,15 @@ export default function EditTab() {
   useEffect(() => {
     fetchRegistry()
     fetchConstants()
+    fetchPathInputs()
   }, [])
 
   // Re-fetch registry when the backend signals a refresh (e.g. module reload).
   useWebSocket(useCallback((msg) => {
-    if (msg.type === 'dag_updated') fetchRegistry()
+    if (msg.type === 'dag_updated') {
+      fetchRegistry()
+      fetchPathInputs()
+    }
   }, []))
 
   function fetchConstants() {
@@ -51,9 +60,26 @@ export default function EditTab() {
       .catch(console.error)
   }
 
+  function fetchPathInputs() {
+    fetch('/api/path-inputs')
+      .then(r => {
+        console.log('[PathInputs] GET status:', r.status)
+        return r.json()
+      })
+      .then((items: Array<{ name: string }>) => {
+        console.log('[PathInputs] fetched:', items)
+        setPathInputs(items.map(i => i.name))
+      })
+      .catch(err => console.error('[PathInputs] fetch error:', err))
+  }
+
   useEffect(() => {
     if (addingConst) constInputRef.current?.focus()
   }, [addingConst])
+
+  useEffect(() => {
+    if (addingPI) piInputRef.current?.focus()
+  }, [addingPI])
 
   useEffect(() => {
     if (addingVar) varInputRef.current?.focus()
@@ -105,9 +131,32 @@ export default function EditTab() {
       .finally(() => setVarSubmitting(false))
   }
 
+  const commitPiDraft = () => {
+    const name = piDraft.trim()
+    console.log('[PathInputs] commitPiDraft called, name:', JSON.stringify(name))
+    if (name) {
+      fetch('/api/path-inputs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+        .then(r => {
+          console.log('[PathInputs] POST status:', r.status)
+          return r.json()
+        })
+        .then(data => {
+          console.log('[PathInputs] POST response:', data)
+          fetchPathInputs()
+        })
+        .catch(err => console.error('[PathInputs] POST error:', err))
+    }
+    setPiDraft('')
+    setAddingPI(false)
+  }
+
   const onDragStart = (
     e: React.DragEvent,
-    nodeType: 'functionNode' | 'variableNode' | 'constantNode',
+    nodeType: 'functionNode' | 'variableNode' | 'constantNode' | 'pathInputNode',
     label: string,
   ) => {
     e.dataTransfer.setData(
@@ -193,6 +242,37 @@ export default function EditTab() {
               if (e.key === 'Escape') { setConstDraft(''); setAddingConst(false) }
             }}
             onBlur={commitConstDraft}
+          />
+        )}
+      </Section>
+      <Section
+        title="Path Inputs"
+        action={
+          <button style={styles.addBtn} onClick={() => setAddingPI(true)} title="New path input">
+            +
+          </button>
+        }
+      >
+        {pathInputs.map(p => (
+          <DragItem
+            key={p}
+            label={p}
+            color="#d97706"
+            onDragStart={e => onDragStart(e, 'pathInputNode', p)}
+          />
+        ))}
+        {addingPI && (
+          <input
+            ref={piInputRef}
+            style={styles.draftInput}
+            value={piDraft}
+            placeholder="param name…"
+            onChange={e => setPiDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitPiDraft()
+              if (e.key === 'Escape') { setPiDraft(''); setAddingPI(false) }
+            }}
+            onBlur={commitPiDraft}
           />
         )}
       </Section>

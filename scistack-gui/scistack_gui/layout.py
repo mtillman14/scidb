@@ -29,14 +29,15 @@ def _load() -> dict:
     """Load and normalise the layout file (positions only, post-migration)."""
     p = _layout_path()
     if not p.exists():
-        return {"positions": {}, "constants": []}
+        return {"positions": {}, "constants": [], "path_inputs": []}
     with p.open() as f:
         raw = json.load(f)
     # Migrate legacy flat format: { "node_id": {"x":..,"y":..}, ... }
     if raw and "positions" not in raw:
-        return {"positions": raw, "constants": []}
+        return {"positions": raw, "constants": [], "path_inputs": []}
     raw.setdefault("positions", {})
     raw.setdefault("constants", [])
+    raw.setdefault("path_inputs", [])
     return raw
 
 
@@ -121,6 +122,44 @@ def write_constant(name: str) -> None:
 def delete_constant(name: str) -> None:
     data = _load()
     data["constants"] = [c for c in data["constants"] if c != name]
+    _save(data)
+
+
+def read_all_path_input_names() -> list[dict]:
+    """All path inputs visible in the palette or already on the canvas.
+
+    Sources (unioned):
+    - ``path_inputs[]``: palette items created via the "+" button.
+    - Canonical DB-derived pathInput IDs in positions (``pathInput__name``).
+    """
+    data = _load()
+    by_name: dict[str, dict] = {}
+    for pi in data["path_inputs"]:
+        by_name[pi["name"]] = pi
+    for node_id in data["positions"]:
+        if node_id.startswith("pathInput__"):
+            name = node_id[len("pathInput__"):]
+            if name not in by_name:
+                by_name[name] = {"name": name, "template": "", "root_folder": None}
+    return sorted(by_name.values(), key=lambda p: p["name"])
+
+
+def write_path_input(name: str, template: str, root_folder: str | None = None) -> None:
+    data = _load()
+    # Update existing or append new.
+    for pi in data["path_inputs"]:
+        if pi["name"] == name:
+            pi["template"] = template
+            pi["root_folder"] = root_folder
+            _save(data)
+            return
+    data["path_inputs"].append({"name": name, "template": template, "root_folder": root_folder})
+    _save(data)
+
+
+def delete_path_input(name: str) -> None:
+    data = _load()
+    data["path_inputs"] = [p for p in data["path_inputs"] if p["name"] != name]
     _save(data)
 
 

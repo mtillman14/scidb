@@ -4,12 +4,21 @@ PUT  /api/layout/{node_id} — persist a single node's position (and optionally
                              register it as a manually-placed node)
 """
 
+import logging
 from fastapi import APIRouter
 from pydantic import BaseModel
 from scistack_gui import layout as layout_store
 
+logger = logging.getLogger(__name__)
+
 class ConstantCreate(BaseModel):
     name: str
+
+
+class PathInputCreate(BaseModel):
+    name: str
+    template: str = ""
+    root_folder: str | None = None
 
 
 class EdgeCreate(BaseModel):
@@ -64,6 +73,33 @@ def post_constant(body: ConstantCreate):
 @router.delete("/constants/{name}")
 def delete_constant(name: str):
     layout_store.delete_constant(name)
+    return {"ok": True}
+
+
+@router.get("/path-inputs")
+def get_path_inputs() -> list[dict]:
+    result = layout_store.read_all_path_input_names()
+    logger.info("GET /path-inputs → %s", result)
+    return result
+
+
+@router.post("/path-inputs")
+def post_path_input(body: PathInputCreate):
+    logger.info("POST /path-inputs name=%r template=%r root_folder=%r",
+                body.name, body.template, body.root_folder)
+    layout_store.write_path_input(body.name, body.template, body.root_folder)
+    return {"ok": True}
+
+
+@router.put("/path-inputs/{name}")
+def put_path_input(name: str, body: PathInputCreate):
+    layout_store.write_path_input(name, body.template, body.root_folder)
+    return {"ok": True}
+
+
+@router.delete("/path-inputs/{name}")
+def delete_path_input(name: str):
+    layout_store.delete_path_input(name)
     return {"ok": True}
 
 

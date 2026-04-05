@@ -1725,3 +1725,8 @@
 [11:00:22.735] [INFO] [save] subject=S01: MaxHR_50Perc
 [11:00:22.744] [INFO] [save] subject=S02: MaxHR_50Perc
 [11:00:22.753] [INFO] [save] subject=S03: MaxHR_50Perc
+[11:15:20.927] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[11:21:16.288] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[11:44:41.728] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[11:51:13.216] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[11:54:47.385] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
