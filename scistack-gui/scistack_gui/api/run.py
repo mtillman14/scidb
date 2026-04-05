@@ -66,10 +66,67 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     fn_variants = [v for v in all_variants if v["function_name"] == function_name]
 
     if not fn_variants:
-        push_message({"type": "run_done", "run_id": run_id, "success": False,
-                      "error": f"No pipeline history found for '{function_name}'. "
-                                "Run it manually first to establish the pipeline structure."})
-        return
+        # No DB history yet — try to infer inputs/outputs from manual edges.
+        from scistack_gui import pipeline_store, layout as layout_store
+        from scistack_gui.api.pipeline import _node_id_to_var_label, _fn_params_from_registry
+        import logging
+        logger = logging.getLogger(__name__)
+
+        all_edges = pipeline_store.get_manual_edges(db)
+        manual_nodes = pipeline_store.get_manual_nodes(db)
+        # Find any node ID for this function (manual or DB-derived).
+        fn_node_ids = set()
+        fn_node_ids.add(f"fn__{function_name}")
+        for nid, meta in manual_nodes.items():
+            if meta["type"] == "functionNode" and meta["label"] == function_name:
+                fn_node_ids.add(nid)
+
+        input_types: dict[str, str] = {}  # param_name → type_name
+        # Collect inputs that have no targetHandle so we can match by signature.
+        unmatched_inputs: list[str] = []
+        output_types: list[str] = []
+        for edge in all_edges:
+            if edge["source"] in fn_node_ids:
+                var_label = _node_id_to_var_label(
+                    edge["target"], set(), [], manual_nodes)
+                if var_label and var_label not in output_types:
+                    output_types.append(var_label)
+            elif edge["target"] in fn_node_ids:
+                var_label = _node_id_to_var_label(
+                    edge["source"], set(), [], manual_nodes)
+                if var_label:
+                    th = edge.get("targetHandle") or ""
+                    if th.startswith("in__"):
+                        input_types[th.replace("in__", "")] = var_label
+                    else:
+                        unmatched_inputs.append(var_label)
+
+        # Match unmatched inputs to function signature params by position.
+        if unmatched_inputs:
+            sig_params = _fn_params_from_registry(function_name)
+            # Remove params already matched via targetHandle.
+            remaining_params = [p for p in sig_params if p not in input_types]
+            for param, var_type in zip(remaining_params, unmatched_inputs):
+                input_types[param] = var_type
+            if len(unmatched_inputs) > len(remaining_params):
+                logger.warning(
+                    "run: %d input edges but only %d unmatched params for '%s'",
+                    len(unmatched_inputs), len(remaining_params), function_name)
+
+        if not output_types:
+            logger.warning("run: no outputs found for '%s' from DB or edges", function_name)
+            push_message({"type": "run_done", "run_id": run_id, "success": False,
+                          "error": f"No pipeline history or output connections found for '{function_name}'. "
+                                    "Connect it to an output variable node first."})
+            return
+
+        logger.info("run: inferred inputs=%s outputs=%s for '%s' from edges",
+                     input_types, output_types, function_name)
+        # Build a synthetic variant for each output type.
+        fn_variants = [
+            {"input_types": input_types, "output_type": out, "constants": {}}
+            for out in output_types
+        ]
 
     # Determine which variants to run. If caller sent specific variants, filter;
     # otherwise run all known variants.

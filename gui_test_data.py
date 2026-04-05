@@ -164,3 +164,6 @@ if __name__ == "__main__":
 
 class MaxHR_80Perc(BaseVariable):
     pass
+
+class MaxHR_50Perc(BaseVariable):
+    pass

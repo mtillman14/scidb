@@ -38,6 +38,30 @@ def _fn_params_from_registry(fn_name: str) -> list[str]:
         return []
 
 
+def _node_id_to_var_label(
+    node_id: str,
+    existing_ids: set[str],
+    nodes: list[dict],
+    manual_nodes: dict[str, dict],
+) -> str | None:
+    """Resolve a node ID to its variable label, or None if not a variable node."""
+    # DB-derived nodes use the convention "var__TypeName".
+    if node_id.startswith("var__"):
+        # Could be a canonical DB node or a manual node with that prefix.
+        for n in nodes:
+            if n["id"] == node_id:
+                return n["data"]["label"]
+        # Manual node not yet appended — check raw ID.
+        parts = node_id.split("__")
+        if len(parts) >= 2:
+            return parts[1]
+    # Check the manual_nodes dict.
+    meta = manual_nodes.get(node_id)
+    if meta and meta["type"] == "variableNode":
+        return meta["label"]
+    return None
+
+
 def _get_record_counts(db: DatabaseManager, var_types: set[str]) -> dict[str, int]:
     """
     Query the row count of each variable type's table directly.
@@ -419,9 +443,42 @@ def _build_graph(db: DatabaseManager) -> dict:
             extra = {"values": []}
         elif meta["type"] == "functionNode":
             sig_params = _fn_params_from_registry(fn_label)
+            # Infer output_types and input_params from manual edges so that
+            # newly-wired functions show their connections before the first run.
+            inferred_outputs: list[str] = []
+            inferred_inputs: dict[str, str] = {}
+            unmatched_inputs: list[str] = []
+            manual_nodes_snapshot = layout_store.get_manual_nodes()
+            for me in layout_store.read_manual_edges():
+                if me["source"] == node_id:
+                    # Edge from this function → a variable node (output).
+                    tgt = me["target"]
+                    var_label = _node_id_to_var_label(tgt, existing_ids, nodes,
+                                                      manual_nodes_snapshot)
+                    if var_label and var_label not in inferred_outputs:
+                        inferred_outputs.append(var_label)
+                elif me["target"] == node_id:
+                    # Edge from a variable node → this function (input).
+                    src = me["source"]
+                    var_label = _node_id_to_var_label(src, existing_ids, nodes,
+                                                      manual_nodes_snapshot)
+                    if var_label:
+                        th = me.get("targetHandle") or ""
+                        if th.startswith("in__"):
+                            inferred_inputs[th.replace("in__", "")] = var_label
+                        else:
+                            unmatched_inputs.append(var_label)
+            # Match unmatched inputs to signature params by position.
+            remaining_params = [p for p in sig_params if p not in inferred_inputs]
+            for param, var_type in zip(remaining_params, unmatched_inputs):
+                inferred_inputs[param] = var_type
+            input_params = {p: inferred_inputs.get(p, "") for p in sig_params}
+            for p, t in inferred_inputs.items():
+                if p not in input_params:
+                    input_params[p] = t
             extra = {
-                "input_params": {p: "" for p in sig_params},
-                "output_types": [],
+                "input_params": input_params,
+                "output_types": sorted(inferred_outputs),
                 "constant_params": [],
                 "run_state": "red",
             }
