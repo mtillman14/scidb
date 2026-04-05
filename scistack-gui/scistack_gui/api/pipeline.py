@@ -414,7 +414,7 @@ def _build_graph(db: DatabaseManager) -> dict:
         fn_label = meta["label"]
         extra: dict = {}
         if meta["type"] == "variableNode":
-            extra = {"total_records": 0}
+            extra = {"total_records": 0, "run_state": "red"}
         elif meta["type"] == "constantNode":
             extra = {"values": []}
         elif meta["type"] == "functionNode":
@@ -423,6 +423,7 @@ def _build_graph(db: DatabaseManager) -> dict:
                 "input_params": {p: "" for p in sig_params},
                 "output_types": [],
                 "constant_params": [],
+                "run_state": "red",
             }
         nodes.append({
             "id": node_id,

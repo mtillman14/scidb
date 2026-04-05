@@ -1,14 +1,23 @@
 """
-GET /api/variables/{variable_name}/records
+Variable-related API endpoints.
 
-Returns all records for a named variable type, with schema key values and
-branch_params per record, plus a variant summary grouped by branch_params.
+GET  /api/variables/{variable_name}/records — records + variant summary
+POST /api/variables/create                 — define a new BaseVariable subclass
 """
 
 import json
+import keyword
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from scidb import BaseVariable
 from scidb.database import DatabaseManager
+from scistack_gui import registry
+from scistack_gui.api import ws
 from scistack_gui.db import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -108,3 +117,66 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
         "records": records,
         "variants": variants,
     }
+
+
+# ---- Create new variable type -------------------------------------------------
+
+class CreateVariableRequest(BaseModel):
+    name: str
+    docstring: str | None = None
+
+
+@router.post("/variables/create")
+async def create_variable(req: CreateVariableRequest) -> dict:
+    """
+    Define a new BaseVariable subclass by appending it to the user's module file,
+    then refresh the registry so it's immediately available.
+    """
+    name = req.name.strip()
+    logger.info("create_variable request: name=%r docstring=%r", name, req.docstring)
+
+    # --- Validation ---
+    if not name.isidentifier() or keyword.iskeyword(name):
+        return {"ok": False, "error": f"'{name}' is not a valid Python class name."}
+
+    if name.startswith("_"):
+        return {"ok": False, "error": "Variable names must not start with an underscore."}
+
+    if not name[0].isupper():
+        return {"ok": False, "error": "Variable names should start with an uppercase letter."}
+
+    if name in BaseVariable._all_subclasses:
+        return {"ok": False, "error": f"A variable named '{name}' already exists."}
+
+    if registry._module_path is None:
+        return {
+            "ok": False,
+            "error": "No module file was loaded at startup (--module not passed). "
+                     "Cannot append a new class.",
+        }
+
+    # --- Build the class definition ---
+    lines = ["\n"]
+    if req.docstring:
+        escaped = req.docstring.replace('"""', '\\"\\"\\"')
+        lines.append(f'class {name}(BaseVariable):\n    """{escaped}"""\n    pass\n')
+    else:
+        lines.append(f"class {name}(BaseVariable):\n    pass\n")
+
+    # --- Append to the module file ---
+    try:
+        with open(registry._module_path, "a") as f:
+            f.writelines(lines)
+        logger.info("Appended class %s to %s", name, registry._module_path)
+    except OSError as e:
+        return {"ok": False, "error": f"Failed to write to module file: {e}"}
+
+    # --- Refresh so the new class is registered ---
+    try:
+        registry.refresh_module()
+    except Exception as e:
+        logger.exception("Refresh failed after appending class %s", name)
+        return {"ok": False, "error": f"Class was written but refresh failed: {e}"}
+
+    await ws.broadcast({"type": "dag_updated"})
+    return {"ok": True, "name": name}

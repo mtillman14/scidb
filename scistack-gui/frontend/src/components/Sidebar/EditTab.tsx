@@ -17,9 +17,15 @@ interface Registry {
 export default function EditTab() {
   const [registry, setRegistry] = useState<Registry>({ functions: [], variables: [] })
   const [constants, setConstants] = useState<string[]>([])
-  const [adding, setAdding] = useState(false)
-  const [draft, setDraft] = useState('')
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [addingConst, setAddingConst] = useState(false)
+  const [constDraft, setConstDraft] = useState('')
+  const constInputRef = useRef<HTMLInputElement>(null)
+
+  const [addingVar, setAddingVar] = useState(false)
+  const [varDraft, setVarDraft] = useState('')
+  const [varError, setVarError] = useState('')
+  const [varSubmitting, setVarSubmitting] = useState(false)
+  const varInputRef = useRef<HTMLInputElement>(null)
 
   function fetchRegistry() {
     fetch('/api/registry')
@@ -46,11 +52,15 @@ export default function EditTab() {
   }
 
   useEffect(() => {
-    if (adding) inputRef.current?.focus()
-  }, [adding])
+    if (addingConst) constInputRef.current?.focus()
+  }, [addingConst])
 
-  const commitDraft = () => {
-    const name = draft.trim()
+  useEffect(() => {
+    if (addingVar) varInputRef.current?.focus()
+  }, [addingVar])
+
+  const commitConstDraft = () => {
+    const name = constDraft.trim()
     if (name) {
       fetch('/api/constants', {
         method: 'POST',
@@ -58,8 +68,41 @@ export default function EditTab() {
         body: JSON.stringify({ name }),
       }).then(fetchConstants)
     }
-    setDraft('')
-    setAdding(false)
+    setConstDraft('')
+    setAddingConst(false)
+  }
+
+  const commitVarDraft = () => {
+    if (varSubmitting) return
+    const name = varDraft.trim()
+    if (!name) {
+      setVarDraft('')
+      setAddingVar(false)
+      setVarError('')
+      return
+    }
+    setVarSubmitting(true)
+    fetch('/api/variables/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          setVarDraft('')
+          setAddingVar(false)
+          setVarError('')
+        } else {
+          setVarError(data.error || 'Failed')
+          varInputRef.current?.focus()
+        }
+      })
+      .catch(() => {
+        setVarError('Request failed')
+        varInputRef.current?.focus()
+      })
+      .finally(() => setVarSubmitting(false))
   }
 
   const onDragStart = (
@@ -86,7 +129,14 @@ export default function EditTab() {
           />
         ))}
       </Section>
-      <Section title="Variables">
+      <Section
+        title="Variables"
+        action={
+          <button style={styles.addBtn} onClick={() => setAddingVar(true)} title="New variable type">
+            +
+          </button>
+        }
+      >
         {registry.variables.map(v => (
           <DragItem
             key={v}
@@ -95,11 +145,30 @@ export default function EditTab() {
             onDragStart={e => onDragStart(e, 'variableNode', v)}
           />
         ))}
+        {addingVar && (
+          <>
+            <input
+              ref={varInputRef}
+              style={styles.draftInput}
+              value={varDraft}
+              placeholder="VariableName…"
+              onChange={e => { setVarDraft(e.target.value); setVarError('') }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') commitVarDraft()
+                if (e.key === 'Escape') { setVarDraft(''); setAddingVar(false); setVarError('') }
+              }}
+              onBlur={commitVarDraft}
+            />
+            {varError && (
+              <div style={styles.errorText}>{varError}</div>
+            )}
+          </>
+        )}
       </Section>
       <Section
         title="Constants"
         action={
-          <button style={styles.addBtn} onClick={() => setAdding(true)} title="New constant">
+          <button style={styles.addBtn} onClick={() => setAddingConst(true)} title="New constant">
             +
           </button>
         }
@@ -112,18 +181,18 @@ export default function EditTab() {
             onDragStart={e => onDragStart(e, 'constantNode', c)}
           />
         ))}
-        {adding && (
+        {addingConst && (
           <input
-            ref={inputRef}
+            ref={constInputRef}
             style={styles.draftInput}
-            value={draft}
+            value={constDraft}
             placeholder="constant name…"
-            onChange={e => setDraft(e.target.value)}
+            onChange={e => setConstDraft(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter') commitDraft()
-              if (e.key === 'Escape') { setDraft(''); setAdding(false) }
+              if (e.key === 'Enter') commitConstDraft()
+              if (e.key === 'Escape') { setConstDraft(''); setAddingConst(false) }
             }}
-            onBlur={commitDraft}
+            onBlur={commitConstDraft}
           />
         )}
       </Section>
@@ -222,5 +291,10 @@ const styles: Record<string, React.CSSProperties> = {
     borderLeft: '3px solid',
     cursor: 'grab',
     userSelect: 'none',
+  },
+  errorText: {
+    padding: '2px 12px',
+    fontSize: 11,
+    color: '#f87171',
   },
 }

@@ -161,3 +161,6 @@ if __name__ == "__main__":
 
     print(f"\nDone. Open with: scistack-gui --module gui_test_data.py test_gui.duckdb")
     db.close()
+
+class MaxHR_80Perc(BaseVariable):
+    pass

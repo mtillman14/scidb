@@ -129,7 +129,8 @@ export default function PipelineDAG() {
         position,
         data: {
           label,
-          ...(nodeType === 'variableNode' ? { total_records: 0 } : {}),
+          ...(nodeType === 'variableNode' ? { total_records: 0, run_state: 'red' } : {}),
+          ...(nodeType === 'functionNode' ? { run_state: 'red' } : {}),
           ...(nodeType === 'constantNode' ? { values: [] } : {}),
         },
       }
