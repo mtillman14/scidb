@@ -7,7 +7,6 @@ echo "Installing all SciStack packages in editable mode..."
 # Layer 0: no internal deps
 pip install -e ./canonical-hash
 pip install -e ./path-gen
-pip install -e ./pipelinedb-lib
 pip install -e ./scifor
 pip install -e ./sciduck
 

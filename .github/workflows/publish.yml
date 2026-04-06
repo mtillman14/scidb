@@ -33,7 +33,6 @@ jobs:
           case "$PKG_NAME" in
             canonicalhash) DIR="canonical-hash" ;;
             scipathgen)    DIR="path-gen" ;;
-            pipelinedb)    DIR="pipelinedb-lib" ;;
             scirun)        DIR="scirun-lib" ;;
             sciduckdb)     DIR="sciduck" ;;
             thunk)         DIR="thunk-lib" ;;

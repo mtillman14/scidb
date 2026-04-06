@@ -23,7 +23,6 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "sciduck" / "src"))
-sys.path.insert(0, str(project_root / "pipelinedb-lib" / "src"))
 sys.path.insert(0, str(project_root / "thunk-lib" / "src"))
 
 from scidb import BaseVariable

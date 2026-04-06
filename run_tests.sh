@@ -11,7 +11,6 @@ EXTRA_ARGS=("$@")
 PACKAGES=(
     canonical-hash
     path-gen
-    pipelinedb-lib
     scifor
     sciduck
     scilineage
