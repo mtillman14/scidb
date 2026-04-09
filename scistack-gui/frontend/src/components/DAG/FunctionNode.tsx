@@ -107,6 +107,7 @@ export default function FunctionNode({ id, data }: Props) {
       }
     }
 
+    const wf = (data as unknown as Record<string, unknown>).whereFilters as unknown[] | undefined
     await callBackend('start_run', {
       function_name: data.label,
       variants: checkedVariants,
@@ -114,8 +115,9 @@ export default function FunctionNode({ id, data }: Props) {
       schema_filter: data.schemaFilter ?? null,
       schema_level: data.schemaLevel ?? null,
       run_options: data.runOptions ?? null,
+      where_filters: (wf && wf.length > 0) ? wf : null,
     })
-  }, [id, data.label, data.schemaFilter, data.schemaLevel, data.runOptions, getNodes, getEdges, startRun])
+  }, [id, data, getNodes, getEdges, startRun])
 
   const handleOpenSource = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()

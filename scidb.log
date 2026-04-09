@@ -3241,3 +3241,7 @@
 [20:08:25.204] [INFO] ────────────────────────────────────────────────────────────────
 [20:08:25.204] [INFO] for_each(compute_rolling_vo2) done: completed=0, skipped=1, total=1
 [20:08:25.205] [INFO] ================================================================
+[21:09:12.028] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[21:11:20.767] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[21:16:26.626] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[21:18:50.015] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']

@@ -238,10 +238,15 @@ def _h_put_node_config(params):
     return {"ok": True}
 
 
+def _h_get_variables_list(params):
+    from scidb import BaseVariable
+    return [{"variable_name": name} for name in sorted(BaseVariable._all_subclasses.keys())]
+
+
 def _h_start_run(params):
     import uuid
     from scistack_gui.db import get_db
-    from scistack_gui.api.run import _run_in_thread
+    from scistack_gui.api.run import _run_in_thread, WhereFilterSpec
 
     run_id = params.get("run_id") or str(uuid.uuid4())[:8]
     function_name = params["function_name"]
@@ -249,11 +254,14 @@ def _h_start_run(params):
     schema_filter = params.get("schema_filter")
     schema_level = params.get("schema_level")
     run_options = params.get("run_options")
+    raw_where = params.get("where_filters")
+    where_filters = [WhereFilterSpec(**f) for f in raw_where] if raw_where else None
     db = get_db()
 
     thread = threading.Thread(
         target=_run_in_thread,
-        args=(run_id, function_name, variants, db, schema_filter, schema_level, run_options),
+        args=(run_id, function_name, variants, db, schema_filter, schema_level,
+              run_options, where_filters),
         daemon=True,
     )
     thread.start()
@@ -349,6 +357,7 @@ METHODS = {
     "get_function_source": _h_get_function_source,
     "get_variable_records": _h_get_variable_records,
     "get_constants": _h_get_constants,
+    "get_variables_list": _h_get_variables_list,
     "get_path_inputs": _h_get_path_inputs,
     "put_layout": _h_put_layout,
     "put_node_config": _h_put_node_config,

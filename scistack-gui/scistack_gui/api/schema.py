@@ -35,3 +35,18 @@ def get_schema(db: DatabaseManager = Depends(get_db)):
     keys = db.dataset_schema_keys
     values = {key: db.distinct_schema_values(key) for key in keys}
     return {"keys": keys, "values": values}
+
+
+@router.get("/variables")
+def list_variables():
+    """Returns all registered variable type names.
+
+    Uses the in-memory registry (BaseVariable._all_subclasses) so that
+    variable types are available for filter setup even before any data
+    has been saved.
+
+    Example response:
+        [{"variable_name": "RawSignal"}, {"variable_name": "Side"}]
+    """
+    from scidb import BaseVariable
+    return [{"variable_name": name} for name in sorted(BaseVariable._all_subclasses.keys())]

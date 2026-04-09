@@ -101,6 +101,7 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     get_function_params:    { path: (p) => `/api/function/${encodeURIComponent(p.name as string)}/params` },
     get_function_source:    { path: (p) => `/api/function/${encodeURIComponent(p.name as string)}/source` },
     get_variable_records:   { path: (p) => `/api/variables/${encodeURIComponent(p.name as string)}/records` },
+    get_variables_list:     { path: '/api/variables' },
     get_constants:          { path: '/api/constants' },
     get_path_inputs:        { path: '/api/path-inputs' },
     put_layout:             { path: (p) => `/api/layout/${encodeURIComponent(p.node_id as string)}`, method: 'PUT', body: true },

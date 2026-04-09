@@ -36,6 +36,12 @@ from scistack_gui.api.ws import push_message
 router = APIRouter()
 
 
+class WhereFilterSpec(BaseModel):
+    variable: str              # variable type name, e.g. "Side"
+    op: str                    # "==", "!=", "<", "<=", ">", ">=", "IN"
+    value: str                 # always string, coerced on backend
+
+
 class RunRequest(BaseModel):
     function_name: str
     variants: list[dict] = []   # list of constants dicts; empty = run all known
@@ -43,12 +49,14 @@ class RunRequest(BaseModel):
     schema_filter: dict[str, list] | None = None   # {key: [selected values]}; None = all
     schema_level: list[str] | None = None          # which schema keys to iterate; None = all
     run_options: dict | None = None   # {dry_run, save, distribute}; all optional
+    where_filters: list[WhereFilterSpec] | None = None  # data filters for where= param
 
 
 def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: DatabaseManager,
                     schema_filter: dict[str, list] | None = None,
                     schema_level: list[str] | None = None,
-                    run_options: dict | None = None):
+                    run_options: dict | None = None,
+                    where_filters: list[WhereFilterSpec] | None = None):
     """
     Executed in a background thread. Runs for_each for each variant,
     captures stdout line-by-line, and pushes it to the WebSocket queue.
@@ -122,7 +130,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         Log.info(f"run: manual_nodes = {manual_nodes}")
         Log.info(f"run: fn_node_ids = {fn_node_ids}")
 
-        input_types: dict[str, str] = {}  # param_name → type_name
+        input_types: dict[str, list[str]] = {}  # param_name → [type_names]
         # Collect inputs that have no targetHandle so we can match by signature.
         unmatched_inputs: list[str] = []
         output_types: list[str] = []
@@ -167,7 +175,10 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                     src, set(), [], manual_nodes)
                 if var_label:
                     if th.startswith("in__"):
-                        input_types[th.replace("in__", "")] = var_label
+                        param = th.replace("in__", "")
+                        input_types.setdefault(param, [])
+                        if var_label not in input_types[param]:
+                            input_types[param].append(var_label)
                     else:
                         unmatched_inputs.append(var_label)
 
@@ -180,7 +191,9 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
             # Remove params already matched via targetHandle.
             remaining_params = [p for p in sig_params if p not in input_types]
             for param, var_type in zip(remaining_params, unmatched_inputs):
-                input_types[param] = var_type
+                input_types.setdefault(param, [])
+                if var_type not in input_types[param]:
+                    input_types[param].append(var_type)
             if len(unmatched_inputs) > len(remaining_params):
                 Log.warn(f"run: {len(unmatched_inputs)} input edges but only "
                          f"{len(remaining_params)} unmatched params for '{function_name}'")
@@ -336,12 +349,23 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
 
     success = True
     run_started_at = time.time()
+    # Build where= argument from where_filters.
+    where_arg = _build_where(where_filters)
+
     for v in unique_targets:
         # Build inputs dict: variable class inputs + scalar constants
         try:
             inputs = {}
-            for param, type_name in v["input_types"].items():
-                inputs[param] = registry.get_variable_class(type_name)
+            for param, type_names in v["input_types"].items():
+                # type_names may be a list (new) or a string (from DB history).
+                if isinstance(type_names, list):
+                    if len(type_names) > 1:
+                        from scidb import EachOf
+                        inputs[param] = EachOf(*(registry.get_variable_class(t) for t in type_names))
+                    else:
+                        inputs[param] = registry.get_variable_class(type_names[0])
+                else:
+                    inputs[param] = registry.get_variable_class(type_names)
             inputs.update(v["constants"])   # add constants
 
             OutputCls = registry.get_variable_class(v["output_type"])
@@ -390,6 +414,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                          dry_run=opt_dry_run, save=opt_save,
                          distribute=opt_distribute,
                          as_table=opt_as_table,
+                         where=where_arg,
                          _progress_fn=_progress_fn, **schema_kwargs)
             output = buf.getvalue()
             if output:
@@ -404,6 +429,36 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     push_message({"type": "dag_updated"})
 
 
+def _build_where(where_filters: list[WhereFilterSpec] | None):
+    """Convert frontend WhereFilterSpec list into scidb filter objects.
+
+    Returns None (no filter), a single Filter, or EachOf(filter1, filter2, ...).
+    """
+    if not where_filters:
+        return None
+
+    import ast
+    from scidb.filters import VariableFilter
+
+    def _coerce(s: str):
+        try:
+            return ast.literal_eval(s)
+        except (ValueError, SyntaxError):
+            return s
+
+    scidb_filters = []
+    for f in where_filters:
+        var_cls = registry.get_variable_class(f.variable)
+        val = _coerce(f.value)
+        scidb_filters.append(VariableFilter(var_cls, f.op, val))
+
+    if len(scidb_filters) == 1:
+        return scidb_filters[0]
+
+    from scidb import EachOf
+    return EachOf(*scidb_filters)
+
+
 def _constants_match(db_constants: dict, selected: dict) -> bool:
     """True if selected is a subset of db_constants (value equality as strings)."""
     return all(str(db_constants.get(k)) == str(v) for k, v in selected.items())
@@ -415,7 +470,8 @@ def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     thread = threading.Thread(
         target=_run_in_thread,
         args=(run_id, req.function_name, req.variants, db,
-              req.schema_filter, req.schema_level, req.run_options),
+              req.schema_filter, req.schema_level, req.run_options,
+              req.where_filters),
         daemon=True,
     )
     thread.start()

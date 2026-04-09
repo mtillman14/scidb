@@ -2,12 +2,13 @@
  * FunctionSettingsPanel — shown in the sidebar when a function node is selected.
  *
  * Sections:
- *   1. Variants — read-only Cartesian product of constant node values.
- *   2. Schema Filter — checkboxes per schema key to restrict which combos run.
- *   3. Run Options — dry_run, save, distribute toggles.
+ *   1. Variants — read-only Cartesian product of constant node values and multi-type inputs.
+ *   2. Data Filters — where= filter definitions (structured form).
+ *   3. Schema Filter — checkboxes per schema key to restrict which combos run.
+ *   4. Run Options — dry_run, save, distribute toggles.
  *
- * Schema filter and run options are stored on the function node's data so they
- * persist across selection changes and are available to handleRun.
+ * Schema filter, where filters, and run options are stored on the function node's
+ * data so they persist across selection changes and are available to handleRun.
  */
 
 import { useEffect, useState, useCallback } from 'react'
@@ -29,13 +30,23 @@ export interface RunOptions {
   as_table: boolean
 }
 
+export interface WhereFilter {
+  variable: string
+  op: string
+  value: string
+}
+
+const OPERATORS = ['==', '!=', '<', '<=', '>', '>=', 'IN'] as const
+
 interface Props {
   id: string
   label: string
   variants: VariantRow[]
   constantNames: string[]
+  inputTypeNames: string[]
   schemaFilter: SchemaFilter | null
   schemaLevel: string[] | null    // which schema keys to iterate over; null = all
+  whereFilters: WhereFilter[]
   runOptions: RunOptions
 }
 
@@ -44,13 +55,24 @@ interface SchemaInfo {
   values: Record<string, unknown[]>
 }
 
-export default function FunctionSettingsPanel({ id, label, variants, constantNames, schemaFilter, schemaLevel, runOptions }: Props) {
+interface VariableInfo {
+  variable_name: string
+}
+
+export default function FunctionSettingsPanel({ id, label, variants, constantNames, inputTypeNames, schemaFilter, schemaLevel, whereFilters, runOptions }: Props) {
   const { setNodes } = useReactFlow()
   const [schema, setSchema] = useState<SchemaInfo | null>(null)
+  const [variableNames, setVariableNames] = useState<string[]>([])
 
   useEffect(() => {
     callBackend('get_schema')
       .then(d => setSchema(d as SchemaInfo))
+      .catch(console.error)
+    callBackend('get_variables_list')
+      .then(d => {
+        const vars = d as VariableInfo[]
+        setVariableNames(vars.map(v => v.variable_name).sort())
+      })
       .catch(console.error)
   }, [])
 
@@ -69,6 +91,7 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
         const d = node.data as Record<string, unknown>
         if (d.schemaFilter) config.schemaFilter = d.schemaFilter
         if (d.schemaLevel) config.schemaLevel = d.schemaLevel
+        if (d.whereFilters) config.whereFilters = d.whereFilters
         if (d.runOptions) config.runOptions = d.runOptions
         callBackend('put_node_config', { node_id: id, config })
       }
@@ -142,6 +165,25 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
     updateNodeData({ runOptions: updated })
   }, [runOptions, updateNodeData])
 
+  // --- Where filter management ---
+  const addWhereFilter = useCallback(() => {
+    const newFilter: WhereFilter = { variable: '', op: '==', value: '' }
+    updateNodeData({ whereFilters: [...whereFilters, newFilter] })
+  }, [whereFilters, updateNodeData])
+
+  const removeWhereFilter = useCallback((index: number) => {
+    const updated = whereFilters.filter((_, i) => i !== index)
+    updateNodeData({ whereFilters: updated })
+  }, [whereFilters, updateNodeData])
+
+  const updateWhereFilter = useCallback((index: number, patch: Partial<WhereFilter>) => {
+    const updated = whereFilters.map((f, i) => i === index ? { ...f, ...patch } : f)
+    updateNodeData({ whereFilters: updated })
+  }, [whereFilters, updateNodeData])
+
+  // All variant column names (constants + multi-type inputs)
+  const allVariantNames = [...constantNames, ...inputTypeNames]
+
   return (
     <div style={styles.root}>
       <div style={styles.fnName}>{label}</div>
@@ -152,9 +194,9 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
 
         {variants.length === 0 && (
           <div style={styles.empty}>
-            {constantNames.length === 0
-              ? 'No constant nodes on canvas.'
-              : 'No values defined on constant nodes.'}
+            {allVariantNames.length === 0
+              ? 'No variant axes (no constants or multi-type inputs).'
+              : 'No values defined on variant axes.'}
           </div>
         )}
 
@@ -162,23 +204,92 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
           <table style={styles.table}>
             <thead>
               <tr>
-                {constantNames.map(name => (
-                  <th key={name} style={styles.th}>{name}</th>
+                {allVariantNames.map(name => (
+                  <th key={name} style={{
+                    ...styles.th,
+                    ...(inputTypeNames.includes(name) ? { color: '#6bb5f0' } : {}),
+                  }}>{name}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {variants.map((row, i) => (
                 <tr key={i} style={styles.variantRow}>
-                  {constantNames.map(name => (
+                  {allVariantNames.map(name => (
                     <td key={name} style={styles.td}>
-                      <span style={styles.pill}>{row[name] ?? '\u2014'}</span>
+                      <span style={{
+                        ...styles.pill,
+                        ...(inputTypeNames.includes(name) ? { color: '#6bb5f0', background: '#1a2a3a' } : {}),
+                      }}>{row[name] ?? '\u2014'}</span>
                     </td>
                   ))}
                 </tr>
               ))}
             </tbody>
           </table>
+        )}
+      </section>
+
+      {/* ---- Data Filters (where=) ---- */}
+      <section style={styles.section}>
+        <div style={styles.sectionTitle}>Data Filters</div>
+
+        {whereFilters.length === 0 && (
+          <div style={styles.empty}>No data filters. All records will be used.</div>
+        )}
+
+        {whereFilters.map((f, idx) => {
+          const isValidVar = f.variable === '' || variableNames.includes(f.variable)
+          return (
+            <div key={idx} style={styles.filterRow}>
+              <input
+                list="where-filter-variables"
+                style={{
+                  ...styles.filterVarInput,
+                  ...(f.variable !== '' && !isValidVar ? { borderColor: '#dc2626' } : {}),
+                }}
+                placeholder="Variable"
+                value={f.variable}
+                onChange={e => updateWhereFilter(idx, { variable: e.target.value })}
+              />
+              <select
+                style={styles.filterOpSelect}
+                value={f.op}
+                onChange={e => updateWhereFilter(idx, { op: e.target.value })}
+              >
+                {OPERATORS.map(op => (
+                  <option key={op} value={op}>{op}</option>
+                ))}
+              </select>
+              <input
+                style={styles.filterValueInput}
+                placeholder="value"
+                value={f.value}
+                onChange={e => updateWhereFilter(idx, { value: e.target.value })}
+              />
+              <button
+                style={styles.filterRemoveBtn}
+                onClick={() => removeWhereFilter(idx)}
+                title="Remove filter"
+              >&times;</button>
+            </div>
+          )
+        })}
+        {/* Shared datalist for variable name autocomplete */}
+        <datalist id="where-filter-variables">
+          {variableNames.map(v => (
+            <option key={v} value={v} />
+          ))}
+        </datalist>
+
+        <button style={styles.addFilterBtn} onClick={addWhereFilter}>
+          + Add Filter
+        </button>
+
+        {whereFilters.length > 1 && (
+          <div style={styles.filterHint}>
+            Each filter runs as a separate variant (EachOf).
+          </div>
         )}
       </section>
 
@@ -381,6 +492,73 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontSize: 11,
     color: '#b2ded9',
+  },
+  // Data filter styles
+  filterRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  filterVarInput: {
+    flex: '3 1 0',
+    minWidth: 0,
+    background: '#1e1e3a',
+    border: '1px solid #2a2a4a',
+    borderRadius: 3,
+    color: '#b2ded9',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    padding: '2px 4px',
+  },
+  filterOpSelect: {
+    flex: '0 0 auto',
+    width: 42,
+    background: '#1e1e3a',
+    border: '1px solid #2a2a4a',
+    borderRadius: 3,
+    color: '#ccc',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    padding: '2px 2px',
+    textAlign: 'center',
+  },
+  filterValueInput: {
+    flex: '4 1 0',
+    minWidth: 0,
+    background: '#1e1e3a',
+    border: '1px solid #2a2a4a',
+    borderRadius: 3,
+    color: '#b2ded9',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    padding: '2px 4px',
+  },
+  filterRemoveBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#dc2626',
+    fontSize: 14,
+    cursor: 'pointer',
+    padding: '0 2px',
+    lineHeight: 1,
+  },
+  addFilterBtn: {
+    background: 'none',
+    border: '1px dashed #444',
+    borderRadius: 3,
+    color: '#7b68ee',
+    fontSize: 11,
+    cursor: 'pointer',
+    padding: '3px 8px',
+    marginTop: 4,
+    width: '100%',
+  },
+  filterHint: {
+    fontSize: 10,
+    color: '#555',
+    fontStyle: 'italic',
+    marginTop: 4,
   },
   // Schema filter styles
   schemaKey: {

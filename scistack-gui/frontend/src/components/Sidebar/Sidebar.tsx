@@ -15,7 +15,7 @@ import { useStore } from '@xyflow/react'
 import RunsTab from './RunsTab'
 import EditTab from './EditTab'
 import FunctionSettingsPanel from './FunctionSettingsPanel'
-import type { SchemaFilter, RunOptions } from './FunctionSettingsPanel'
+import type { SchemaFilter, RunOptions, WhereFilter } from './FunctionSettingsPanel'
 import ConstantSettingsPanel from './ConstantSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
 import PathInputSettingsPanel from './PathInputSettingsPanel'
@@ -31,6 +31,7 @@ interface FnNodeData {
   label: string
   schemaFilter?: SchemaFilter | null
   schemaLevel?: string[] | null
+  whereFilters?: WhereFilter[]
   runOptions?: RunOptions
 }
 
@@ -90,10 +91,12 @@ export default function Sidebar() {
   const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode)
   const tabs: Tab[] = hasNodeTab ? ['Runs', 'Edit', 'Node'] : ['Runs', 'Edit']
 
-  // Compute variant combinations from constant nodes connected to the selected function node.
+  // Compute variant combinations from constant nodes and multi-wired variable inputs
+  // connected to the selected function node.
   // Re-derived whenever nodes or edges change (value edits, new connections, etc.).
-  const { constantNames, variants } = useMemo(() => {
-    if (!isFunctionNode(selectedNode)) return { constantNames: [], variants: [] }
+  const { constantNames, inputTypeNames, variants } = useMemo(() => {
+    const empty = { constantNames: [] as string[], inputTypeNames: [] as string[], variants: [] as Record<string, string>[] }
+    if (!isFunctionNode(selectedNode)) return empty
 
     // BFS upstream: walk edges in reverse to find all ancestor node IDs.
     const visited = new Set<string>()
@@ -108,26 +111,56 @@ export default function Sidebar() {
       }
     }
 
+    // Constant variant axes
     const constantNodes = nodes.filter(
       n => n.type === 'constantNode' && visited.has(n.id)
     ) as Array<Node & { data: ConstantNodeData }>
 
-    if (constantNodes.length === 0) return { constantNames: [], variants: [] }
-
-    const names = constantNodes.map(n => n.data.label)
-    const valueLists = constantNodes.map(n =>
+    const cNames = constantNodes.map(n => n.data.label)
+    const cValueLists = constantNodes.map(n =>
       (n.data.values ?? []).map((v: ConstantValue) => v.value)
     )
 
-    // If any constant has no values, there are no valid variants.
-    if (valueLists.some(vals => vals.length === 0)) return { constantNames: names, variants: [] }
+    // Multi-variable input axes: find in__ handles with >1 variable source
+    const inputHandleTypes: Record<string, string[]> = {}
+    for (const e of edges) {
+      if (e.target !== selectedNode.id) continue
+      const th = e.targetHandle ?? ''
+      if (!th.startsWith('in__')) continue
+      const sourceNode = nodes.find(n => n.id === e.source)
+      if (!sourceNode || sourceNode.type !== 'variableNode') continue
+      const param = th.replace('in__', '')
+      const label = (sourceNode.data as { label: string }).label
+      if (!inputHandleTypes[param]) inputHandleTypes[param] = []
+      if (!inputHandleTypes[param].includes(label)) {
+        inputHandleTypes[param].push(label)
+      }
+    }
 
-    const combos = cartesian(valueLists)
+    // Only include params with >1 type as variant axes
+    const itNames: string[] = []
+    const itValueLists: string[][] = []
+    for (const [param, types] of Object.entries(inputHandleTypes)) {
+      if (types.length > 1) {
+        itNames.push(param)
+        itValueLists.push(types)
+      }
+    }
+
+    const allNames = [...cNames, ...itNames]
+    const allValueLists = [...cValueLists, ...itValueLists]
+
+    if (allNames.length === 0) return empty
+    if (allValueLists.some(vals => vals.length === 0)) {
+      return { constantNames: cNames, inputTypeNames: itNames, variants: [] }
+    }
+
+    const combos = cartesian(allValueLists)
     const variantRows = combos.map(combo =>
-      Object.fromEntries(names.map((name, i) => [name, combo[i]]))
+      Object.fromEntries(allNames.map((name, i) => [name, combo[i]]))
     )
 
-    return { constantNames: names, variants: variantRows }
+    return { constantNames: cNames, inputTypeNames: itNames, variants: variantRows }
   }, [nodes, edges, selectedNode])
 
   return (
@@ -152,8 +185,10 @@ export default function Sidebar() {
             label={(selectedNode.data as FnNodeData).label}
             variants={variants}
             constantNames={constantNames}
+            inputTypeNames={inputTypeNames}
             schemaFilter={(selectedNode.data as FnNodeData).schemaFilter ?? null}
             schemaLevel={(selectedNode.data as FnNodeData).schemaLevel ?? null}
+            whereFilters={(selectedNode.data as FnNodeData).whereFilters ?? []}
             runOptions={(selectedNode.data as FnNodeData).runOptions ?? { dry_run: false, save: true, distribute: false, as_table: false }}
           />
         )}
