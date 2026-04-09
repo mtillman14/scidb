@@ -14,6 +14,7 @@ from scifor.pathinput import PathInput
 from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
+from .each_of import EachOf
 from .foreach_config import ForEachConfig
 from .merge import Merge
 
@@ -125,6 +126,46 @@ def for_each(
     Returns:
         A pandas DataFrame of results, or None when dry_run=True.
     """
+    # --- EachOf expansion: must be first, before any other logic ---
+    each_of_axes = []
+    for param, val in inputs.items():
+        if isinstance(val, EachOf):
+            each_of_axes.append(("input", param, val.alternatives))
+    if isinstance(where, EachOf):
+        each_of_axes.append(("where", None, where.alternatives))
+
+    if each_of_axes:
+        import pandas as pd
+        from itertools import product as _eachof_product
+
+        results = []
+        for combo in _eachof_product(*(axis[2] for axis in each_of_axes)):
+            concrete_inputs = dict(inputs)
+            concrete_where = where
+            for (kind, param, _alts), value in zip(each_of_axes, combo):
+                if kind == "input":
+                    concrete_inputs[param] = value
+                elif kind == "where":
+                    concrete_where = value
+            result = for_each(
+                fn,
+                concrete_inputs,
+                outputs,
+                dry_run=dry_run,
+                save=save,
+                as_table=as_table,
+                db=db,
+                distribute=distribute,
+                where=concrete_where,
+                _inject_combo_metadata=_inject_combo_metadata,
+                _pre_combo_hook=_pre_combo_hook,
+                _progress_fn=_progress_fn,
+                **metadata_iterables,
+            )
+            if result is not None:
+                results.append(result)
+        return pd.concat(results, ignore_index=True) if results else None
+
     fn_name = getattr(fn, "__name__", repr(fn))
     Log.info(f"===== for_each({fn_name}) start =====")
 
