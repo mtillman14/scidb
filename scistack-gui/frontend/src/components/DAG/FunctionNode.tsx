@@ -23,7 +23,7 @@ interface FunctionNodeData {
   run_state?: 'green' | 'grey' | 'red'
   schemaFilter?: Record<string, unknown[]> | null
   schemaLevel?: string[] | null
-  runOptions?: { dry_run: boolean; save: boolean; distribute: boolean }
+  runOptions?: { dry_run: boolean; save: boolean; distribute: boolean; as_table: boolean }
 }
 
 const STATE_STYLES: Record<string, { border: string; background: string }> = {

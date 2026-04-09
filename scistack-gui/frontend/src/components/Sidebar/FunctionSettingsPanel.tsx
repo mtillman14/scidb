@@ -26,6 +26,7 @@ export interface RunOptions {
   dry_run: boolean
   save: boolean
   distribute: boolean
+  as_table: boolean
 }
 
 interface Props {
@@ -305,6 +306,17 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
           />
           <span style={styles.optionText}>Distribute</span>
           <span style={styles.optionHint}>Save at lower schema level</span>
+        </label>
+
+        <label style={styles.optionLabel}>
+          <input
+            type="checkbox"
+            checked={runOptions.as_table}
+            onChange={() => toggleRunOption('as_table')}
+            style={styles.checkbox}
+          />
+          <span style={styles.optionText}>As table</span>
+          <span style={styles.optionHint}>Keep schema columns in DataFrames</span>
         </label>
       </section>
     </div>

@@ -154,7 +154,7 @@ export default function Sidebar() {
             constantNames={constantNames}
             schemaFilter={(selectedNode.data as FnNodeData).schemaFilter ?? null}
             schemaLevel={(selectedNode.data as FnNodeData).schemaLevel ?? null}
-            runOptions={(selectedNode.data as FnNodeData).runOptions ?? { dry_run: false, save: true, distribute: false }}
+            runOptions={(selectedNode.data as FnNodeData).runOptions ?? { dry_run: false, save: true, distribute: false, as_table: false }}
           />
         )}
         {activeTab === 'Node' && isConstantNode(selectedNode) && (

@@ -3143,3 +3143,101 @@
 [19:54:54.794] [INFO] [save] subject=S01, sample_interval=5, window_seconds=60: RollingVO2
 [19:54:54.805] [INFO] [save] subject=S02, sample_interval=5, window_seconds=60: RollingVO2
 [19:54:54.819] [INFO] [save] subject=S03, sample_interval=5, window_seconds=60: RollingVO2
+[20:07:02.162] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[20:07:12.794] [INFO] run: fn_variants for 'compute_rolling_vo2' = [{'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 30}, 'record_count': 3}, {'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 60}, 'record_count': 3}]
+[20:07:12.799] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[20:07:12.821] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.020s
+[20:07:12.821] [INFO] loaded 3 inputs in 0.021s
+[20:07:12.823] [INFO] aggregation mode: skipped rid expansion, iterating (none) of schema ['subject'], 1 combo(s)
+[20:07:12.823] [INFO] ================================================================
+[20:07:12.824] [INFO] for_each(compute_rolling_vo2) — 1 iteration
+[20:07:12.824] [INFO] no metadata
+[20:07:12.824] [INFO] ================================================================
+[20:07:12.824] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2'], sample_interval: 5, window_seconds: 30}
+[20:07:12.824] [INFO] options: as_table=True
+[20:07:12.825] [INFO] [run] : compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:17.414] [INFO] [skip] : compute_rolling_vo2 raised: 2
+[20:07:17.417] [INFO] ────────────────────────────────────────────────────────────────
+[20:07:17.417] [INFO] for_each(compute_rolling_vo2) done: completed=0, skipped=1, total=1
+[20:07:17.417] [INFO] ================================================================
+[20:07:17.421] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[20:07:17.429] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.008s
+[20:07:17.429] [INFO] loaded 3 inputs in 0.008s
+[20:07:17.430] [INFO] aggregation mode: skipped rid expansion, iterating (none) of schema ['subject'], 1 combo(s)
+[20:07:17.430] [INFO] ================================================================
+[20:07:17.430] [INFO] for_each(compute_rolling_vo2) — 1 iteration
+[20:07:17.430] [INFO] no metadata
+[20:07:17.430] [INFO] ================================================================
+[20:07:17.431] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2'], sample_interval: 5, window_seconds: 60}
+[20:07:17.431] [INFO] options: as_table=True
+[20:07:17.431] [INFO] [run] : compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:17.431] [INFO] [skip] : compute_rolling_vo2 raised: 2
+[20:07:17.432] [INFO] ────────────────────────────────────────────────────────────────
+[20:07:17.432] [INFO] for_each(compute_rolling_vo2) done: completed=0, skipped=1, total=1
+[20:07:17.432] [INFO] ================================================================
+[20:07:20.349] [INFO] run: fn_variants for 'compute_rolling_vo2' = [{'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 30}, 'record_count': 3}, {'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 60}, 'record_count': 3}]
+[20:07:20.354] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[20:07:20.364] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.009s
+[20:07:20.364] [INFO] loaded 3 inputs in 0.009s
+[20:07:20.367] [INFO] ================================================================
+[20:07:20.367] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[20:07:20.367] [INFO] subject=[3 values]
+[20:07:20.367] [INFO] ================================================================
+[20:07:20.367] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 30}
+[20:07:20.367] [INFO] subject=['S01', 'S02', 'S03']
+[20:07:20.369] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:31.447] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:31.447] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:31.447] [INFO] ────────────────────────────────────────────────────────────────
+[20:07:31.447] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[20:07:31.448] [INFO] ================================================================
+[20:07:31.459] [INFO] [save] subject=S01, sample_interval=5, window_seconds=30: RollingVO2
+[20:07:31.469] [INFO] [save] subject=S02, sample_interval=5, window_seconds=30: RollingVO2
+[20:07:31.478] [INFO] [save] subject=S03, sample_interval=5, window_seconds=30: RollingVO2
+[20:07:31.479] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[20:07:31.486] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.006s
+[20:07:31.486] [INFO] loaded 3 inputs in 0.006s
+[20:07:31.487] [INFO] ================================================================
+[20:07:31.487] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[20:07:31.487] [INFO] subject=[3 values]
+[20:07:31.487] [INFO] ================================================================
+[20:07:31.487] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 60}
+[20:07:31.487] [INFO] subject=['S01', 'S02', 'S03']
+[20:07:31.488] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:31.488] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:31.489] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:07:31.489] [INFO] ────────────────────────────────────────────────────────────────
+[20:07:31.489] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[20:07:31.489] [INFO] ================================================================
+[20:07:31.500] [INFO] [save] subject=S01, sample_interval=5, window_seconds=60: RollingVO2
+[20:07:31.511] [INFO] [save] subject=S02, sample_interval=5, window_seconds=60: RollingVO2
+[20:07:31.522] [INFO] [save] subject=S03, sample_interval=5, window_seconds=60: RollingVO2
+[20:08:18.864] [INFO] run: fn_variants for 'compute_rolling_vo2' = [{'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 30}, 'record_count': 3}, {'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 60}, 'record_count': 3}]
+[20:08:18.868] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[20:08:18.877] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.008s
+[20:08:18.877] [INFO] loaded 3 inputs in 0.009s
+[20:08:18.878] [INFO] aggregation mode: skipped rid expansion, iterating (none) of schema ['subject'], 1 combo(s)
+[20:08:18.878] [INFO] ================================================================
+[20:08:18.878] [INFO] for_each(compute_rolling_vo2) — 1 iteration
+[20:08:18.878] [INFO] no metadata
+[20:08:18.878] [INFO] ================================================================
+[20:08:18.878] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2'], sample_interval: 5, window_seconds: 30}
+[20:08:18.879] [INFO] [run] : compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:08:25.192] [INFO] [skip] : compute_rolling_vo2 raised: 2
+[20:08:25.193] [INFO] ────────────────────────────────────────────────────────────────
+[20:08:25.193] [INFO] for_each(compute_rolling_vo2) done: completed=0, skipped=1, total=1
+[20:08:25.193] [INFO] ================================================================
+[20:08:25.195] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[20:08:25.202] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.007s
+[20:08:25.202] [INFO] loaded 3 inputs in 0.007s
+[20:08:25.203] [INFO] aggregation mode: skipped rid expansion, iterating (none) of schema ['subject'], 1 combo(s)
+[20:08:25.203] [INFO] ================================================================
+[20:08:25.203] [INFO] for_each(compute_rolling_vo2) — 1 iteration
+[20:08:25.203] [INFO] no metadata
+[20:08:25.203] [INFO] ================================================================
+[20:08:25.203] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2'], sample_interval: 5, window_seconds: 60}
+[20:08:25.204] [INFO] [run] : compute_rolling_vo2(signal, sample_interval, window_seconds)
+[20:08:25.204] [INFO] [skip] : compute_rolling_vo2 raised: 2
+[20:08:25.204] [INFO] ────────────────────────────────────────────────────────────────
+[20:08:25.204] [INFO] for_each(compute_rolling_vo2) done: completed=0, skipped=1, total=1
+[20:08:25.205] [INFO] ================================================================

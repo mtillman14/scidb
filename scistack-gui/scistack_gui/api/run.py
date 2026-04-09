@@ -327,11 +327,12 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
             for key in iterate_keys
         }
 
-    # Extract run options (dry_run, save, distribute).
+    # Extract run options (dry_run, save, distribute, as_table).
     opts = run_options or {}
     opt_dry_run = opts.get("dry_run", False)
     opt_save = opts.get("save", True)
     opt_distribute = opts.get("distribute", False)
+    opt_as_table = opts.get("as_table", False)
 
     success = True
     run_started_at = time.time()
@@ -388,6 +389,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                 for_each(fn, inputs=inputs, outputs=[OutputCls],
                          dry_run=opt_dry_run, save=opt_save,
                          distribute=opt_distribute,
+                         as_table=opt_as_table,
                          _progress_fn=_progress_fn, **schema_kwargs)
             output = buf.getvalue()
             if output:
