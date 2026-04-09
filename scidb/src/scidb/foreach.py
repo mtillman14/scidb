@@ -274,78 +274,103 @@ def for_each(
     # --- Build full combos: base_combos × valid rid-combos per schema location ---
     current_schema_keys = list(_scifor.get_schema() or [])
 
-    # Lookup keys for rid disambiguation: schema keys + any non-schema metadata
-    # iterable keys.  Using only schema keys misses non-schema iterables (e.g.
-    # "session") that ARE present in the loaded DataFrame and should distinguish
-    # which record belongs to which combo.
-    _lookup_keys = list(dict.fromkeys(
-        current_schema_keys +
-        [k for k in metadata_iterables if k not in set(current_schema_keys)]
-    ))
-
     base_combos = all_combos
     if base_combos is None:
         keys = list(metadata_iterables.keys())
         value_lists = [metadata_iterables[k] for k in keys]
         base_combos = [dict(zip(keys, combo)) for combo in _iproduct(*value_lists)]
 
-    # For each rid_key, map combo_tuple → [rid_values at that combo]
-    rid_per_combo: dict = {}
-    for rid_col in rid_keys:
-        param_name = rid_col[len("__rid_"):]
-        df = loaded_inputs.get(param_name)
-        if not isinstance(df, pd.DataFrame) or rid_col not in df.columns:
-            continue
-        schema_cols_in_df = [k for k in _lookup_keys if k in df.columns]
-        mapping: dict = {}
-        if schema_cols_in_df:
-            for combo_vals, group in df.groupby(schema_cols_in_df, sort=False):
-                raw_key = combo_vals if isinstance(combo_vals, tuple) else (combo_vals,)
-                # Expand to ALL _lookup_keys, filling missing cols with ""
-                col_val = {sk: ("" if v is None else str(v))
-                           for sk, v in zip(schema_cols_in_df, raw_key)}
-                key = tuple(col_val.get(sk, "") for sk in _lookup_keys)
-                mapping[key] = group[rid_col].tolist()
-        else:
-            # No lookup cols in df — use all-empty key
-            mapping[tuple("" for _ in _lookup_keys)] = df[rid_col].tolist()
-        rid_per_combo[rid_col] = mapping
+    # Detect aggregation mode: not all schema keys are being iterated, so
+    # lower-level records should be aggregated into multi-row DataFrames
+    # rather than being separated into individual combos via rid expansion.
+    _iterated_schema_keys = set(metadata_iterables.keys()) & set(current_schema_keys)
+    _aggregation_mode = len(current_schema_keys) > 0 and len(_iterated_schema_keys) < len(current_schema_keys)
 
-    # Expand each base combo with all valid rid-combos for that schema location
-    Log.debug(f"expanding combos: {len(base_combos)} base combos, "
-              f"{len(rid_per_combo)} rid dimensions")
-    full_combos: list = []
-    for combo in base_combos:
-        schema_vals = tuple(str(combo.get(k, "")) for k in _lookup_keys)
-
-        rid_lists: list = []
-        rid_col_names: list = []
-        valid = True
-        for rid_col, mapping in rid_per_combo.items():
-            rids = mapping.get(schema_vals, [])
-            if not rids:
-                valid = False
-                break
-            rid_lists.append(rids)
-            rid_col_names.append(rid_col)
-
-        if not valid:
-            continue
-
-        if rid_lists:
-            for rid_combo in _iproduct(*rid_lists):
-                full_combo = {**combo}
-                for rc_name, rc_val in zip(rid_col_names, rid_combo):
-                    full_combo[rc_name] = rc_val
-                full_combos.append(full_combo)
-        else:
-            full_combos.append(combo)
-
-    if len(full_combos) != len(base_combos):
-        Log.info(f"expanded {len(base_combos)} base combos -> "
-                 f"{len(full_combos)} full combos (rid variants)")
+    if _aggregation_mode:
+        # Aggregation mode: skip rid expansion.  Strip __rid_* columns from
+        # loaded DataFrames so the user's function doesn't see internal
+        # tracking columns, and pass base_combos straight through.
+        for param_name, data in list(loaded_inputs.items()):
+            if isinstance(data, pd.DataFrame):
+                rid_cols_in_df = [c for c in data.columns if c.startswith("__rid_")]
+                if rid_cols_in_df:
+                    loaded_inputs[param_name] = data.drop(columns=rid_cols_in_df)
+        rid_keys = []
+        rid_per_combo = {}
+        full_combos = list(base_combos)
+        Log.info(f"aggregation mode: skipped rid expansion, "
+                 f"iterating {list(_iterated_schema_keys) or '(none)'} "
+                 f"of schema {current_schema_keys}, "
+                 f"{len(full_combos)} combo(s)")
     else:
-        Log.debug(f"{len(full_combos)} combos (no rid expansion needed)")
+        # Full iteration mode: expand combos with rid variants.
+
+        # Lookup keys for rid disambiguation: schema keys + any non-schema metadata
+        # iterable keys.  Using only schema keys misses non-schema iterables (e.g.
+        # "session") that ARE present in the loaded DataFrame and should distinguish
+        # which record belongs to which combo.
+        _lookup_keys = list(dict.fromkeys(
+            current_schema_keys +
+            [k for k in metadata_iterables if k not in set(current_schema_keys)]
+        ))
+
+        # For each rid_key, map combo_tuple → [rid_values at that combo]
+        rid_per_combo: dict = {}
+        for rid_col in rid_keys:
+            param_name = rid_col[len("__rid_"):]
+            df = loaded_inputs.get(param_name)
+            if not isinstance(df, pd.DataFrame) or rid_col not in df.columns:
+                continue
+            schema_cols_in_df = [k for k in _lookup_keys if k in df.columns]
+            mapping: dict = {}
+            if schema_cols_in_df:
+                for combo_vals, group in df.groupby(schema_cols_in_df, sort=False):
+                    raw_key = combo_vals if isinstance(combo_vals, tuple) else (combo_vals,)
+                    # Expand to ALL _lookup_keys, filling missing cols with ""
+                    col_val = {sk: ("" if v is None else str(v))
+                               for sk, v in zip(schema_cols_in_df, raw_key)}
+                    key = tuple(col_val.get(sk, "") for sk in _lookup_keys)
+                    mapping[key] = group[rid_col].tolist()
+            else:
+                # No lookup cols in df — use all-empty key
+                mapping[tuple("" for _ in _lookup_keys)] = df[rid_col].tolist()
+            rid_per_combo[rid_col] = mapping
+
+        # Expand each base combo with all valid rid-combos for that schema location
+        Log.debug(f"expanding combos: {len(base_combos)} base combos, "
+                  f"{len(rid_per_combo)} rid dimensions")
+        full_combos: list = []
+        for combo in base_combos:
+            schema_vals = tuple(str(combo.get(k, "")) for k in _lookup_keys)
+
+            rid_lists: list = []
+            rid_col_names: list = []
+            valid = True
+            for rid_col, mapping in rid_per_combo.items():
+                rids = mapping.get(schema_vals, [])
+                if not rids:
+                    valid = False
+                    break
+                rid_lists.append(rids)
+                rid_col_names.append(rid_col)
+
+            if not valid:
+                continue
+
+            if rid_lists:
+                for rid_combo in _iproduct(*rid_lists):
+                    full_combo = {**combo}
+                    for rc_name, rc_val in zip(rid_col_names, rid_combo):
+                        full_combo[rc_name] = rc_val
+                    full_combos.append(full_combo)
+            else:
+                full_combos.append(combo)
+
+        if len(full_combos) != len(base_combos):
+            Log.info(f"expanded {len(base_combos)} base combos -> "
+                     f"{len(full_combos)} full combos (rid variants)")
+        else:
+            Log.debug(f"{len(full_combos)} combos (no rid expansion needed)")
 
     # Apply pre-combo hook (e.g. skip_computed from scihist): filter out any
     # combos where the hook returns True.
