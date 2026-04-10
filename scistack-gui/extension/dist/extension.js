@@ -34,6 +34,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
+var path2 = __toESM(require("path"));
 var vscode3 = __toESM(require("vscode"));
 
 // src/pythonProcess.ts
@@ -437,14 +438,33 @@ function activate(context) {
           return;
         dbPath = dbUris[0].fsPath;
       } else {
-        const dbUri = await vscode3.window.showSaveDialog({
-          filters: { "DuckDB Database": ["duckdb"] },
-          title: "Create SciStack Database",
-          saveLabel: "Create"
+        const folderUris = await vscode3.window.showOpenDialog({
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          title: "Select folder for new SciStack database",
+          openLabel: "Select Folder"
         });
-        if (!dbUri)
+        if (!folderUris || folderUris.length === 0)
           return;
-        dbPath = dbUri.fsPath;
+        const folderPath = folderUris[0].fsPath;
+        const nameInput = await vscode3.window.showInputBox({
+          prompt: "Database filename",
+          placeHolder: "e.g. my_pipeline.duckdb",
+          validateInput: (v) => {
+            const trimmed = v.trim();
+            if (!trimmed)
+              return "Provide a filename";
+            if (trimmed.includes("/") || trimmed.includes("\\")) {
+              return "Filename must not contain path separators";
+            }
+            return null;
+          }
+        });
+        if (!nameInput)
+          return;
+        const fileName = nameInput.trim().endsWith(".duckdb") ? nameInput.trim() : `${nameInput.trim()}.duckdb`;
+        dbPath = path2.join(folderPath, fileName);
         const keysInput = await vscode3.window.showInputBox({
           prompt: "Schema keys (comma-separated, top-down)",
           placeHolder: "e.g. subject, session",

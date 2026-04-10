@@ -3245,3 +3245,45 @@
 [21:11:20.767] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
 [21:16:26.626] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
 [21:18:50.015] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[22:09:32.401] [INFO] configure_database: path=/home/mtillman/SciDB/test_gui.duckdb, schema_keys=['subject']
+[22:11:26.709] [INFO] run: fn_variants for 'compute_rolling_vo2' = [{'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 30}, 'record_count': 3}, {'function_name': 'compute_rolling_vo2', 'output_type': 'RollingVO2', 'input_types': {'signal': 'RawVO2'}, 'constants': {'sample_interval': 5, 'window_seconds': 60}, 'record_count': 3}]
+[22:11:26.716] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[22:11:26.733] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.016s
+[22:11:26.734] [INFO] loaded 3 inputs in 0.016s
+[22:11:26.738] [INFO] ================================================================
+[22:11:26.738] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[22:11:26.738] [INFO] subject=[3 values]
+[22:11:26.738] [INFO] ================================================================
+[22:11:26.738] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 30}
+[22:11:26.738] [INFO] subject=['S01', 'S02', 'S03']
+[22:11:26.740] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[22:11:28.322] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[22:11:28.323] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[22:11:28.323] [INFO] ────────────────────────────────────────────────────────────────
+[22:11:28.323] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[22:11:28.323] [INFO] ================================================================
+[22:11:28.338] [INFO] [save] subject=S01, sample_interval=5, window_seconds=30: RollingVO2
+[22:11:28.347] [INFO] [save] subject=S02, sample_interval=5, window_seconds=30: RollingVO2
+[22:11:28.358] [INFO] [save] subject=S03, sample_interval=5, window_seconds=30: RollingVO2
+[22:11:28.358] [INFO] ===== for_each(compute_rolling_vo2) start =====
+[22:11:28.366] [INFO] input 'signal': loaded RawVO2 -> 3 rows, 4 cols in 0.007s
+[22:11:28.366] [INFO] loaded 3 inputs in 0.007s
+[22:11:28.368] [INFO] ================================================================
+[22:11:28.368] [INFO] for_each(compute_rolling_vo2) — 3 iterations
+[22:11:28.368] [INFO] subject=[3 values]
+[22:11:28.368] [INFO] ================================================================
+[22:11:28.368] [INFO] inputs: {signal: DataFrame['subject', 'RawVO2', '__rid_signal'], sample_interval: 5, window_seconds: 60}
+[22:11:28.368] [INFO] subject=['S01', 'S02', 'S03']
+[22:11:28.368] [INFO] [run] subject=S01, __rid_signal=bb8b159779579e7f: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[22:11:28.369] [INFO] [run] subject=S02, __rid_signal=72a8685950ef8710: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[22:11:28.369] [INFO] [run] subject=S03, __rid_signal=95784fc090555401: compute_rolling_vo2(signal, sample_interval, window_seconds)
+[22:11:28.369] [INFO] ────────────────────────────────────────────────────────────────
+[22:11:28.369] [INFO] for_each(compute_rolling_vo2) done: completed=3, skipped=0, total=3
+[22:11:28.369] [INFO] ================================================================
+[22:11:28.381] [INFO] [save] subject=S01, sample_interval=5, window_seconds=60: RollingVO2
+[22:11:28.395] [INFO] [save] subject=S02, sample_interval=5, window_seconds=60: RollingVO2
+[22:11:28.407] [INFO] [save] subject=S03, sample_interval=5, window_seconds=60: RollingVO2
+[22:15:47.228] [INFO] configure_database: path=/home/mtillman/SciDB/test, schema_keys=['subject', 'trial']
+[22:16:24.645] [INFO] configure_database: path=/home/mtillman/SciDB/test, schema_keys=['subject', 'trial']
+[22:21:14.353] [INFO] configure_database: path=/home/mtillman/SciDB/test.duckdb, schema_keys=['subject', 'trial']
+[22:23:44.271] [INFO] configure_database: path=/home/mtillman/SciDB/test.duckdb, schema_keys=['subject', 'trial']

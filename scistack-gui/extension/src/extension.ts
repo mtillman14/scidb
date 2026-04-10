@@ -5,6 +5,7 @@
  * deactivate() is called when the extension is unloaded.
  */
 
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { PythonProcess } from './pythonProcess';
 import { DagPanel } from './dagPanel';
@@ -49,13 +50,33 @@ export function activate(context: vscode.ExtensionContext) {
         if (!dbUris || dbUris.length === 0) return;
         dbPath = dbUris[0].fsPath;
       } else {
-        const dbUri = await vscode.window.showSaveDialog({
-          filters: { 'DuckDB Database': ['duckdb'] },
-          title: 'Create SciStack Database',
-          saveLabel: 'Create',
+        const folderUris = await vscode.window.showOpenDialog({
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          title: 'Select folder for new SciStack database',
+          openLabel: 'Select Folder',
         });
-        if (!dbUri) return;
-        dbPath = dbUri.fsPath;
+        if (!folderUris || folderUris.length === 0) return;
+        const folderPath = folderUris[0].fsPath;
+
+        const nameInput = await vscode.window.showInputBox({
+          prompt: 'Database filename',
+          placeHolder: 'e.g. my_pipeline.duckdb',
+          validateInput: (v) => {
+            const trimmed = v.trim();
+            if (!trimmed) return 'Provide a filename';
+            if (trimmed.includes('/') || trimmed.includes('\\')) {
+              return 'Filename must not contain path separators';
+            }
+            return null;
+          },
+        });
+        if (!nameInput) return;
+        const fileName = nameInput.trim().endsWith('.duckdb')
+          ? nameInput.trim()
+          : `${nameInput.trim()}.duckdb`;
+        dbPath = path.join(folderPath, fileName);
 
         const keysInput = await vscode.window.showInputBox({
           prompt: 'Schema keys (comma-separated, top-down)',
