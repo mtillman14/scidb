@@ -3287,3 +3287,4 @@
 [22:16:24.645] [INFO] configure_database: path=/home/mtillman/SciDB/test, schema_keys=['subject', 'trial']
 [22:21:14.353] [INFO] configure_database: path=/home/mtillman/SciDB/test.duckdb, schema_keys=['subject', 'trial']
 [22:23:44.271] [INFO] configure_database: path=/home/mtillman/SciDB/test.duckdb, schema_keys=['subject', 'trial']
+[16:08:07.042] [INFO] configure_database: path=/home/mtillman/mnt/rto/LabMembers/MTillman/GitRepos/general-sqlite-database/test_gui.duckdb, schema_keys=['subject']

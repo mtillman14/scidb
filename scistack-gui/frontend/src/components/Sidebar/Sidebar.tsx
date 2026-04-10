@@ -19,11 +19,12 @@ import type { SchemaFilter, RunOptions, WhereFilter } from './FunctionSettingsPa
 import ConstantSettingsPanel from './ConstantSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
 import PathInputSettingsPanel from './PathInputSettingsPanel'
+import ProjectConfigPanel from './ProjectConfigPanel'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import type { Node } from '@xyflow/react'
 import type { ConstantValue } from '../DAG/ConstantNode'
 
-const BASE_TABS = ['Runs', 'Edit'] as const
+const BASE_TABS = ['Runs', 'Edit', 'Project'] as const
 type BaseTab = typeof BASE_TABS[number]
 type Tab = BaseTab | 'Node'
 
@@ -179,6 +180,7 @@ export default function Sidebar() {
       <div style={styles.content}>
         {activeTab === 'Runs' && <RunsTab />}
         {activeTab === 'Edit' && <EditTab />}
+        {activeTab === 'Project' && <ProjectConfigPanel />}
         {activeTab === 'Node' && isFunctionNode(selectedNode) && (
           <FunctionSettingsPanel
             id={selectedNode.id}

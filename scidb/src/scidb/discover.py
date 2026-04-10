@@ -1,0 +1,453 @@
+"""
+Discovery scanner for scistack projects.
+
+Walks a project's ``src/{project}/`` tree and all packages listed in
+``uv.lock`` (that are currently importable in the environment), and
+collects the pipeline-relevant exports of each module:
+
+* :class:`BaseVariable` subclasses (via ``issubclass`` check)
+* :class:`scilineage.LineageFcn` instances (the return type of ``@lineage_fcn``)
+* :class:`Constant` instances (wrapped via :func:`constant`)
+
+The scan imports modules for real — it never parses source text — so the
+objects returned are the live runtime instances the GUI can execute against.
+
+Import failures are captured per-module as :class:`ModuleError` entries;
+the scan never aborts on a single bad module.
+
+Typical use::
+
+    from scidb.discover import scan_project
+    result = scan_project(Path("/path/to/my-study"))
+
+    for mod in result.project_code.modules:
+        print(mod.module_name, len(mod.variables), len(mod.functions))
+
+    for lib_name, pkg in result.non_empty_libraries().items():
+        print(lib_name, pkg.variable_count, pkg.function_count)
+"""
+
+from __future__ import annotations
+
+import importlib
+import importlib.metadata
+import importlib.util
+import logging
+import pkgutil
+import sys
+import traceback
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Callable, Iterable
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover
+    try:
+        import tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore[no-redef]
+
+from .constant import Constant
+from .variable import BaseVariable
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Result types
+# ---------------------------------------------------------------------------
+@dataclass
+class ModuleExports:
+    """Exports discovered in a single imported module."""
+
+    module_name: str
+    variables: list[type] = field(default_factory=list)
+    functions: list[Any] = field(default_factory=list)
+    constants: list[tuple[str, Constant]] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.variables or self.functions or self.constants)
+
+    @property
+    def total_count(self) -> int:
+        return len(self.variables) + len(self.functions) + len(self.constants)
+
+
+@dataclass
+class ModuleError:
+    """Import failure for a single module; the scan continues past it."""
+
+    module_name: str
+    traceback: str
+
+
+@dataclass
+class PackageResult:
+    """Result of scanning one package (project code or an installed library)."""
+
+    name: str
+    modules: list[ModuleExports] = field(default_factory=list)
+    errors: list[ModuleError] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        """True when no scistack-relevant exports were found (ignores errors)."""
+        return all(m.is_empty for m in self.modules)
+
+    @property
+    def variable_count(self) -> int:
+        return sum(len(m.variables) for m in self.modules)
+
+    @property
+    def function_count(self) -> int:
+        return sum(len(m.functions) for m in self.modules)
+
+    @property
+    def constant_count(self) -> int:
+        return sum(len(m.constants) for m in self.modules)
+
+
+@dataclass
+class DiscoveryResult:
+    """Top-level result for :func:`scan_project`."""
+
+    project_code: PackageResult
+    libraries: dict[str, PackageResult] = field(default_factory=dict)
+
+    def non_empty_libraries(self) -> dict[str, PackageResult]:
+        """Libraries that contributed at least one Variable/Function/Constant."""
+        return {name: pkg for name, pkg in self.libraries.items() if not pkg.is_empty}
+
+
+# ---------------------------------------------------------------------------
+# Per-module scanner
+# ---------------------------------------------------------------------------
+def _lineage_fcn_type() -> type | None:
+    """Return the ``LineageFcn`` type if scilineage is installed, else None."""
+    try:
+        from scilineage import LineageFcn  # type: ignore
+    except Exception:
+        return None
+    return LineageFcn
+
+
+def discover_module(module: ModuleType) -> ModuleExports:
+    """
+    Scan a single already-imported module for scistack-relevant exports.
+
+    A BaseVariable subclass or LineageFcn is only attributed to ``module``
+    if it was *defined* there — re-exports (e.g. ``from .other import X``)
+    are filtered out by comparing ``__module__``. This prevents the same
+    object from being listed twice in the project panel.
+
+    ``Constant`` instances don't have a ``__module__`` attribute we can
+    trust, so they are attributed to the module in which the name is
+    exposed. Callers that walk multiple modules should deduplicate by
+    ``id()`` if that matters for their UI.
+    """
+    module_name = module.__name__
+    exports = ModuleExports(module_name=module_name)
+    LineageFcn = _lineage_fcn_type()
+
+    for name, obj in vars(module).items():
+        if name.startswith("_"):
+            continue
+
+        # --- BaseVariable subclasses ---
+        if isinstance(obj, type) and obj is not BaseVariable and issubclass(obj, BaseVariable):
+            if getattr(obj, "__module__", None) == module_name:
+                exports.variables.append(obj)
+            continue
+
+        # --- LineageFcn instances ---
+        if LineageFcn is not None and isinstance(obj, LineageFcn):
+            fn = getattr(obj, "fcn", None)
+            if fn is not None and getattr(fn, "__module__", None) == module_name:
+                exports.functions.append(obj)
+            continue
+
+        # --- Constant instances ---
+        if isinstance(obj, Constant):
+            exports.constants.append((name, obj))
+            continue
+
+    return exports
+
+
+# ---------------------------------------------------------------------------
+# Package-level scanner
+# ---------------------------------------------------------------------------
+def scan_package(package_name: str) -> PackageResult:
+    """
+    Import ``package_name`` and all its submodules and run
+    :func:`discover_module` on each.
+
+    Per-module import failures are captured as :class:`ModuleError` entries
+    on the returned :class:`PackageResult`; the scan continues past them.
+    If the top-level package itself cannot be imported, the result contains
+    a single error entry and no module exports.
+    """
+    result = PackageResult(name=package_name)
+
+    try:
+        pkg = importlib.import_module(package_name)
+    except Exception:
+        logger.debug("Failed to import top-level package %s", package_name, exc_info=True)
+        result.errors.append(
+            ModuleError(module_name=package_name, traceback=traceback.format_exc())
+        )
+        return result
+
+    # Scan the top-level package itself.
+    try:
+        result.modules.append(discover_module(pkg))
+    except Exception:
+        logger.exception("discover_module failed for %s", package_name)
+        result.errors.append(
+            ModuleError(module_name=package_name, traceback=traceback.format_exc())
+        )
+
+    # Walk submodules if this is a package (has __path__).
+    pkg_path = getattr(pkg, "__path__", None)
+    if pkg_path is None:
+        return result
+
+    for _importer, modname, _ispkg in pkgutil.walk_packages(
+        pkg_path, prefix=package_name + "."
+    ):
+        try:
+            submod = importlib.import_module(modname)
+        except Exception:
+            logger.debug("Failed to import submodule %s", modname, exc_info=True)
+            result.errors.append(
+                ModuleError(module_name=modname, traceback=traceback.format_exc())
+            )
+            continue
+
+        try:
+            result.modules.append(discover_module(submod))
+        except Exception:
+            logger.exception("discover_module failed for %s", modname)
+            result.errors.append(
+                ModuleError(module_name=modname, traceback=traceback.format_exc())
+            )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Project-level scanner
+# ---------------------------------------------------------------------------
+def _read_project_name(project_root: Path) -> str | None:
+    """Return ``project.name`` from pyproject.toml, or None if absent."""
+    pyproject = project_root / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        logger.warning("Failed to parse %s", pyproject, exc_info=True)
+        return None
+    name = data.get("project", {}).get("name")
+    return name if isinstance(name, str) else None
+
+
+def _read_uv_lock_packages(project_root: Path) -> list[str]:
+    """Return all package names listed in ``uv.lock``.
+
+    The project's own package and virtual dependency-group packages are
+    NOT filtered out here — callers should skip by name if needed.
+    """
+    lock_path = project_root / "uv.lock"
+    if not lock_path.exists():
+        return []
+    try:
+        with open(lock_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        logger.warning("Failed to parse %s", lock_path, exc_info=True)
+        return []
+
+    names: list[str] = []
+    for entry in data.get("package", []):
+        name = entry.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def _dist_to_import_names(dist_name: str) -> list[str]:
+    """Resolve a PyPI distribution name to the top-level import names it provides.
+
+    Uses ``top_level.txt`` if available, otherwise scans the RECORD for
+    top-level ``__init__.py`` files, otherwise falls back to normalizing
+    the distribution name (``python-dateutil`` -> ``python_dateutil``).
+    """
+    try:
+        dist = importlib.metadata.distribution(dist_name)
+    except importlib.metadata.PackageNotFoundError:
+        logger.debug("Distribution not found in env: %s", dist_name)
+        return []
+
+    # 1. top_level.txt (legacy wheels / setuptools)
+    try:
+        top_level = dist.read_text("top_level.txt")
+    except Exception:
+        top_level = None
+    if top_level:
+        names = [line.strip() for line in top_level.splitlines() if line.strip()]
+        if names:
+            return names
+
+    # 2. Scan dist.files for top-level packages.
+    import_names: set[str] = set()
+    for file in dist.files or []:
+        parts = file.parts
+        if len(parts) >= 2 and parts[-1] == "__init__.py":
+            top = parts[0]
+            # Skip dist-info / data dirs.
+            if top.endswith(".dist-info") or top.endswith(".data"):
+                continue
+            import_names.add(top)
+    if import_names:
+        return sorted(import_names)
+
+    # 3. Ultimate fallback: PEP 503 normalized name with underscores.
+    return [dist_name.replace("-", "_")]
+
+
+@dataclass
+class _PathInsert:
+    """Context manager that inserts a directory onto sys.path."""
+
+    directory: str
+    _inserted: bool = False
+
+    def __enter__(self) -> "_PathInsert":
+        if self.directory not in sys.path:
+            sys.path.insert(0, self.directory)
+            self._inserted = True
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._inserted:
+            try:
+                sys.path.remove(self.directory)
+            except ValueError:
+                pass
+        importlib.invalidate_caches()
+
+
+def scan_project(
+    project_root: Path,
+    *,
+    skip_dists: Iterable[str] = (),
+    library_filter: Callable[[str], bool] | None = None,
+) -> DiscoveryResult:
+    """
+    Scan a scistack project for all pipeline-relevant exports.
+
+    Walks ``{project_root}/src/{project_name}/`` (adding ``src/`` to
+    ``sys.path`` for the duration of the call) and every top-level package
+    provided by each distribution listed in ``{project_root}/uv.lock``.
+
+    Args:
+        project_root: The project directory (containing ``pyproject.toml``).
+        skip_dists: Optional iterable of distribution names to skip entirely
+            (e.g. ``["scidb", "scistack-gui"]`` to hide framework packages
+            from the library panel).
+        library_filter: Optional predicate run on each distribution name;
+            if it returns False the distribution is not scanned. Applied
+            after ``skip_dists``.
+
+    Returns:
+        A :class:`DiscoveryResult` with ``project_code`` and ``libraries``
+        populated. Import errors are captured per-module and are never
+        raised out of this function.
+    """
+    project_root = Path(project_root).resolve()
+    logger.debug("scan_project: root=%s", project_root)
+
+    # --- Project code ---
+    project_name = _read_project_name(project_root)
+    project_src_parent = project_root / "src"
+
+    if project_name is None:
+        logger.debug("scan_project: no project.name in pyproject.toml")
+        project_result = PackageResult(name="<unknown>")
+    elif not (project_src_parent / project_name).exists():
+        logger.debug(
+            "scan_project: src/%s does not exist under %s",
+            project_name,
+            project_root,
+        )
+        project_result = PackageResult(name=project_name)
+    else:
+        with _PathInsert(str(project_src_parent.resolve())):
+            # Ensure a stale cached import of the same package name is
+            # dropped — this matters when the same package_name is used
+            # across multiple test-fixture projects.
+            _purge_module(project_name)
+            project_result = scan_package(project_name)
+
+    # --- Libraries from uv.lock ---
+    libraries: dict[str, PackageResult] = {}
+    skip_set = set(skip_dists)
+    if project_name is not None:
+        skip_set.add(project_name)
+
+    for dist_name in _read_uv_lock_packages(project_root):
+        if dist_name in skip_set:
+            continue
+        if library_filter is not None and not library_filter(dist_name):
+            continue
+
+        import_names = _dist_to_import_names(dist_name)
+        if not import_names:
+            libraries[dist_name] = PackageResult(
+                name=dist_name,
+                errors=[
+                    ModuleError(
+                        module_name=dist_name,
+                        traceback=(
+                            f"Distribution {dist_name!r} from uv.lock is not "
+                            f"installed in the current environment."
+                        ),
+                    )
+                ],
+            )
+            continue
+
+        # A single distribution may expose multiple top-level packages
+        # (e.g. ``setuptools`` -> pkg_resources, setuptools, ...). Merge
+        # all of them into one PackageResult keyed by the dist name.
+        merged = PackageResult(name=dist_name)
+        for import_name in import_names:
+            sub = scan_package(import_name)
+            merged.modules.extend(sub.modules)
+            merged.errors.extend(sub.errors)
+        libraries[dist_name] = merged
+
+    return DiscoveryResult(project_code=project_result, libraries=libraries)
+
+
+def _purge_module(package_name: str) -> None:
+    """Remove a package and all its submodules from ``sys.modules``.
+
+    Needed so that two successive scans of projects that happen to share
+    a ``project.name`` don't return stale cached modules. In normal
+    (non-test) usage the GUI rescans the same project repeatedly, so
+    clearing a stale cache is also what we want there — re-imports pick
+    up any edits the user has made.
+    """
+    prefix = package_name + "."
+    to_drop = [
+        name for name in sys.modules
+        if name == package_name or name.startswith(prefix)
+    ]
+    for name in to_drop:
+        sys.modules.pop(name, None)

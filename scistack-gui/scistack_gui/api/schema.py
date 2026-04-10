@@ -7,6 +7,7 @@ Used by the frontend to populate the global schema filter bar.
 
 from fastapi import APIRouter, Depends
 from scidb.database import DatabaseManager
+from scistack_gui import startup
 from scistack_gui.db import get_db, get_db_path
 
 router = APIRouter()
@@ -14,8 +15,16 @@ router = APIRouter()
 
 @router.get("/info")
 def get_info():
-    """Returns metadata about the open database (used by the frontend header)."""
-    return {"db_name": get_db_path().name}
+    """Returns metadata about the open database (used by the frontend header).
+
+    The ``startup_errors`` field carries any diagnostics from project open
+    (Phase 8 stale-lockfile handling). The frontend checks this list and
+    renders a blocking dialog when any entry has ``blocking: true``.
+    """
+    return {
+        "db_name": get_db_path().name,
+        "startup_errors": [e.to_dict() for e in startup.get_startup_errors()],
+    }
 
 
 @router.get("/schema")

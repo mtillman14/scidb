@@ -119,6 +119,13 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     start_run:              { path: '/api/run', method: 'POST', body: true },
     refresh_module:         { path: '/api/refresh', method: 'POST' },
     create_variable:        { path: '/api/variables/create', method: 'POST', body: true },
+    get_project_code:       { path: '/api/project/code' },
+    get_project_libraries:  { path: '/api/project/libraries' },
+    refresh_project:        { path: '/api/project/refresh', method: 'POST' },
+    get_indexes:            { path: '/api/indexes' },
+    search_index_packages:  { path: (p) => `/api/indexes/${encodeURIComponent(p.name as string)}/packages?q=${encodeURIComponent((p.q as string) || '')}` },
+    add_library:            { path: '/api/project/libraries', method: 'POST', body: true },
+    remove_library:         { path: (p) => `/api/project/libraries/${encodeURIComponent(p.name as string)}`, method: 'DELETE' },
   };
 
   const route = routes[method];

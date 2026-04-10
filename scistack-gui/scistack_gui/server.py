@@ -93,7 +93,11 @@ def _h_get_schema(params):
 
 def _h_get_info(params):
     from scistack_gui.db import get_db_path
-    return {"db_name": get_db_path().name}
+    from scistack_gui import startup as _startup
+    return {
+        "db_name": get_db_path().name,
+        "startup_errors": [e.to_dict() for e in _startup.get_startup_errors()],
+    }
 
 
 def _h_get_registry(params):
@@ -344,6 +348,60 @@ def _h_create_variable(params):
 
 
 # ---------------------------------------------------------------------------
+# Stale lockfile handling (Phase 8)
+# ---------------------------------------------------------------------------
+# The actual check lives in :mod:`scistack_gui.startup` so both FastAPI and
+# JSON-RPC entry points share one implementation. Errors are stored in the
+# startup module and surfaced to the frontend via the ``get_info`` handler,
+# which the React app polls once on mount — that's a more reliable delivery
+# channel than firing a notification at a webview that may not be listening
+# yet.
+
+
+# ---------------------------------------------------------------------------
+# Project config panel (Phase 6)
+# ---------------------------------------------------------------------------
+
+def _h_get_project_code(params):
+    from scistack_gui.api.project import get_project_code
+    return get_project_code()
+
+
+def _h_get_project_libraries(params):
+    from scistack_gui.api.project import get_project_libraries
+    return get_project_libraries()
+
+
+def _h_refresh_project(params):
+    from scistack_gui.api.project import refresh_project
+    return refresh_project()
+
+
+# ---------------------------------------------------------------------------
+# Index & library management (Phase 7)
+# ---------------------------------------------------------------------------
+
+def _h_get_indexes(params):
+    from scistack_gui.api.indexes import list_indexes
+    return list_indexes()
+
+
+def _h_search_index_packages(params):
+    from scistack_gui.api.indexes import search_index_packages
+    return search_index_packages(params.get("name", ""), q=params.get("q", ""))
+
+
+def _h_add_library(params):
+    from scistack_gui.api.indexes import add_library
+    return add_library(params)
+
+
+def _h_remove_library(params):
+    from scistack_gui.api.indexes import remove_library
+    return remove_library(params.get("name", ""))
+
+
+# ---------------------------------------------------------------------------
 # Method dispatch table
 # ---------------------------------------------------------------------------
 
@@ -374,6 +432,13 @@ METHODS = {
     "start_run": _h_start_run,
     "refresh_module": _h_refresh_module,
     "create_variable": _h_create_variable,
+    "get_project_code": _h_get_project_code,
+    "get_project_libraries": _h_get_project_libraries,
+    "refresh_project": _h_refresh_project,
+    "get_indexes": _h_get_indexes,
+    "search_index_packages": _h_search_index_packages,
+    "add_library": _h_add_library,
+    "remove_library": _h_remove_library,
 }
 
 
@@ -501,6 +566,14 @@ def main():
     # Enable JSON-RPC notifications on stdout
     from scistack_gui.notify import enable
     enable()
+
+    # Phase 8: Stale lockfile detection on project open.
+    # If pyproject.toml exists next to the db, check whether uv.lock is
+    # out of date and silently sync if so. On failure, the error is
+    # recorded in scistack_gui.startup; the frontend picks it up via the
+    # next /api/info call (see _h_get_info).
+    from scistack_gui import startup as _startup
+    _startup.check_lockfile_staleness(db_path.parent)
 
     # Signal readiness
     _send({

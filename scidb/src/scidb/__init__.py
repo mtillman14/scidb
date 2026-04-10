@@ -48,6 +48,16 @@ from scifor import Col, set_schema, get_schema, PathInput
 
 from .variable import BaseVariable
 from .filters import raw_sql
+from .constant import Constant, constant
+from .discover import (
+    DiscoveryResult,
+    ModuleError,
+    ModuleExports,
+    PackageResult,
+    discover_module,
+    scan_package,
+    scan_project,
+)
 
 from scilineage import manual
 
@@ -56,6 +66,16 @@ __version__ = "0.1.0"
 __all__ = [
     # Core classes
     "BaseVariable",
+    "Constant",
+    "constant",
+    # Discovery
+    "scan_project",
+    "scan_package",
+    "discover_module",
+    "DiscoveryResult",
+    "PackageResult",
+    "ModuleExports",
+    "ModuleError",
     # Configuration
     "configure_database",
     "get_database",

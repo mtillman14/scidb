@@ -110,6 +110,18 @@ def main():
         print(f"Error opening database: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Phase 8: Stale lockfile detection on project open.
+    # If pyproject.toml exists next to the db, check whether uv.lock is
+    # out of date and silently sync if so. On failure, the error is
+    # stored in scistack_gui.startup and surfaced to the browser via the
+    # /api/info endpoint that the React app polls on mount.
+    from scistack_gui import startup as _startup
+    _startup.check_lockfile_staleness(db_path.parent)
+    for err in _startup.get_startup_errors():
+        print(f"Startup warning [{err.kind}]: {err.message}", file=sys.stderr)
+        if err.details:
+            print(err.details, file=sys.stderr)
+
     url = f"http://localhost:{args.port}"
     print(f"SciStack GUI running at {url}")
 
