@@ -11,6 +11,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { PythonProcess } from './pythonProcess';
+import { runInMatlabTerminal } from './matlabTerminal';
 
 const DEBUG_SESSION_NAME = 'Attach to scistack-gui server';
 
@@ -70,9 +71,16 @@ export class DagPanel {
           }
           return;
         }
-        // Auto-attach debugger before starting a run so breakpoints in user
-        // functions get hit. The session is auto-detached on run_done.
+        // MATLAB function execution: generate command and copy to clipboard
+        // instead of running in Python.
         if (method === 'start_run') {
+          const params = (msg.params ?? {}) as Record<string, unknown>;
+          const language = params.language as string | undefined;
+          if (language === 'matlab') {
+            await this.handleMatlabRun(msg.id as number, params);
+            return;
+          }
+          // Python function — auto-attach debugger so breakpoints get hit.
           await this.ensureDebugAttached();
         }
         try {
@@ -125,6 +133,41 @@ export class DagPanel {
     // already open (selection in showTextDocument only applies on first open).
     editor.revealRange(selection, vscode.TextEditorRevealKind.InCenter);
     return { ok: true };
+  }
+
+  /**
+   * Handle "Run" for a MATLAB function: generate command, then either send
+   * to the MathWorks MATLAB terminal or copy to clipboard.
+   */
+  private async handleMatlabRun(
+    msgId: number,
+    params: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const result = await this.pythonProcess.request(
+        'generate_matlab_command',
+        params,
+      ) as { command: string };
+      const command = result.command;
+
+      // Try MathWorks terminal first, fall back to clipboard.
+      const sent = await runInMatlabTerminal(command, this.outputChannel);
+      if (sent) {
+        vscode.window.showInformationMessage('Running in MATLAB terminal...');
+      } else {
+        await vscode.env.clipboard.writeText(command);
+        vscode.window.showInformationMessage(
+          'MATLAB command copied to clipboard. Paste into MATLAB to run.'
+        );
+      }
+
+      this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
+    } catch (err) {
+      this.panel.webview.postMessage({
+        id: msgId,
+        error: { message: String(err) },
+      });
+    }
   }
 
   /**

@@ -62,17 +62,24 @@ def _parse_path_input(value: str) -> dict | None:
 
 
 def _fn_params_from_registry(fn_name: str) -> list[str]:
-    """Return non-private parameter names from the registered function's signature."""
+    """Return non-private parameter names from the registered function's signature.
+
+    Falls back to the MATLAB registry if the function isn't a Python function.
+    """
     fn = registry._functions.get(fn_name)
-    if fn is None:
-        return []
-    try:
-        return [
-            name for name in inspect.signature(fn).parameters
-            if not name.startswith('_')
-        ]
-    except (ValueError, TypeError):
-        return []
+    if fn is not None:
+        try:
+            return [
+                name for name in inspect.signature(fn).parameters
+                if not name.startswith('_')
+            ]
+        except (ValueError, TypeError):
+            return []
+    # Check MATLAB registry.
+    from scistack_gui import matlab_registry
+    if matlab_registry.is_matlab_function(fn_name):
+        return list(matlab_registry.get_matlab_function(fn_name).params)
+    return []
 
 
 def _node_id_to_var_label(
@@ -432,14 +439,23 @@ def _build_graph(db: DatabaseManager) -> dict:
     # Load saved node configs (schema filter, run options) from manual nodes.
     manual_nodes = _ps.get_manual_nodes(db)
 
+    from scistack_gui import matlab_registry as _mr
+
     for fn in sorted(fn_input_params.keys()):
         input_params = dict(sorted(fn_input_params[fn].items()))
         constant_params = sorted(fn_constants[fn])
-        # Fill in any params the DB didn't capture (e.g. never run via for_each)
+        # Fill in any params the DB didn't capture (e.g. never run via for_each).
+        # For MATLAB functions, use the MATLAB parser's param list.
         known = set(input_params) | set(constant_params)
-        for name in _fn_params_from_registry(fn):
-            if name not in known:
-                input_params[name] = ""
+        if _mr.is_matlab_function(fn):
+            matlab_params = _mr.get_matlab_function(fn).params
+            for name in matlab_params:
+                if name not in known:
+                    input_params[name] = ""
+        else:
+            for name in _fn_params_from_registry(fn):
+                if name not in known:
+                    input_params[name] = ""
         fn_data: dict = {
             "label": fn,
             "variants": fn_variants.get(fn, []),
@@ -450,6 +466,9 @@ def _build_graph(db: DatabaseManager) -> dict:
         state = run_states.get(f"fn__{fn}")
         if state:
             fn_data["run_state"] = state
+        # Tag MATLAB functions so the frontend can style them differently.
+        if _mr.is_matlab_function(fn):
+            fn_data["language"] = "matlab"
         # Apply saved config (schemaFilter, runOptions) if present.
         node_id = f"fn__{fn}"
         saved = manual_nodes.get(node_id, {}).get("config")

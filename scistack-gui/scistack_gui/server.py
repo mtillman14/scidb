@@ -102,23 +102,36 @@ def _h_get_info(params):
 
 def _h_get_registry(params):
     from scistack_gui import registry
+    from scistack_gui import matlab_registry
     from scidb import BaseVariable
     return {
         "functions": sorted(registry._functions.keys()),
         "variables": sorted(BaseVariable._all_subclasses.keys()),
+        "matlab_functions": matlab_registry.get_all_function_names(),
     }
 
 
 def _h_get_function_params(params):
     from scistack_gui.api.pipeline import _fn_params_from_registry
-    return {"params": _fn_params_from_registry(params["name"])}
+    from scistack_gui import matlab_registry
+    name = params["name"]
+    # Check MATLAB registry first for MATLAB functions.
+    if matlab_registry.is_matlab_function(name):
+        info = matlab_registry.get_matlab_function(name)
+        return {"params": info.params}
+    return {"params": _fn_params_from_registry(name)}
 
 
 def _h_get_function_source(params):
     """Return the source file path and line number for a registered function."""
     import inspect
     from scistack_gui import registry
+    from scistack_gui import matlab_registry
     name = params["name"]
+    # Check MATLAB registry first.
+    if matlab_registry.is_matlab_function(name):
+        info = matlab_registry.get_matlab_function(name)
+        return {"ok": True, "file": str(info.file_path), "line": 1}
     fn = registry._functions.get(name)
     if fn is None:
         return {"ok": False, "error": f"Function '{name}' is not registered (pass --module at startup)."}
@@ -279,6 +292,7 @@ def _h_refresh_module(params):
     # for other JSON-RPC clients and internal callers (e.g. variable creation
     # in api/variables.py) that only need to re-import the user module.
     from scistack_gui import registry
+    from scistack_gui import matlab_registry
     from scistack_gui.notify import notify
     try:
         # Project mode refreshes all sources; single-file mode refreshes one.
@@ -286,6 +300,8 @@ def _h_refresh_module(params):
             result = registry.refresh_all()
         else:
             result = registry.refresh_module()
+        # Also refresh MATLAB registry if configured.
+        matlab_registry.refresh_all()
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
@@ -299,13 +315,15 @@ def _h_create_variable(params):
     import keyword
     from scidb import BaseVariable
     from scistack_gui import registry
+    from scistack_gui import matlab_registry
     from scistack_gui.notify import notify
 
     name = params.get("name", "").strip()
     docstring = params.get("docstring")
+    language = params.get("language", "python")
 
     if not name.isidentifier() or keyword.iskeyword(name):
-        return {"ok": False, "error": f"'{name}' is not a valid Python class name."}
+        return {"ok": False, "error": f"'{name}' is not a valid class name."}
     if name.startswith("_"):
         return {"ok": False, "error": "Variable names must not start with an underscore."}
     if not name[0].isupper():
@@ -313,7 +331,11 @@ def _h_create_variable(params):
     if name in BaseVariable._all_subclasses:
         return {"ok": False, "error": f"A variable named '{name}' already exists."}
 
-    # Determine the target file for the new class definition.
+    # MATLAB variable creation: write a .m classdef file.
+    if language == "matlab":
+        return _create_matlab_variable(name, docstring, matlab_registry, notify)
+
+    # Python variable creation (original path).
     target_file: Path | None = None
     if registry._config is not None and registry._config.variable_file is not None:
         target_file = registry._config.variable_file
@@ -342,6 +364,42 @@ def _h_create_variable(params):
             registry.refresh_module()
     except Exception as e:
         return {"ok": False, "error": f"Class was written but refresh failed: {e}"}
+
+    notify("dag_updated", {})
+    return {"ok": True, "name": name}
+
+
+def _create_matlab_variable(name, docstring, matlab_registry, notify):
+    """Create a MATLAB classdef variable file and register the surrogate."""
+    if matlab_registry._config is None or matlab_registry._config.matlab_variable_dir is None:
+        return {"ok": False, "error": "No matlab.variable_dir configured in [tool.scistack.matlab]."}
+
+    target_dir = matlab_registry._config.matlab_variable_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / f"{name}.m"
+
+    if target_file.exists():
+        return {"ok": False, "error": f"File already exists: {target_file}"}
+
+    # Build the .m classdef content.
+    m_lines = [f"classdef {name} < scidb.BaseVariable"]
+    if docstring:
+        m_lines.append(f"    % {docstring}")
+    m_lines.append("end")
+    m_lines.append("")  # trailing newline
+
+    try:
+        target_file.write_text("\n".join(m_lines), encoding="utf-8")
+    except OSError as e:
+        return {"ok": False, "error": f"Failed to write .m file: {e}"}
+
+    # Create the Python surrogate and refresh the MATLAB registry.
+    try:
+        from sci_matlab.bridge import register_matlab_variable
+        register_matlab_variable(name)
+        matlab_registry.refresh_all()
+    except Exception as e:
+        return {"ok": False, "error": f"File written but registration failed: {e}"}
 
     notify("dag_updated", {})
     return {"ok": True, "name": name}
@@ -402,6 +460,42 @@ def _h_remove_library(params):
 
 
 # ---------------------------------------------------------------------------
+# MATLAB support
+# ---------------------------------------------------------------------------
+
+def _h_generate_matlab_command(params):
+    """Generate a ready-to-paste MATLAB command for a pipeline function."""
+    from scistack_gui.api.matlab_command import generate_matlab_command
+    from scistack_gui.db import get_db, get_db_path
+    from scistack_gui import matlab_registry
+
+    db = get_db()
+    db_path = str(get_db_path())
+
+    # Collect addpath directories from MATLAB config.
+    addpath_dirs = None
+    if matlab_registry._config is not None:
+        addpath_dirs = [str(p) for p in matlab_registry._config.matlab_addpath]
+
+    # Resolve variants for this function from DB history.
+    function_name = params["function_name"]
+    all_variants = db.list_pipeline_variants()
+    fn_variants = [v for v in all_variants if v["function_name"] == function_name]
+
+    return {
+        "command": generate_matlab_command(
+            function_name=function_name,
+            db_path=db_path,
+            schema_keys=list(db.dataset_schema_keys),
+            variants=fn_variants if fn_variants else params.get("variants"),
+            schema_filter=params.get("schema_filter"),
+            schema_level=params.get("schema_level"),
+            addpath_dirs=addpath_dirs,
+        )
+    }
+
+
+# ---------------------------------------------------------------------------
 # Method dispatch table
 # ---------------------------------------------------------------------------
 
@@ -439,6 +533,7 @@ METHODS = {
     "search_index_packages": _h_search_index_packages,
     "add_library": _h_add_library,
     "remove_library": _h_remove_library,
+    "generate_matlab_command": _h_generate_matlab_command,
 }
 
 
@@ -511,6 +606,15 @@ def main():
                 "Project mode: %d functions, %d variables",
                 len(result["functions"]), len(result["variables"]),
             )
+            # Load MATLAB registry if MATLAB config is present.
+            if config.matlab_functions or config.matlab_variables:
+                from scistack_gui import matlab_registry
+                matlab_result = matlab_registry.load_from_config(config)
+                logger.info(
+                    "MATLAB: %d functions, %d variables",
+                    len(matlab_result["matlab_functions"]),
+                    len(matlab_result["matlab_variables"]),
+                )
         except (FileNotFoundError, ValueError) as e:
             print(json.dumps({
                 "jsonrpc": "2.0", "method": "error",

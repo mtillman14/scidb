@@ -13,6 +13,8 @@ import { DagPanel } from './dagPanel';
 let pythonProcess: PythonProcess | null = null;
 let dagPanel: DagPanel | null = null;
 let outputChannel: vscode.OutputChannel;
+let dbWatcher: vscode.FileSystemWatcher | null = null;
+let dbWatcherDebounce: ReturnType<typeof setTimeout> | null = null;
 
 // Remember the most recent start args so we can restart the Python process
 // (e.g. after editing scistack_gui source code) without re-prompting the user.
@@ -236,6 +238,10 @@ async function startPipeline(
     }
   });
 
+  // Watch the DuckDB file for external changes (e.g. MATLAB writes).
+  // Debounce with a 2-second window so rapid writes don't flood the UI.
+  setupDbWatcher(dbPath);
+
   // Status bar
   const statusItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Left, 100
@@ -267,7 +273,49 @@ async function resolvePythonPath(): Promise<string | undefined> {
   return 'python3';
 }
 
+function setupDbWatcher(dbPath: string): void {
+  // Dispose any previous watcher.
+  if (dbWatcher) {
+    dbWatcher.dispose();
+    dbWatcher = null;
+  }
+  if (dbWatcherDebounce) {
+    clearTimeout(dbWatcherDebounce);
+    dbWatcherDebounce = null;
+  }
+
+  const dbDir = path.dirname(dbPath);
+  const dbBase = path.basename(dbPath);
+  // Watch for .duckdb and .duckdb.wal files.
+  const pattern = new vscode.RelativePattern(dbDir, dbBase + '*');
+  dbWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+  const onDbChange = () => {
+    if (dbWatcherDebounce) {
+      clearTimeout(dbWatcherDebounce);
+    }
+    dbWatcherDebounce = setTimeout(() => {
+      dbWatcherDebounce = null;
+      if (dagPanel) {
+        outputChannel.appendLine('DuckDB file changed externally — refreshing DAG');
+        dagPanel.postMessage({ method: 'dag_updated', params: {} });
+      }
+    }, 2000);
+  };
+
+  dbWatcher.onDidChange(onDbChange);
+  dbWatcher.onDidCreate(onDbChange);
+}
+
 export function deactivate() {
+  if (dbWatcher) {
+    dbWatcher.dispose();
+    dbWatcher = null;
+  }
+  if (dbWatcherDebounce) {
+    clearTimeout(dbWatcherDebounce);
+    dbWatcherDebounce = null;
+  }
   if (pythonProcess) {
     pythonProcess.kill();
     pythonProcess = null;
