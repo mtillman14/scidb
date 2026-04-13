@@ -221,3 +221,191 @@ class TestDirectConstructor:
         x = constant(1)
         with pytest.raises(AttributeError):
             x.some_new_attr = 5  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Bitwise operations
+# ---------------------------------------------------------------------------
+class TestBitwiseOperations:
+    def test_bitwise_and(self):
+        x = constant(0b1100)
+        assert (x & 0b1010) == 0b1000
+        assert (0b1010 & x) == 0b1000
+
+    def test_bitwise_or(self):
+        x = constant(0b1100)
+        assert (x | 0b0011) == 0b1111
+        assert (0b0011 | x) == 0b1111
+
+    def test_bitwise_xor(self):
+        x = constant(0b1100)
+        assert (x ^ 0b1010) == 0b0110
+        assert (0b1010 ^ x) == 0b0110
+
+    def test_left_shift(self):
+        x = constant(1)
+        assert (x << 4) == 16
+        assert (1 << constant(4)) == 16
+
+    def test_right_shift(self):
+        x = constant(16)
+        assert (x >> 2) == 4
+        assert (16 >> constant(2)) == 4
+
+    def test_invert(self):
+        x = constant(0)
+        assert ~x == ~0
+
+
+# ---------------------------------------------------------------------------
+# Unary operations
+# ---------------------------------------------------------------------------
+class TestUnaryOperations:
+    def test_positive(self):
+        x = constant(5)
+        assert +x == 5
+
+    def test_positive_negative(self):
+        x = constant(-3)
+        assert +x == -3
+
+    def test_round_no_digits(self):
+        x = constant(3.7)
+        assert round(x) == 4
+
+    def test_round_with_digits(self):
+        x = constant(3.14159)
+        assert round(x, 2) == 3.14
+
+    def test_abs_positive(self):
+        x = constant(5)
+        assert abs(x) == 5
+
+    def test_abs_negative(self):
+        x = constant(-5)
+        assert abs(x) == 5
+
+
+# ---------------------------------------------------------------------------
+# Type conversions
+# ---------------------------------------------------------------------------
+class TestTypeConversions:
+    def test_complex_conversion(self):
+        x = constant(3)
+        assert complex(x) == 3 + 0j
+
+    def test_int_from_float_constant(self):
+        x = constant(3.9)
+        assert int(x) == 3
+
+    def test_str_conversion(self):
+        x = constant(42)
+        assert str(x) == "42"
+
+
+# ---------------------------------------------------------------------------
+# Constant-to-Constant arithmetic
+# ---------------------------------------------------------------------------
+class TestConstantToConstantArithmetic:
+    def test_add_two_constants(self):
+        a = constant(10)
+        b = constant(20)
+        assert a + b == 30
+
+    def test_sub_two_constants(self):
+        a = constant(20)
+        b = constant(7)
+        assert a - b == 13
+
+    def test_mul_two_constants(self):
+        a = constant(3)
+        b = constant(4)
+        assert a * b == 12
+
+    def test_div_two_constants(self):
+        a = constant(10)
+        b = constant(4)
+        assert a / b == 2.5
+
+    def test_floordiv_two_constants(self):
+        a = constant(10)
+        b = constant(3)
+        assert a // b == 3
+
+    def test_mod_two_constants(self):
+        a = constant(10)
+        b = constant(3)
+        assert a % b == 1
+
+    def test_pow_two_constants(self):
+        a = constant(2)
+        b = constant(10)
+        assert a ** b == 1024
+
+    def test_comparison_two_constants(self):
+        a = constant(5)
+        b = constant(10)
+        assert a < b
+        assert b > a
+        assert a <= b
+        assert b >= a
+        assert a != b
+        assert constant(5) == constant(5)
+
+
+# ---------------------------------------------------------------------------
+# value property
+# ---------------------------------------------------------------------------
+class TestValueProperty:
+    def test_value_returns_wrapped(self):
+        x = constant(42)
+        assert x.value == 42
+        assert type(x.value) is int
+
+    def test_value_returns_original_container(self):
+        lst = [1, 2, 3]
+        x = constant(lst)
+        assert x.value is lst
+
+    def test_value_returns_dict(self):
+        d = {"a": 1, "b": 2}
+        x = constant(d)
+        assert x.value is d
+
+
+# ---------------------------------------------------------------------------
+# Slots: reject arbitrary attributes, allow slot attributes
+# ---------------------------------------------------------------------------
+class TestSlotsConstraints:
+    def test_arbitrary_attr_rejected(self):
+        x = constant(1)
+        with pytest.raises(AttributeError):
+            x.random_attr = 5  # type: ignore[misc]
+
+    def test_slot_attrs_are_writable(self):
+        """Slots don't prevent setting existing slot attributes."""
+        x = constant(1, description="original")
+        # This is allowed by Python's __slots__ mechanism
+        x.description = "changed"  # type: ignore[misc]
+        assert x.description == "changed"
+
+
+# ---------------------------------------------------------------------------
+# Set / dict membership
+# ---------------------------------------------------------------------------
+class TestSetDictMembership:
+    def test_constant_in_set(self):
+        x = constant(42)
+        s = {42, 43, 44}
+        assert x in s
+
+    def test_constant_as_dict_key(self):
+        x = constant("key")
+        d = {x: "value"}
+        assert d["key"] == "value"
+
+    def test_two_constants_same_value_equal_hash(self):
+        a = constant(42, description="first")
+        b = constant(42, description="second")
+        assert hash(a) == hash(b)
+        assert a == b

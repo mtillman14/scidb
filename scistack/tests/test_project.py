@@ -285,3 +285,152 @@ class TestCli:
         from scistack.__main__ import main
 
         assert main([]) == 1
+
+    def test_cli_project_new_happy_path(self, tmp_path):
+        from scistack.__main__ import main
+
+        ret = main([
+            "project", "new", "cli_study",
+            "--schema-keys", "subject", "session",
+            "--parent-dir", str(tmp_path),
+            "--no-uv-sync",
+        ])
+        assert ret == 0
+        assert (tmp_path / "cli_study" / "pyproject.toml").is_file()
+        assert (tmp_path / "cli_study" / "src" / "cli_study" / "__init__.py").is_file()
+
+    def test_cli_existing_dir_returns_1(self, tmp_path):
+        from scistack.__main__ import main
+
+        (tmp_path / "dup_study").mkdir()
+        ret = main([
+            "project", "new", "dup_study",
+            "--schema-keys", "subject",
+            "--parent-dir", str(tmp_path),
+            "--no-uv-sync",
+        ])
+        assert ret == 1
+
+    def test_cli_project_subcommand_without_new_returns_1(self):
+        from scistack.__main__ import main
+
+        assert main(["project"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# scaffold_project — schema keys edge cases
+# ---------------------------------------------------------------------------
+class TestScaffoldSchemaKeys:
+    def test_single_schema_key(self, tmp_path):
+        root = scaffold_project(
+            parent_dir=tmp_path,
+            name="single_key",
+            schema_keys=["subject"],
+            run_uv_sync=False,
+            configure_db=False,
+        )
+        readme = (root / "README.md").read_text()
+        assert "['subject']" in readme
+
+    def test_many_schema_keys(self, tmp_path):
+        keys = ["subject", "session", "run", "condition"]
+        root = scaffold_project(
+            parent_dir=tmp_path,
+            name="many_keys",
+            schema_keys=keys,
+            run_uv_sync=False,
+            configure_db=False,
+        )
+        readme = (root / "README.md").read_text()
+        for key in keys:
+            assert key in readme
+
+    def test_readme_schema_keys_repr(self, tmp_path):
+        """README must embed the schema keys in a valid Python repr."""
+        root = scaffold_project(
+            parent_dir=tmp_path,
+            name="repr_study",
+            schema_keys=["subject", "session"],
+            run_uv_sync=False,
+            configure_db=False,
+        )
+        readme = (root / "README.md").read_text()
+        assert "['subject', 'session']" in readme
+
+    def test_init_template_has_project_name(self, tmp_path):
+        root = scaffold_project(
+            parent_dir=tmp_path,
+            name="init_study",
+            schema_keys=["subject"],
+            run_uv_sync=False,
+            configure_db=False,
+        )
+        text = (root / "src" / "init_study" / "__init__.py").read_text()
+        assert "init_study" in text
+
+
+# ---------------------------------------------------------------------------
+# scaffold_project — validate_project_name edge cases
+# ---------------------------------------------------------------------------
+class TestValidateProjectNameEdgeCases:
+    def test_underscores_only_after_first_char_rejected(self):
+        with pytest.raises(ValueError, match="Invalid project name"):
+            validate_project_name("_leading")
+
+    def test_single_letter_valid(self):
+        validate_project_name("x")  # should not raise
+
+    def test_long_name_valid(self):
+        validate_project_name("a" * 100)  # should not raise
+
+    def test_trailing_underscore_valid(self):
+        validate_project_name("study_")  # should not raise
+
+    def test_only_digits_after_letter_valid(self):
+        validate_project_name("a123")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# scaffold_project — template content correctness
+# ---------------------------------------------------------------------------
+class TestTemplateContent:
+    @pytest.fixture
+    def project_root(self, tmp_path):
+        return scaffold_project(
+            parent_dir=tmp_path,
+            name="tmpl_study",
+            schema_keys=["subject", "session"],
+            run_uv_sync=False,
+            configure_db=False,
+        )
+
+    def test_pyproject_hatch_packages_path(self, project_root):
+        """Hatch build target must point at src/{name}."""
+        with open(project_root / "pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+        pkgs = data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+        assert pkgs == ["src/tmpl_study"]
+
+    def test_gitignore_contains_wal(self, project_root):
+        text = (project_root / ".gitignore").read_text()
+        assert "*.duckdb.wal" in text
+
+    def test_gitignore_contains_pycache(self, project_root):
+        text = (project_root / ".gitignore").read_text()
+        assert "__pycache__/" in text
+
+    def test_project_toml_has_version(self, project_root):
+        text = (project_root / ".scistack" / "project.toml").read_text()
+        assert 'version = "0.1.0"' in text
+
+    def test_project_toml_created_is_iso_date(self, project_root):
+        text = (project_root / ".scistack" / "project.toml").read_text()
+        # ISO dates contain "T" and "+00:00" or "Z"
+        assert "created" in text
+        # Just verify it parses as a date
+        import datetime
+        for line in text.splitlines():
+            if "created" in line:
+                date_str = line.split("=", 1)[1].strip().strip('"')
+                dt = datetime.datetime.fromisoformat(date_str)
+                assert dt.tzinfo is not None

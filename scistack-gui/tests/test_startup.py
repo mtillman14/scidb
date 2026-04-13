@@ -305,3 +305,148 @@ class TestInfoEndpointSurfaceErrors:
         data = resp.json()
         assert "db_name" in data
         assert data["db_name"].endswith(".duckdb")
+
+
+# ---------------------------------------------------------------------------
+# StartupError defaults and to_dict
+# ---------------------------------------------------------------------------
+class TestStartupErrorDefaults:
+    def test_default_details_empty(self):
+        err = StartupError(kind="test", message="msg")
+        assert err.details == ""
+
+    def test_default_blocking_true(self):
+        err = StartupError(kind="test", message="msg")
+        assert err.blocking is True
+
+    def test_non_blocking_error(self):
+        err = StartupError(kind="warn", message="msg", blocking=False)
+        assert err.blocking is False
+        d = err.to_dict()
+        assert d["blocking"] is False
+
+    def test_to_dict_all_fields(self):
+        err = StartupError(
+            kind="k",
+            message="m",
+            details="d",
+            blocking=False,
+        )
+        d = err.to_dict()
+        assert set(d.keys()) == {"kind", "message", "details", "blocking"}
+        assert d["kind"] == "k"
+        assert d["message"] == "m"
+        assert d["details"] == "d"
+        assert d["blocking"] is False
+
+
+# ---------------------------------------------------------------------------
+# is_lockfile_stale exception handling
+# ---------------------------------------------------------------------------
+class TestIsLockfileStaleException:
+    def test_is_lockfile_stale_exception_returns_none(
+        self, project_with_pyproject: Path, monkeypatch
+    ):
+        """If is_lockfile_stale itself raises, check returns None gracefully."""
+        def boom(root):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", boom)
+
+        result = check_lockfile_staleness(project_with_pyproject)
+        assert result is None
+        assert get_startup_errors() == []
+
+
+# ---------------------------------------------------------------------------
+# Multiple check calls (accumulation / replacement)
+# ---------------------------------------------------------------------------
+class TestMultipleChecks:
+    def test_repeated_failures_dedup(
+        self, project_with_pyproject: Path, monkeypatch
+    ):
+        """Calling check twice with failures should replace, not append."""
+        monkeypatch.setattr(
+            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
+        )
+
+        call_count = [0]
+
+        def fake_sync(root, **kw):
+            call_count[0] += 1
+            return _FakeSyncResult(
+                ok=False,
+                returncode=1,
+                stderr=f"error attempt {call_count[0]}",
+            )
+
+        monkeypatch.setattr("scistack.uv_wrapper.sync", fake_sync)
+
+        check_lockfile_staleness(project_with_pyproject)
+        check_lockfile_staleness(project_with_pyproject)
+
+        errors = get_startup_errors()
+        assert len(errors) == 1  # deduped by kind
+        assert "attempt 2" in errors[0].details
+
+    def test_different_error_kinds_accumulate(
+        self, project_with_pyproject: Path, monkeypatch
+    ):
+        """Different error kinds should accumulate, not replace each other."""
+        from scistack.uv_wrapper import UvNotFoundError
+
+        monkeypatch.setattr(
+            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
+        )
+
+        # First call: uv not found
+        def uv_missing_sync(root, **kw):
+            raise UvNotFoundError("uv not on PATH")
+
+        monkeypatch.setattr("scistack.uv_wrapper.sync", uv_missing_sync)
+        check_lockfile_staleness(project_with_pyproject)
+
+        # Record a different kind manually
+        startup._record(StartupError(kind="other_check", message="something else"))
+
+        errors = get_startup_errors()
+        assert len(errors) == 2
+        kinds = {e.kind for e in errors}
+        assert kinds == {"uv_not_installed", "other_check"}
+
+
+# ---------------------------------------------------------------------------
+# check_lockfile_staleness message content
+# ---------------------------------------------------------------------------
+class TestCheckMessages:
+    def test_sync_failure_message_includes_exit_code(
+        self, project_with_pyproject: Path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
+        )
+        monkeypatch.setattr(
+            "scistack.uv_wrapper.sync",
+            lambda root, **kw: _FakeSyncResult(ok=False, returncode=42, stderr="boom"),
+        )
+
+        result = check_lockfile_staleness(project_with_pyproject)
+        assert result is not None
+        assert "42" in result.message
+
+    def test_uv_not_installed_message_has_install_url(
+        self, project_with_pyproject: Path, monkeypatch
+    ):
+        from scistack.uv_wrapper import UvNotFoundError
+
+        monkeypatch.setattr(
+            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
+        )
+        monkeypatch.setattr(
+            "scistack.uv_wrapper.sync",
+            lambda root, **kw: (_ for _ in ()).throw(UvNotFoundError("not found")),
+        )
+
+        result = check_lockfile_staleness(project_with_pyproject)
+        assert result is not None
+        assert "astral-sh/uv" in result.message

@@ -1685,10 +1685,11 @@ class DatabaseManager:
         # Split metadata
         nested_metadata = self._split_metadata(metadata)
 
-        # Warn if no metadata keys match the schema
-        if metadata and not nested_metadata.get("schema"):
+        # Warn if no metadata keys match the schema (skip internal __* keys)
+        user_metadata_keys = [k for k in metadata if not k.startswith("__")]
+        if user_metadata_keys and not nested_metadata.get("schema"):
             warnings.warn(
-                f"None of the metadata keys {list(metadata.keys())} match the "
+                f"None of the metadata keys {user_metadata_keys} match the "
                 f"configured dataset_schema_keys {self.dataset_schema_keys}. "
                 f"All keys will be treated as version parameters.",
                 UserWarning,

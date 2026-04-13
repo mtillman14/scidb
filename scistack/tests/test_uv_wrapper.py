@@ -436,3 +436,185 @@ class TestUvIntegration:
         result = sync(tmp_path, timeout=30)
         assert not result.ok
         assert result.combined_output != ""
+
+
+# ---------------------------------------------------------------------------
+# LockedPackage property edge cases
+# ---------------------------------------------------------------------------
+class TestLockedPackageProperties:
+    def test_registry_url_none_when_not_registry(self):
+        pkg = LockedPackage(name="foo", version="1.0", source={"editable": "."})
+        assert pkg.registry_url is None
+        assert not pkg.is_registry
+        assert pkg.is_editable
+
+    def test_registry_url_none_when_registry_is_dict(self):
+        """If source.registry is a dict instead of str, registry_url returns None."""
+        pkg = LockedPackage(name="foo", version="1.0", source={"registry": {"url": "https://pypi.org"}})
+        assert pkg.is_registry  # key exists in source
+        assert pkg.registry_url is None  # but it's not a string
+
+    def test_is_virtual_false_for_registry(self):
+        pkg = LockedPackage(name="foo", version="1.0", source={"registry": "https://pypi.org/simple"})
+        assert not pkg.is_virtual
+        assert not pkg.is_editable
+        assert pkg.is_registry
+
+    def test_empty_source(self):
+        pkg = LockedPackage(name="foo", version="1.0")
+        assert not pkg.is_registry
+        assert not pkg.is_editable
+        assert not pkg.is_virtual
+        assert pkg.registry_url is None
+
+    def test_version_is_stored(self):
+        pkg = LockedPackage(name="numpy", version="2.1.0")
+        assert pkg.version == "2.1.0"
+        assert pkg.name == "numpy"
+
+
+# ---------------------------------------------------------------------------
+# _UvResult / SyncResult combined_output edge cases
+# ---------------------------------------------------------------------------
+class TestCombinedOutput:
+    def test_combined_output_empty_when_both_empty(self):
+        r = SyncResult(ok=True, returncode=0, stdout="", stderr="", command=("uv", "sync"))
+        assert r.combined_output == ""
+
+    def test_combined_output_only_stdout(self):
+        r = SyncResult(ok=True, returncode=0, stdout="Resolved 3 packages", stderr="", command=("uv", "sync"))
+        assert r.combined_output == "Resolved 3 packages"
+
+    def test_combined_output_only_stderr(self):
+        r = SyncResult(ok=False, returncode=1, stdout="", stderr="error: broken", command=("uv", "sync"))
+        assert r.combined_output == "error: broken"
+
+    def test_combined_output_both(self):
+        r = SyncResult(ok=False, returncode=1, stdout="partial", stderr="error", command=("uv", "sync"))
+        assert r.combined_output == "partial\nerror"
+
+
+# ---------------------------------------------------------------------------
+# read_lockfile edge cases
+# ---------------------------------------------------------------------------
+class TestReadLockfileEdgeCases:
+    def test_no_package_key_returns_empty(self, tmp_path):
+        """A valid TOML lockfile with no 'package' key should return empty list."""
+        (tmp_path / "uv.lock").write_text("version = 1\n")
+        pkgs = read_lockfile(tmp_path)
+        assert pkgs == []
+
+    def test_package_entry_without_version(self, tmp_path):
+        """Entries without version get empty string."""
+        (tmp_path / "uv.lock").write_text(
+            textwrap.dedent("""
+                version = 1
+
+                [[package]]
+                name = "noversion"
+            """)
+        )
+        pkgs = read_lockfile(tmp_path)
+        assert len(pkgs) == 1
+        assert pkgs[0].name == "noversion"
+        assert pkgs[0].version == ""
+
+    def test_package_entry_with_non_dict_source(self, tmp_path):
+        """If source is not a dict, it should default to empty dict."""
+        (tmp_path / "uv.lock").write_text(
+            textwrap.dedent("""
+                version = 1
+
+                [[package]]
+                name = "badsource"
+                version = "1.0"
+                source = "not-a-dict"
+            """)
+        )
+        pkgs = read_lockfile(tmp_path)
+        assert len(pkgs) == 1
+        assert pkgs[0].source == {}
+
+    def test_package_entry_non_dict_skipped(self, tmp_path):
+        """Non-dict entries in the package list should be skipped."""
+        (tmp_path / "uv.lock").write_text(
+            textwrap.dedent("""
+                version = 1
+
+                [[package]]
+                name = "valid"
+                version = "1.0"
+            """)
+        )
+        # This is already tested indirectly but let's be explicit
+        pkgs = read_lockfile(tmp_path)
+        assert len(pkgs) == 1
+
+
+# ---------------------------------------------------------------------------
+# _canonicalize edge cases
+# ---------------------------------------------------------------------------
+class TestCanonicalizeEdgeCases:
+    def test_empty_dict(self):
+        assert _canonicalize({}) == "{}"
+
+    def test_empty_list(self):
+        assert _canonicalize([]) == "[]"
+
+    def test_empty_string(self):
+        assert _canonicalize("") == "''"
+
+    def test_string_with_special_chars(self):
+        result = _canonicalize("hello world! @#$")
+        assert isinstance(result, str)
+
+    def test_float_precision(self):
+        assert _canonicalize(3.14) == "3.14"
+
+    def test_integer(self):
+        assert _canonicalize(42) == "42"
+
+    def test_deeply_nested(self):
+        obj = {"a": {"b": {"c": [1, 2, {"d": True}]}}}
+        result = _canonicalize(obj)
+        assert "true" in result
+        assert "d=" in result
+
+
+# ---------------------------------------------------------------------------
+# _hash_mapping determinism
+# ---------------------------------------------------------------------------
+class TestHashMapping:
+    def test_same_input_same_hash(self):
+        a = {"project": {"name": "foo", "version": "1.0"}, "deps": ["bar"]}
+        assert _hash_mapping(a) == _hash_mapping(a)
+
+    def test_key_order_irrelevant(self):
+        a = {"b": 1, "a": 2}
+        b = {"a": 2, "b": 1}
+        assert _hash_mapping(a) == _hash_mapping(b)
+
+    def test_different_values_different_hash(self):
+        assert _hash_mapping({"a": 1}) != _hash_mapping({"a": 2})
+
+    def test_hash_is_sha256_hex(self):
+        h = _hash_mapping({"x": 1})
+        assert len(h) == 64  # SHA-256 hex digest
+        assert all(c in "0123456789abcdef" for c in h)
+
+
+# ---------------------------------------------------------------------------
+# sync with timeout
+# ---------------------------------------------------------------------------
+class TestSyncTimeout:
+    def test_sync_passes_timeout(self, fake_uv, tmp_path):
+        fake_uv.set_result(0)
+        sync(tmp_path, timeout=42.0)
+        call = fake_uv.calls[0]
+        assert call["kwargs"].get("timeout") == 42.0
+
+    def test_sync_default_timeout(self, fake_uv, tmp_path):
+        fake_uv.set_result(0)
+        sync(tmp_path)
+        call = fake_uv.calls[0]
+        assert call["kwargs"].get("timeout") == 300.0

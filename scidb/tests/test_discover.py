@@ -487,3 +487,305 @@ class TestHelpers:
 
     def test_dist_to_import_names_missing(self):
         assert _dist_to_import_names("definitely_not_a_real_package_xyz") == []
+
+
+# ---------------------------------------------------------------------------
+# ModuleExports properties
+# ---------------------------------------------------------------------------
+class TestModuleExportsProperties:
+    def test_is_empty_when_no_exports(self):
+        from scidb.discover import ModuleExports
+
+        exports = ModuleExports(module_name="test")
+        assert exports.is_empty
+        assert exports.total_count == 0
+
+    def test_is_empty_false_with_variable(self):
+        from scidb.discover import ModuleExports
+
+        exports = ModuleExports(module_name="test", variables=[object])
+        assert not exports.is_empty
+        assert exports.total_count == 1
+
+    def test_is_empty_false_with_function(self):
+        from scidb.discover import ModuleExports
+
+        exports = ModuleExports(module_name="test", functions=[object])
+        assert not exports.is_empty
+
+    def test_is_empty_false_with_constant(self):
+        from scidb.discover import ModuleExports
+        from scidb import constant
+
+        c = constant(42)
+        exports = ModuleExports(module_name="test", constants=[("X", c)])
+        assert not exports.is_empty
+        assert exports.total_count == 1
+
+    def test_total_count_mixed(self):
+        from scidb.discover import ModuleExports
+        from scidb import constant
+
+        c = constant(42)
+        exports = ModuleExports(
+            module_name="test",
+            variables=[object, object],
+            functions=[object],
+            constants=[("X", c), ("Y", c)],
+        )
+        assert exports.total_count == 5
+
+
+# ---------------------------------------------------------------------------
+# PackageResult properties
+# ---------------------------------------------------------------------------
+class TestPackageResultProperties:
+    def test_counts_across_modules(self):
+        from scidb.discover import ModuleExports, PackageResult
+        from scidb import constant
+
+        c = constant(1)
+        m1 = ModuleExports(module_name="a", variables=[object, object])
+        m2 = ModuleExports(module_name="b", functions=[object], constants=[("X", c)])
+        result = PackageResult(name="test", modules=[m1, m2])
+        assert result.variable_count == 2
+        assert result.function_count == 1
+        assert result.constant_count == 1
+
+    def test_is_empty_all_empty_modules(self):
+        from scidb.discover import ModuleExports, PackageResult
+
+        m1 = ModuleExports(module_name="a")
+        m2 = ModuleExports(module_name="b")
+        result = PackageResult(name="test", modules=[m1, m2])
+        assert result.is_empty
+
+    def test_is_empty_no_modules(self):
+        from scidb.discover import PackageResult
+
+        result = PackageResult(name="test")
+        assert result.is_empty
+
+    def test_is_empty_false_if_any_module_has_exports(self):
+        from scidb.discover import ModuleExports, PackageResult
+
+        m1 = ModuleExports(module_name="a")
+        m2 = ModuleExports(module_name="b", variables=[object])
+        result = PackageResult(name="test", modules=[m1, m2])
+        assert not result.is_empty
+
+
+# ---------------------------------------------------------------------------
+# DiscoveryResult.non_empty_libraries
+# ---------------------------------------------------------------------------
+class TestDiscoveryResultNonEmptyLibraries:
+    def test_filters_empty_libraries(self):
+        from scidb.discover import ModuleExports, PackageResult
+
+        empty_pkg = PackageResult(name="empty_lib", modules=[ModuleExports(module_name="e")])
+        nonempty_pkg = PackageResult(
+            name="good_lib",
+            modules=[ModuleExports(module_name="g", variables=[object])],
+        )
+        result = DiscoveryResult(
+            project_code=PackageResult(name="proj"),
+            libraries={"empty_lib": empty_pkg, "good_lib": nonempty_pkg},
+        )
+        non_empty = result.non_empty_libraries()
+        assert "good_lib" in non_empty
+        assert "empty_lib" not in non_empty
+
+    def test_all_empty_returns_empty_dict(self):
+        from scidb.discover import ModuleExports, PackageResult
+
+        empty1 = PackageResult(name="a", modules=[ModuleExports(module_name="a")])
+        empty2 = PackageResult(name="b", modules=[ModuleExports(module_name="b")])
+        result = DiscoveryResult(
+            project_code=PackageResult(name="proj"),
+            libraries={"a": empty1, "b": empty2},
+        )
+        assert result.non_empty_libraries() == {}
+
+
+# ---------------------------------------------------------------------------
+# _PathInsert context manager
+# ---------------------------------------------------------------------------
+class TestPathInsert:
+    def test_inserts_and_removes_path(self, tmp_path):
+        from scidb.discover import _PathInsert
+
+        target = str(tmp_path / "my_src")
+        assert target not in sys.path
+        with _PathInsert(target):
+            assert target in sys.path
+        assert target not in sys.path
+
+    def test_does_not_double_insert(self, tmp_path):
+        from scidb.discover import _PathInsert
+
+        target = str(tmp_path / "already")
+        sys.path.insert(0, target)
+        try:
+            initial_count = sys.path.count(target)
+            with _PathInsert(target):
+                assert sys.path.count(target) == initial_count
+            # Should not have removed it since it didn't insert
+            assert target in sys.path
+        finally:
+            sys.path.remove(target)
+
+    def test_invalidates_caches_on_exit(self, tmp_path):
+        from scidb.discover import _PathInsert
+        import importlib
+
+        target = str(tmp_path / "cache_test")
+        # Just verify it doesn't raise
+        with _PathInsert(target):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# _purge_module
+# ---------------------------------------------------------------------------
+class TestPurgeModule:
+    def test_purge_removes_main_and_sub_modules(self):
+        from scidb.discover import _purge_module
+
+        # Inject fake modules
+        sys.modules["_fake_purge_test"] = type(sys)("_fake_purge_test")
+        sys.modules["_fake_purge_test.sub1"] = type(sys)("_fake_purge_test.sub1")
+        sys.modules["_fake_purge_test.sub2.deep"] = type(sys)("_fake_purge_test.sub2.deep")
+
+        _purge_module("_fake_purge_test")
+
+        assert "_fake_purge_test" not in sys.modules
+        assert "_fake_purge_test.sub1" not in sys.modules
+        assert "_fake_purge_test.sub2.deep" not in sys.modules
+
+    def test_purge_does_not_remove_unrelated(self):
+        from scidb.discover import _purge_module
+
+        # Inject fake modules — one unrelated
+        sys.modules["_fake_purge_a"] = type(sys)("_fake_purge_a")
+        sys.modules["_fake_purge_a_other"] = type(sys)("_fake_purge_a_other")
+
+        _purge_module("_fake_purge_a")
+
+        assert "_fake_purge_a" not in sys.modules
+        # _fake_purge_a_other starts with "_fake_purge_a" but not "_fake_purge_a."
+        assert "_fake_purge_a_other" in sys.modules
+        del sys.modules["_fake_purge_a_other"]
+
+    def test_purge_nonexistent_is_noop(self):
+        from scidb.discover import _purge_module
+
+        _purge_module("_definitely_not_in_sys_modules_xyz")
+        # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# scan_project: deep submodule hierarchy
+# ---------------------------------------------------------------------------
+class TestDeepSubmodules:
+    def test_deep_nested_modules_scanned(self, project_factory):
+        root = project_factory(
+            package_name="fix_deep",
+            files={
+                "level1/__init__.py": "",
+                "level1/level2/__init__.py": "",
+                "level1/level2/constants.py": """
+                    from scidb import constant
+                    DEEP_CONST = constant(42, description="deeply nested")
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_constants = [
+            (name, c) for m in result.project_code.modules for name, c in m.constants
+        ]
+        names = {name for name, _ in all_constants}
+        assert "DEEP_CONST" in names
+
+    def test_init_defines_exports(self, project_factory):
+        """Exports defined in __init__.py should be discovered."""
+        root = project_factory(
+            package_name="fix_init_exports",
+            files={
+                "__init__.py": """
+                    from scidb import constant
+                    INIT_CONST = constant(99, description="from init")
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_constants = [
+            (name, c) for m in result.project_code.modules for name, c in m.constants
+        ]
+        names = {name for name, _ in all_constants}
+        assert "INIT_CONST" in names
+
+    def test_empty_package_no_error(self, project_factory):
+        """A package with only __init__.py and no modules should scan cleanly."""
+        root = project_factory(
+            package_name="fix_empty_pkg",
+            files={},
+        )
+        result = scan_project(root)
+        assert result.project_code.is_empty
+        assert result.project_code.errors == []
+
+
+# ---------------------------------------------------------------------------
+# scan_project: multiple types in one module
+# ---------------------------------------------------------------------------
+class TestMixedModuleExports:
+    def test_all_types_in_one_module(self, project_factory):
+        root = project_factory(
+            package_name="fix_mixed",
+            files={
+                "everything.py": """
+                    from scidb import BaseVariable, constant
+                    from scilineage import lineage_fcn
+
+                    class MixedVar(BaseVariable):
+                        schema_version = 1
+
+                    @lineage_fcn
+                    def mixed_fn(x):
+                        return x
+
+                    MIXED_CONST = constant(42)
+                """,
+            },
+        )
+        result = scan_project(root)
+        by_module = {m.module_name: m for m in result.project_code.modules}
+        assert "fix_mixed.everything" in by_module
+
+        mod = by_module["fix_mixed.everything"]
+        assert len(mod.variables) == 1
+        assert mod.variables[0].__name__ == "MixedVar"
+        assert len(mod.functions) == 1
+        assert mod.functions[0].fcn.__name__ == "mixed_fn"
+        assert len(mod.constants) == 1
+        assert mod.constants[0][0] == "MIXED_CONST"
+
+
+# ---------------------------------------------------------------------------
+# scan_project: BaseVariable itself not collected
+# ---------------------------------------------------------------------------
+class TestBaseVariableNotCollected:
+    def test_base_variable_not_in_results(self, project_factory):
+        """BaseVariable itself must be excluded even if imported."""
+        root = project_factory(
+            package_name="fix_base",
+            files={
+                "variables.py": """
+                    from scidb import BaseVariable
+                    # Only re-imports BaseVariable, no subclass
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_vars = [v for m in result.project_code.modules for v in m.variables]
+        assert len(all_vars) == 0

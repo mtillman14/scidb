@@ -267,3 +267,142 @@ class TestTap:
     def test_not_exists_locally(self, tmp_path):
         tap = Tap(name="x", url="", local_path=tmp_path / "nope")
         assert not tap.exists_locally
+
+
+# ---------------------------------------------------------------------------
+# SCISTACK_CONFIG_DIR environment variable
+# ---------------------------------------------------------------------------
+class TestConfigDirEnvVar:
+    def test_env_var_overrides_default(self, tmp_path, monkeypatch):
+        custom_dir = tmp_path / "custom_scistack"
+        monkeypatch.setenv("SCISTACK_CONFIG_DIR", str(custom_dir))
+        from scistack.user_config import _default_config_dir
+
+        assert _default_config_dir() == custom_dir
+
+    def test_env_var_not_set_uses_home(self, monkeypatch):
+        monkeypatch.delenv("SCISTACK_CONFIG_DIR", raising=False)
+        from scistack.user_config import _default_config_dir
+
+        result = _default_config_dir()
+        assert result == Path.home() / ".scistack"
+
+
+# ---------------------------------------------------------------------------
+# _save_config roundtrip accuracy
+# ---------------------------------------------------------------------------
+class TestSaveConfigRoundtrip:
+    def test_save_and_reload_preserves_taps(self, config_dir, fake_git):
+        """Adding taps, saving, and reloading should preserve all data."""
+        add_tap("https://example.com/a.git", name="alpha", config_dir=config_dir)
+        add_tap("https://example.com/b.git", name="beta", config_dir=config_dir)
+
+        # Reload from disk
+        config = load_config(config_dir=config_dir)
+        assert len(config.taps) == 2
+        names = [t.name for t in config.taps]
+        assert "alpha" in names
+        assert "beta" in names
+
+        urls = [t.url for t in config.taps]
+        assert "https://example.com/a.git" in urls
+        assert "https://example.com/b.git" in urls
+
+    def test_save_after_remove_persists(self, config_dir, fake_git):
+        add_tap("https://example.com/a.git", name="alpha", config_dir=config_dir)
+        add_tap("https://example.com/b.git", name="beta", config_dir=config_dir)
+        remove_tap("alpha", config_dir=config_dir)
+
+        config = load_config(config_dir=config_dir)
+        assert len(config.taps) == 1
+        assert config.taps[0].name == "beta"
+
+
+# ---------------------------------------------------------------------------
+# Config edge cases
+# ---------------------------------------------------------------------------
+class TestConfigEdgeCases:
+    def test_config_with_only_comment(self, config_dir):
+        """A config file with just comments and no tap entries."""
+        (config_dir / "config.toml").write_text("# Just a comment\n")
+        config = load_config(config_dir=config_dir)
+        assert config.taps == []
+
+    def test_config_with_extra_keys_ignored(self, config_dir):
+        """Extra keys in tap entries should be silently ignored."""
+        (config_dir / "config.toml").write_text(
+            '[[tap]]\nname = "ok"\nurl = "https://example.com"\nextra = "ignored"\n'
+        )
+        config = load_config(config_dir=config_dir)
+        assert len(config.taps) == 1
+        assert config.taps[0].name == "ok"
+
+    def test_config_with_empty_tap_table(self, config_dir):
+        """An empty [[tap]] table (no name, no url) should be skipped."""
+        (config_dir / "config.toml").write_text("[[tap]]\n\n")
+        config = load_config(config_dir=config_dir)
+        assert config.taps == []
+
+
+# ---------------------------------------------------------------------------
+# Multiple add/remove cycles
+# ---------------------------------------------------------------------------
+class TestAddRemoveCycles:
+    def test_add_remove_readd_same_name(self, config_dir, fake_git):
+        add_tap("https://example.com/a.git", name="cycling", config_dir=config_dir)
+        remove_tap("cycling", config_dir=config_dir)
+        # Re-adding with same name should work
+        tap = add_tap("https://example.com/b.git", name="cycling", config_dir=config_dir)
+        assert tap.name == "cycling"
+        assert tap.url == "https://example.com/b.git"
+        taps = list_taps(config_dir=config_dir)
+        assert len(taps) == 1
+
+    def test_add_multiple_remove_all(self, config_dir, fake_git):
+        for i in range(5):
+            add_tap(f"https://example.com/{i}.git", name=f"tap{i}", config_dir=config_dir)
+        assert len(list_taps(config_dir=config_dir)) == 5
+
+        for i in range(5):
+            remove_tap(f"tap{i}", config_dir=config_dir)
+        assert len(list_taps(config_dir=config_dir)) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tap name validation edge cases
+# ---------------------------------------------------------------------------
+class TestTapNameEdgeCases:
+    def test_tap_name_with_digits(self, config_dir, fake_git):
+        tap = add_tap("https://example.com/a.git", name="lab42", config_dir=config_dir)
+        assert tap.name == "lab42"
+
+    def test_tap_name_starts_with_digit_rejected(self, config_dir, fake_git):
+        with pytest.raises(ValueError, match="Invalid tap name"):
+            add_tap("https://example.com/a.git", name="42lab", config_dir=config_dir)
+
+    def test_tap_name_with_hyphen(self, config_dir, fake_git):
+        tap = add_tap("https://example.com/a.git", name="my-lab", config_dir=config_dir)
+        assert tap.name == "my-lab"
+
+    def test_tap_name_with_underscore(self, config_dir, fake_git):
+        tap = add_tap("https://example.com/a.git", name="my_lab", config_dir=config_dir)
+        assert tap.name == "my_lab"
+
+
+# ---------------------------------------------------------------------------
+# _infer_tap_name edge cases
+# ---------------------------------------------------------------------------
+class TestInferTapNameEdgeCases:
+    def test_empty_url_returns_tap(self):
+        assert _infer_tap_name("") == "tap"
+
+    def test_url_with_only_slashes(self):
+        # Edge case: just protocol and slashes
+        name = _infer_tap_name("https:///")
+        assert isinstance(name, str)
+        assert len(name) > 0
+
+    def test_url_with_uppercase_chars(self):
+        name = _infer_tap_name("https://github.com/MyLab/MyIndex.git")
+        assert name == name.lower()
+        assert name == "myindex"

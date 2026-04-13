@@ -308,10 +308,10 @@ class TestCustomVariableType:
 
         # Save a point
         original = (1.0, 2.0, 3.0)
-        Point3D.save(original, name="origin")
+        Point3D.save(original, subject="origin")
 
         # Load it back
-        loaded = Point3D.load(name="origin")
+        loaded = Point3D.load(subject="origin")
         assert loaded.data == original
 
     def test_variable_with_nested_data(self, db):
@@ -336,9 +336,9 @@ class TestCustomVariableType:
             "activation": "relu",
             "nested": {"a": 1, "b": 2},
         }
-        Config.save(original, experiment="test")
+        Config.save(original, subject="test")
 
-        loaded = Config.load(experiment="test")
+        loaded = Config.load(subject="test")
         assert loaded.data == original
 
 
