@@ -315,13 +315,11 @@ class TestConfigMatlabParsing:
             [tool.scistack.matlab]
             functions = ["matlab/bandpass_filter.m"]
             variables = ["matlab/types/*.m"]
-            addpath = ["matlab/lib"]
             variable_dir = "matlab/types"
         """))
 
         # Create the referenced files.
         (tmp_path / "matlab").mkdir()
-        (tmp_path / "matlab" / "lib").mkdir()
         (tmp_path / "matlab" / "types").mkdir()
 
         (tmp_path / "matlab" / "bandpass_filter.m").write_text(
@@ -339,7 +337,11 @@ class TestConfigMatlabParsing:
         assert config.matlab_functions[0].name == "bandpass_filter.m"
         assert len(config.matlab_variables) == 1
         assert config.matlab_variables[0].name == "RawSignal.m"
-        assert len(config.matlab_addpath) == 1
+        # addpath is auto-derived from parent dirs of functions, variables, and variable_dir
+        assert len(config.matlab_addpath) == 2
+        addpath_set = set(config.matlab_addpath)
+        assert (tmp_path / "matlab").resolve() in addpath_set
+        assert (tmp_path / "matlab" / "types").resolve() in addpath_set
         assert config.matlab_variable_dir == (tmp_path / "matlab" / "types").resolve()
 
     def test_scistack_toml(self, tmp_path):

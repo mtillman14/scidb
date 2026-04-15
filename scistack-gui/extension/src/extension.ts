@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { PythonProcess } from './pythonProcess';
 import { DagPanel } from './dagPanel';
+import { checkProjectConfig, promptForMissingConfig } from './projectInit';
 
 let pythonProcess: PythonProcess | null = null;
 let dagPanel: DagPanel | null = null;
@@ -115,7 +116,15 @@ export function activate(context: vscode.ExtensionContext) {
           title: 'Select pyproject.toml or project directory',
         });
         if (projectUris && projectUris.length > 0) {
-          projectPath = projectUris[0].fsPath;
+          const selectedPath = projectUris[0].fsPath;
+          const configStatus = checkProjectConfig(selectedPath);
+          if (configStatus === 'no_config_file') {
+            const result = await promptForMissingConfig(selectedPath, outputChannel);
+            if (result === undefined) return;  // user cancelled
+            projectPath = result;
+          } else {
+            projectPath = selectedPath;
+          }
         }
       } else if (sourceChoice === 'Select a single pipeline module (.py)') {
         const moduleUris = await vscode.window.showOpenDialog({

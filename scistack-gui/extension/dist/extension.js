@@ -34,8 +34,8 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var path2 = __toESM(require("path"));
-var vscode3 = __toESM(require("vscode"));
+var path3 = __toESM(require("path"));
+var vscode5 = __toESM(require("vscode"));
 
 // src/pythonProcess.ts
 var import_child_process = require("child_process");
@@ -192,8 +192,37 @@ var PythonProcess = class {
 };
 
 // src/dagPanel.ts
-var vscode2 = __toESM(require("vscode"));
+var vscode3 = __toESM(require("vscode"));
 var path = __toESM(require("path"));
+
+// src/matlabTerminal.ts
+var vscode2 = __toESM(require("vscode"));
+function isMatlabExtensionAvailable() {
+  return vscode2.extensions.getExtension("MathWorks.language-matlab") !== void 0;
+}
+async function runInMatlabTerminal(command, outputChannel2) {
+  if (!isMatlabExtensionAvailable()) {
+    return false;
+  }
+  try {
+    await vscode2.commands.executeCommand("matlab.openCommandWindow");
+    const terminal = vscode2.window.terminals.find((t) => t.name === "MATLAB");
+    if (!terminal) {
+      outputChannel2?.appendLine(
+        "MathWorks extension found but MATLAB terminal not available."
+      );
+      return false;
+    }
+    terminal.sendText(command);
+    terminal.show();
+    return true;
+  } catch (err) {
+    outputChannel2?.appendLine(`Failed to send to MATLAB terminal: ${err}`);
+    return false;
+  }
+}
+
+// src/dagPanel.ts
 var DEBUG_SESSION_NAME = "Attach to scistack-gui server";
 var DagPanel = class {
   constructor(context, pythonProcess2, outputChannel2) {
@@ -202,15 +231,15 @@ var DagPanel = class {
     this.outputChannel = outputChannel2;
     this.disposables = [];
     this.disposeCallbacks = [];
-    this.panel = vscode2.window.createWebviewPanel(
+    this.panel = vscode3.window.createWebviewPanel(
       "scistack.dag",
       "SciStack Pipeline",
-      vscode2.ViewColumn.One,
+      vscode3.ViewColumn.One,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [
-          vscode2.Uri.file(path.join(context.extensionPath, "dist", "webview"))
+          vscode3.Uri.file(path.join(context.extensionPath, "dist", "webview"))
         ]
       }
     );
@@ -220,7 +249,7 @@ var DagPanel = class {
         const method = msg.method;
         if (method === "restart_python") {
           try {
-            await vscode2.commands.executeCommand("scistack.restartPython");
+            await vscode3.commands.executeCommand("scistack.restartPython");
             this.panel.webview.postMessage({ id: msg.id, result: { ok: true } });
           } catch (err) {
             this.panel.webview.postMessage({
@@ -244,6 +273,12 @@ var DagPanel = class {
           return;
         }
         if (method === "start_run") {
+          const params = msg.params ?? {};
+          const language = params.language;
+          if (language === "matlab") {
+            await this.handleMatlabRun(msg.id, params);
+            return;
+          }
           await this.ensureDebugAttached();
         }
         try {
@@ -280,17 +315,45 @@ var DagPanel = class {
     this.outputChannel.appendLine(`reveal_in_editor: file=${file} line=${line}`);
     if (!file)
       return { ok: false, error: "No file path provided." };
-    const uri = vscode2.Uri.file(file);
-    const doc = await vscode2.workspace.openTextDocument(uri);
+    const uri = vscode3.Uri.file(file);
+    const doc = await vscode3.workspace.openTextDocument(uri);
     const zeroBased = Math.max(0, (line ?? 1) - 1);
-    const selection = new vscode2.Range(zeroBased, 0, zeroBased, 0);
-    const editor = await vscode2.window.showTextDocument(doc, {
-      viewColumn: vscode2.ViewColumn.Beside,
+    const selection = new vscode3.Range(zeroBased, 0, zeroBased, 0);
+    const editor = await vscode3.window.showTextDocument(doc, {
+      viewColumn: vscode3.ViewColumn.Beside,
       preserveFocus: false,
       selection
     });
-    editor.revealRange(selection, vscode2.TextEditorRevealKind.InCenter);
+    editor.revealRange(selection, vscode3.TextEditorRevealKind.InCenter);
     return { ok: true };
+  }
+  /**
+   * Handle "Run" for a MATLAB function: generate command, then either send
+   * to the MathWorks MATLAB terminal or copy to clipboard.
+   */
+  async handleMatlabRun(msgId, params) {
+    try {
+      const result = await this.pythonProcess.request(
+        "generate_matlab_command",
+        params
+      );
+      const command = result.command;
+      const sent = await runInMatlabTerminal(command, this.outputChannel);
+      if (sent) {
+        vscode3.window.showInformationMessage("Running in MATLAB terminal...");
+      } else {
+        await vscode3.env.clipboard.writeText(command);
+        vscode3.window.showInformationMessage(
+          "MATLAB command copied to clipboard. Paste into MATLAB to run."
+        );
+      }
+      this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
+    } catch (err) {
+      this.panel.webview.postMessage({
+        id: msgId,
+        error: { message: String(err) }
+      });
+    }
   }
   /**
    * Post a notification message to the Webview (from Python push notifications).
@@ -304,7 +367,7 @@ var DagPanel = class {
    * disabled or a session is already attached.
    */
   async ensureDebugAttached() {
-    const cfg = vscode2.workspace.getConfiguration("scistack");
+    const cfg = vscode3.workspace.getConfiguration("scistack");
     if (!cfg.get("debug", false))
       return;
     if (this.debugSession)
@@ -315,8 +378,8 @@ var DagPanel = class {
       return;
     }
     const port = cfg.get("debugPort", 5678);
-    const folder = vscode2.workspace.workspaceFolders?.[0];
-    const started = await vscode2.debug.startDebugging(folder, {
+    const folder = vscode3.workspace.workspaceFolders?.[0];
+    const started = await vscode3.debug.startDebugging(folder, {
       name: DEBUG_SESSION_NAME,
       type: "debugpy",
       request: "attach",
@@ -329,7 +392,7 @@ var DagPanel = class {
       );
       return;
     }
-    this.debugSession = vscode2.debug.activeDebugSession ?? this.findExistingDebugSession();
+    this.debugSession = vscode3.debug.activeDebugSession ?? this.findExistingDebugSession();
   }
   /**
    * Detach the debug session (called when run_done arrives).
@@ -338,11 +401,11 @@ var DagPanel = class {
     const session = this.debugSession ?? this.findExistingDebugSession();
     this.debugSession = void 0;
     if (session) {
-      await vscode2.debug.stopDebugging(session);
+      await vscode3.debug.stopDebugging(session);
     }
   }
   findExistingDebugSession() {
-    const active = vscode2.debug.activeDebugSession;
+    const active = vscode3.debug.activeDebugSession;
     if (active && active.name === DEBUG_SESSION_NAME)
       return active;
     return void 0;
@@ -351,7 +414,7 @@ var DagPanel = class {
    * Reveal the panel if it's hidden.
    */
   reveal() {
-    this.panel.reveal(vscode2.ViewColumn.One);
+    this.panel.reveal(vscode3.ViewColumn.One);
   }
   /**
    * Register a callback for when the panel is disposed.
@@ -363,10 +426,10 @@ var DagPanel = class {
     const webviewDir = path.join(this.context.extensionPath, "dist", "webview");
     const webview = this.panel.webview;
     const scriptUri = webview.asWebviewUri(
-      vscode2.Uri.file(path.join(webviewDir, "index.js"))
+      vscode3.Uri.file(path.join(webviewDir, "index.js"))
     );
     const styleUri = webview.asWebviewUri(
-      vscode2.Uri.file(path.join(webviewDir, "index.css"))
+      vscode3.Uri.file(path.join(webviewDir, "index.css"))
     );
     const nonce = getNonce();
     return `<!DOCTYPE html>
@@ -408,17 +471,86 @@ function getNonce() {
   return text;
 }
 
+// src/projectInit.ts
+var fs = __toESM(require("fs"));
+var path2 = __toESM(require("path"));
+var vscode4 = __toESM(require("vscode"));
+function checkProjectConfig(dirPath) {
+  const resolved = fs.statSync(dirPath, { throwIfNoEntry: false });
+  if (!resolved) {
+    return "ready";
+  }
+  const dir = resolved.isFile() ? path2.dirname(dirPath) : dirPath;
+  if (fs.existsSync(path2.join(dir, "pyproject.toml")) || fs.existsSync(path2.join(dir, "scistack.toml"))) {
+    return "ready";
+  }
+  return "no_config_file";
+}
+function createScistackToml(dirPath) {
+  const filePath = path2.join(dirPath, "scistack.toml");
+  const content = `# SciStack project configuration
+# See documentation for all available options.
+
+# Python pipeline modules (relative paths)
+# modules = ["pipelines/my_pipeline.py"]
+
+# Pip-installed packages to scan for pipeline functions
+# packages = ["my_scistack_plugin"]
+
+# Auto-discover scistack.plugins entry points (default: true)
+# auto_discover = true
+
+# File where 'create_variable' writes new variable classes
+# variable_file = "src/vars.py"
+
+# [matlab]
+# functions = ["src/"]
+# variables = ["src/vars/"]
+# variable_dir = "src/vars/"
+`;
+  fs.writeFileSync(filePath, content, "utf-8");
+  return filePath;
+}
+async function promptForMissingConfig(dirPath, outputChannel2) {
+  const createOption = "Create scistack.toml";
+  const continueOption = "Continue anyway";
+  const choice = await vscode4.window.showWarningMessage(
+    `No pyproject.toml or scistack.toml found in "${path2.basename(
+      dirPath
+    )}". The server needs a config file to discover pipeline code.`,
+    { modal: true },
+    createOption,
+    continueOption
+  );
+  if (choice === createOption) {
+    const filePath = createScistackToml(dirPath);
+    outputChannel2.appendLine(`Created ${filePath}`);
+    const doc = await vscode4.workspace.openTextDocument(filePath);
+    await vscode4.window.showTextDocument(doc);
+    return dirPath;
+  }
+  if (choice === continueOption) {
+    outputChannel2.appendLine(
+      "Continuing without config file \u2014 server will use defaults if possible."
+    );
+    return dirPath;
+  }
+  return void 0;
+}
+
 // src/extension.ts
 var pythonProcess = null;
 var dagPanel = null;
 var outputChannel;
+var dbWatcher = null;
+var dbWatcherDebounce = null;
 var lastStartArgs = null;
 function activate(context) {
-  outputChannel = vscode3.window.createOutputChannel("SciStack");
-  const openPipeline = vscode3.commands.registerCommand(
+  outputChannel = vscode5.window.createOutputChannel("SciStack");
+  const openPipeline = vscode5.commands.registerCommand(
     "scistack.openPipeline",
     async () => {
-      const dbChoice = await vscode3.window.showQuickPick(
+      const dbChoice = await vscode5.window.showQuickPick(
         ["Open existing database", "Create new database"],
         { placeHolder: "SciStack: Open or create a .duckdb file?" }
       );
@@ -427,7 +559,7 @@ function activate(context) {
       let dbPath;
       let schemaKeys;
       if (dbChoice === "Open existing database") {
-        const dbUris = await vscode3.window.showOpenDialog({
+        const dbUris = await vscode5.window.showOpenDialog({
           canSelectFiles: true,
           canSelectFolders: false,
           canSelectMany: false,
@@ -438,7 +570,7 @@ function activate(context) {
           return;
         dbPath = dbUris[0].fsPath;
       } else {
-        const folderUris = await vscode3.window.showOpenDialog({
+        const folderUris = await vscode5.window.showOpenDialog({
           canSelectFiles: false,
           canSelectFolders: true,
           canSelectMany: false,
@@ -448,7 +580,7 @@ function activate(context) {
         if (!folderUris || folderUris.length === 0)
           return;
         const folderPath = folderUris[0].fsPath;
-        const nameInput = await vscode3.window.showInputBox({
+        const nameInput = await vscode5.window.showInputBox({
           prompt: "Database filename",
           placeHolder: "e.g. my_pipeline.duckdb",
           validateInput: (v) => {
@@ -464,8 +596,8 @@ function activate(context) {
         if (!nameInput)
           return;
         const fileName = nameInput.trim().endsWith(".duckdb") ? nameInput.trim() : `${nameInput.trim()}.duckdb`;
-        dbPath = path2.join(folderPath, fileName);
-        const keysInput = await vscode3.window.showInputBox({
+        dbPath = path3.join(folderPath, fileName);
+        const keysInput = await vscode5.window.showInputBox({
           prompt: "Schema keys (comma-separated, top-down)",
           placeHolder: "e.g. subject, session",
           validateInput: (v) => {
@@ -477,7 +609,7 @@ function activate(context) {
           return;
         schemaKeys = keysInput.split(",").map((s) => s.trim()).filter(Boolean);
       }
-      const sourceChoice = await vscode3.window.showQuickPick(
+      const sourceChoice = await vscode5.window.showQuickPick(
         [
           "Select a project (pyproject.toml)",
           "Select a single pipeline module (.py)",
@@ -490,7 +622,7 @@ function activate(context) {
       let modulePath;
       let projectPath;
       if (sourceChoice === "Select a project (pyproject.toml)") {
-        const projectUris = await vscode3.window.showOpenDialog({
+        const projectUris = await vscode5.window.showOpenDialog({
           canSelectFiles: true,
           canSelectFolders: true,
           canSelectMany: false,
@@ -498,10 +630,19 @@ function activate(context) {
           title: "Select pyproject.toml or project directory"
         });
         if (projectUris && projectUris.length > 0) {
-          projectPath = projectUris[0].fsPath;
+          const selectedPath = projectUris[0].fsPath;
+          const configStatus = checkProjectConfig(selectedPath);
+          if (configStatus === "no_config_file") {
+            const result = await promptForMissingConfig(selectedPath, outputChannel);
+            if (result === void 0)
+              return;
+            projectPath = result;
+          } else {
+            projectPath = selectedPath;
+          }
         }
       } else if (sourceChoice === "Select a single pipeline module (.py)") {
-        const moduleUris = await vscode3.window.showOpenDialog({
+        const moduleUris = await vscode5.window.showOpenDialog({
           canSelectFiles: true,
           canSelectFolders: false,
           canSelectMany: false,
@@ -515,11 +656,11 @@ function activate(context) {
       await startPipeline(context, dbPath, modulePath, projectPath, schemaKeys);
     }
   );
-  const restartPython = vscode3.commands.registerCommand(
+  const restartPython = vscode5.commands.registerCommand(
     "scistack.restartPython",
     async () => {
       if (!lastStartArgs) {
-        vscode3.window.showWarningMessage(
+        vscode5.window.showWarningMessage(
           'SciStack: No pipeline has been opened yet \u2014 run "SciStack: Open Pipeline" first.'
         );
         return;
@@ -534,9 +675,9 @@ function activate(context) {
           // Don't re-pass schemaKeys: the DB already exists on restart.
           void 0
         );
-        vscode3.window.showInformationMessage("SciStack: Python process restarted.");
+        vscode5.window.showInformationMessage("SciStack: Python process restarted.");
       } catch (err) {
-        vscode3.window.showErrorMessage(`SciStack: Restart failed \u2014 ${err}`);
+        vscode5.window.showErrorMessage(`SciStack: Restart failed \u2014 ${err}`);
       }
     }
   );
@@ -555,7 +696,7 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
   }
   const pythonPath = await resolvePythonPath();
   if (!pythonPath) {
-    vscode3.window.showErrorMessage(
+    vscode5.window.showErrorMessage(
       "SciStack: Could not find a Python interpreter. Install the Python extension or set scistack.pythonPath in settings."
     );
     return;
@@ -576,7 +717,7 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
       `Server ready \u2014 DB: ${readyParams.db_name}, schema: [${readyParams.schema_keys.join(", ")}]`
     );
   } catch (err) {
-    vscode3.window.showErrorMessage(`SciStack: Server failed to start \u2014 ${err}`);
+    vscode5.window.showErrorMessage(`SciStack: Server failed to start \u2014 ${err}`);
     pythonProcess.kill();
     pythonProcess = null;
     return;
@@ -597,8 +738,9 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
       }
     }
   });
-  const statusItem = vscode3.window.createStatusBarItem(
-    vscode3.StatusBarAlignment.Left,
+  setupDbWatcher(dbPath);
+  const statusItem = vscode5.window.createStatusBarItem(
+    vscode5.StatusBarAlignment.Left,
     100
   );
   statusItem.text = `$(database) SciStack: ${dbPath.split("/").pop()}`;
@@ -606,11 +748,11 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
   statusItem.show();
 }
 async function resolvePythonPath() {
-  const config = vscode3.workspace.getConfiguration("scistack");
+  const config = vscode5.workspace.getConfiguration("scistack");
   const configured = config.get("pythonPath");
   if (configured)
     return configured;
-  const pythonExt = vscode3.extensions.getExtension("ms-python.python");
+  const pythonExt = vscode5.extensions.getExtension("ms-python.python");
   if (pythonExt) {
     if (!pythonExt.isActive)
       await pythonExt.activate();
@@ -623,7 +765,43 @@ async function resolvePythonPath() {
   }
   return "python3";
 }
+function setupDbWatcher(dbPath) {
+  if (dbWatcher) {
+    dbWatcher.dispose();
+    dbWatcher = null;
+  }
+  if (dbWatcherDebounce) {
+    clearTimeout(dbWatcherDebounce);
+    dbWatcherDebounce = null;
+  }
+  const dbDir = path3.dirname(dbPath);
+  const dbBase = path3.basename(dbPath);
+  const pattern = new vscode5.RelativePattern(dbDir, dbBase + "*");
+  dbWatcher = vscode5.workspace.createFileSystemWatcher(pattern);
+  const onDbChange = () => {
+    if (dbWatcherDebounce) {
+      clearTimeout(dbWatcherDebounce);
+    }
+    dbWatcherDebounce = setTimeout(() => {
+      dbWatcherDebounce = null;
+      if (dagPanel) {
+        outputChannel.appendLine("DuckDB file changed externally \u2014 refreshing DAG");
+        dagPanel.postMessage({ method: "dag_updated", params: {} });
+      }
+    }, 2e3);
+  };
+  dbWatcher.onDidChange(onDbChange);
+  dbWatcher.onDidCreate(onDbChange);
+}
 function deactivate() {
+  if (dbWatcher) {
+    dbWatcher.dispose();
+    dbWatcher = null;
+  }
+  if (dbWatcherDebounce) {
+    clearTimeout(dbWatcherDebounce);
+    dbWatcherDebounce = null;
+  }
   if (pythonProcess) {
     pythonProcess.kill();
     pythonProcess = null;
