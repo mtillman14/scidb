@@ -76,6 +76,14 @@ def main():
                 f"Project mode: {len(result['functions'])} functions, "
                 f"{len(result['variables'])} variables"
             )
+            # Load MATLAB registry if MATLAB config is present.
+            if config.matlab_functions or config.matlab_variables:
+                from scistack_gui import matlab_registry
+                matlab_result = matlab_registry.load_from_config(config)
+                print(
+                    f"MATLAB: {len(matlab_result['matlab_functions'])} functions, "
+                    f"{len(matlab_result['matlab_variables'])} variables"
+                )
         except (FileNotFoundError, ValueError) as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

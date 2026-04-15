@@ -1,0 +1,6 @@
+*.fig
+*.png
+*.asv
+plots/stim_intensities/Thumbs.db
+"*.db" 
+*.db

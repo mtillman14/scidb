@@ -148,7 +148,23 @@ async def create_variable(req: CreateVariableRequest) -> dict:
     if name in BaseVariable._all_subclasses:
         return {"ok": False, "error": f"A variable named '{name}' already exists."}
 
-    if registry._module_path is None:
+    # --- Determine target file (Python or MATLAB) ---
+    target_file = None
+    if registry._config is not None and registry._config.variable_file is not None:
+        target_file = registry._config.variable_file
+    elif registry._module_path is not None:
+        target_file = registry._module_path
+
+    if target_file is None:
+        # No Python target — fall back to MATLAB if configured.
+        from scistack_gui import matlab_registry
+        if matlab_registry.has_matlab_config() and matlab_registry._config is not None and matlab_registry._config.matlab_variable_dir is not None:
+            from scistack_gui.server import _create_matlab_variable
+            from scistack_gui.notify import notify
+            result = _create_matlab_variable(name, req.docstring, matlab_registry, notify)
+            if result.get("ok"):
+                await ws.broadcast({"type": "dag_updated"})
+            return result
         return {
             "ok": False,
             "error": "No module file was loaded at startup (--module not passed). "
@@ -165,15 +181,18 @@ async def create_variable(req: CreateVariableRequest) -> dict:
 
     # --- Append to the module file ---
     try:
-        with open(registry._module_path, "a") as f:
+        with open(target_file, "a") as f:
             f.writelines(lines)
-        logger.info("Appended class %s to %s", name, registry._module_path)
+        logger.info("Appended class %s to %s", name, target_file)
     except OSError as e:
         return {"ok": False, "error": f"Failed to write to module file: {e}"}
 
     # --- Refresh so the new class is registered ---
     try:
-        registry.refresh_module()
+        if registry._config is not None:
+            registry.refresh_all()
+        else:
+            registry.refresh_module()
     except Exception as e:
         logger.exception("Refresh failed after appending class %s", name)
         return {"ok": False, "error": f"Class was written but refresh failed: {e}"}

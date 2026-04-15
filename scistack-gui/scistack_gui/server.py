@@ -104,10 +104,18 @@ def _h_get_registry(params):
     from scistack_gui import registry
     from scistack_gui import matlab_registry
     from scidb import BaseVariable
+    matlab_fns = matlab_registry.get_all_function_names()
+    logger.info(
+        "get_registry: %d python fns, %d matlab fns, %d vars",
+        len(registry._functions), len(matlab_fns),
+        len(BaseVariable._all_subclasses),
+    )
+    if matlab_fns:
+        logger.info("matlab_functions: %s", matlab_fns)
     return {
         "functions": sorted(registry._functions.keys()),
         "variables": sorted(BaseVariable._all_subclasses.keys()),
-        "matlab_functions": matlab_registry.get_all_function_names(),
+        "matlab_functions": matlab_fns,
     }
 
 
@@ -342,6 +350,9 @@ def _h_create_variable(params):
     elif registry._module_path is not None:
         target_file = registry._module_path
     if target_file is None:
+        # No Python target available — fall back to MATLAB if configured.
+        if matlab_registry.has_matlab_config() and matlab_registry._config is not None and matlab_registry._config.matlab_variable_dir is not None:
+            return _create_matlab_variable(name, docstring, matlab_registry, notify)
         return {"ok": False, "error": "No module file was loaded at startup."}
 
     lines = ["\n"]

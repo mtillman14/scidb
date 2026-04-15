@@ -1,0 +1,168 @@
+{    
+    "TX": {
+        "PATHS": {
+            "SAVE_FILE_NAME": "GaitRite_TX.mat",
+            "ALL_DATA_CSV": "../../SavedOutcomesAim2\\TX\\0_FromMATLAB_NonSym\\0_from_matlab_unmatched.csv"
+        },
+        "REGEXS": {
+            "INTERVENTIONS": [
+                "TX[0-9]{1,2}"
+            ]
+        },
+        "INTERVENTION_FOLDERS": [
+            "TX\\TX4", "TX\\TX7", "TX\\TX10", "TX\\TX13", "TX\\TX16", "TX\\TX19", "TX\\TX22"
+        ],
+        "MAPPED_INTERVENTIONS": [
+            "TX4", "TX7", "TX10", "TX13", "TX16", "TX19", "TX22"
+        ]
+    },
+    "PATHS": {
+        "ROOT_LOAD": "Y:\\Spinal Stim_Stroke R01\\AIM 2\\Subject Data",
+        "ROOT_SAVE": "Y:/Spinal Stim_Stroke R01/AIM 2/Subject Data/MATLAB Processed Overground_EMG_Kinematics",
+        "SAVE_FILE_NAME": "Overground_EMG_Kinematics.mat",
+        "CODE_FOLDER_PATH": "Stroke-R01-Aim-2\\src\\overground",
+        "ALL_DATA_CSV": {
+            "UNMATCHED": "../../SavedOutcomesAim2/Overground_EMG_Kinematics/0_FromMATLAB_NonSym/0_from_matlab_unmatched.csv",
+            "MATCHED":   "../../SavedOutcomesAim2/Overground_EMG_Kinematics/0_FromMATLAB_NonSym/0_from_matlab_matched.csv",
+            "TRIAL":     "../../SavedOutcomesAim2/Overground_EMG_Kinematics/0_FromMATLAB_NonSym/0_from_matlab_trial.csv",
+            "VISIT":     "../../SavedOutcomesAim2/Overground_EMG_Kinematics/0_FromMATLAB_NonSym/0_from_matlab_visit.csv"
+        },
+        "PLOTS": {
+            "ROOT": "../../SavedOutcomesAim2\\plots",
+            "FILTERED_NON_TIME_NORMALIZED": "Filtered_GaitCycles",
+            "FILTERED_TIME_NORMALIZED": "Filtered_TimeNormalized",
+            "FILTERED_TIME_NORMALIZED_UNSCALED": "Filtered_TimeNormalized_Unscaled"
+        }
+    },
+    "REGEXS": {
+        "SUBJECT_ID": "SS\\d{2}",
+        "INTERVENTIONS": [
+            "BL",
+            "MID(18|24)",
+            "MO[13]FU",
+            "POST(18|24)"
+        ],
+        "SPEED": "FV|SSV",
+        "TRIAL": "[0-9]+$"
+    },
+    "VIF_CUTOFF": 10,
+    "NUM_POINTS": 101,
+    "INTERVENTION_FOLDERS": [
+        "BL","MID18","MID24","MO1FU","MO3FU","POST18","POST24"
+    ],
+    "TIMEPOINTS": [
+        "PRE", "POST"
+    ],
+    "SPEEDS": [
+        "SSV", "FV"
+    ],
+    "MISSING_FILES":[
+        "SS32_SHAM2_POST_SSV_2.",
+        "SS32_SHAM2_PRE_SSV_3."
+    ],
+    "DELSYS_EMG": {
+        "MVC_FOLDER_NAME": "MVCs",
+        "FOLDER_NAME": "EMG",
+        "FILE_EXTENSION": "*.mat",
+        "SAMPLING_FREQUENCY": 2000,
+        "MUSCLES": [
+            "HAM",
+            "RF",
+            "MG",
+            "TA",
+            "VL"
+        ],
+        "MVC_CATEGORICAL_COLUMNS": [
+            "Subject",
+            "Intervention",
+            "Muscle"
+        ],
+        "CATEGORICAL_COLUMNS": [
+            "Subject",
+            "Intervention",
+            "Speed",
+            "Trial"
+        ],
+        "SUBJECTS_INTERVENTIONS_TO_FIX": {            
+        },
+        "FILTER": {
+            "BANDPASS_ORDER": 4,
+            "BANDPASS_CUTOFF": [
+                10, 
+                400
+            ],
+            "LOWPASS_ORDER": 2,
+            "LOWPASS_CUTOFF": 5        
+        },
+        "VAF_THRESHOLD": 0.9,
+        "MVC_MUSCLE_MAPPING": {
+            "Left_Ankle_Flexors": "LTA",
+            "Left_Ankle_Extensors": "LMG",
+            "Left_Knee_Extensors": ["LVL", "LRF"],
+            "Left_Knee_Flexors": "LHAM",
+            "Right_Ankle_Flexors": "RTA",
+            "Right_Ankle_Extensors": "RMG",
+            "Right_Knee_Extensors": ["RVL", "RRF"],
+            "Right_Knee_Flexors": "RHAM"
+        }
+    },
+    "GAITRITE": {
+        "FOLDER_NAME": "Gaitrite",
+        "FILE_EXTENSION": "*.xlsx",
+        "HEADER_ROW_NUM": 3,
+        "SAMPLING_FREQUENCY": 120,
+        "CATEGORICAL_COLUMNS": [
+            "Subject",
+            "Intervention",
+            "Speed",
+            "Trial"
+        ],
+        "COLUMN_NAMES": {
+            "GAIT_ID": "Gait_Id",
+            "LEFT_RIGHT": "Foot",
+            "HEEL_ON": "HeelOn",
+            "TOE_OFF": "ToeOff",
+            "HEEL_OFF": "HeelOff",
+            "TOE_ON": "ToeOn",
+            "STEP_LENGTH": "Step_length",
+            "SWING_TIME": "Swing_time",            
+            "STEP_TIME": "Step_time",
+            "STANCE_TIME": "Stance_time",
+            "STRIDE_TIME": "Stride_time",
+            "STRIDE_LENGTH": "Stride_length",
+            "STEP_WIDTH": "StepWidth",
+            "STRIDE_WIDTH": "StrideWidth",
+            "STRIDE_VELOCITY": "Stride_velocity",
+            "SINGLE_SUPPORT_TIME": "Supp_time_Single",
+            "DOUBLE_SUPPORT_TIME": "Supp_time_Double"
+        }
+    },    
+    "XSENS": {
+        "FOLDER_NAME": "XSENS",
+        "FILE_EXTENSION": "*.xlsx",
+        "SAMPLING_FREQUENCY": 100,
+        "COLUMN_NAMES": {
+            "RHIP": "Right Hip Flexion/Extension",
+            "RKNEE": "Right Knee Flexion/Extension",
+            "RANKLE": "Right Ankle Dorsiflexion/Plantarflexion",
+            "LHIP": "Left Hip Flexion/Extension",
+            "LKNEE": "Left Knee Flexion/Extension",
+            "LANKLE": "Left Ankle Dorsiflexion/Plantarflexion"
+        },
+        "CATEGORICAL_COLUMNS": [
+            "Subject",
+            "Intervention",
+            "Speed",
+            "Trial"
+        ],
+        "FILTER": {
+            "LOWPASS_CUTOFF": 6,
+            "LOWPASS_ORDER": 4
+        },
+        "JOINTS": [
+            "HIP",
+            "KNEE",
+            "ANKLE"
+        ]
+    }      
+}

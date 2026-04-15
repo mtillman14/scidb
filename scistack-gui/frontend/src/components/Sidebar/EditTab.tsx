@@ -13,6 +13,7 @@ import { useBackendMessage } from '../../hooks/useBackendMessage'
 interface Registry {
   functions: string[]
   variables: string[]
+  matlab_functions?: string[]
 }
 
 export default function EditTab() {
@@ -144,7 +145,7 @@ export default function EditTab() {
   return (
     <div style={styles.root}>
       <Section title="Functions">
-        {registry.functions.map(fn => (
+        {[...registry.functions, ...(registry.matlab_functions ?? [])].map(fn => (
           <DragItem
             key={fn}
             label={fn}

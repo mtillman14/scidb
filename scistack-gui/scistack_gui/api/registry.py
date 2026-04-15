@@ -19,9 +19,11 @@ router = APIRouter()
 
 @router.get("/registry")
 def get_registry() -> dict:
+    from scistack_gui import matlab_registry
     return {
         "functions": sorted(registry._functions.keys()),
         "variables": sorted(BaseVariable._all_subclasses.keys()),
+        "matlab_functions": matlab_registry.get_all_function_names(),
     }
 
 

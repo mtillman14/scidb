@@ -1,0 +1,19 @@
+# SciStack project configuration
+# See documentation for all available options.
+
+# Python pipeline modules (relative paths)
+# modules = ["pipelines/my_pipeline.py"]
+
+# Pip-installed packages to scan for pipeline functions
+# packages = ["my_scistack_plugin"]
+
+# Auto-discover scistack.plugins entry points (default: true)
+# auto_discover = true
+
+# File where 'create_variable' writes new variable classes
+# variable_file = "src/vars.py"
+
+[matlab]
+functions = ["src/"]
+variables = ["src/vars/"]
+variable_dir = "src/vars/"

@@ -413,6 +413,24 @@ def _build_graph(db: DatabaseManager) -> dict:
         })
 
     # --- PathInput nodes ---
+    # Overlay saved template/root_folder from layout.json so that user edits
+    # persist across DAG refreshes (variants from the DB may have stale or
+    # empty values until the pipeline is actually run).
+    for saved_pi in layout_store.read_all_path_input_names():
+        pname = saved_pi["name"]
+        if pname in path_inputs:
+            if saved_pi.get("template"):
+                path_inputs[pname]["template"] = saved_pi["template"]
+            if saved_pi.get("root_folder") is not None:
+                path_inputs[pname]["root_folder"] = saved_pi["root_folder"]
+        else:
+            # PathInput created via the palette but not yet in any variant.
+            path_inputs[pname] = {
+                "template": saved_pi.get("template", ""),
+                "root_folder": saved_pi.get("root_folder"),
+                "functions": set(),
+            }
+
     for param_name in sorted(path_inputs.keys()):
         pi = path_inputs[param_name]
         nodes.append({
