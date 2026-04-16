@@ -126,14 +126,15 @@ def _check_via_lineage(fn, db, output_record_id: str, stored_hash: str,
     for node in nodes:
         lineage_inputs = db.get_lineage_inputs(node["record_id"])
         for inp in lineage_inputs:
-            if inp.get("source_type") != "variable":
+            source_type = inp.get("source_type")
+            if source_type not in ("variable", "rid_tracking"):
                 continue
             used_rid = inp.get("record_id")
             if not used_rid:
                 continue
             current_rid = db.get_latest_record_id_for_variant(used_rid)
             if current_rid != used_rid:
-                var_type = inp.get("type", "unknown")
+                var_type = inp.get("type") or inp.get("name") or "unknown"
                 logger.debug(
                     "stale: %s — upstream %s updated (was %s, now %s)",
                     combo_str, var_type, used_rid, current_rid,
@@ -251,6 +252,7 @@ def _check_via_fn_hash(fn, db, output_record_id: str, output_timestamp: str | No
 def check_node_state(
     fn,
     outputs: list[type],
+    inputs: dict | None = None,
     db=None,
 ) -> dict:
     """Aggregate run state across all known combos for a pipeline function.
@@ -265,6 +267,10 @@ def check_node_state(
     Args:
         fn: The pipeline function (plain callable or LineageFcn).
         outputs: List of output variable classes produced by fn.
+        inputs: Optional dict mapping parameter names to input variable types
+            (same format as ``for_each``'s ``inputs``).  Used as a fallback to
+            determine expected combos when the function has never been run and
+            no pipeline variants are registered in the DB.
         db: DatabaseManager instance.  Uses the global DB if omitted.
 
     Returns:
@@ -298,7 +304,7 @@ def check_node_state(
     # variant (e.g. window_seconds=90 added after the function was last run)
     # is detected as missing even when all schema_ids are already covered by
     # other variants.
-    expected_combos = _get_expected_combos(db, fn_name)
+    expected_combos = _get_expected_combos(db, fn_name, inputs_fallback=inputs)
 
     # --- Determine missing combos ---
     actual_combo_keys = {
@@ -395,7 +401,7 @@ def _get_output_combos(db, fn_name: str, outputs: list[type]) -> list[dict]:
     return result
 
 
-def _get_expected_combos(db, fn_name: str) -> set[tuple]:
+def _get_expected_combos(db, fn_name: str, inputs_fallback: dict | None = None) -> set[tuple]:
     """Return the set of (schema_id, branch_params_json) combos that should have
     been produced by fn_name.
 
@@ -408,9 +414,15 @@ def _get_expected_combos(db, fn_name: str) -> set[tuple]:
     when a new upstream variant (e.g. a new constant value) exists in the inputs
     but hasn't been processed by fn_name yet, even if all schema_ids are already
     covered by other variants.
+
+    When no pipeline variants are registered (function never run) and
+    ``inputs_fallback`` is provided, falls back to querying the input variable
+    types directly.
     """
     variants = [v for v in db.list_pipeline_variants() if v["function_name"] == fn_name]
     if not variants:
+        if inputs_fallback:
+            return _get_expected_combos_from_inputs(db, inputs_fallback)
         return set()
 
     expected: set[tuple] = set()
@@ -435,6 +447,28 @@ def _get_expected_combos(db, fn_name: str) -> set[tuple]:
                 expected_bp = {**input_bp, **namespaced_own}
                 expected.add((schema_id, json.dumps(expected_bp, sort_keys=True)))
 
+    return expected
+
+
+def _get_expected_combos_from_inputs(db, inputs: dict) -> set[tuple]:
+    """Fallback for _get_expected_combos when no pipeline variants are registered.
+
+    Extracts variable type names from the inputs dict (same format as for_each)
+    and queries the DB for all (schema_id, branch_params) combos of those types.
+    """
+    expected: set[tuple] = set()
+    for value in inputs.values():
+        if not isinstance(value, type):
+            continue
+        type_name = value.__name__
+        rows = db._duck._fetchall(
+            "SELECT DISTINCT schema_id, branch_params FROM _record_metadata "
+            "WHERE variable_name = ? AND excluded = FALSE",
+            [type_name],
+        )
+        for schema_id, bp_raw in rows:
+            bp = json.loads(bp_raw or "{}") if bp_raw else {}
+            expected.add((schema_id, json.dumps(bp, sort_keys=True)))
     return expected
 
 

@@ -126,7 +126,10 @@ class TestCheckNodeState:
     def test_red_when_never_run(self, db):
         _seed_raw(db)
         # for_each never called — no output records
-        result = check_node_state(process_data, [ProcessedState], db=db)
+        result = check_node_state(
+            process_data, [ProcessedState],
+            inputs={"raw": RawState}, db=db,
+        )
         assert result["state"] == "red"
         assert result["counts"]["up_to_date"] == 0
         assert result["counts"]["missing"] == 4  # 2 subjects × 2 trials
