@@ -526,7 +526,7 @@ class TestForEachAllLevels:
 
         assert len(MockOutput.saved_data) == 3
         saved_subjects = [d["metadata"]["subject"] for d in MockOutput.saved_data]
-        assert saved_subjects == [1, 2, 3]
+        assert saved_subjects == ["1", "2", "3"]
 
     def test_multiple_empty_lists(self):
         """subject=[], session=[] should resolve both from the database."""
@@ -567,9 +567,9 @@ class TestForEachAllLevels:
 
         # 1 subject * 3 sessions = 3 iterations
         assert len(MockOutput.saved_data) == 3
-        # All should have subject=1
+        # All should have subject="1" (schema keys are stringified)
         for d in MockOutput.saved_data:
-            assert d["metadata"]["subject"] == 1
+            assert d["metadata"]["subject"] == "1"
         # Sessions should be A, B, C
         saved_sessions = [d["metadata"]["session"] for d in MockOutput.saved_data]
         assert sorted(saved_sessions) == ["A", "B", "C"]
@@ -673,8 +673,8 @@ class TestForEachDistribute:
         assert len(MockOutput.saved_data) == 3
         for i, entry in enumerate(MockOutput.saved_data):
             assert entry["metadata"]["cycle"] == i + 1
-            assert entry["metadata"]["subject"] == 1
-            assert entry["metadata"]["trial"] == 1
+            assert entry["metadata"]["subject"] == "1"
+            assert entry["metadata"]["trial"] == "1"
 
     def test_distribute_numpy_2d(self):
         """2D numpy array should be split by row."""
@@ -770,7 +770,7 @@ class TestForEachDistribute:
         # 2 iterations * 2 elements each = 4 saves
         assert len(MockOutput.saved_data) == 4
         # Check subject=1 saves
-        s1_saves = [d for d in MockOutput.saved_data if d["metadata"]["subject"] == 1]
+        s1_saves = [d for d in MockOutput.saved_data if d["metadata"]["subject"] == "1"]
         assert len(s1_saves) == 2
         assert s1_saves[0]["metadata"]["cycle"] == 1
         assert s1_saves[1]["metadata"]["cycle"] == 2
@@ -841,8 +841,8 @@ class TestForEachDistribute:
         assert len(MockOutput.saved_data) == 3
         for i, entry in enumerate(MockOutput.saved_data):
             assert entry["metadata"]["cycle"] == i + 1
-            assert entry["metadata"]["subject"] == 1
-            assert entry["metadata"]["trial"] == 1
+            assert entry["metadata"]["subject"] == "1"
+            assert entry["metadata"]["trial"] == "1"
             assert float(entry["data"]) == (i + 1) * 10.0
 
     def test_distribute_subject_level_to_trial(self):
@@ -866,7 +866,7 @@ class TestForEachDistribute:
         assert len(MockOutput.saved_data) == 3
         for i, entry in enumerate(MockOutput.saved_data):
             assert entry["metadata"]["trial"] == i + 1
-            assert entry["metadata"]["subject"] == 1
+            assert entry["metadata"]["subject"] == "1"
             assert "cycle" not in entry["metadata"]
 
     def test_distribute_no_deeper_level(self):
@@ -1429,8 +1429,8 @@ class TestForEachSchemaFiltering:
 
         assert len(MockOutput.saved_data) == 2
         saved = [(d["metadata"]["subject"], d["metadata"]["session"]) for d in MockOutput.saved_data]
-        assert (1, "A") in saved
-        assert (2, "B") in saved
+        assert ("1", "A") in saved
+        assert ("2", "B") in saved
 
 
 class TestForEachReturnValue:

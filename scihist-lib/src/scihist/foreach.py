@@ -1,9 +1,16 @@
 """SciHist for_each — auto-wraps function in LineageFcn and records lineage."""
 
 import logging
+import sys
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+def _diag(msg):
+    """Temporary diagnostic print to file (bypasses capsys)."""
+    with open("/tmp/scihist_diag.log", "a") as f:
+        f.write(msg + "\n")
+        f.flush()
 
 
 def for_each(
@@ -70,7 +77,7 @@ def for_each(
             except Exception:
                 active_db = None
         if active_db is not None:
-            pre_combo_hook = _build_skip_hook(fn, outputs, active_db)
+            pre_combo_hook = _build_skip_hook(fn, outputs, active_db, inputs)
 
     # Delegate to scidb.for_each with save=False (we handle saves ourselves).
     # For generates_file functions, inject combo metadata as kwargs so fn receives
@@ -96,25 +103,84 @@ def for_each(
 
     # Save with lineage
     if save and outputs and not result_tbl.empty:
+        # Identify constant (non-variable, non-wrapper) inputs for version_keys.
+        constant_inputs = {}
+        # Resolve Fixed input record_ids for lineage rid_tracking.
+        fixed_rids = {}
+        for name, value in inputs.items():
+            if isinstance(value, type):
+                continue  # Variable type
+            if hasattr(value, 'var_type') or hasattr(value, 'var_specs'):
+                # Track Fixed inputs for rid_tracking in lineage.
+                if hasattr(value, 'fixed_metadata'):
+                    inner = value.var_type
+                    if hasattr(inner, 'var_type'):
+                        inner = inner.var_type
+                    if isinstance(inner, type):
+                        save_db = db
+                        if save_db is None:
+                            try:
+                                from scidb.database import get_database
+                                save_db = get_database()
+                            except Exception:
+                                save_db = None
+                        if save_db is not None:
+                            rid = save_db.find_record_id(inner, value.fixed_metadata)
+                            if rid:
+                                fixed_rids[f"__rid_{name}"] = rid
+                continue  # Wrapper (Fixed, ColumnSelection, Merge, etc.)
+            constant_inputs[name] = value
+
+        _diag(f"[DIAG] save path: fixed_rids={fixed_rids}")
         output_names = [_output_name(o) for o in outputs]
-        _save_with_lineage(result_tbl, outputs, output_names, db)
+        _save_with_lineage(result_tbl, outputs, output_names, db,
+                           constant_inputs=constant_inputs,
+                           fixed_input_rids=fixed_rids)
 
     return result_tbl
 
 
-def _build_skip_hook(fn: "LineageFcn", outputs: list, db) -> Callable[[dict], bool]:
+def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Callable[[dict], bool]:
     """Return a pre-combo hook that returns True when a combo can be skipped.
 
     A combo is skipped when:
-    1. Every output type already has a record for this combo.
-    2. Walking get_upstream_provenance() from the output record, every
-       function hash still matches and every input record_id in _lineage.inputs
-       matches the current latest record for that variable variant.
+    1. Every output type already has a record for this combo's metadata.
+    2. The function hash stored in lineage matches the current function's hash.
+    3. The combo's ``__rid_*`` values match those stored in the output record's
+       lineage inputs (as ``rid_tracking`` entries) — meaning all upstream
+       inputs are unchanged.
+    4. Constant input hashes match those stored in the output record's lineage.
     """
+    from canonicalhash import canonical_hash as _chash
+
     schema_keys: set = set(db.dataset_schema_keys)
+
+    # Pre-compute constant inputs (non-variable, non-wrapper) with their hashes.
+    constant_values: dict = {}
+    constant_hashes: dict[str, str] = {}
+    # Collect Fixed inputs for record_id tracking.
+    fixed_inputs: dict[str, tuple] = {}  # name -> (inner_type, fixed_metadata)
+    for name, value in inputs.items():
+        if isinstance(value, type):
+            continue  # Variable type (BaseVariable subclass)
+        if hasattr(value, 'var_type') or hasattr(value, 'var_specs'):
+            # Check if it's a Fixed wrapper — track it for rid comparison.
+            if hasattr(value, 'fixed_metadata'):
+                inner = value.var_type
+                # Unwrap ColumnSelection if present
+                if hasattr(inner, 'var_type'):
+                    inner = inner.var_type
+                if isinstance(inner, type):
+                    fixed_inputs[name] = (inner, value.fixed_metadata)
+            continue  # Wrapper (Fixed, ColumnSelection, Merge, etc.)
+        constant_values[name] = value
+        constant_hashes[name] = _chash(value)
 
     def _combo_str(schema_combo: dict) -> str:
         return ", ".join(f"{k}={v}" for k, v in sorted(schema_combo.items()))
+
+    _diag(f"[DIAG] _build_skip_hook: fixed_inputs={list(fixed_inputs.keys())}, "
+          f"constant_hashes={list(constant_hashes.keys())}")
 
     def _should_skip(combo: dict) -> bool:
         # Strip __rid_* and other internal keys — only schema keys for DB lookups.
@@ -122,57 +188,127 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db) -> Callable[[dict], bo
                         if k in schema_keys}
         combo_str = _combo_str(schema_combo)
 
+        # Current __rid_* values from the combo (freshly loaded inputs).
+        combo_rids = {k: v for k, v in combo.items() if k.startswith("__rid_")}
+
+        _diag(f"[DIAG] _should_skip: combo_str={combo_str}, combo_rids={list(combo_rids.keys())}")
+
         # Step 1: all outputs must exist.
+        # Include constant values in lookup so variants are disambiguated.
+        lookup_combo = dict(schema_combo)
+        lookup_combo.update(constant_values)
+
         output_record_id = None
         for OutputCls in outputs:
-            rid = db.find_record_id(OutputCls, schema_combo)
+            rid = db.find_record_id(OutputCls, lookup_combo)
             if rid is None:
+                _diag(f"[DIAG] step1: output {OutputCls.__name__} NOT FOUND for {lookup_combo}")
                 logger.debug("missing: %s — no output record for %s",
                              combo_str, OutputCls.__name__)
                 return False  # output missing → compute
-            output_record_id = rid  # use the last output's record for provenance
+            output_record_id = rid
+        _diag(f"[DIAG] step1: output found, record_id={output_record_id}")
 
-        # Step 2: walk the full upstream provenance graph.
-        try:
-            nodes = db.get_upstream_provenance(output_record_id)
-        except Exception:
-            logger.debug("recompute: %s — provenance lookup failed", combo_str)
-            return False  # provenance lookup failed → compute to be safe
+        # Step 2: function hash check.
+        stored_hash = db.get_function_hash_for_record(output_record_id)
+        if stored_hash is None:
+            msg = f"[recompute] {combo_str} — no lineage record"
+            print(msg)
+            logger.debug(msg)
+            return False
+        if stored_hash != fn.hash:
+            msg = f"[recompute] {combo_str} — function hash changed"
+            print(msg)
+            logger.debug(msg)
+            return False
+        _diag(f"[DIAG] step2: function hash matches")
 
-        for node in nodes:
-            node_rid = node["record_id"]
-
-            # a. Function hash check (only meaningful for computed nodes).
-            if node["depth"] == 0:
-                # This is the output node — compare against the function we're
-                # about to run.
-                stored_hash = db.get_function_hash_for_record(node_rid)
-                if stored_hash is None:
-                    # No lineage record: output was not saved via scihist.
-                    # Cannot verify provenance → recompute.
-                    logger.debug("recompute: %s — no lineage record (not saved via scihist)",
-                                 combo_str)
-                    return False
-                if stored_hash != fn.hash:
-                    logger.debug("recompute: %s — function hash changed", combo_str)
-                    return False
-
-            # b. Input record_id check via _lineage.inputs.
-            lineage_inputs = db.get_lineage_inputs(node_rid)
+        # Step 3: compare __rid_* values against stored lineage inputs.
+        if combo_rids:
+            lineage_inputs = db.get_lineage_inputs(output_record_id)
+            stored_rids = {}
             for inp in lineage_inputs:
-                if inp.get("source_type") != "variable":
-                    continue  # thunks / constants handled by hash check
-                used_rid = inp.get("record_id")
-                if not used_rid:
+                if inp.get("source_type") == "rid_tracking":
+                    stored_rids[inp["name"]] = inp["record_id"]
+            _diag(f"[DIAG] step3: combo_rids={combo_rids}, stored_rids={stored_rids}")
+            for rid_key, rid_val in combo_rids.items():
+                # Self-referential case: the loaded "input" IS the output
+                # record (input type == output type). Pipeline is stable.
+                if str(rid_val) == str(output_record_id):
                     continue
-                current_rid = db.get_latest_record_id_for_variant(used_rid)
-                if current_rid != used_rid:
-                    var_type = inp.get("type", "unknown")
-                    logger.debug("recompute: %s — upstream %s updated (was %s, now %s)",
-                                 combo_str, var_type, used_rid, current_rid)
+                stored_rid = stored_rids.get(rid_key)
+                if stored_rid is None:
+                    # Output was saved without __rid tracking → recompute.
+                    msg = f"[recompute] {combo_str} — no stored {rid_key}"
+                    print(msg)
+                    logger.debug(msg)
+                    return False
+                if str(rid_val) != str(stored_rid):
+                    msg = f"[recompute] {combo_str} — {rid_key} changed"
+                    print(msg)
+                    logger.debug(msg)
+                    return False
+            _diag(f"[DIAG] step3: all combo_rids match")
+
+        # Step 3b: compare Fixed input record_ids against stored lineage.
+        if fixed_inputs:
+            if not combo_rids:
+                # Need to fetch lineage_inputs (step 3 skipped because no combo_rids).
+                lineage_inputs = db.get_lineage_inputs(output_record_id)
+                stored_rids = {}
+                for inp in lineage_inputs:
+                    if inp.get("source_type") == "rid_tracking":
+                        stored_rids[inp["name"]] = inp["record_id"]
+            _diag(f"[DIAG] step3b: fixed_inputs={list(fixed_inputs.keys())}, "
+                  f"stored_rids={stored_rids}")
+            for name, (inner_type, fixed_meta) in fixed_inputs.items():
+                rid_key = f"__rid_{name}"
+                # Look up the current record_id for this Fixed input.
+                current_rid = db.find_record_id(inner_type, fixed_meta)
+                _diag(f"[DIAG] step3b: {rid_key}: current_rid={current_rid}, "
+                      f"stored_rid={stored_rids.get(rid_key)}")
+                if current_rid is None:
+                    msg = f"[recompute] {combo_str} — fixed input {name} not found"
+                    print(msg)
+                    logger.debug(msg)
+                    return False
+                stored_rid = stored_rids.get(rid_key)
+                if stored_rid is None:
+                    msg = f"[recompute] {combo_str} — no stored {rid_key}"
+                    print(msg)
+                    logger.debug(msg)
+                    return False
+                if str(current_rid) != str(stored_rid):
+                    msg = f"[recompute] {combo_str} — {rid_key} changed"
+                    print(msg)
+                    logger.debug(msg)
                     return False
 
-        logger.debug("skip: %s — up to date", combo_str)
+        # Step 4: compare constant input hashes against stored lineage.
+        if constant_hashes:
+            stored_constants = db.get_lineage_constants(output_record_id)
+            stored_const_hashes = {
+                c["name"]: c["value_hash"]
+                for c in stored_constants
+                if "name" in c and "value_hash" in c
+            }
+            for name, current_hash in constant_hashes.items():
+                stored_hash = stored_const_hashes.get(name)
+                if stored_hash is not None and stored_hash != current_hash:
+                    msg = f"[recompute] {combo_str} — constant {name} changed"
+                    print(msg)
+                    logger.debug(msg)
+                    return False
+                if stored_hash is None and stored_const_hashes:
+                    # New constant not in stored lineage → recompute.
+                    msg = f"[recompute] {combo_str} — new constant {name}"
+                    print(msg)
+                    logger.debug(msg)
+                    return False
+
+        msg = f"[skip] {combo_str}"
+        print(msg)
+        logger.debug(msg)
         return True
 
     return _should_skip
@@ -191,6 +327,8 @@ def _save_with_lineage(
     outputs: list[Any],
     output_names: list[str],
     db: Any | None,
+    constant_inputs: dict | None = None,
+    fixed_input_rids: dict | None = None,
 ) -> None:
     """Save results with lineage tracking, extracting lineage from LineageFcnResult."""
     from scilineage import LineageFcnResult
@@ -210,7 +348,22 @@ def _save_with_lineage(
     meta_cols = [c for c in result_tbl.columns if c not in output_names]
 
     for _, row in result_tbl.iterrows():
-        save_metadata = {col: row[col] for col in meta_cols}
+        raw_metadata = {col: row[col] for col in meta_cols}
+
+        # Extract __rid_* for lineage tracking; strip __ keys from save metadata
+        # (matching scidb.for_each's _save_results behaviour).
+        input_rids = {k: str(v) for k, v in raw_metadata.items()
+                      if k.startswith("__rid_")}
+        # Merge Fixed input record_ids into rid tracking.
+        if fixed_input_rids:
+            input_rids.update(fixed_input_rids)
+        _diag(f"[DIAG] _save_with_lineage: input_rids={input_rids}")
+        save_metadata = {k: v for k, v in raw_metadata.items()
+                         if not k.startswith("__")}
+
+        # Add constant inputs as version keys for variant disambiguation.
+        if constant_inputs:
+            save_metadata.update(constant_inputs)
 
         for output_obj, output_name in zip(outputs, output_names):
             if output_name not in row.index:
@@ -220,7 +373,8 @@ def _save_with_lineage(
             try:
                 if isinstance(output_value, LineageFcnResult):
                     _save_lineage_fcn_result(
-                        output_obj, output_value, save_metadata, active_db
+                        output_obj, output_value, save_metadata, active_db,
+                        input_rids=input_rids,
                     )
                 else:
                     output_obj.save(output_value, **db_kwargs, **save_metadata)
@@ -239,6 +393,7 @@ def _save_lineage_fcn_result(
     data: "LineageFcnResult",
     metadata: dict,
     db: Any | None,
+    input_rids: dict | None = None,
 ) -> str | None:
     """Save a LineageFcnResult with full lineage tracking."""
     from scilineage import LineageFcnResult, extract_lineage, get_raw_value
@@ -253,18 +408,27 @@ def _save_lineage_fcn_result(
     if data.invoked.fcn.generates_file:
         lineage_record = extract_lineage(data)
         lineage_dict = _lineage_to_dict(lineage_record)
+        _append_rid_tracking(lineage_dict, input_rids)
         pipeline_lineage_hash = data.invoked.compute_lineage_hash()
         generated_id = f"generated:{pipeline_lineage_hash[:32]}"
         user_id = get_user_id()
         nested_metadata = active_db._split_metadata(metadata)
 
         output_name = output_obj.__name__ if isinstance(output_obj, type) else type(output_obj).__name__
+        schema_keys = nested_metadata.get("schema", {})
+        version_keys = nested_metadata.get("version", {})
+        schema_level = active_db._infer_schema_level(schema_keys)
+        schema_id = (
+            active_db._duck._get_or_create_schema_id(schema_level, schema_keys)
+            if schema_level is not None and schema_keys
+            else 0
+        )
         active_db._save_record_metadata(
             record_id=generated_id,
             timestamp=datetime.now().isoformat(),
             variable_name=output_name,
-            schema_id=0,
-            version_keys=None,
+            schema_id=schema_id,
+            version_keys=version_keys or None,
             content_hash=None,
             lineage_hash=pipeline_lineage_hash,
             schema_version=getattr(output_obj, 'schema_version', 1),
@@ -283,6 +447,7 @@ def _save_lineage_fcn_result(
 
     lineage_record = extract_lineage(data)
     lineage_dict = _lineage_to_dict(lineage_record)
+    _append_rid_tracking(lineage_dict, input_rids)
     lineage_hash = data.hash
     pipeline_lineage_hash = data.invoked.compute_lineage_hash()
     raw_data = get_raw_value(data)
@@ -322,6 +487,18 @@ def save(variable_class, data, db=None, **metadata) -> str | None:
     else:
         db_kwargs = {"db": db} if db is not None else {}
         return variable_class.save(data, **db_kwargs, **metadata)
+
+
+def _append_rid_tracking(lineage_dict: dict, input_rids: dict | None) -> None:
+    """Append __rid_* entries to lineage inputs for skip_computed tracking."""
+    if not input_rids:
+        return
+    for rid_key, rid_val in input_rids.items():
+        lineage_dict["inputs"].append({
+            "name": rid_key,
+            "source_type": "rid_tracking",
+            "record_id": str(rid_val),
+        })
 
 
 def _lineage_to_dict(lineage_record) -> dict:

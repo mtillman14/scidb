@@ -707,7 +707,26 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
         if isinstance(inner_loaded, PerComboLoader):
             # Inner needs per-combo loading; wrap the whole Fixed spec
             return PerComboLoader(var_spec)
-        return _scifor.Fixed(inner_loaded, **var_spec.fixed_metadata)
+        # Strip internal tracking columns — Fixed inputs are not part of
+        # the rid expansion (they're tracked separately in scihist), so
+        # __record_id / __branch_params would confuse _extract_data.
+        import pandas as pd
+        if isinstance(inner_loaded, pd.DataFrame):
+            _drop = [c for c in ("__record_id", "__branch_params")
+                     if c in inner_loaded.columns]
+            if _drop:
+                inner_loaded = inner_loaded.drop(columns=_drop)
+        # Stringify fixed_metadata schema keys to match the stringified
+        # DataFrame columns produced by _load_var_type_all.
+        fixed_meta = dict(var_spec.fixed_metadata)
+        _sk = _get_schema_keys(db)
+        if _sk:
+            from .database import _schema_str
+            fixed_meta = {
+                k: _schema_str(v) if k in _sk else v
+                for k, v in fixed_meta.items()
+            }
+        return _scifor.Fixed(inner_loaded, **fixed_meta)
 
     # ColumnSelection: load inner var_type if possible, else per-combo
     if isinstance(var_spec, ColumnSelection):
@@ -1117,6 +1136,20 @@ def _is_loadable(var_spec: Any) -> bool:
     except ImportError:
         pass
     return isinstance(var_spec, (type, Fixed, ColumnSelection, Merge, PathInput)) or hasattr(var_spec, 'load')
+
+
+def _get_schema_keys(db: Any | None) -> set:
+    """Return the set of dataset_schema_keys from db or the global database."""
+    if db is not None and hasattr(db, 'dataset_schema_keys'):
+        return set(db.dataset_schema_keys)
+    try:
+        from .database import get_database
+        _db = get_database()
+        if hasattr(_db, 'dataset_schema_keys'):
+            return set(_db.dataset_schema_keys)
+    except Exception:
+        pass
+    return set()
 
 
 def _has_pathinput(inputs: dict) -> bool:

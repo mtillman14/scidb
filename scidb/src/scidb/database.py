@@ -2644,6 +2644,44 @@ class DatabaseManager:
         except (json.JSONDecodeError, TypeError):
             return []
 
+    def get_lineage_constants(self, record_id: str) -> list[dict]:
+        """Return the list of constant descriptors stored in _lineage for a record.
+
+        Each entry is a dict with 'name', 'value_hash', 'value_repr', 'value_type'.
+
+        Returns an empty list if no lineage row exists for the record.
+        """
+        rows = self._duck._fetchall(
+            "SELECT constants FROM _lineage WHERE output_record_id = ?",
+            [record_id],
+        )
+        if not rows or not rows[0][0]:
+            return []
+        try:
+            result = json.loads(rows[0][0])
+            return result if isinstance(result, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def get_record_version_keys(self, record_id: str) -> dict:
+        """Return the version_keys dict stored in _record_metadata for a record.
+
+        Used by scihist.for_each's skip_computed check to compare __rid_*
+        values between the current combo and the stored output record.
+
+        Returns an empty dict if the record doesn't exist or has no version_keys.
+        """
+        rows = self._duck._fetchall(
+            "SELECT version_keys FROM _record_metadata WHERE record_id = ? LIMIT 1",
+            [record_id],
+        )
+        if not rows or not rows[0][0]:
+            return {}
+        try:
+            return json.loads(rows[0][0])
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
     # -------------------------------------------------------------------------
     # Export Methods
     # -------------------------------------------------------------------------

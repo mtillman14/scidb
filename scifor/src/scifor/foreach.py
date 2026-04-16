@@ -246,6 +246,12 @@ def for_each(
                 print(msg)
                 if _log_fn is not None:
                     _log_fn(msg)
+                # DIAG: log filter error to file
+                import sys as _sys
+                with open("/tmp/scihist_diag.log", "a") as _f:
+                    _f.write(f"[DIAG] FILTER ERROR for {param_name}: {e}\n")
+                    import traceback as _tb
+                    _tb.print_exc(file=_f)
                 traceback.print_exc()
                 filter_failed = True
                 break
@@ -281,6 +287,11 @@ def for_each(
             print(msg)
             if _log_fn is not None:
                 _log_fn(msg)
+            # DIAG: log function error to file
+            with open("/tmp/scihist_diag.log", "a") as _f:
+                _f.write(f"[DIAG] FUNCTION ERROR: {e}\n")
+                import traceback as _tb
+                _tb.print_exc(file=_f)
             traceback.print_exc()
             skipped += 1
             if _progress_fn is not None:

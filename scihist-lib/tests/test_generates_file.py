@@ -341,7 +341,7 @@ class TestForEachIntegration:
             session=["A"],
         )
 
-        assert received_kwargs == {"subject": 1, "session": "A"}
+        assert received_kwargs == {"subject": "1", "session": "A"}
 
     def test_for_each_cache_hit_on_second_run(self, db):
         """Second for_each run should hit cache for all iterations."""

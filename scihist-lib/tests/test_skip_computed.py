@@ -302,7 +302,7 @@ class TestSkipComputedInputChanges:
         @lineage_fcn
         def process_dict(x):
             call_count[0] += 1
-            return {"out": x["vals"] * 2}
+            return {"vals": x["vals"] * 2}
 
         DictOut.save({"vals": np.array([1, 2, 3])}, subject=1, trial=1)
         for_each(process_dict, inputs={"x": DictOut}, outputs=[DictOut],
@@ -322,7 +322,7 @@ class TestSkipComputedInputChanges:
         """Dict-of-arrays: same content → skip."""
         @lineage_fcn
         def process_dict(x):
-            return {"out": x["vals"] * 2}
+            return {"vals": x["vals"] * 2}
 
         DictOut.save({"vals": np.array([1, 2, 3])}, subject=1, trial=1)
         for_each(process_dict, inputs={"x": DictOut}, outputs=[DictOut],
