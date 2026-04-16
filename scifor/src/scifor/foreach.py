@@ -22,6 +22,7 @@ def for_each(
     _all_combos: list[dict] | None = None,
     _log_fn: "Callable[[str], None] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
+    _cancel_check: "Callable[[], bool] | None" = None,
     **metadata_iterables: list[Any],
 ) -> "pd.DataFrame | None":
     """
@@ -190,8 +191,29 @@ def for_each(
     completed = 0
     skipped = 0
     collected_rows: list[tuple[dict, tuple]] = []
+    was_cancelled = False
 
     for combo_idx, metadata in enumerate(all_combos):
+        # Cooperative cancel: check between combos (before any work for this combo).
+        if _cancel_check is not None and _cancel_check():
+            was_cancelled = True
+            cancel_msg = (
+                f"[cancelled] for_each({fn_name}) at combo {combo_idx + 1}/{total} "
+                f"(completed={completed}, skipped={skipped})"
+            )
+            print(cancel_msg)
+            if _log_fn is not None:
+                _log_fn(cancel_msg)
+            if _progress_fn is not None:
+                _progress_fn({
+                    "event": "cancelled",
+                    "current": combo_idx + 1,
+                    "total": total,
+                    "completed": completed,
+                    "skipped": skipped,
+                })
+            break
+
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
 
         if _progress_fn is not None:
@@ -313,8 +335,12 @@ def for_each(
         print(f"{'=' * 64}\n")
         return None
     else:
-        done_msg = f"for_each({fn_name}) done: completed={completed}, skipped={skipped}, total={total}"
-        print(f"  done: completed={completed}, skipped={skipped}, total={total}")
+        cancelled_suffix = ", cancelled" if was_cancelled else ""
+        done_msg = (
+            f"for_each({fn_name}) done: completed={completed}, "
+            f"skipped={skipped}, total={total}{cancelled_suffix}"
+        )
+        print(f"  done: completed={completed}, skipped={skipped}, total={total}{cancelled_suffix}")
         print(f"{'=' * 64}\n")
         if _log_fn is not None:
             _log_fn("─" * 64)

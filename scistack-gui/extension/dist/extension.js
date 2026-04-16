@@ -34,7 +34,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var path3 = __toESM(require("path"));
+var path4 = __toESM(require("path"));
 var vscode5 = __toESM(require("vscode"));
 
 // src/pythonProcess.ts
@@ -49,6 +49,8 @@ var PythonProcess = class {
     this.notificationHandlers = [];
     this.readyResolve = null;
     this.readyReject = null;
+    this.readyTimer = null;
+    this.readyTimeoutMs = 0;
     const args = ["-m", "scistack_gui.server", "--db", dbPath];
     if (projectPath) {
       args.push("--project", projectPath);
@@ -87,6 +89,10 @@ var PythonProcess = class {
       }
       this.pending.clear();
       if (this.readyReject) {
+        if (this.readyTimer) {
+          clearTimeout(this.readyTimer);
+          this.readyTimer = null;
+        }
         this.readyReject(new Error(msg));
         this.readyResolve = null;
         this.readyReject = null;
@@ -95,6 +101,10 @@ var PythonProcess = class {
     this.proc.on("error", (err) => {
       this.outputChannel.appendLine(`Python process error: ${err.message}`);
       if (this.readyReject) {
+        if (this.readyTimer) {
+          clearTimeout(this.readyTimer);
+          this.readyTimer = null;
+        }
         this.readyReject(err);
         this.readyResolve = null;
         this.readyReject = null;
@@ -104,19 +114,34 @@ var PythonProcess = class {
   /**
    * Wait for the Python server to signal readiness.
    * Returns the ready notification params (db_name, schema_keys).
+   *
+   * The ``timeoutMs`` is an *inactivity* timeout: it resets whenever a
+   * ``progress`` notification arrives from the server. This lets slow-but-
+   * progressing startups (e.g. projects on network drives) complete
+   * without falsely timing out, while still killing a truly stuck server.
    */
   waitForReady(timeoutMs) {
+    this.readyTimeoutMs = timeoutMs;
     return new Promise((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
-      setTimeout(() => {
-        if (this.readyReject) {
-          this.readyReject(new Error(`Python server did not become ready within ${timeoutMs}ms`));
-          this.readyResolve = null;
-          this.readyReject = null;
-        }
-      }, timeoutMs);
+      this.resetReadyTimer(timeoutMs);
     });
+  }
+  resetReadyTimer(timeoutMs) {
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer);
+    }
+    this.readyTimer = setTimeout(() => {
+      this.readyTimer = null;
+      if (this.readyReject) {
+        this.readyReject(new Error(
+          `Python server did not become ready within ${timeoutMs}ms of silence (no progress notification received).`
+        ));
+        this.readyResolve = null;
+        this.readyReject = null;
+      }
+    }, timeoutMs);
   }
   /**
    * Send a JSON-RPC request and return a promise for the result.
@@ -170,7 +195,18 @@ var PythonProcess = class {
     }
     const method = msg.method;
     const params = msg.params ?? {};
+    if (method === "progress") {
+      this.outputChannel.appendLine(`  ${params.message}`);
+      if (this.readyResolve) {
+        this.resetReadyTimer(this.readyTimeoutMs);
+      }
+      return;
+    }
     if (method === "ready" && this.readyResolve) {
+      if (this.readyTimer) {
+        clearTimeout(this.readyTimer);
+        this.readyTimer = null;
+      }
       this.readyResolve(params);
       this.readyResolve = null;
       this.readyReject = null;
@@ -179,6 +215,10 @@ var PythonProcess = class {
     if (method === "error") {
       this.outputChannel.appendLine(`Server error: ${params.message}`);
       if (this.readyReject) {
+        if (this.readyTimer) {
+          clearTimeout(this.readyTimer);
+          this.readyTimer = null;
+        }
         this.readyReject(new Error(params.message));
         this.readyResolve = null;
         this.readyReject = null;
@@ -193,9 +233,12 @@ var PythonProcess = class {
 
 // src/dagPanel.ts
 var vscode3 = __toESM(require("vscode"));
-var path = __toESM(require("path"));
+var path2 = __toESM(require("path"));
 
 // src/matlabTerminal.ts
+var fs = __toESM(require("fs"));
+var os = __toESM(require("os"));
+var path = __toESM(require("path"));
 var vscode2 = __toESM(require("vscode"));
 function isMatlabExtensionAvailable() {
   return vscode2.extensions.getExtension("MathWorks.language-matlab") !== void 0;
@@ -205,6 +248,11 @@ async function runInMatlabTerminal(command, outputChannel2) {
     return false;
   }
   try {
+    const scriptPath = path.join(os.tmpdir(), "scistack_run.m");
+    fs.writeFileSync(scriptPath, command, "utf-8");
+    outputChannel2?.appendLine(
+      `runInMatlabTerminal: wrote ${command.length}-char script to ${scriptPath}`
+    );
     await vscode2.commands.executeCommand("matlab.openCommandWindow");
     const terminal = vscode2.window.terminals.find((t) => t.name === "MATLAB");
     if (!terminal) {
@@ -213,7 +261,10 @@ async function runInMatlabTerminal(command, outputChannel2) {
       );
       return false;
     }
-    terminal.sendText(command);
+    const forMatlab = scriptPath.replace(/\\/g, "/");
+    const runLine = `run('${forMatlab}');`;
+    outputChannel2?.appendLine(`runInMatlabTerminal: sendText ${runLine}`);
+    terminal.sendText(runLine);
     terminal.show();
     return true;
   } catch (err) {
@@ -239,7 +290,7 @@ var DagPanel = class {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [
-          vscode3.Uri.file(path.join(context.extensionPath, "dist", "webview"))
+          vscode3.Uri.file(path2.join(context.extensionPath, "dist", "webview"))
         ]
       }
     );
@@ -275,6 +326,11 @@ var DagPanel = class {
         if (method === "start_run") {
           const params = msg.params ?? {};
           const language = params.language;
+          const functionName = params.function_name;
+          const variants = params.variants;
+          this.outputChannel.appendLine(
+            `start_run: function=${functionName ?? "<?>"} language=${language ?? "python"} variants=${variants ? variants.length : 0}`
+          );
           if (language === "matlab") {
             await this.handleMatlabRun(msg.id, params);
             return;
@@ -309,46 +365,105 @@ var DagPanel = class {
   /**
    * Open a file in an editor column beside the DAG panel and reveal the given line.
    * `line` is 1-based (matching inspect.getsourcelines).
+   *
+   * UNC paths (`\\server\share\...`) are handled via explicit
+   * `Uri.from({scheme:'file', authority, path})` construction because
+   * `Uri.file()` has historically had edge cases with UNC canonicalization
+   * on Windows. Errors are logged to the output channel before being
+   * returned, so failures are visible even when the webview silently
+   * swallows the error response.
    */
   async revealInEditor(params) {
     const { file, line } = params;
     this.outputChannel.appendLine(`reveal_in_editor: file=${file} line=${line}`);
     if (!file)
       return { ok: false, error: "No file path provided." };
-    const uri = vscode3.Uri.file(file);
-    const doc = await vscode3.workspace.openTextDocument(uri);
+    const uri = this.buildFileUri(file);
+    this.outputChannel.appendLine(`reveal_in_editor: resolved uri=${uri.toString()}`);
+    let doc;
+    try {
+      doc = await vscode3.workspace.openTextDocument(uri);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(
+        `reveal_in_editor: openTextDocument failed for ${uri.toString()}: ${msg}`
+      );
+      return { ok: false, error: `openTextDocument failed: ${msg}` };
+    }
     const zeroBased = Math.max(0, (line ?? 1) - 1);
     const selection = new vscode3.Range(zeroBased, 0, zeroBased, 0);
-    const editor = await vscode3.window.showTextDocument(doc, {
-      viewColumn: vscode3.ViewColumn.Beside,
-      preserveFocus: false,
-      selection
-    });
+    let editor;
+    try {
+      editor = await vscode3.window.showTextDocument(doc, {
+        viewColumn: vscode3.ViewColumn.Beside,
+        preserveFocus: false,
+        selection
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(
+        `reveal_in_editor: showTextDocument failed for ${uri.toString()}: ${msg}`
+      );
+      return { ok: false, error: `showTextDocument failed: ${msg}` };
+    }
     editor.revealRange(selection, vscode3.TextEditorRevealKind.InCenter);
     return { ok: true };
+  }
+  /**
+   * Build a file URI, handling Windows UNC paths (`\\server\share\path`)
+   * explicitly. `vscode.Uri.file` accepts UNC but its canonicalization has
+   * known edge cases; constructing via `Uri.from` with an explicit
+   * authority removes that ambiguity.
+   */
+  buildFileUri(file) {
+    if (file.startsWith("\\\\") || file.startsWith("//")) {
+      const rest = file.replace(/^[\\/]{2}/, "");
+      const slashIdx = rest.search(/[\\/]/);
+      if (slashIdx > 0) {
+        const authority = rest.substring(0, slashIdx);
+        const pathPart = "/" + rest.substring(slashIdx + 1).replace(/\\/g, "/");
+        return vscode3.Uri.from({ scheme: "file", authority, path: pathPart });
+      }
+    }
+    return vscode3.Uri.file(file);
   }
   /**
    * Handle "Run" for a MATLAB function: generate command, then either send
    * to the MathWorks MATLAB terminal or copy to clipboard.
    */
   async handleMatlabRun(msgId, params) {
+    const functionName = params.function_name;
+    this.outputChannel.appendLine(
+      `handleMatlabRun: requesting generate_matlab_command for ${functionName ?? "<?>"}`
+    );
     try {
       const result = await this.pythonProcess.request(
         "generate_matlab_command",
         params
       );
       const command = result.command;
+      this.outputChannel.appendLine(
+        `handleMatlabRun: got command (${command.length} chars)`
+      );
       const sent = await runInMatlabTerminal(command, this.outputChannel);
       if (sent) {
+        this.outputChannel.appendLine(
+          "handleMatlabRun: sent to MATLAB terminal"
+        );
         vscode3.window.showInformationMessage("Running in MATLAB terminal...");
       } else {
         await vscode3.env.clipboard.writeText(command);
+        this.outputChannel.appendLine(
+          "handleMatlabRun: no MATLAB terminal found, copied to clipboard"
+        );
         vscode3.window.showInformationMessage(
           "MATLAB command copied to clipboard. Paste into MATLAB to run."
         );
       }
       this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(`handleMatlabRun: failed: ${msg}`);
       this.panel.webview.postMessage({
         id: msgId,
         error: { message: String(err) }
@@ -423,13 +538,13 @@ var DagPanel = class {
     this.disposeCallbacks.push(callback);
   }
   getHtml() {
-    const webviewDir = path.join(this.context.extensionPath, "dist", "webview");
+    const webviewDir = path2.join(this.context.extensionPath, "dist", "webview");
     const webview = this.panel.webview;
     const scriptUri = webview.asWebviewUri(
-      vscode3.Uri.file(path.join(webviewDir, "index.js"))
+      vscode3.Uri.file(path2.join(webviewDir, "index.js"))
     );
     const styleUri = webview.asWebviewUri(
-      vscode3.Uri.file(path.join(webviewDir, "index.css"))
+      vscode3.Uri.file(path2.join(webviewDir, "index.css"))
     );
     const nonce = getNonce();
     return `<!DOCTYPE html>
@@ -472,22 +587,22 @@ function getNonce() {
 }
 
 // src/projectInit.ts
-var fs = __toESM(require("fs"));
-var path2 = __toESM(require("path"));
+var fs2 = __toESM(require("fs"));
+var path3 = __toESM(require("path"));
 var vscode4 = __toESM(require("vscode"));
 function checkProjectConfig(dirPath) {
-  const resolved = fs.statSync(dirPath, { throwIfNoEntry: false });
+  const resolved = fs2.statSync(dirPath, { throwIfNoEntry: false });
   if (!resolved) {
     return "ready";
   }
-  const dir = resolved.isFile() ? path2.dirname(dirPath) : dirPath;
-  if (fs.existsSync(path2.join(dir, "pyproject.toml")) || fs.existsSync(path2.join(dir, "scistack.toml"))) {
+  const dir = resolved.isFile() ? path3.dirname(dirPath) : dirPath;
+  if (fs2.existsSync(path3.join(dir, "pyproject.toml")) || fs2.existsSync(path3.join(dir, "scistack.toml"))) {
     return "ready";
   }
   return "no_config_file";
 }
 function createScistackToml(dirPath) {
-  const filePath = path2.join(dirPath, "scistack.toml");
+  const filePath = path3.join(dirPath, "scistack.toml");
   const content = `# SciStack project configuration
 # See documentation for all available options.
 
@@ -508,14 +623,14 @@ function createScistackToml(dirPath) {
 # variables = ["src/vars/"]
 # variable_dir = "src/vars/"
 `;
-  fs.writeFileSync(filePath, content, "utf-8");
+  fs2.writeFileSync(filePath, content, "utf-8");
   return filePath;
 }
 async function promptForMissingConfig(dirPath, outputChannel2) {
   const createOption = "Create scistack.toml";
   const continueOption = "Continue anyway";
   const choice = await vscode4.window.showWarningMessage(
-    `No pyproject.toml or scistack.toml found in "${path2.basename(
+    `No pyproject.toml or scistack.toml found in "${path3.basename(
       dirPath
     )}". The server needs a config file to discover pipeline code.`,
     { modal: true },
@@ -596,7 +711,7 @@ function activate(context) {
         if (!nameInput)
           return;
         const fileName = nameInput.trim().endsWith(".duckdb") ? nameInput.trim() : `${nameInput.trim()}.duckdb`;
-        dbPath = path3.join(folderPath, fileName);
+        dbPath = path4.join(folderPath, fileName);
         const keysInput = await vscode5.window.showInputBox({
           prompt: "Schema keys (comma-separated, top-down)",
           placeHolder: "e.g. subject, session",
@@ -712,7 +827,9 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
     outputChannel.appendLine(`  Schema keys: [${schemaKeys.join(", ")}] (new DB)`);
   pythonProcess = new PythonProcess(pythonPath, dbPath, modulePath, outputChannel, schemaKeys, projectPath);
   try {
-    const readyParams = await pythonProcess.waitForReady(1e4);
+    const cfg = vscode5.workspace.getConfiguration("scistack");
+    const startupTimeoutMs = cfg.get("startupTimeoutMs", 6e4);
+    const readyParams = await pythonProcess.waitForReady(startupTimeoutMs);
     outputChannel.appendLine(
       `Server ready \u2014 DB: ${readyParams.db_name}, schema: [${readyParams.schema_keys.join(", ")}]`
     );
@@ -774,8 +891,8 @@ function setupDbWatcher(dbPath) {
     clearTimeout(dbWatcherDebounce);
     dbWatcherDebounce = null;
   }
-  const dbDir = path3.dirname(dbPath);
-  const dbBase = path3.basename(dbPath);
+  const dbDir = path4.dirname(dbPath);
+  const dbBase = path4.basename(dbPath);
   const pattern = new vscode5.RelativePattern(dbDir, dbBase + "*");
   dbWatcher = vscode5.workspace.createFileSystemWatcher(pattern);
   const onDbChange = () => {

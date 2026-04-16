@@ -17,6 +17,8 @@ Each entry in `variants` is a constants dict. We run one for_each call
 per variant. If `variants` is empty we run all known variants from the DB.
 """
 
+import ctypes
+import logging
 import sys
 import time
 import uuid
@@ -33,7 +35,32 @@ from scistack_gui.db import get_db
 from scistack_gui import registry
 from scistack_gui.api.ws import push_message
 
+# This logger is configured in server.py (FastAPI) / __main__.py (JSON-RPC)
+# to write to stderr with the "[scistack] …" prefix. The extension forwards
+# stderr to the SciStack Output channel, so .info() calls here show up in
+# VS Code's UI in addition to being captured by scidb.log.Log for the on-disk
+# scidb.log file.
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Per-run cancellation registry
+# ---------------------------------------------------------------------------
+#
+# Each entry: {
+#   "event": threading.Event,        # set by cancel_run / force_cancel_run
+#   "thread": threading.Thread,      # the worker thread running _run_in_thread
+#   "cancelled": bool,               # True after cooperative cancel requested
+#   "force_cancelled": bool,         # True after force cancel requested
+# }
+#
+# The registry is module-level (process-wide); lookups by run_id are O(1).
+# Mutated only from the FastAPI/JSON-RPC handler thread and the worker
+# thread's entry/exit, so a plain dict is sufficient.
+_active_runs: dict[str, dict] = {}
+_active_runs_lock = threading.Lock()
 
 
 class WhereFilterSpec(BaseModel):
@@ -61,9 +88,30 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     Executed in a background thread. Runs for_each for each variant,
     captures stdout line-by-line, and pushes it to the WebSocket queue.
     """
+    logger.info(
+        "run[%s]: thread started for function=%s, variants=%d, "
+        "schema_level=%s, schema_filter=%s, where_filters=%s, run_options=%s",
+        run_id, function_name, len(variants or []),
+        schema_level, _summarize_schema_filter(schema_filter),
+        len(where_filters) if where_filters else 0,
+        run_options,
+    )
 
     def emit(text: str):
         push_message({"type": "run_output", "run_id": run_id, "text": text})
+
+    # Register this run so cancel_run/force_cancel_run can find it.
+    cancel_event = threading.Event()
+    with _active_runs_lock:
+        _active_runs[run_id] = {
+            "event": cancel_event,
+            "thread": threading.current_thread(),
+            "cancelled": False,
+            "force_cancelled": False,
+        }
+
+    def _is_cancelled() -> bool:
+        return cancel_event.is_set()
 
     # The DatabaseManager is stored in thread-local storage by configure_database().
     # Background threads don't inherit that local, so we re-register it here.
@@ -72,8 +120,11 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     try:
         fn = registry.get_function(function_name)
     except KeyError as e:
+        logger.warning("run[%s]: function not found: %s", run_id, e)
         push_message({"type": "run_done", "run_id": run_id, "success": False,
-                      "error": str(e)})
+                      "error": str(e), "cancelled": False})
+        with _active_runs_lock:
+            _active_runs.pop(run_id, None)
         return
 
     # Look up input/output types for this function from the DB.
@@ -352,81 +403,142 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     # Build where= argument from where_filters.
     where_arg = _build_where(where_filters)
 
-    for v in unique_targets:
-        # Build inputs dict: variable class inputs + scalar constants
-        try:
-            inputs = {}
-            for param, type_names in v["input_types"].items():
-                # type_names may be a list (new) or a string (from DB history).
-                if isinstance(type_names, list):
-                    if len(type_names) > 1:
-                        from scidb import EachOf
-                        inputs[param] = EachOf(*(registry.get_variable_class(t) for t in type_names))
+    logger.info(
+        "run[%s]: executing %d target(s) for '%s' "
+        "(dry_run=%s, save=%s, distribute=%s, as_table=%s, schema_keys=%s)",
+        run_id, len(unique_targets), function_name,
+        opt_dry_run, opt_save, opt_distribute, opt_as_table,
+        list(schema_kwargs.keys()),
+    )
+
+    cancelled = False
+    try:
+        for v in unique_targets:
+            # Cooperative cancel: stop before launching the next variant.
+            if _is_cancelled():
+                logger.info("run[%s]: cancel detected between variants — stopping",
+                            run_id)
+                cancelled = True
+                emit("⛔ Cancelled\n")
+                break
+            # Build inputs dict: variable class inputs + scalar constants
+            try:
+                inputs = {}
+                for param, type_names in v["input_types"].items():
+                    # type_names may be a list (new) or a string (from DB history).
+                    if isinstance(type_names, list):
+                        if len(type_names) > 1:
+                            from scidb import EachOf
+                            inputs[param] = EachOf(*(registry.get_variable_class(t) for t in type_names))
+                        else:
+                            inputs[param] = registry.get_variable_class(type_names[0])
                     else:
-                        inputs[param] = registry.get_variable_class(type_names[0])
-                else:
-                    inputs[param] = registry.get_variable_class(type_names)
-            inputs.update(v["constants"])   # add constants
+                        inputs[param] = registry.get_variable_class(type_names)
+                inputs.update(v["constants"])   # add constants
 
-            OutputCls = registry.get_variable_class(v["output_type"])
-        except KeyError as e:
-            emit(f"Error: {e}\n")
-            success = False
-            continue
+                OutputCls = registry.get_variable_class(v["output_type"])
+            except KeyError as e:
+                emit(f"Error: {e}\n")
+                success = False
+                continue
 
-        label = f"{function_name}({', '.join(f'{k}={val}' for k, val in v['constants'].items())})" \
-                if v["constants"] else function_name
-        emit(f"▶ Running {label}\n")
+            label = f"{function_name}({', '.join(f'{k}={val}' for k, val in v['constants'].items())})" \
+                    if v["constants"] else function_name
+            logger.info(
+                "run[%s]: target -> %s, inputs=%s, output=%s",
+                run_id, label,
+                {k: (type_names if isinstance(type_names, list) else [type_names])
+                 for k, type_names in v["input_types"].items()},
+                v["output_type"],
+            )
+            emit(f"▶ Running {label}\n")
 
-        # Emit structured run_start message for the frontend.
-        started_at = time.time()
-        push_message({
-            "type": "run_start",
-            "run_id": run_id,
-            "function_name": function_name,
-            "constants": v["constants"],
-            "input_types": {k: str(vt) for k, vt in v["input_types"].items()},
-            "output_type": v["output_type"],
-            "started_at": started_at,
-        })
-
-        # Progress callback: relay structured progress to the frontend.
-        def _progress_fn(info: dict):
-            # Convert metadata values to strings for JSON serialization.
-            meta = {str(k): str(val) for k, val in info.get("metadata", {}).items()}
+            # Emit structured run_start message for the frontend.
+            started_at = time.time()
             push_message({
-                "type": "run_progress",
+                "type": "run_start",
                 "run_id": run_id,
-                "event": info["event"],
-                "current": info["current"],
-                "total": info["total"],
-                "completed": info["completed"],
-                "skipped": info["skipped"],
-                "metadata": meta,
-                "error": info.get("error"),
+                "function_name": function_name,
+                "constants": v["constants"],
+                "input_types": {k: str(vt) for k, vt in v["input_types"].items()},
+                "output_type": v["output_type"],
+                "started_at": started_at,
             })
 
-        # Capture for_each stdout and relay it line-by-line.
-        buf = StringIO()
-        try:
-            with redirect_stdout(buf):
-                for_each(fn, inputs=inputs, outputs=[OutputCls],
-                         dry_run=opt_dry_run, save=opt_save,
-                         distribute=opt_distribute,
-                         as_table=opt_as_table,
-                         where=where_arg,
-                         _progress_fn=_progress_fn, **schema_kwargs)
-            output = buf.getvalue()
-            if output:
-                emit(output)
-        except Exception as exc:
-            emit(f"Error: {exc}\n")
-            success = False
+            # Progress callback: relay structured progress to the frontend.
+            def _progress_fn(info: dict):
+                # Convert metadata values to strings for JSON serialization.
+                meta = {str(k): str(val) for k, val in info.get("metadata", {}).items()}
+                push_message({
+                    "type": "run_progress",
+                    "run_id": run_id,
+                    "event": info["event"],
+                    "current": info["current"],
+                    "total": info["total"],
+                    "completed": info["completed"],
+                    "skipped": info["skipped"],
+                    "metadata": meta,
+                    "error": info.get("error"),
+                })
 
-    duration_ms = int((time.time() - run_started_at) * 1000)
-    push_message({"type": "run_done", "run_id": run_id, "success": success,
-                  "duration_ms": duration_ms})
-    push_message({"type": "dag_updated"})
+            # Capture for_each stdout and relay it line-by-line.
+            buf = StringIO()
+            try:
+                with redirect_stdout(buf):
+                    for_each(fn, inputs=inputs, outputs=[OutputCls],
+                             dry_run=opt_dry_run, save=opt_save,
+                             distribute=opt_distribute,
+                             as_table=opt_as_table,
+                             where=where_arg,
+                             _progress_fn=_progress_fn,
+                             _cancel_check=_is_cancelled,
+                             **schema_kwargs)
+                output = buf.getvalue()
+                if output:
+                    emit(output)
+                target_ms = int((time.time() - started_at) * 1000)
+                logger.info("run[%s]: target %s completed in %d ms",
+                            run_id, label, target_ms)
+            except KeyboardInterrupt:
+                # Force-cancel injected an interrupt into this thread (or the
+                # user pressed Ctrl-C in CLI mode).  Treat as cancel and stop.
+                logger.warning(
+                    "run[%s]: target %s interrupted by KeyboardInterrupt "
+                    "(force-cancel)", run_id, label,
+                )
+                output = buf.getvalue()
+                if output:
+                    emit(output)
+                cancelled = True
+                emit("⛔ Force-cancelled\n")
+                break
+            except Exception as exc:
+                logger.exception("run[%s]: target %s failed", run_id, label)
+                emit(f"Error: {exc}\n")
+                success = False
+    except KeyboardInterrupt:
+        # Defence in depth: if KeyboardInterrupt slips past the per-target
+        # handler (e.g. fired between targets), still cancel cleanly.
+        logger.warning("run[%s]: interrupted by KeyboardInterrupt at top level",
+                       run_id)
+        cancelled = True
+        emit("⛔ Force-cancelled\n")
+    finally:
+        duration_ms = int((time.time() - run_started_at) * 1000)
+        # Read the final cancel flags from the registry before popping it.
+        with _active_runs_lock:
+            entry = _active_runs.pop(run_id, None)
+        was_force = bool(entry and entry.get("force_cancelled"))
+        if cancel_event.is_set():
+            cancelled = True
+        logger.info(
+            "run[%s]: finished (success=%s, cancelled=%s, force=%s) in %d ms",
+            run_id, success, cancelled, was_force, duration_ms,
+        )
+        push_message({"type": "run_done", "run_id": run_id, "success": success,
+                      "duration_ms": duration_ms,
+                      "cancelled": cancelled, "force_cancelled": was_force})
+        push_message({"type": "dag_updated"})
 
 
 def _build_where(where_filters: list[WhereFilterSpec] | None):
@@ -464,6 +576,13 @@ def _constants_match(db_constants: dict, selected: dict) -> bool:
     return all(str(db_constants.get(k)) == str(v) for k, v in selected.items())
 
 
+def _summarize_schema_filter(schema_filter: dict[str, list] | None) -> str:
+    """Compact one-line summary of a schema_filter for logging."""
+    if not schema_filter:
+        return "none"
+    return ", ".join(f"{k}={len(v)}v" for k, v in schema_filter.items())
+
+
 @router.post("/run")
 def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     run_id = req.run_id or str(uuid.uuid4())[:8]
@@ -476,3 +595,119 @@ def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     )
     thread.start()
     return {"run_id": run_id}
+
+
+# ---------------------------------------------------------------------------
+# Cancel APIs (called from server.py JSON-RPC handlers)
+# ---------------------------------------------------------------------------
+
+def cancel_run(run_id: str) -> dict:
+    """Cooperatively cancel a running for_each.
+
+    Sets the cancel event so the worker thread breaks between combos.
+    Safe: completed combos are saved, in-flight combo finishes normally.
+
+    Returns:
+        ``{"ok": True, "cancelled": True}`` on success,
+        ``{"ok": False, "error": "unknown run_id"}`` if the run isn't active.
+    """
+    with _active_runs_lock:
+        entry = _active_runs.get(run_id)
+        if entry is None:
+            logger.warning("cancel_run: unknown run_id=%s", run_id)
+            return {"ok": False, "error": f"unknown run_id: {run_id}"}
+        entry["cancelled"] = True
+        entry["event"].set()
+    logger.info("run[%s]: cancel requested (cooperative)", run_id)
+    return {"ok": True, "cancelled": True, "force": False}
+
+
+def force_cancel_run(run_id: str) -> dict:
+    """Force-cancel a running for_each by injecting KeyboardInterrupt.
+
+    Sets the cooperative cancel event AND calls
+    ``ctypes.pythonapi.PyThreadState_SetAsyncExc`` to raise
+    ``KeyboardInterrupt`` in the worker thread. Best-effort:
+
+    - Won't interrupt code blocked in C extensions, native syscalls,
+      or threading primitives that don't poll for interrupts.
+    - When that fails, the user must restart the Python subprocess via
+      the existing ``scistack.restartPython`` command.
+
+    Returns:
+        ``{"ok": True, "cancelled": True, "force": True, "best_effort": True}``
+        on success,
+        ``{"ok": False, "error": "..."}`` if the run isn't active or the
+        ctypes injection failed unexpectedly.
+    """
+    with _active_runs_lock:
+        entry = _active_runs.get(run_id)
+        if entry is None:
+            logger.warning("force_cancel_run: unknown run_id=%s", run_id)
+            return {"ok": False, "error": f"unknown run_id: {run_id}"}
+        entry["cancelled"] = True
+        entry["force_cancelled"] = True
+        entry["event"].set()
+        thread = entry["thread"]
+
+    tid = thread.ident
+    if tid is None:
+        logger.warning(
+            "run[%s]: force-cancel could not resolve thread id (thread not started?)",
+            run_id,
+        )
+        return {
+            "ok": True,
+            "cancelled": True,
+            "force": True,
+            "best_effort": True,
+            "injected": False,
+            "warning": "thread id not available",
+        }
+
+    # PyThreadState_SetAsyncExc takes (long thread_id, PyObject* exc) and
+    # returns the number of threads modified. Returns:
+    #   0  → invalid thread id (worker likely already exited)
+    #   1  → success
+    #  >1  → catastrophic; immediately undo by passing NULL
+    n = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_long(tid),
+        ctypes.py_object(KeyboardInterrupt),
+    )
+    if n == 0:
+        logger.warning(
+            "run[%s]: force-cancel injection failed (thread tid=%s no longer exists)",
+            run_id, tid,
+        )
+        return {
+            "ok": True,
+            "cancelled": True,
+            "force": True,
+            "best_effort": True,
+            "injected": False,
+            "warning": "thread no longer running",
+        }
+    if n > 1:
+        # Undo the over-broad injection per Python docs.
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_long(tid), ctypes.c_long(0))
+        logger.error(
+            "run[%s]: force-cancel injection affected %d threads — rolled back",
+            run_id, n,
+        )
+        return {
+            "ok": False,
+            "error": f"PyThreadState_SetAsyncExc affected {n} threads (rolled back)",
+        }
+
+    logger.info(
+        "run[%s]: force-cancel injected KeyboardInterrupt into tid=%s",
+        run_id, tid,
+    )
+    return {
+        "ok": True,
+        "cancelled": True,
+        "force": True,
+        "best_effort": True,
+        "injected": True,
+    }

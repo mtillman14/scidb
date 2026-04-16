@@ -13,7 +13,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %   7. Saves results from the returned table
 %
 %   Arguments:
-%       fn      - Function handle (plain; use scihist.for_each for Thunk wrapping)
+%       fn      - Function handle (plain; use scihist.for_each for LineageFcn wrapping)
 %       inputs  - Struct mapping parameter names to BaseVariable instances,
 %                 scidb.Fixed wrappers, scidb.Merge wrappers,
 %                 scifor.PathInput instances, or constant values.
@@ -406,7 +406,7 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     elseif opts.distribute
         % distribute needs schema columns preserved in plain-table inputs
         % but NOT in auto-loaded BaseVariable tables (where schema columns
-        % are metadata added by thunk_outputs_to_table, not user data)
+        % are metadata added by lineage_results_to_table, not user data)
         table_input_names = string.empty;
         for p = 1:n_inputs
             if istable(inputs.(input_names{p}))
@@ -620,8 +620,8 @@ function result = convert_input(var_spec, py_db, where_nv, db_nv)
         % Batch-wrap all results
         results = scidb.BaseVariable.wrap_py_vars_batch(bulk);
 
-        % Convert ThunkOutput array into a MATLAB table with metadata + data cols
-        result = thunk_outputs_to_table(results, var_inst);
+        % Convert BaseVariable array into a MATLAB table with metadata + data cols
+        result = lineage_results_to_table(results, var_inst);
 
         % Handle column selection if specified
         if ~isempty(var_inst.selected_columns)
@@ -636,12 +636,12 @@ function result = convert_input(var_spec, py_db, where_nv, db_nv)
 end
 
 
-function tbl = thunk_outputs_to_table(results, var_inst)
-%THUNK_OUTPUTS_TO_TABLE  Convert an array of ThunkOutput/BaseVariable into a MATLAB table.
+function tbl = lineage_results_to_table(results, var_inst)
+%LINEAGE_RESULTS_TO_TABLE  Convert an array of BaseVariable into a MATLAB table.
 %   Produces a table with metadata columns + data columns, suitable for
 %   scifor.for_each to filter per combo.
     n = numel(results);
-    scidb.Log.debug('thunk_outputs_to_table: %d results for %s', n, class(var_inst));
+    scidb.Log.debug('lineage_results_to_table: %d results for %s', n, class(var_inst));
 
     % Strip internal metadata keys (x__fn, x__inputs, constant keys, etc.)
     for i = 1:n
@@ -1092,7 +1092,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
         n_results = int64(bulk{'n'});
 
         if n_results == 0
-            preloaded_results{p} = scidb.ThunkOutput.empty();
+            preloaded_results{p} = scidb.BaseVariable.empty(0, 0);
             preloaded_maps{p} = containers.Map();
             continue;
         end
@@ -1212,7 +1212,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
                 end
             end
 
-            % Unwrap ThunkOutput/BaseVariable
+            % Unwrap LineageFcnResult/BaseVariable
             if ~istable(loaded{p}) && ~isnumeric(loaded{p})
                 loaded{p} = scidb.internal.unwrap_input(loaded{p});
             end
@@ -1304,7 +1304,7 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
                 c = resolved_indices(j);
                 if o <= numel(results_par{j})
                     raw_val = results_par{j}{o};
-                    if isa(raw_val, 'scidb.ThunkOutput') || isa(raw_val, 'scidb.BaseVariable')
+                    if isa(raw_val, 'scidb.LineageFcnResult') || isa(raw_val, 'scidb.BaseVariable')
                         raw_val = raw_val.data;
                     end
                     py_data.append(scidb.internal.to_python(raw_val));

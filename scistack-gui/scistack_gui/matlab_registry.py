@@ -77,7 +77,10 @@ def load_from_config(config: SciStackConfig) -> dict:
     for path in config.matlab_variables:
         var_name = parse_matlab_variable(path)
         if var_name is not None:
-            _matlab_variables[var_name] = path.resolve()
+            # Store the path as-is (already absolute & normalized by
+            # config._normalize). Calling .resolve() here would undo that
+            # by canonicalizing mapped drives → UNC on Windows.
+            _matlab_variables[var_name] = path
             # Create a Python surrogate so BaseVariable._all_subclasses
             # contains this type and the DAG builder can reference it.
             try:

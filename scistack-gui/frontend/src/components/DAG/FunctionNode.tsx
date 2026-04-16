@@ -24,6 +24,10 @@ interface FunctionNodeData {
   schemaFilter?: Record<string, unknown[]> | null
   schemaLevel?: string[] | null
   runOptions?: { dry_run: boolean; save: boolean; distribute: boolean; as_table: boolean }
+  // Set to 'matlab' for functions backed by a .m file. The extension uses this
+  // to intercept start_run and route to handleMatlabRun instead of calling
+  // into the Python registry (which doesn't know about MATLAB functions).
+  language?: string
 }
 
 const STATE_STYLES: Record<string, { border: string; background: string }> = {
@@ -40,7 +44,8 @@ interface Props {
 export default function FunctionNode({ id, data }: Props) {
   const { getNodes, getEdges } = useReactFlow()
   const [running, setRunning] = useState(false)
-  const { startRun, appendLine, finishRun, setRunMeta, updateProgress } = useRunLog()
+  const [cancelling, setCancelling] = useState(false)
+  const { startRun, appendLine, finishRun, markCancelling, setRunMeta, updateProgress } = useRunLog()
   // Ref (not state) so the WebSocket handler always sees the current value
   // without waiting for a React re-render — critical when the pipeline
   // finishes before the first render cycle completes.
@@ -75,8 +80,10 @@ export default function FunctionNode({ id, data }: Props) {
     } else if (msgType === 'run_done') {
       const success = (params.success ?? true) as boolean
       const durationMs = params.duration_ms as number | undefined
-      finishRun(runId!, success, durationMs)
+      const cancelled = (params.cancelled ?? false) as boolean
+      finishRun(runId!, success, durationMs, cancelled)
       setRunning(false)
+      setCancelling(false)
     }
   }, [appendLine, finishRun, setRunMeta, updateProgress]))
 
@@ -116,8 +123,38 @@ export default function FunctionNode({ id, data }: Props) {
       schema_level: data.schemaLevel ?? null,
       run_options: data.runOptions ?? null,
       where_filters: (wf && wf.length > 0) ? wf : null,
+      // Forward language so the extension can intercept MATLAB runs
+      // (dagPanel.ts checks params.language === 'matlab').
+      language: data.language,
     })
   }, [id, data, getNodes, getEdges, startRun])
+
+  const handleCancel = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const runId = runIdRef.current
+    if (!runId) return
+    if (!cancelling) {
+      // First click → cooperative cancel
+      setCancelling(true)
+      markCancelling(runId)
+      try {
+        await callBackend('cancel_run', { run_id: runId })
+      } catch (err) {
+        // Re-allow another attempt if the backend call itself failed.
+        setCancelling(false)
+        // eslint-disable-next-line no-console
+        console.warn(`cancel_run failed for ${runId}:`, err)
+      }
+    } else {
+      // Second click → force cancel (ctypes-injected KeyboardInterrupt)
+      try {
+        await callBackend('force_cancel_run', { run_id: runId })
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`force_cancel_run failed for ${runId}:`, err)
+      }
+    }
+  }, [cancelling, markCancelling])
 
   const handleOpenSource = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -186,13 +223,55 @@ export default function FunctionNode({ id, data }: Props) {
         {data.label}
       </div>
 
-      <button
-        style={running ? styles.buttonRunning : styles.button}
-        onClick={handleRun}
-        disabled={running}
-      >
-        {running ? '⏳ Running…' : '▶ Run'}
-      </button>
+      {(() => {
+        const isMatlab = data.language === 'matlab'
+        if (!running) {
+          return (
+            <button
+              style={styles.button}
+              onClick={handleRun}
+              disabled={running}
+            >
+              ▶ Run
+            </button>
+          )
+        }
+        // MATLAB: no cancel — the run is in the MATLAB terminal, not the
+        // Python worker thread. Keep the plain disabled button.
+        if (isMatlab) {
+          return (
+            <button style={styles.buttonRunning} disabled>
+              ⏳ Running…
+            </button>
+          )
+        }
+        // Python: split button with cancel / force-cancel segments.
+        const leftLabel = cancelling ? '⏳ Cancelling…' : '⏳ Running…'
+        const rightLabel = cancelling ? '⚠' : '✕'
+        const rightTitle = cancelling
+          ? 'Force cancel — best effort. Injects KeyboardInterrupt; if that fails, '
+            + 'use the SciStack: Restart Python Process command.'
+          : 'Cancel run (cooperative — finishes the current combo, no partial saves).'
+        return (
+          <div style={styles.splitButton}>
+            <button
+              style={styles.splitButtonLeft}
+              disabled
+              type="button"
+            >
+              {leftLabel}
+            </button>
+            <button
+              style={cancelling ? styles.splitButtonRightForce : styles.splitButtonRight}
+              onClick={handleCancel}
+              title={rightTitle}
+              type="button"
+            >
+              {rightLabel}
+            </button>
+          </div>
+        )
+      })()}
 
       {outTypes.length > 0
         ? outTypes.map((t, i) => (
@@ -252,6 +331,44 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     cursor: 'not-allowed',
     fontWeight: 600,
+    fontSize: 12,
+  },
+  splitButton: {
+    display: 'flex',
+    width: '100%',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  splitButtonLeft: {
+    flex: '0 0 70%',
+    padding: '4px 0',
+    background: '#b0a8f0',
+    color: '#fff',
+    border: 'none',
+    cursor: 'not-allowed',
+    fontWeight: 600,
+    fontSize: 12,
+  },
+  splitButtonRight: {
+    flex: '0 0 30%',
+    padding: '4px 0',
+    background: '#dc2626',
+    color: '#fff',
+    border: 'none',
+    borderLeft: '1px solid #fff',
+    cursor: 'pointer',
+    fontWeight: 700,
+    fontSize: 12,
+  },
+  splitButtonRightForce: {
+    flex: '0 0 30%',
+    padding: '4px 0',
+    background: '#991b1b',
+    color: '#fde68a',
+    border: 'none',
+    borderLeft: '1px solid #fff',
+    cursor: 'pointer',
+    fontWeight: 700,
     fontSize: 12,
   },
 }

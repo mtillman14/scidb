@@ -25,7 +25,7 @@ export interface RunEntry {
   records_done: number
   records_skipped: number
   current_combo?: Record<string, string>  // live schema combo being processed
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'cancelling' | 'cancelled' | 'done' | 'error'
   error_summary?: string
   lines: string[]                 // raw log, hidden by default
 }
@@ -51,7 +51,8 @@ interface RunLogContextValue {
   runs: RunEntry[]
   startRun: (run_id: string, function_name: string) => void
   appendLine: (run_id: string, line: string) => void
-  finishRun: (run_id: string, success: boolean, duration_ms?: number) => void
+  finishRun: (run_id: string, success: boolean, duration_ms?: number, cancelled?: boolean) => void
+  markCancelling: (run_id: string) => void
   setRunMeta: (run_id: string, meta: RunMeta) => void
   updateProgress: (run_id: string, progress: RunProgress) => void
 }
@@ -83,15 +84,32 @@ export function RunLogProvider({ children }: { children: React.ReactNode }) {
     ))
   }, [])
 
-  const finishRun = useCallback((run_id: string, success: boolean, duration_ms?: number) => {
+  const finishRun = useCallback((run_id: string, success: boolean, duration_ms?: number, cancelled?: boolean) => {
     setRuns(prev => prev.map(r => {
       if (r.run_id !== run_id) return r
+      let status: RunEntry['status']
+      if (cancelled) {
+        status = 'cancelled'
+      } else if (success) {
+        status = 'done'
+      } else {
+        status = 'error'
+      }
       return {
         ...r,
-        status: success ? 'done' : 'error',
+        status,
         duration_ms: duration_ms ?? (Date.now() - r.started_at),
         current_combo: undefined,
       }
+    }))
+  }, [])
+
+  const markCancelling = useCallback((run_id: string) => {
+    setRuns(prev => prev.map(r => {
+      if (r.run_id !== run_id) return r
+      // Only transition from 'running' — don't clobber 'cancelled'/'done'/'error'.
+      if (r.status !== 'running') return r
+      return { ...r, status: 'cancelling' }
     }))
   }, [])
 
@@ -135,7 +153,7 @@ export function RunLogProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   return (
-    <RunLogContext.Provider value={{ runs, startRun, appendLine, finishRun, setRunMeta, updateProgress }}>
+    <RunLogContext.Provider value={{ runs, startRun, appendLine, finishRun, markCancelling, setRunMeta, updateProgress }}>
       {children}
     </RunLogContext.Provider>
   )

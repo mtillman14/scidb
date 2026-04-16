@@ -2,7 +2,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
 %TESTENDTOEND  End-to-end integration tests exercising full workflows.
 %
 %   These tests verify complete realistic scenarios involving multiple
-%   components working together: configure -> save -> thunk -> save ->
+%   components working together: configure -> save -> lineage fcn -> save ->
 %   load -> provenance -> for_each.
 
     properties
@@ -46,11 +46,11 @@ classdef TestEndToEnd < matlab.unittest.TestCase
                 RawSignal().save(data, 'subject', s, 'session', 'A');
             end
 
-            %% Step 2: Process with a thunk
-            thunk = scidb.Thunk(@double_values);
+            %% Step 2: Process with a lineage function
+            lfcn = scidb.LineageFcn(@double_values);
             for s = [1 2 3]
                 raw = RawSignal().load('subject', s, 'session', 'A');
-                result = thunk(raw);
+                result = lfcn(raw);
                 ProcessedSignal().save(result, 'subject', s, 'session', 'A');
             end
 
@@ -106,14 +106,14 @@ classdef TestEndToEnd < matlab.unittest.TestCase
 
             %% Chain 1: double
             raw = RawSignal().load('subject', 1, 'session', 'A');
-            thunk1 = scidb.Thunk(@double_values);
-            step1 = thunk1(raw);
+            lfcn1 = scidb.LineageFcn(@double_values);
+            step1 = lfcn1(raw);
             ProcessedSignal().save(step1, 'subject', 1, 'session', 'A');
 
             %% Chain 2: add offset
             proc = ProcessedSignal().load('subject', 1, 'session', 'A');
-            thunk2 = scidb.Thunk(@add_offset);
-            step2 = thunk2(proc, 100);
+            lfcn2 = scidb.LineageFcn(@add_offset);
+            step2 = lfcn2(proc, 100);
             FilteredSignal().save(step2, 'subject', 1, 'session', 'A');
 
             %% Verify final data: (x * 2) + 100
@@ -124,7 +124,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Verify lineage chain
             prov = FilteredSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEqual(char(prov.function_name), 'add_offset');
-            % Input should reference the processed signal (thunk output)
+            % Input should reference the processed signal (lineage result)
             testCase.verifyEqual(numel(prov.inputs), 1);
             testCase.verifyEqual(numel(prov.constants), 1);
         end
@@ -173,12 +173,12 @@ classdef TestEndToEnd < matlab.unittest.TestCase
 
             %% Process manually (creates cache entry)
             raw = RawSignal().load('subject', 1, 'session', 'A');
-            thunk = scidb.Thunk(@double_values);
-            result = thunk(raw);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn(raw);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
-            %% Process again with for_each using same thunk (should hit cache)
-            scidb.for_each(thunk, ...
+            %% Process again with for_each using same lineage fcn (should hit cache)
+            scidb.for_each(lfcn, ...
                 struct('x', RawSignal()), ...
                 {FilteredSignal()}, ...
                 'subject', 1, ...
@@ -209,10 +209,10 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Save input data
             RawSignal().save([10 20 30 40], 'subject', 1, 'session', 'A');
 
-            %% Split using thunk with unpack_output
+            %% Split using lineage function with unpack_output
             raw = RawSignal().load('subject', 1, 'session', 'A');
-            thunk = scidb.Thunk(@split_data, 'unpack_output', true);
-            [first, second] = thunk(raw);
+            lfcn = scidb.LineageFcn(@split_data, 'unpack_output', true);
+            [first, second] = lfcn(raw);
 
             SplitFirst().save(first, 'subject', 1, 'session', 'A');
             SplitSecond().save(second, 'subject', 1, 'session', 'A');
@@ -259,14 +259,14 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             testCase.verifyEqual(numel(all_results), 3);
         end
 
-        function test_thunk_output_used_as_input_to_for_each_thunk(testCase)
+        function test_lineage_result_used_as_input_to_for_each(testCase)
             %% Save raw data
             RawSignal().save([5 10 15], 'subject', 1, 'session', 'A');
             RawSignal().save([6 12 18], 'subject', 2, 'session', 'A');
 
-            %% Use a thunk within for_each
-            thunk = scidb.Thunk(@double_values);
-            scidb.for_each(thunk, ...
+            %% Use a lineage function within for_each
+            lfcn = scidb.LineageFcn(@double_values);
+            scidb.for_each(lfcn, ...
                 struct('x', RawSignal()), ...
                 {ProcessedSignal()}, ...
                 'subject', [1 2], ...
@@ -288,14 +288,14 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             testCase.verifyEqual(char(prov2.function_name), 'double_values');
         end
 
-        function test_matrix_through_thunk_pipeline(testCase)
+        function test_matrix_through_lineage_pipeline(testCase)
             %% Verify matrix shapes survive the full pipeline
             data = [1 2 3; 4 5 6; 7 8 9; 10 11 12];  % 4x3
             RawSignal().save(data, 'subject', 1, 'session', 'A');
 
             raw = RawSignal().load('subject', 1, 'session', 'A');
-            thunk = scidb.Thunk(@double_values);
-            result = thunk(raw);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn(raw);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             proc = ProcessedSignal().load('subject', 1, 'session', 'A');

@@ -76,6 +76,13 @@ export class DagPanel {
         if (method === 'start_run') {
           const params = (msg.params ?? {}) as Record<string, unknown>;
           const language = params.language as string | undefined;
+          const functionName = params.function_name as string | undefined;
+          const variants = params.variants as unknown[] | undefined;
+          this.outputChannel.appendLine(
+            `start_run: function=${functionName ?? '<?>'} ` +
+            `language=${language ?? 'python'} ` +
+            `variants=${variants ? variants.length : 0}`,
+          );
           if (language === 'matlab') {
             await this.handleMatlabRun(msg.id as number, params);
             return;
@@ -113,6 +120,13 @@ export class DagPanel {
   /**
    * Open a file in an editor column beside the DAG panel and reveal the given line.
    * `line` is 1-based (matching inspect.getsourcelines).
+   *
+   * UNC paths (`\\server\share\...`) are handled via explicit
+   * `Uri.from({scheme:'file', authority, path})` construction because
+   * `Uri.file()` has historically had edge cases with UNC canonicalization
+   * on Windows. Errors are logged to the output channel before being
+   * returned, so failures are visible even when the webview silently
+   * swallows the error response.
    */
   private async revealInEditor(
     params: { file?: string; line?: number },
@@ -120,19 +134,64 @@ export class DagPanel {
     const { file, line } = params;
     this.outputChannel.appendLine(`reveal_in_editor: file=${file} line=${line}`);
     if (!file) return { ok: false, error: 'No file path provided.' };
-    const uri = vscode.Uri.file(file);
-    const doc = await vscode.workspace.openTextDocument(uri);
+
+    const uri = this.buildFileUri(file);
+    this.outputChannel.appendLine(`reveal_in_editor: resolved uri=${uri.toString()}`);
+
+    let doc: vscode.TextDocument;
+    try {
+      doc = await vscode.workspace.openTextDocument(uri);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(
+        `reveal_in_editor: openTextDocument failed for ${uri.toString()}: ${msg}`,
+      );
+      return { ok: false, error: `openTextDocument failed: ${msg}` };
+    }
+
     const zeroBased = Math.max(0, (line ?? 1) - 1);
     const selection = new vscode.Range(zeroBased, 0, zeroBased, 0);
-    const editor = await vscode.window.showTextDocument(doc, {
-      viewColumn: vscode.ViewColumn.Beside,
-      preserveFocus: false,
-      selection,
-    });
+    let editor: vscode.TextEditor;
+    try {
+      editor = await vscode.window.showTextDocument(doc, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preserveFocus: false,
+        selection,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(
+        `reveal_in_editor: showTextDocument failed for ${uri.toString()}: ${msg}`,
+      );
+      return { ok: false, error: `showTextDocument failed: ${msg}` };
+    }
+
     // Belt-and-suspenders: explicitly center the range in case the editor was
     // already open (selection in showTextDocument only applies on first open).
     editor.revealRange(selection, vscode.TextEditorRevealKind.InCenter);
     return { ok: true };
+  }
+
+  /**
+   * Build a file URI, handling Windows UNC paths (`\\server\share\path`)
+   * explicitly. `vscode.Uri.file` accepts UNC but its canonicalization has
+   * known edge cases; constructing via `Uri.from` with an explicit
+   * authority removes that ambiguity.
+   */
+  private buildFileUri(file: string): vscode.Uri {
+    if (file.startsWith('\\\\') || file.startsWith('//')) {
+      // Strip the leading `\\` or `//`, split into authority + path.
+      const rest = file.replace(/^[\\/]{2}/, '');
+      const slashIdx = rest.search(/[\\/]/);
+      if (slashIdx > 0) {
+        const authority = rest.substring(0, slashIdx);
+        // Normalize backslashes → forward slashes for the path portion and
+        // prepend a leading slash as required by file URIs.
+        const pathPart = '/' + rest.substring(slashIdx + 1).replace(/\\/g, '/');
+        return vscode.Uri.from({ scheme: 'file', authority, path: pathPart });
+      }
+    }
+    return vscode.Uri.file(file);
   }
 
   /**
@@ -143,19 +202,32 @@ export class DagPanel {
     msgId: number,
     params: Record<string, unknown>,
   ): Promise<void> {
+    const functionName = params.function_name as string | undefined;
+    this.outputChannel.appendLine(
+      `handleMatlabRun: requesting generate_matlab_command for ${functionName ?? '<?>'}`,
+    );
     try {
       const result = await this.pythonProcess.request(
         'generate_matlab_command',
         params,
       ) as { command: string };
       const command = result.command;
+      this.outputChannel.appendLine(
+        `handleMatlabRun: got command (${command.length} chars)`,
+      );
 
       // Try MathWorks terminal first, fall back to clipboard.
       const sent = await runInMatlabTerminal(command, this.outputChannel);
       if (sent) {
+        this.outputChannel.appendLine(
+          'handleMatlabRun: sent to MATLAB terminal',
+        );
         vscode.window.showInformationMessage('Running in MATLAB terminal...');
       } else {
         await vscode.env.clipboard.writeText(command);
+        this.outputChannel.appendLine(
+          'handleMatlabRun: no MATLAB terminal found, copied to clipboard',
+        );
         vscode.window.showInformationMessage(
           'MATLAB command copied to clipboard. Paste into MATLAB to run.'
         );
@@ -163,6 +235,8 @@ export class DagPanel {
 
       this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(`handleMatlabRun: failed: ${msg}`);
       this.panel.webview.postMessage({
         id: msgId,
         error: { message: String(err) },

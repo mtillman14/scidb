@@ -33,6 +33,8 @@ export class PythonProcess {
   private notificationHandlers: NotificationHandler[] = [];
   private readyResolve: ((params: ReadyParams) => void) | null = null;
   private readyReject: ((err: Error) => void) | null = null;
+  private readyTimer: NodeJS.Timeout | null = null;
+  private readyTimeoutMs = 0;
 
   constructor(
     pythonPath: string,
@@ -97,6 +99,10 @@ export class PythonProcess {
 
       // Reject ready promise if still waiting
       if (this.readyReject) {
+        if (this.readyTimer) {
+          clearTimeout(this.readyTimer);
+          this.readyTimer = null;
+        }
         this.readyReject(new Error(msg));
         this.readyResolve = null;
         this.readyReject = null;
@@ -106,6 +112,10 @@ export class PythonProcess {
     this.proc.on('error', (err) => {
       this.outputChannel.appendLine(`Python process error: ${err.message}`);
       if (this.readyReject) {
+        if (this.readyTimer) {
+          clearTimeout(this.readyTimer);
+          this.readyTimer = null;
+        }
         this.readyReject(err);
         this.readyResolve = null;
         this.readyReject = null;
@@ -116,20 +126,36 @@ export class PythonProcess {
   /**
    * Wait for the Python server to signal readiness.
    * Returns the ready notification params (db_name, schema_keys).
+   *
+   * The ``timeoutMs`` is an *inactivity* timeout: it resets whenever a
+   * ``progress`` notification arrives from the server. This lets slow-but-
+   * progressing startups (e.g. projects on network drives) complete
+   * without falsely timing out, while still killing a truly stuck server.
    */
   waitForReady(timeoutMs: number): Promise<ReadyParams> {
+    this.readyTimeoutMs = timeoutMs;
     return new Promise((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
-
-      setTimeout(() => {
-        if (this.readyReject) {
-          this.readyReject(new Error(`Python server did not become ready within ${timeoutMs}ms`));
-          this.readyResolve = null;
-          this.readyReject = null;
-        }
-      }, timeoutMs);
+      this.resetReadyTimer(timeoutMs);
     });
+  }
+
+  private resetReadyTimer(timeoutMs: number): void {
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer);
+    }
+    this.readyTimer = setTimeout(() => {
+      this.readyTimer = null;
+      if (this.readyReject) {
+        this.readyReject(new Error(
+          `Python server did not become ready within ${timeoutMs}ms ` +
+          `of silence (no progress notification received).`
+        ));
+        this.readyResolve = null;
+        this.readyReject = null;
+      }
+    }, timeoutMs);
   }
 
   /**
@@ -192,8 +218,22 @@ export class PythonProcess {
     const method = msg.method as string;
     const params = (msg.params ?? {}) as Record<string, unknown>;
 
+    // Special case: progress notification during startup. Resets the
+    // inactivity timer so long-but-progressing startups don't time out.
+    if (method === 'progress') {
+      this.outputChannel.appendLine(`  ${params.message}`);
+      if (this.readyResolve) {
+        this.resetReadyTimer(this.readyTimeoutMs);
+      }
+      return;
+    }
+
     // Special case: ready notification
     if (method === 'ready' && this.readyResolve) {
+      if (this.readyTimer) {
+        clearTimeout(this.readyTimer);
+        this.readyTimer = null;
+      }
       this.readyResolve(params as unknown as ReadyParams);
       this.readyResolve = null;
       this.readyReject = null;
@@ -204,6 +244,10 @@ export class PythonProcess {
     if (method === 'error') {
       this.outputChannel.appendLine(`Server error: ${params.message}`);
       if (this.readyReject) {
+        if (this.readyTimer) {
+          clearTimeout(this.readyTimer);
+          this.readyTimer = null;
+        }
         this.readyReject(new Error(params.message as string));
         this.readyResolve = null;
         this.readyReject = null;

@@ -1,15 +1,15 @@
 function py_val = to_python_input(arg)
-%TO_PYTHON_INPUT  Marshal a MATLAB thunk argument to a Python object.
+%TO_PYTHON_INPUT  Marshal a MATLAB lineage argument to a Python object.
 %
-%   For scidb.ThunkOutput and scidb.BaseVariable, returns the Python
-%   shadow (.py_obj) so that classify_inputs() in thunk-lib sees the
+%   For scidb.LineageFcnResult and scidb.BaseVariable, returns the Python
+%   shadow (.py_obj) so that classify_inputs() in scilineage sees the
 %   real Python type and input classification works unchanged.
 %
 %   For raw MATLAB data (scalars, arrays), converts to the Python
 %   equivalent via to_python().
 
-    if isa(arg, 'scidb.ThunkOutput')
-        % Pass the real Python ThunkOutput
+    if isa(arg, 'scidb.LineageFcnResult')
+        % Pass the real Python LineageFcnResult
         py_val = arg.py_obj;
 
     elseif isa(arg, 'scidb.BaseVariable')

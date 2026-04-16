@@ -166,6 +166,40 @@ class TestPipeline:
         edge_ids = {e["id"] for e in edges}
         assert "manual_e1" in edge_ids
 
+    def test_manual_matlab_function_node_tagged_language(self, client, tmp_path):
+        """Regression: manually-placed MATLAB function nodes must have
+        ``data.language == "matlab"`` so the VS Code extension intercepts
+        start_run and routes to handleMatlabRun instead of the Python
+        registry (which doesn't know about MATLAB functions).
+
+        Without this tag, clicking Run on a freshly-placed MATLAB node
+        (no DB history yet) fails with:
+            "Function '...' not found in registry."
+        """
+        from scistack_gui import matlab_registry
+        from scistack_gui.matlab_parser import MatlabFunctionInfo
+
+        # Stub a MATLAB function into the registry.
+        fn_name = "my_matlab_fn"
+        m_file = tmp_path / f"{fn_name}.m"
+        m_file.write_text("function y = my_matlab_fn(x)\ny=x;\nend\n")
+        matlab_registry._matlab_functions[fn_name] = MatlabFunctionInfo(
+            name=fn_name, file_path=m_file, params=["x"], source_hash="0" * 64,
+        )
+        try:
+            # Drop a manual function node on the canvas.
+            client.put(f"/api/layout/manual__{fn_name}", json={
+                "x": 0.0, "y": 0.0,
+                "node_type": "functionNode",
+                "label": fn_name,
+            })
+            nodes = client.get("/api/pipeline").json()["nodes"]
+            matches = [n for n in nodes if n["data"]["label"] == fn_name]
+            assert len(matches) == 1
+            assert matches[0]["data"].get("language") == "matlab"
+        finally:
+            matlab_registry._matlab_functions.pop(fn_name, None)
+
 
 # ---------------------------------------------------------------------------
 # /api/layout
@@ -400,6 +434,139 @@ class TestRunEndpoint:
         assert r.status_code == 200
         assert "run_id" in r.json()
         _wait_for_threads("Thread-")
+
+    def test_cancel_run_unknown_id_returns_error(self, client):
+        """cancel_run on a run_id that isn't active should return ok=False."""
+        from scistack_gui.api.run import cancel_run
+        result = cancel_run("does_not_exist_xyz")
+        assert result["ok"] is False
+        assert "unknown run_id" in result["error"]
+
+    def test_force_cancel_run_unknown_id_returns_error(self, client):
+        """force_cancel_run on an unknown run_id should also error gracefully."""
+        from scistack_gui.api.run import force_cancel_run
+        result = force_cancel_run("not_a_real_run_id")
+        assert result["ok"] is False
+        assert "unknown run_id" in result["error"]
+
+    def test_cancel_run_sets_event_and_terminates(self, client, monkeypatch):
+        """Cooperative cancel: setting the event should make the worker stop
+        between variants, emit run_done with cancelled=True, and pop the entry
+        from _active_runs.
+
+        We synthesise a worker that loops forever while the event is unset,
+        bypassing _run_in_thread's heavyweight setup. This exercises the
+        registry, event plumbing, and the run_done emission path.
+        """
+        from scistack_gui.api import run as run_api
+
+        run_id = "cancel_test_1"
+        emitted: list[dict] = []
+
+        # Capture push_message calls into a list rather than going to WS.
+        monkeypatch.setattr(run_api, "push_message",
+                            lambda msg: emitted.append(msg))
+
+        cancel_event = threading.Event()
+        worker_done = threading.Event()
+
+        def synthetic_worker():
+            with run_api._active_runs_lock:
+                run_api._active_runs[run_id] = {
+                    "event": cancel_event,
+                    "thread": threading.current_thread(),
+                    "cancelled": False,
+                    "force_cancelled": False,
+                }
+            try:
+                # Poll the event up to ~2s; cancel should fire well before that.
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    if cancel_event.is_set():
+                        run_api.push_message({
+                            "type": "run_done",
+                            "run_id": run_id,
+                            "success": True,
+                            "duration_ms": 0,
+                            "cancelled": True,
+                            "force_cancelled": False,
+                        })
+                        return
+                    time.sleep(0.02)
+            finally:
+                with run_api._active_runs_lock:
+                    run_api._active_runs.pop(run_id, None)
+                worker_done.set()
+
+        t = threading.Thread(target=synthetic_worker, name="SynthRun-1",
+                             daemon=True)
+        t.start()
+
+        # Give the worker a moment to register itself.
+        time.sleep(0.05)
+
+        result = run_api.cancel_run(run_id)
+        assert result["ok"] is True
+        assert result["cancelled"] is True
+        assert result["force"] is False
+
+        assert worker_done.wait(timeout=2.0), "worker did not stop after cancel"
+        t.join(timeout=1.0)
+
+        # Verify the emitted run_done has cancelled=True.
+        done_msgs = [m for m in emitted if m.get("type") == "run_done"]
+        assert len(done_msgs) == 1
+        assert done_msgs[0]["cancelled"] is True
+
+        # Registry must be cleaned up.
+        with run_api._active_runs_lock:
+            assert run_id not in run_api._active_runs
+
+    def test_force_cancel_run_smoke(self, client):
+        """force_cancel_run should set the event, attempt ctypes injection,
+        and return the documented best-effort shape.
+
+        We don't actually exercise the worker thread (KeyboardInterrupt
+        injection inside pytest is destabilising) — we register a dummy
+        thread, call force_cancel_run, then clean up.
+        """
+        from scistack_gui.api import run as run_api
+
+        run_id = "force_cancel_smoke"
+        cancel_event = threading.Event()
+
+        # Register against the *current* thread but immediately remove
+        # before it can be hit by ctypes. We pop just before the call so
+        # the lookup succeeds, but the recorded thread is harmless.
+        # To be really safe, use a finished thread (ident may be None or
+        # invalid) — force_cancel_run handles both gracefully.
+        finished = threading.Thread(target=lambda: None, name="ForceCancelSmoke")
+        finished.start()
+        finished.join()
+
+        with run_api._active_runs_lock:
+            run_api._active_runs[run_id] = {
+                "event": cancel_event,
+                "thread": finished,
+                "cancelled": False,
+                "force_cancelled": False,
+            }
+
+        try:
+            result = run_api.force_cancel_run(run_id)
+            assert result["ok"] is True
+            assert result["cancelled"] is True
+            assert result["force"] is True
+            assert result["best_effort"] is True
+            # The finished thread either has no ident or the injection
+            # returns 0 — either way "injected" is a bool.
+            assert "injected" in result
+            assert isinstance(result["injected"], bool)
+            # Cooperative cancel event must have been set as well.
+            assert cancel_event.is_set()
+        finally:
+            with run_api._active_runs_lock:
+                run_api._active_runs.pop(run_id, None)
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,7 @@ def for_each(
     _inject_combo_metadata: bool = False,
     _pre_combo_hook: "Callable[[dict], bool] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
+    _cancel_check: "Callable[[], bool] | None" = None,
     **metadata_iterables: list[Any],
 ) -> "pd.DataFrame | None":
     """
@@ -160,10 +161,15 @@ def for_each(
                 _inject_combo_metadata=_inject_combo_metadata,
                 _pre_combo_hook=_pre_combo_hook,
                 _progress_fn=_progress_fn,
+                _cancel_check=_cancel_check,
                 **metadata_iterables,
             )
             if result is not None:
                 results.append(result)
+            # Cooperative cancel: stop iterating across EachOf alternatives
+            # as soon as the user cancels — don't start the next concrete run.
+            if _cancel_check is not None and _cancel_check():
+                break
         return pd.concat(results, ignore_index=True) if results else None
 
     fn_name = getattr(fn, "__name__", repr(fn))
@@ -230,6 +236,7 @@ def for_each(
             as_table=as_table,
             distribute=distribute,
             output_names=output_names,
+            _cancel_check=_cancel_check,
             **metadata_iterables,
         )
         return None
@@ -476,6 +483,7 @@ def for_each(
         _all_combos=full_combos,
         _log_fn=Log.info,
         _progress_fn=_progress_fn,
+        _cancel_check=_cancel_check,
         **extended_metadata_iterables,
     )
 

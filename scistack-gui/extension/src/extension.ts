@@ -215,7 +215,9 @@ async function startPipeline(
   pythonProcess = new PythonProcess(pythonPath, dbPath, modulePath, outputChannel, schemaKeys, projectPath);
 
   try {
-    const readyParams = await pythonProcess.waitForReady(10000);
+    const cfg = vscode.workspace.getConfiguration('scistack');
+    const startupTimeoutMs = cfg.get<number>('startupTimeoutMs', 60000);
+    const readyParams = await pythonProcess.waitForReady(startupTimeoutMs);
     outputChannel.appendLine(
       `Server ready — DB: ${readyParams.db_name}, schema: [${readyParams.schema_keys.join(', ')}]`
     );

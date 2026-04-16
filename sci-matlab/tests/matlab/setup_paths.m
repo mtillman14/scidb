@@ -18,11 +18,11 @@ function setup_paths()
     % Add Python paths for all monorepo packages
     py_paths = {
         fullfile(workspace_root, 'src')
-        fullfile(workspace_root, 'thunk-lib', 'src')
         fullfile(workspace_root, 'canonical-hash', 'src')
         fullfile(workspace_root, 'sciduck', 'src')
         fullfile(workspace_root, 'path-gen', 'src')
         fullfile(workspace_root, 'scifor', 'src')
+        fullfile(workspace_root, 'scilineage', 'src')
         fullfile(workspace_root, 'scihist-lib', 'src')
         fullfile(workspace_root, 'sci-matlab', 'src')
     };

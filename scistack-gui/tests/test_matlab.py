@@ -297,6 +297,117 @@ class TestGenerateMatlabCommand:
 
         assert "/path/with''quote/db.duckdb" in cmd
 
+    def test_pyenv_preamble_present(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="f",
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            python_executable="/usr/bin/python3",
+        )
+
+        # Stage 1: bind
+        assert "pyenv('Version', scistack_pyenv_target__)" in cmd
+        assert "scistack_pyenv_target__ = '/usr/bin/python3';" in cmd
+        assert 'if scistack_pyenv__.Status == "NotLoaded"' in cmd
+        assert "SciStack:PyenvMismatch" in cmd
+        # Stage 2: force-load (smoke test)
+        assert "py.sys.version" in cmd
+        # Stage 3: diagnostic dump on smoke-test failure
+        assert "OutOfProcess" in cmd
+        # Stage 4: pre-import scidb so py.scidb.* is warm
+        assert "py.importlib.import_module('scidb')" in cmd
+        # Stage 5: clear compiled-function cache so package functions re-parse
+        # with py.* now recognized.
+        assert "clear functions" in cmd
+        # Teardown: clear all temporaries
+        assert "clear scistack_pyenv__ scistack_pyenv_target__" in cmd
+
+    def test_pyenv_preamble_omitted_when_none(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="f",
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            python_executable=None,
+        )
+
+        assert "pyenv" not in cmd
+
+    def test_pyenv_preamble_escapes_single_quotes(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="f",
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            python_executable="/tmp/O'Neil/python",
+        )
+
+        # Single quote in path must be doubled inside the MATLAB literal.
+        assert "scistack_pyenv_target__ = '/tmp/O''Neil/python';" in cmd
+
+    def test_pyenv_preamble_windows_path(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="f",
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            python_executable=r"C:\Users\mtillman\venvs\stim-device-comparison\Scripts\python.exe",
+        )
+
+        # Backslashes converted to forward slashes for the MATLAB literal.
+        assert (
+            "scistack_pyenv_target__ = "
+            "'C:/Users/mtillman/venvs/stim-device-comparison/Scripts/python.exe';"
+        ) in cmd
+        assert "\\" not in cmd.split("scistack_pyenv_target__ =")[1].splitlines()[0]
+
+    def test_pyenv_preamble_mismatch_uses_normalized_compare(self):
+        """The mismatch check must tolerate backslash/forward-slash differences
+        between what MATLAB's pyenv returns and our target literal.
+        Regression: previously ``string(Executable) ~= string(target)`` fired
+        erroneously when Status=Loaded and the paths differed only in separators.
+        """
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="f",
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            python_executable=r"C:\Users\mtillman\venvs\scistack-gui\.venv\Scripts\python.exe",
+        )
+
+        # The comparison MUST use a path normalizer (strrep + strcmpi), not a
+        # raw string equality.
+        assert "scistack_norm_path__" in cmd
+        # MATLAB literal: strrep(char(p), '\', '/')  (single backslash in MATLAB).
+        assert "strrep(char(p), '\\', '/')" in cmd
+        assert "strcmpi(" in cmd
+        # And the raw mismatching pattern must NOT be present.
+        assert (
+            "string(scistack_pyenv__.Executable) ~= string(scistack_pyenv_target__)"
+            not in cmd
+        )
+
+    def test_pyenv_preamble_ordered_before_addpath(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="f",
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            addpath_dirs=["/home/user/matlab/lib"],
+            python_executable="/usr/bin/python3",
+        )
+
+        pyenv_idx = cmd.index("scistack_pyenv_target__")
+        addpath_idx = cmd.index("addpath(")
+        assert pyenv_idx < addpath_idx
+
 
 # ---------------------------------------------------------------------------
 # config MATLAB parsing tests
@@ -339,10 +450,12 @@ class TestConfigMatlabParsing:
         assert config.matlab_variables[0].name == "RawSignal.m"
         # addpath is auto-derived from parent dirs of functions, variables, and variable_dir
         assert len(config.matlab_addpath) == 2
+        # Paths are stored in absolute-but-not-UNC-canonicalized form (see
+        # config._normalize); compare against that form, not .resolve().
         addpath_set = set(config.matlab_addpath)
-        assert (tmp_path / "matlab").resolve() in addpath_set
-        assert (tmp_path / "matlab" / "types").resolve() in addpath_set
-        assert config.matlab_variable_dir == (tmp_path / "matlab" / "types").resolve()
+        assert (tmp_path / "matlab") in addpath_set
+        assert (tmp_path / "matlab" / "types") in addpath_set
+        assert config.matlab_variable_dir == (tmp_path / "matlab" / "types")
 
     def test_scistack_toml(self, tmp_path):
         from scistack_gui.config import load_config

@@ -8,7 +8,12 @@ import pytest
 # Ensure the local package is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scistack_gui.config import SciStackConfig, _extract_scistack_section, load_config
+from scistack_gui.config import (
+    SciStackConfig,
+    _extract_scistack_section,
+    _normalize,
+    load_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -266,9 +271,12 @@ def test_matlab_addpath_auto_derived_from_functions_and_variables(tmp_path):
 
     config = load_config(tmp_path, tmp_path / "dummy.duckdb")
 
+    # Compare against the non-canonicalized form since config no longer
+    # calls .resolve() on stored paths (that would convert Windows mapped
+    # drives to UNC, breaking VS Code's reveal_in_editor).
     addpath_set = set(config.matlab_addpath)
-    assert (tmp_path / "matlab" / "funcs").resolve() in addpath_set
-    assert (tmp_path / "matlab" / "types").resolve() in addpath_set
+    assert (tmp_path / "matlab" / "funcs") in addpath_set
+    assert (tmp_path / "matlab" / "types") in addpath_set
     assert len(config.matlab_addpath) == 2
 
 
@@ -279,6 +287,105 @@ def test_matlab_addpath_empty_when_no_matlab_files(tmp_path):
 
     config = load_config(tmp_path, tmp_path / "dummy.duckdb")
     assert config.matlab_addpath == []
+
+
+def test_matlab_variables_excluded_from_functions(tmp_path):
+    """Files in matlab.variables must not also be parsed as matlab.functions.
+
+    Regression test for the case where ``matlab.functions`` points at a
+    parent directory that contains the ``matlab.variables`` subtree — the
+    recursive walk would otherwise include variable .m files in the
+    functions list, producing spurious parse warnings.
+    """
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text(
+        '[matlab]\n'
+        'functions = ["src/"]\n'
+        'variables = ["src/vars/"]\n'
+    )
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "func.m").write_text("function y = func(x)\ny = x;\nend\n")
+    vars_dir = src / "vars"
+    vars_dir.mkdir()
+    (vars_dir / "var.m").write_text("classdef var < scidb.BaseVariable\nend\n")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    assert [p.name for p in config.matlab_functions] == ["func.m"]
+    assert [p.name for p in config.matlab_variables] == ["var.m"]
+
+
+# ---------------------------------------------------------------------------
+# _normalize — preserves user's drive-letter form
+# ---------------------------------------------------------------------------
+
+def test_normalize_is_absolute_and_normpath(tmp_path):
+    """_normalize should make the path absolute and collapse ``.``/``..``."""
+    # Relative with .. segment
+    rel = Path("a") / ".." / "b"
+    result = _normalize(rel)
+    assert result.is_absolute()
+    # Normalized form has no .. segment.
+    assert ".." not in result.parts
+
+    # Already-absolute input passes through as-is (no following of symlinks).
+    result2 = _normalize(tmp_path / "sub")
+    assert result2 == tmp_path / "sub"
+
+
+def test_normalize_does_not_follow_symlinks(tmp_path):
+    """_normalize must NOT resolve symlinks (or Windows mapped drives) —
+    that's what Path.resolve() does and what causes the UNC issue."""
+    import os
+
+    real = tmp_path / "real_dir"
+    real.mkdir()
+    (real / "file.m").write_text("")
+
+    link = tmp_path / "link_dir"
+    try:
+        os.symlink(real, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not supported on this platform")
+
+    normalized = _normalize(link / "file.m")
+    # The symlinked path is preserved; only .resolve() would rewrite it.
+    assert normalized == link / "file.m"
+    # Sanity: .resolve() WOULD follow the symlink (this is the behavior we
+    # deliberately avoid on Windows mapped drives).
+    assert normalized.resolve() == real / "file.m"
+
+
+def test_matlab_functions_not_canonicalized_through_symlink(tmp_path):
+    """Regression test for the mapped-drive → UNC issue on Windows.
+
+    If the MATLAB functions directory is referenced through a symlink
+    (which simulates y:\\ → \\\\server\\share\\ on Windows), the stored
+    paths in ``config.matlab_functions`` must retain the symlink form,
+    not the resolved form. This ensures VS Code can open them using the
+    same path the workspace was rooted at.
+    """
+    import os
+
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    (real_root / "func.m").write_text("function y = func(x)\ny=x;\nend\n")
+    (real_root / "scistack.toml").write_text(
+        '[matlab]\nfunctions = ["func.m"]\n'
+    )
+
+    link_root = tmp_path / "link"
+    try:
+        os.symlink(real_root, link_root, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not supported on this platform")
+
+    config = load_config(link_root, link_root / "dummy.duckdb")
+    assert len(config.matlab_functions) == 1
+    # Crucial: stored path uses the link prefix, not the real prefix.
+    assert config.matlab_functions[0] == link_root / "func.m"
+    assert str(config.matlab_functions[0]).startswith(str(link_root))
 
 
 def test_matlab_addpath_deduplicates(tmp_path):
@@ -298,4 +405,4 @@ def test_matlab_addpath_deduplicates(tmp_path):
 
     # Both files are in the same directory — should produce exactly one entry.
     assert len(config.matlab_addpath) == 1
-    assert config.matlab_addpath[0] == (tmp_path / "matlab").resolve()
+    assert config.matlab_addpath[0] == (tmp_path / "matlab")

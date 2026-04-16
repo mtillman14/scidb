@@ -156,7 +156,7 @@ classdef TestSaveLoad < matlab.unittest.TestCase
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
             results = RawSignal().load_all('subject', 1, 'session', 'A');
             for i = 1:numel(results)
-                testCase.verifyClass(results(i), 'scidb.ThunkOutput');
+                testCase.verifyClass(results(i), 'scidb.BaseVariable');
             end
         end
 
@@ -211,7 +211,7 @@ classdef TestSaveLoad < matlab.unittest.TestCase
         end
 
         function test_raw_data_has_empty_lineage_hash(testCase)
-            % Raw data (not from a thunk) should have no lineage hash
+            % Raw data (not from a LineageFcn) should have no lineage hash
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             results = RawSignal().load_all('subject', 1, 'session', 'A');
             testCase.verifyEqual(results(1).lineage_hash, string.empty);

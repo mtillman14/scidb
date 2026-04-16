@@ -8,6 +8,7 @@ MATLAB .m files.
 
 import glob as _glob
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,29 @@ else:
         import tomli as tomllib  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize(p) -> Path:
+    """Return *p* as an absolute, normalized :class:`Path` without following
+    symlinks or canonicalizing Windows mapped drives.
+
+    ``Path.resolve()`` on Windows rewrites mapped-drive paths like
+    ``y:\\foo`` to their UNC target ``\\\\server\\share\\foo``. VS Code 1.75+
+    refuses to open UNC paths unless the host is in
+    ``security.allowedUNCHosts`` — which means every file opened via the
+    GUI's ``reveal_in_editor`` would fail with "UNC host … access is not
+    allowed".
+
+    ``os.path.abspath`` + ``os.path.normpath`` make the path absolute and
+    collapse ``.``/``..`` segments while preserving the drive-letter form
+    the user supplied, so stored paths continue to work anywhere VS Code
+    can open them (and MATLAB accepts either form).
+
+    Callers that genuinely need canonical-form comparison (e.g. the
+    variables-vs-functions dedupe set) should still use ``.resolve()``
+    directly — that's comparison-only and doesn't leak into stored paths.
+    """
+    return Path(os.path.normpath(os.path.abspath(str(p))))
 
 
 @dataclass
@@ -105,7 +129,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
                 logger.warning("modules glob matched no .py files: %s", entry)
             modules.extend(matched)
         else:
-            p = (project_root / entry).resolve()
+            p = _normalize(project_root / entry)
             if p.is_dir():
                 # Recursively discover all .py files in the directory.
                 found = sorted(p.rglob("*.py"))
@@ -125,7 +149,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     variable_file: Path | None = None
     raw_vf = section.get("variable_file")
     if raw_vf is not None:
-        variable_file = (project_root / raw_vf).resolve()
+        variable_file = _normalize(project_root / raw_vf)
 
     # --- packages ---
     packages = section.get("packages", [])
@@ -148,7 +172,24 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     matlab_variable_dir: Path | None = None
     raw_mvd = matlab_section.get("variable_dir")
     if raw_mvd is not None:
-        matlab_variable_dir = (project_root / raw_mvd).resolve()
+        matlab_variable_dir = _normalize(project_root / raw_mvd)
+
+    # Dedupe: any file in matlab.variables must not be parsed as a
+    # function. This handles the common case where matlab.functions points
+    # at a parent directory (e.g. "src/") that contains the variables dir
+    # (e.g. "src/vars/") as a subtree.
+    var_path_set = {p.resolve() for p in matlab_variables}
+    original_fn_count = len(matlab_functions)
+    matlab_functions = [
+        p for p in matlab_functions if p.resolve() not in var_path_set
+    ]
+    excluded = original_fn_count - len(matlab_functions)
+    if excluded:
+        logger.info(
+            "Excluded %d file(s) from matlab.functions because they are "
+            "also declared in matlab.variables.",
+            excluded,
+        )
 
     # Derive addpath from parent directories of all MATLAB file paths.
     addpath_set: set[Path] = set()
@@ -204,7 +245,7 @@ def _resolve_glob_paths(
                 logger.warning("%s glob matched no .m files: %s", label, entry)
             result.extend(matched)
         else:
-            p = (project_root / entry).resolve()
+            p = _normalize(project_root / entry)
             if p.is_dir():
                 # Recursively discover all .m files in the directory.
                 found = sorted(p.rglob("*.m"))
@@ -223,7 +264,7 @@ def _resolve_glob_paths(
 def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
     """Find the pyproject.toml or scistack.toml to use."""
     if project_path is not None:
-        p = project_path.resolve()
+        p = _normalize(project_path)
         if p.is_file():
             return p
         if p.is_dir():
@@ -238,7 +279,7 @@ def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
         raise FileNotFoundError(f"Path does not exist: {p}")
 
     # Search upward from the database file's directory.
-    search_dir = db_path.resolve().parent
+    search_dir = _normalize(db_path).parent
     while True:
         for name in ("pyproject.toml", "scistack.toml"):
             candidate = search_dir / name

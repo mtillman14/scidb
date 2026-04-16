@@ -83,7 +83,13 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
 
     return MatlabFunctionInfo(
         name=fn_name,
-        file_path=path.resolve(),
+        # The caller (config._resolve_glob_paths) already normalizes paths
+        # to an absolute, non-symlink-followed form. We deliberately do NOT
+        # call .resolve() here because on Windows it canonicalizes mapped
+        # drives (y:\...) to UNC (\\server\share\...), which VS Code refuses
+        # to open without security.allowedUNCHosts — breaking the GUI's
+        # reveal_in_editor feature.
+        file_path=path,
         params=params,
         source_hash=source_hash,
     )

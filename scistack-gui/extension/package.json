@@ -38,6 +38,11 @@
           "type": "number",
           "default": 5678,
           "description": "Port for the debugpy listener when scistack.debug is enabled."
+        },
+        "scistack.startupTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "description": "Max time (ms) of silence from the server during startup before the extension kills it. Reset whenever a progress notification arrives, so long-but-progressing startups (e.g. projects on network drives) do not falsely time out."
         }
       }
     }

@@ -16,6 +16,7 @@ orchestration layer wires everything together correctly.
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -28,6 +29,25 @@ from scistack_gui.startup import (
     clear_startup_errors,
     get_startup_errors,
 )
+
+
+# ---------------------------------------------------------------------------
+# _send_progress — startup progress notifications
+# ---------------------------------------------------------------------------
+def test_send_progress_writes_json_rpc_notification(capsys):
+    """_send_progress should emit a well-formed JSON-RPC notification on stdout."""
+    from scistack_gui.server import _send_progress
+
+    _send_progress("hello")
+
+    captured = capsys.readouterr()
+    line = captured.out.strip().splitlines()[-1]
+    msg = json.loads(line)
+    assert msg["jsonrpc"] == "2.0"
+    assert msg["method"] == "progress"
+    assert msg["params"]["message"] == "hello"
+    # It's a notification, not a request — no id.
+    assert "id" not in msg
 
 
 # ---------------------------------------------------------------------------

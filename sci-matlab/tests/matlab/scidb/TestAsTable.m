@@ -101,17 +101,17 @@ classdef TestAsTable < matlab.unittest.TestCase
         end
 
         function test_loadall_as_table_false_multiple_versions(testCase)
-            %% load_all(as_table=false) with multiple saves returns ThunkOutput array
+            %% load_all(as_table=false) with multiple saves returns BaseVariable array
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
 
             result = RawSignal().load_all('as_table', false, 'subject', 1, 'session', 'A');
-            testCase.verifyTrue(isa(result, 'scidb.ThunkOutput'));
+            testCase.verifyTrue(isa(result, 'scidb.BaseVariable'));
             testCase.verifyEqual(numel(result), 2);
 
             % test default is 'false'
             result = RawSignal().load_all('subject', 1, 'session', 'A');
-            testCase.verifyTrue(isa(result, 'scidb.ThunkOutput'));
+            testCase.verifyTrue(isa(result, 'scidb.BaseVariable'));
             testCase.verifyEqual(numel(result), 2);
         end
 

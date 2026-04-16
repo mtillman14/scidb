@@ -653,6 +653,12 @@ def _build_graph(db: DatabaseManager) -> dict:
                 "constant_params": [],
                 "run_state": "red",
             }
+            # Tag MATLAB functions so the extension intercepts start_run
+            # and routes to handleMatlabRun (otherwise the Python registry
+            # lookup fails with "Function X not found in registry").
+            # Mirrors the DB-derived branch above at fn_data["language"]=...
+            if _mr.is_matlab_function(fn_label):
+                extra["language"] = "matlab"
         node_data: dict = {"label": fn_label, **extra}
         # Apply saved config for manually-placed function nodes.
         saved_cfg = meta.get("config")

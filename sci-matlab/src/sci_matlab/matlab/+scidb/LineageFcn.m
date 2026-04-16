@@ -1,22 +1,22 @@
-classdef Thunk < handle
-%SCIDB.THUNK  Wrap a MATLAB function for lineage tracking and caching.
+classdef LineageFcn < handle
+%SCIDB.LINEAGEFCN  Wrap a MATLAB function for lineage tracking and caching.
 %
-%   T = scidb.Thunk(@my_function) wraps a named MATLAB function.
+%   T = scidb.LineageFcn(@my_function) wraps a named MATLAB function.
 %   When called, T checks the database for a cached result.  On cache
-%   miss it executes the function and returns a scidb.ThunkOutput that
-%   carries both the MATLAB result and a Python lineage shadow.
+%   miss it executes the function and returns a scidb.LineageFcnResult
+%   that carries both the MATLAB result and a Python lineage shadow.
 %
-%   T = scidb.Thunk(@my_function, unpack_output=true) enables multi-output
-%   mode where the function must return a cell array and each element
-%   becomes a separate ThunkOutput.
+%   T = scidb.LineageFcn(@my_function, unpack_output=true) enables
+%   multi-output mode where the function must return a cell array and
+%   each element becomes a separate LineageFcnResult.
 %
 %   Usage:
-%       filter_fn = scidb.Thunk(@bandpass_filter);
+%       filter_fn = scidb.LineageFcn(@bandpass_filter);
 %       result = filter_fn(raw_signal, 10, 200);
 %       FilteredSignal().save(result, subject=1, session="A");
 %
 %   Multi-output:
-%       split_fn = scidb.Thunk(@split_data, unpack_output=true);
+%       split_fn = scidb.LineageFcn(@split_data, unpack_output=true);
 %       [first, second] = split_fn(data);
 %
 %   Notes:
@@ -28,12 +28,12 @@ classdef Thunk < handle
     properties (SetAccess = private)
         fcn           function_handle   % The wrapped MATLAB function
         unpack_output logical           % Multi-output mode
-        py_thunk                        % Python MatlabThunk proxy
+        py_fcn                          % Python MatlabLineageFcn proxy
     end
 
     methods
-        function obj = Thunk(fcn, options)
-        %THUNK  Construct a thunk wrapper around a MATLAB function.
+        function obj = LineageFcn(fcn, options)
+        %LINEAGEFCN  Construct a lineage function wrapper around a MATLAB function.
 
             arguments
                 fcn           function_handle
@@ -48,12 +48,12 @@ classdef Thunk < handle
             func_name = scidb.internal.function_name(fcn);
 
             % Create the Python-side proxy
-            obj.py_thunk = py.sci_matlab.bridge.MatlabThunk( ...
+            obj.py_fcn = py.sci_matlab.bridge.MatlabLineageFcn( ...
                 source_hash, func_name, options.unpack_output);
         end
 
         function varargout = subsref(obj, s)
-        %SUBSREF  Overload () to make T(args...) work as a thunk call.
+        %SUBSREF  Overload () to make T(args...) work as a lineage function call.
 
             if strcmp(s(1).type, '()')
                 args = s(1).subs;
@@ -67,7 +67,7 @@ classdef Thunk < handle
 
     methods (Access = private)
         function varargout = invoke(obj, args)
-        %INVOKE  Core thunk call: check cache, execute on miss, wrap output.
+        %INVOKE  Core lineage function call: check cache, execute on miss, wrap output.
 
             % --- Step 1: Build Python inputs dict ---
             py_inputs = py.dict();
@@ -76,23 +76,23 @@ classdef Thunk < handle
                 py_inputs{key} = scidb.internal.to_python_input(args{i});
             end
 
-            % --- Step 2: Create pipeline thunk & check cache ---
-            py_pt = py.sci_matlab.bridge.MatlabPipelineThunk( ...
-                obj.py_thunk, py_inputs);
+            % --- Step 2: Create invocation & check cache ---
+            py_inv = py.sci_matlab.bridge.MatlabLineageFcnInvocation( ...
+                obj.py_fcn, py_inputs);
 
-            cached = py.sci_matlab.bridge.check_cache(py_pt);
+            cached = py.sci_matlab.bridge.check_cache(py_inv);
 
             if ~isa(cached, 'py.NoneType') && ~isempty(cached)
                 % --- Cache HIT ---
-                varargout = wrap_cached(obj, py_pt, cached);
+                varargout = wrap_cached(obj, py_inv, cached);
             else
                 % --- Cache MISS: execute in MATLAB ---
-                varargout = execute_and_wrap(obj, py_pt, args);
+                varargout = execute_and_wrap(obj, py_inv, args);
             end
         end
 
-        function out = wrap_cached(obj, py_pt, cached)
-        %WRAP_CACHED  Convert cached Python values to MATLAB ThunkOutputs.
+        function out = wrap_cached(obj, py_inv, cached)
+        %WRAP_CACHED  Convert cached Python values to MATLAB LineageFcnResults.
 
             cached_cell = cell(cached);
             n = numel(cached_cell);
@@ -100,20 +100,20 @@ classdef Thunk < handle
             if obj.unpack_output
                 out = cell(1, n);
                 for i = 1:n
-                    py_to = py.sci_matlab.bridge.make_thunk_output( ...
-                        py_pt, int64(i - 1), cached_cell{i});
-                    out{i} = scidb.ThunkOutput( ...
-                        scidb.internal.from_python(cached_cell{i}), py_to);
+                    py_result = py.sci_matlab.bridge.make_lineage_fcn_result( ...
+                        py_inv, int64(i - 1), cached_cell{i});
+                    out{i} = scidb.LineageFcnResult( ...
+                        scidb.internal.from_python(cached_cell{i}), py_result);
                 end
             else
-                py_to = py.sci_matlab.bridge.make_thunk_output( ...
-                    py_pt, int64(0), cached_cell{1});
-                out = {scidb.ThunkOutput( ...
-                    scidb.internal.from_python(cached_cell{1}), py_to)};
+                py_result = py.sci_matlab.bridge.make_lineage_fcn_result( ...
+                    py_inv, int64(0), cached_cell{1});
+                out = {scidb.LineageFcnResult( ...
+                    scidb.internal.from_python(cached_cell{1}), py_result)};
             end
         end
 
-        function out = execute_and_wrap(obj, py_pt, args)
+        function out = execute_and_wrap(obj, py_inv, args)
         %EXECUTE_AND_WRAP  Run the MATLAB function and wrap results.
 
             % Unwrap inputs to raw MATLAB data for execution
@@ -135,16 +135,16 @@ classdef Thunk < handle
                 out = cell(1, n);
                 for i = 1:n
                     py_data = scidb.internal.to_python(result{i});
-                    py_to = py.sci_matlab.bridge.make_thunk_output( ...
-                        py_pt, int64(i - 1), py_data);
-                    out{i} = scidb.ThunkOutput(result{i}, py_to);
+                    py_result = py.sci_matlab.bridge.make_lineage_fcn_result( ...
+                        py_inv, int64(i - 1), py_data);
+                    out{i} = scidb.LineageFcnResult(result{i}, py_result);
                 end
             else
                 result = feval(obj.fcn, matlab_args{:});
                 py_data = scidb.internal.to_python(result);
-                py_to = py.sci_matlab.bridge.make_thunk_output( ...
-                    py_pt, int64(0), py_data);
-                out = {scidb.ThunkOutput(result, py_to)};
+                py_result = py.sci_matlab.bridge.make_lineage_fcn_result( ...
+                    py_inv, int64(0), py_data);
+                out = {scidb.LineageFcnResult(result, py_result)};
             end
         end
     end

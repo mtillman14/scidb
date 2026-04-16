@@ -19,7 +19,7 @@ classdef BaseVariable < dynamicprops
 %       record_id    - Unique record identifier (string)
 %       metadata     - Struct of metadata key-value pairs
 %       content_hash - Content hash of the data (string)
-%       lineage_hash - Lineage hash, if computed by a thunk (string)
+%       lineage_hash - Lineage hash, if computed by a LineageFcn (string)
 %       py_obj       - Python BaseVariable shadow (used internally)
 
     properties
@@ -93,8 +93,8 @@ classdef BaseVariable < dynamicprops
         %
         %   RECORD_ID = TypeClass().save(DATA, Name, Value, ...)
         %
-        %   DATA can be a numeric array, scalar, scidb.ThunkOutput (lineage
-        %   is stored automatically), or scidb.BaseVariable (re-save).
+        %   DATA can be a numeric array, scalar, scidb.LineageFcnResult
+        %   (lineage is stored automatically), or scidb.BaseVariable (re-save).
         %
         %   Name-Value Arguments:
         %       db - Optional DatabaseManager to use instead of the global
@@ -117,8 +117,8 @@ classdef BaseVariable < dynamicprops
             [metadata_nv, db_val] = extract_db(varargin);
             py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_nv{:});
 
-            % ThunkOutput: route to scihist's lineage-aware save
-            if isa(data, 'scidb.ThunkOutput')
+            % LineageFcnResult: route to scihist's lineage-aware save
+            if isa(data, 'scidb.LineageFcnResult')
                 py_data = data.py_obj;
                 py_record_id = py.scihist.foreach.save(py_class, py_data, pyargs(py_kwargs{:}));
                 record_id = char(py_record_id);
@@ -353,7 +353,7 @@ classdef BaseVariable < dynamicprops
                 elseif as_table
                     result = multi_result_to_table(results_arr, type_name, categorical_flag);
                 else
-                    % as_table=false: return raw data only (no ThunkOutput wrappers)
+                    % as_table=false: return raw data only (no BaseVariable wrappers)
                     raw = cell(n, 1);
                     for k = 1:n
                         raw{k} = results_arr(k).data;
@@ -373,7 +373,7 @@ classdef BaseVariable < dynamicprops
         %
         %   RESULTS = TypeClass().load_all(Name, Value, ...)
         %
-        %   Returns an array of scidb.ThunkOutput objects.
+        %   Returns an array of scidb.BaseVariable objects.
         %
         %   Name-Value Arguments:
         %       version_id - Which versions to return (default "all"):
@@ -681,13 +681,16 @@ classdef BaseVariable < dynamicprops
         end
 
         function v = wrap_py_var(py_var)
-        %WRAP_PY_VAR  Convert a Python BaseVariable to a MATLAB ThunkOutput.
+        %WRAP_PY_VAR  Convert a Python BaseVariable to a MATLAB BaseVariable.
         %   This is used internally to convert results from the database into
-        %   MATLAB objects.  The returned ThunkOutput has the .py_obj property set to
-        %   the original Python BaseVariable shadow, so that lineage tracking works if it's passed to another thunk or re-saved.
+        %   MATLAB objects.  The returned BaseVariable has the .py_obj property
+        %   set to the original Python BaseVariable shadow, so that lineage
+        %   tracking works if it's passed to another LineageFcn or re-saved.
         % Usage: v = scidb.BaseVariable.wrap_py_var(py_var)
             matlab_data = scidb.internal.from_python(py_var.data);
-            v = scidb.ThunkOutput(matlab_data, py_var);
+            v = scidb.BaseVariable();
+            v.data = matlab_data;
+            v.py_obj = py_var;
             v.record_id = string(py_var.record_id);
             v.content_hash = string(py_var.content_hash);
 
@@ -704,7 +707,7 @@ classdef BaseVariable < dynamicprops
         end
 
         function results = wrap_py_vars_batch(bulk)
-        %WRAP_PY_VARS_BATCH  Batch-convert Python BaseVariables to ThunkOutputs.
+        %WRAP_PY_VARS_BATCH  Batch-convert Python BaseVariables to MATLAB BaseVariables.
         %   Accepts the bulk dict returned by bridge.load_and_extract() or
         %   bridge.wrap_batch_bridge().  Parses newline-joined strings and
         %   JSON metadata with minimal MATLAB-Python boundary crossings.
@@ -717,11 +720,11 @@ classdef BaseVariable < dynamicprops
         %
         %   results = scidb.BaseVariable.wrap_py_vars_batch(bulk)
         %
-        %   Returns a ThunkOutput array.
+        %   Returns a BaseVariable array.
             n = int64(bulk{'n'});
 
             if n == 0
-                results = scidb.ThunkOutput.empty();
+                results = scidb.BaseVariable.empty(0, 0);
                 return;
             end
 
@@ -787,7 +790,7 @@ classdef BaseVariable < dynamicprops
             batch_id = int64(bulk{'batch_id'});
 
             % --- Optimization D: Preallocate results array ---
-            results(1:n) = scidb.ThunkOutput();
+            results(1:n) = scidb.BaseVariable();
 
             for i = 1:n
                 % Data: use scalar fast path, concat-df fast path,
@@ -804,7 +807,9 @@ classdef BaseVariable < dynamicprops
                     matlab_data = scidb.internal.from_python(py_data);
                 end
 
-                v = scidb.ThunkOutput(matlab_data, py_vars_cell{i});
+                v = scidb.BaseVariable();
+                v.data = matlab_data;
+                v.py_obj = py_vars_cell{i};
                 v.record_id    = record_ids(i);
                 v.content_hash = content_hashes(i);
 
@@ -892,7 +897,7 @@ end
 
 
 function tbl = multi_result_to_table(results, type_name, categorical_flag)
-%MULTI_RESULT_TO_TABLE  Convert an array of ThunkOutput to a MATLAB table.
+%MULTI_RESULT_TO_TABLE  Convert an array of BaseVariable to a MATLAB table.
     n = numel(results);
 
     % Build metadata columns

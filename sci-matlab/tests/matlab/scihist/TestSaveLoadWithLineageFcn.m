@@ -1,5 +1,5 @@
-classdef TestSaveLoadWithThunk < matlab.unittest.TestCase
-%TESTSAVELOADWITHTHUNK  Tests for save/load behavior with Thunk lineage.
+classdef TestSaveLoadWithLineageFcn < matlab.unittest.TestCase
+%TESTSAVELOADWITHLINEAGEFCN  Tests for save/load behavior with LineageFcn lineage.
 
     properties
         test_dir
@@ -28,10 +28,6 @@ classdef TestSaveLoadWithThunk < matlab.unittest.TestCase
                 scidb.get_database().close();
             catch
             end
-            try
-                py.thunk.Thunk.query = py.None;
-            catch
-            end
             if isfolder(testCase.test_dir)
                 rmdir(testCase.test_dir, 's');
             end
@@ -40,13 +36,13 @@ classdef TestSaveLoadWithThunk < matlab.unittest.TestCase
 
     methods (Test)
 
-        function test_save_thunk_output_preserves_lineage(testCase)
-            % Save raw data, load it, pass through a thunk, save result
+        function test_save_lineage_result_preserves_lineage(testCase)
+            % Save raw data, load it, pass through a lineage function, save result
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@double_values);
-            result = thunk(raw);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn(raw);
 
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
             loaded = ProcessedSignal().load('subject', 1, 'session', 'A');
@@ -55,13 +51,13 @@ classdef TestSaveLoadWithThunk < matlab.unittest.TestCase
             testCase.verifyTrue(strlength(loaded.lineage_hash) > 0);
         end
 
-        function test_thunk_output_provenance_accessible(testCase)
-            % After saving a ThunkOutput, provenance should be queryable
+        function test_lineage_result_provenance_accessible(testCase)
+            % After saving a LineageFcnResult, provenance should be queryable
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@double_values);
-            result = thunk(raw);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn(raw);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');

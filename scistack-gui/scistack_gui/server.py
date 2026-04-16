@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import threading
+import time
 import logging
 from pathlib import Path
 
@@ -64,6 +65,13 @@ def _respond(req_id, result):
 def _respond_error(req_id, code: int, message: str):
     """Send a JSON-RPC error response."""
     _send({"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}})
+
+
+def _send_progress(message: str) -> None:
+    """Emit a startup progress notification. Uses _send directly because
+    notify.enable() has not been called yet during startup."""
+    _send({"jsonrpc": "2.0", "method": "progress",
+           "params": {"message": message}})
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +288,20 @@ def _h_start_run(params):
     schema_level = params.get("schema_level")
     run_options = params.get("run_options")
     raw_where = params.get("where_filters")
+    language = params.get("language", "python")
     where_filters = [WhereFilterSpec(**f) for f in raw_where] if raw_where else None
     db = get_db()
+
+    # Surface the start_run request to the SciStack Output channel (via stderr).
+    # This is the Python-side counterpart to the extension's outputChannel log.
+    logger.info(
+        "start_run[%s]: function=%s, language=%s, variants=%d, "
+        "schema_filter=%s, schema_level=%s, run_options=%s, where_filters=%d",
+        run_id, function_name, language, len(variants),
+        list(schema_filter.keys()) if schema_filter else None,
+        schema_level, run_options,
+        len(where_filters) if where_filters else 0,
+    )
 
     thread = threading.Thread(
         target=_run_in_thread,
@@ -291,6 +311,22 @@ def _h_start_run(params):
     )
     thread.start()
     return {"run_id": run_id}
+
+
+def _h_cancel_run(params):
+    """Cooperatively cancel an in-flight run."""
+    from scistack_gui.api.run import cancel_run
+    run_id = params["run_id"]
+    logger.info("cancel_run[%s]: cooperative cancel requested", run_id)
+    return cancel_run(run_id)
+
+
+def _h_force_cancel_run(params):
+    """Force-cancel an in-flight run by injecting KeyboardInterrupt."""
+    from scistack_gui.api.run import force_cancel_run
+    run_id = params["run_id"]
+    logger.info("force_cancel_run[%s]: force cancel requested", run_id)
+    return force_cancel_run(run_id)
 
 
 def _h_refresh_module(params):
@@ -502,6 +538,7 @@ def _h_generate_matlab_command(params):
             schema_filter=params.get("schema_filter"),
             schema_level=params.get("schema_level"),
             addpath_dirs=addpath_dirs,
+            python_executable=sys.executable,
         )
     }
 
@@ -535,6 +572,8 @@ METHODS = {
     "update_path_input": _h_update_path_input,
     "delete_path_input": _h_delete_path_input,
     "start_run": _h_start_run,
+    "cancel_run": _h_cancel_run,
+    "force_cancel_run": _h_force_cancel_run,
     "refresh_module": _h_refresh_module,
     "create_variable": _h_create_variable,
     "get_project_code": _h_get_project_code,
@@ -575,6 +614,7 @@ def _handle_request(req: dict) -> None:
 
 
 def main():
+    t0 = time.monotonic()
     parser = argparse.ArgumentParser(prog="scistack-gui-server")
     parser.add_argument("--db", type=Path, required=True, help="Path to .duckdb file")
     parser.add_argument("--module", "-m", type=Path, default=None,
@@ -611,21 +651,31 @@ def main():
         # Project mode: load from [tool.scistack] in pyproject.toml
         from scistack_gui.config import load_config
         try:
+            _send_progress("Loading project config...")
             config = load_config(args.project, db_path)
             result = registry.load_from_config(config)
             logger.info(
                 "Project mode: %d functions, %d variables",
                 len(result["functions"]), len(result["variables"]),
             )
+            _send_progress(
+                f"Loaded {len(result['functions'])} Python functions, "
+                f"{len(result['variables'])} variables"
+            )
             # Load MATLAB registry if MATLAB config is present.
             if config.matlab_functions or config.matlab_variables:
                 from scistack_gui import matlab_registry
+                _send_progress(
+                    f"Loading MATLAB registry ({len(config.matlab_functions)} "
+                    f"functions, {len(config.matlab_variables)} variables)..."
+                )
                 matlab_result = matlab_registry.load_from_config(config)
                 logger.info(
                     "MATLAB: %d functions, %d variables",
                     len(matlab_result["matlab_functions"]),
                     len(matlab_result["matlab_variables"]),
                 )
+                _send_progress("MATLAB registry loaded")
         except (FileNotFoundError, ValueError) as e:
             print(json.dumps({
                 "jsonrpc": "2.0", "method": "error",
@@ -663,6 +713,7 @@ def main():
 
     # Initialise the database (create if missing and schema keys supplied)
     from scistack_gui.db import init_db, create_db
+    _send_progress("Opening database...")
     try:
         if create_new:
             schema_keys = [k.strip() for k in args.schema_keys.split(",") if k.strip()]
@@ -691,6 +742,7 @@ def main():
     _startup.check_lockfile_staleness(db_path.parent)
 
     # Signal readiness
+    logger.info("Startup complete in %.2fs", time.monotonic() - t0)
     _send({
         "jsonrpc": "2.0",
         "method": "ready",

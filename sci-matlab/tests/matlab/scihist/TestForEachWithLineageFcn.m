@@ -1,5 +1,5 @@
-classdef TestForEachWithThunk < matlab.unittest.TestCase
-%TESTFOREACHWITHTHUNK  Tests for scihist.for_each with Thunk lineage tracking.
+classdef TestForEachWithLineageFcn < matlab.unittest.TestCase
+%TESTFOREACHWITHLINEAGEFCN  Tests for scihist.for_each with LineageFcn lineage tracking.
 
     properties
         test_dir
@@ -28,10 +28,6 @@ classdef TestForEachWithThunk < matlab.unittest.TestCase
                 scidb.get_database().close();
             catch
             end
-            try
-                py.thunk.Thunk.query = py.None;
-            catch
-            end
             if isfolder(testCase.test_dir)
                 rmdir(testCase.test_dir, 's');
             end
@@ -40,12 +36,12 @@ classdef TestForEachWithThunk < matlab.unittest.TestCase
 
     methods (Test)
 
-        function test_with_thunk_function(testCase)
-            % scihist.for_each auto-wraps or accepts a Thunk; output has lineage
+        function test_with_lineage_fcn(testCase)
+            % scihist.for_each auto-wraps or accepts a LineageFcn; output has lineage
             RawSignal().save([5 10 15], 'subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@double_values);
-            scihist.for_each(thunk, ...
+            lfcn = scidb.LineageFcn(@double_values);
+            scihist.for_each(lfcn, ...
                 struct('x', RawSignal()), ...
                 {ProcessedSignal()}, ...
                 'subject', 1, ...
@@ -54,12 +50,12 @@ classdef TestForEachWithThunk < matlab.unittest.TestCase
             result = ProcessedSignal().load('subject', 1, 'session', 'A');
             testCase.verifyEqual(result.data, [10 20 30]', 'AbsTol', 1e-10);
 
-            % Thunk output should have lineage hash
+            % LineageFcn output should have lineage hash
             testCase.verifyTrue(strlength(result.lineage_hash) > 0);
         end
 
         function test_with_plain_function_records_lineage(testCase)
-            % scihist.for_each auto-wraps a plain function in Thunk
+            % scihist.for_each auto-wraps a plain function in LineageFcn
             RawSignal().save([5 10 15], 'subject', 1, 'session', 'A');
 
             scihist.for_each(@double_values, ...
@@ -75,12 +71,12 @@ classdef TestForEachWithThunk < matlab.unittest.TestCase
             testCase.verifyTrue(strlength(result.lineage_hash) > 0);
         end
 
-        function test_with_thunk_and_constant(testCase)
-            % Thunk with constant input tracked in lineage
+        function test_with_lineage_fcn_and_constant(testCase)
+            % LineageFcn with constant input tracked in lineage
             RawSignal().save([5 10 15], 'subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@add_offset);
-            scihist.for_each(thunk, ...
+            lfcn = scidb.LineageFcn(@add_offset);
+            scihist.for_each(lfcn, ...
                 struct('x', RawSignal(), 'offset', 100), ...
                 {ProcessedSignal()}, ...
                 'subject', 1, ...
@@ -90,12 +86,12 @@ classdef TestForEachWithThunk < matlab.unittest.TestCase
             testCase.verifyEqual(result.data, [105 110 115]', 'AbsTol', 1e-10);
         end
 
-        function test_multiple_outputs_with_thunk(testCase)
+        function test_multiple_outputs_with_lineage_fcn(testCase)
             % unpack_output=true with scihist.for_each
             RawSignal().save([10 20 30 40], 'subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@split_data, 'unpack_output', true);
-            scihist.for_each(thunk, ...
+            lfcn = scidb.LineageFcn(@split_data, 'unpack_output', true);
+            scihist.for_each(lfcn, ...
                 struct('x', RawSignal()), ...
                 {SplitFirst(), SplitSecond()}, ...
                 'subject', 1, ...
@@ -113,12 +109,12 @@ classdef TestForEachWithThunk < matlab.unittest.TestCase
 
             % Process manually (creates cache entry)
             raw = RawSignal().load('subject', 1, 'session', 'A');
-            thunk = scidb.Thunk(@double_values);
-            result = thunk(raw);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn(raw);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
-            % Process again via for_each with same thunk (should hit cache)
-            scihist.for_each(thunk, ...
+            % Process again via for_each with same lineage fcn (should hit cache)
+            scihist.for_each(lfcn, ...
                 struct('x', RawSignal()), ...
                 {FilteredSignal()}, ...
                 'subject', 1, ...

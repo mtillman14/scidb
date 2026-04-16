@@ -41,9 +41,9 @@ classdef TestProvenance < matlab.unittest.TestCase
             testCase.verifyEmpty(prov);
         end
 
-        function test_thunk_output_has_provenance(testCase)
-            thunk = scidb.Thunk(@double_values);
-            result = thunk([1 2 3]);
+        function test_lineage_result_has_provenance(testCase)
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn([1 2 3]);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -52,8 +52,8 @@ classdef TestProvenance < matlab.unittest.TestCase
         end
 
         function test_provenance_function_name(testCase)
-            thunk = scidb.Thunk(@double_values);
-            result = thunk([1 2 3]);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn([1 2 3]);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -61,8 +61,8 @@ classdef TestProvenance < matlab.unittest.TestCase
         end
 
         function test_provenance_function_hash(testCase)
-            thunk = scidb.Thunk(@double_values);
-            result = thunk([1 2 3]);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn([1 2 3]);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -70,8 +70,8 @@ classdef TestProvenance < matlab.unittest.TestCase
         end
 
         function test_provenance_has_required_fields(testCase)
-            thunk = scidb.Thunk(@double_values);
-            result = thunk([1 2 3]);
+            lfcn = scidb.LineageFcn(@double_values);
+            result = lfcn([1 2 3]);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -82,8 +82,8 @@ classdef TestProvenance < matlab.unittest.TestCase
         end
 
         function test_provenance_constants_from_constant_args(testCase)
-            thunk = scidb.Thunk(@add_offset);
-            result = thunk([1 2 3], 10);
+            lfcn = scidb.LineageFcn(@add_offset);
+            result = lfcn([1 2 3], 10);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -95,8 +95,8 @@ classdef TestProvenance < matlab.unittest.TestCase
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@add_offset);
-            result = thunk(raw, 5);
+            lfcn = scidb.LineageFcn(@add_offset);
+            result = lfcn(raw, 5);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -104,18 +104,18 @@ classdef TestProvenance < matlab.unittest.TestCase
             testCase.verifyEqual(numel(prov.constants), 1);
         end
 
-        function test_provenance_chained_thunks(testCase)
+        function test_provenance_chained_lineage_fcns(testCase)
             % Chain: raw -> double_values -> triple_values
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            thunk1 = scidb.Thunk(@double_values);
-            step1 = thunk1(raw);
+            lfcn1 = scidb.LineageFcn(@double_values);
+            step1 = lfcn1(raw);
             ProcessedSignal().save(step1, 'subject', 1, 'session', 'A');
 
             proc = ProcessedSignal().load('subject', 1, 'session', 'A');
-            thunk2 = scidb.Thunk(@triple_values);
-            step2 = thunk2(proc);
+            lfcn2 = scidb.LineageFcn(@triple_values);
+            step2 = lfcn2(proc);
             FilteredSignal().save(step2, 'subject', 1, 'session', 'A');
 
             % Provenance of final result references triple_values
@@ -123,7 +123,7 @@ classdef TestProvenance < matlab.unittest.TestCase
             testCase.verifyEqual(char(prov.function_name), 'triple_values');
             testCase.verifyEqual(numel(prov.inputs), 1);
 
-            % The input should reference the upstream thunk
+            % The input should reference the upstream lineage function
             input_info = prov.inputs{1};
             testCase.verifyTrue(isstruct(input_info));
         end
@@ -135,8 +135,8 @@ classdef TestProvenance < matlab.unittest.TestCase
             raw = RawSignal().load('subject', 1, 'session', 'A');
             proc = ProcessedSignal().load('subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@sum_inputs);
-            result = thunk(raw, proc);
+            lfcn = scidb.LineageFcn(@sum_inputs);
+            result = lfcn(raw, proc);
             FilteredSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = FilteredSignal().provenance('subject', 1, 'session', 'A');
@@ -146,12 +146,12 @@ classdef TestProvenance < matlab.unittest.TestCase
         end
 
         function test_different_functions_different_hashes(testCase)
-            thunk1 = scidb.Thunk(@double_values);
-            result1 = thunk1([1 2 3]);
+            lfcn1 = scidb.LineageFcn(@double_values);
+            result1 = lfcn1([1 2 3]);
             ProcessedSignal().save(result1, 'subject', 1, 'session', 'A');
 
-            thunk2 = scidb.Thunk(@triple_values);
-            result2 = thunk2([1 2 3]);
+            lfcn2 = scidb.LineageFcn(@triple_values);
+            result2 = lfcn2([1 2 3]);
             FilteredSignal().save(result2, 'subject', 1, 'session', 'A');
 
             prov1 = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -162,12 +162,12 @@ classdef TestProvenance < matlab.unittest.TestCase
 
         function test_lineage_hash_deterministic(testCase)
             % Same computation twice should produce the same lineage hash
-            thunk = scidb.Thunk(@double_values);
+            lfcn = scidb.LineageFcn(@double_values);
 
-            result1 = thunk([1 2 3]);
+            result1 = lfcn([1 2 3]);
             ProcessedSignal().save(result1, 'subject', 1, 'session', 'A');
 
-            result2 = thunk([1 2 3]);
+            result2 = lfcn([1 2 3]);
             ProcessedSignal().save(result2, 'subject', 1, 'session', 'B');
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
@@ -177,12 +177,12 @@ classdef TestProvenance < matlab.unittest.TestCase
         end
 
         function test_lineage_hash_changes_with_inputs(testCase)
-            thunk = scidb.Thunk(@double_values);
+            lfcn = scidb.LineageFcn(@double_values);
 
-            result1 = thunk([1 2 3]);
+            result1 = lfcn([1 2 3]);
             ProcessedSignal().save(result1, 'subject', 1, 'session', 'A');
 
-            result2 = thunk([4 5 6]);
+            result2 = lfcn([4 5 6]);
             ProcessedSignal().save(result2, 'subject', 1, 'session', 'B');
 
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
@@ -197,8 +197,8 @@ classdef TestProvenance < matlab.unittest.TestCase
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@add_offset);
-            result = thunk(raw, 10);
+            lfcn = scidb.LineageFcn(@add_offset);
+            result = lfcn(raw, 10);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
@@ -218,8 +218,8 @@ classdef TestProvenance < matlab.unittest.TestCase
             record_id = RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            thunk = scidb.Thunk(@add_offset);
-            result = thunk(raw, 10);
+            lfcn = scidb.LineageFcn(@add_offset);
+            result = lfcn(raw, 10);
             ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
