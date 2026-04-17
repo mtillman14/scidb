@@ -1,5 +1,6 @@
 """Pure for_each loop — works with DataFrames only, no I/O."""
 
+import time
 import traceback
 from itertools import product
 from typing import Any, Callable
@@ -281,7 +282,13 @@ def for_each(
         filtered_inputs.update(constant_inputs)
 
         try:
+            fn_t0 = time.perf_counter()
             result = _call_fn(fn, filtered_inputs, n_outputs)
+            fn_elapsed = time.perf_counter() - fn_t0
+            done_msg = f"[done] {metadata_str}: {fn_name} completed in {fn_elapsed:.3f}s"
+            print(done_msg)
+            if _log_fn is not None:
+                _log_fn(done_msg)
         except Exception as e:
             msg = f"[skip] {metadata_str}: {fn_name} raised: {e}"
             print(msg)
@@ -363,6 +370,27 @@ def for_each(
 def _call_fn(fn, kwargs, n_outputs):
     """Call fn with the right number of output captures."""
     return fn(**kwargs)
+
+
+def _describe_result(val) -> str:
+    """Compact description of a function result value."""
+    try:
+        import pandas as pd
+        if isinstance(val, pd.DataFrame):
+            return f"DataFrame {val.shape[0]}x{val.shape[1]}"
+    except ImportError:
+        pass
+    try:
+        import numpy as np
+        if isinstance(val, np.ndarray):
+            return f"ndarray shape={val.shape}"
+    except ImportError:
+        pass
+    if isinstance(val, dict):
+        return f"dict ({len(val)} keys)"
+    if isinstance(val, (list, tuple)):
+        return f"{type(val).__name__} len={len(val)}"
+    return type(val).__name__
 
 
 # ---------------------------------------------------------------------------

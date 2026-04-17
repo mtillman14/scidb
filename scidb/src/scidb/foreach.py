@@ -496,8 +496,11 @@ def for_each(
 
     # Save results
     if save and outputs and not result_tbl.empty:
+        save_t0 = time.perf_counter()
         _save_results(result_tbl, outputs, output_names, config_keys, db,
                       rid_to_bp=rid_to_bp, rid_keys=rid_keys)
+        save_elapsed = time.perf_counter() - save_t0
+        Log.info(f"for_each({fn_name}): saved {len(result_tbl)} results in {save_elapsed:.3f}s")
 
     return result_tbl
 
@@ -1094,10 +1097,14 @@ def _save_results(
                 save_meta_for_output = {k: v for k, v in save_metadata.items()
                                         if k not in set(data_cols)}
                 try:
-                    output_obj.save(output_value, **db_kwargs, **save_meta_for_output)
+                    save_t0 = time.perf_counter()
+                    rid = output_obj.save(output_value, **db_kwargs, **save_meta_for_output)
+                    save_elapsed = time.perf_counter() - save_t0
                     meta_str = ", ".join(f"{k}={v}" for k, v in save_meta_for_output.items()
                                          if not k.startswith("__"))
-                    msg = f"[save] {meta_str}: {_output_name(output_obj)}"
+                    data_desc = _describe_save_data(output_value)
+                    rid_short = rid[:12] if isinstance(rid, str) else str(rid)
+                    msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}) in {save_elapsed:.3f}s"
                     print(msg)
                     Log.info(msg)
                 except Exception as e:
@@ -1109,10 +1116,14 @@ def _save_results(
                 continue
             output_value = row[output_name]
             try:
-                output_obj.save(output_value, **db_kwargs, **save_metadata)
+                save_t0 = time.perf_counter()
+                rid = output_obj.save(output_value, **db_kwargs, **save_metadata)
+                save_elapsed = time.perf_counter() - save_t0
                 meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
                                      if not k.startswith("__"))
-                msg = f"[save] {meta_str}: {_output_name(output_obj)}"
+                data_desc = _describe_save_data(output_value)
+                rid_short = rid[:12] if isinstance(rid, str) else str(rid)
+                msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}) in {save_elapsed:.3f}s"
                 print(msg)
                 Log.info(msg)
             except Exception as e:
@@ -1160,6 +1171,21 @@ def _has_pathinput(inputs: dict) -> bool:
         if isinstance(v, Fixed) and isinstance(v.var_type, PathInput):
             return True
     return False
+
+
+def _describe_save_data(val) -> str:
+    """Compact description of data being saved."""
+    import pandas as pd
+    import numpy as np
+    if isinstance(val, pd.DataFrame):
+        return f"DataFrame {val.shape[0]}x{val.shape[1]}"
+    if isinstance(val, np.ndarray):
+        return f"ndarray shape={val.shape}"
+    if isinstance(val, dict):
+        return f"dict, {len(val)} keys"
+    if isinstance(val, (list, tuple)):
+        return f"{type(val).__name__} len={len(val)}"
+    return type(val).__name__
 
 
 def _output_name(output_obj: Any) -> str:

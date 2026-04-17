@@ -461,6 +461,18 @@ var DagPanel = class {
         );
       }
       this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
+      const runId = params.run_id;
+      if (runId) {
+        this.panel.webview.postMessage({
+          method: "run_done",
+          params: {
+            run_id: runId,
+            success: true,
+            duration_ms: 0,
+            cancelled: false
+          }
+        });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`handleMatlabRun: failed: ${msg}`);
@@ -468,6 +480,18 @@ var DagPanel = class {
         id: msgId,
         error: { message: String(err) }
       });
+      const runId = params.run_id;
+      if (runId) {
+        this.panel.webview.postMessage({
+          method: "run_done",
+          params: {
+            run_id: runId,
+            success: false,
+            duration_ms: 0,
+            cancelled: false
+          }
+        });
+      }
     }
   }
   /**

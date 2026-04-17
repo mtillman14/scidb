@@ -22,6 +22,7 @@ def generate_matlab_command(
     addpath_dirs: list[str] | None = None,
     python_executable: str | None = None,
     path_inputs: dict[str, dict] | None = None,
+    output_types: list[str] | None = None,
 ) -> str:
     """Generate a complete MATLAB script to run a pipeline function.
 
@@ -82,18 +83,26 @@ def generate_matlab_command(
     lines.append("")
 
     if not variants:
-        # No variant info — generate a template, but include any known path inputs.
+        # No variant info — generate a template, but include any known path inputs
+        # and output types inferred from manual edges.
         if path_inputs:
             inputs_str = _format_matlab_struct(
                 {p: _format_path_input(pi) for p, pi in path_inputs.items()}
             )
         else:
             inputs_str = "struct()"
+        if output_types:
+            outputs_str = _format_matlab_cell([f"{t}()" for t in output_types])
+        else:
+            outputs_str = "{}"
+            logger.warning("generate_matlab_command: no output_types for %s — "
+                           "outputs will be empty, saves will be skipped",
+                           function_name)
         lines.append("try")
         lines.append(f"    % Run (fill in inputs/outputs)")
         lines.append(f"    scihist.for_each(@{function_name}, ...")
         lines.append(f"        {inputs_str}, ...")
-        lines.append(f"        {{}});")         # outputs placeholder
+        lines.append(f"        {outputs_str});")
         lines.append("    db.close();")
         lines.append("catch scistack_err__")
         lines.append("    db.close();")

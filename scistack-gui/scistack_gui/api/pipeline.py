@@ -12,8 +12,12 @@ saved positions, and the frontend assigns dagre positions for new nodes.
 """
 
 import json
+import logging
+import time
 import inspect
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends
 from scidb.database import DatabaseManager
 from scistack_gui.db import get_db
@@ -125,6 +129,23 @@ def _get_record_counts(db: DatabaseManager, var_types: set[str]) -> dict[str, in
 _STATE_ORDER = {"red": 0, "grey": 1, "green": 2}
 
 
+def _build_matlab_fn_proxy(fn_name: str):
+    """Build a MatlabLineageFcn proxy for use in check_node_state.
+
+    Uses the source hash and output count from the MATLAB registry so
+    the proxy's ``.hash`` matches what was stored at save time.
+    """
+    from scistack_gui import matlab_registry
+    from sci_matlab.bridge import MatlabLineageFcn
+
+    info = matlab_registry.get_matlab_function(fn_name)
+    unpack = info.n_outputs >= 2
+    proxy = MatlabLineageFcn(info.source_hash, fn_name, unpack_output=unpack)
+    # check_node_state reads getattr(fn, "__name__") to match lineage records.
+    proxy.__name__ = fn_name
+    return proxy
+
+
 def _own_state_for_function(
     db: DatabaseManager,
     fn_name: str,
@@ -141,13 +162,15 @@ def _own_state_for_function(
     from scihist.state import check_node_state
     from scidb import BaseVariable
 
-    from scihist.state import check_node_state
-    from scidb import BaseVariable
-
     fn_obj = registry._functions.get(fn_name)
     if fn_obj is None:
-        # Function not registered in this session — can't run state check.
-        return "red"
+        # Try MATLAB registry — build a proxy with the right hash.
+        from scistack_gui import matlab_registry
+        if matlab_registry.is_matlab_function(fn_name):
+            fn_obj = _build_matlab_fn_proxy(fn_name)
+        else:
+            # Function not registered in this session — can't run state check.
+            return "red"
 
     output_classes = [
         BaseVariable._all_subclasses[t]
@@ -159,10 +182,17 @@ def _own_state_for_function(
 
     try:
         result = check_node_state(fn_obj, output_classes, db=db)
-        return result["state"]
+        state = result["state"]
+        logger.debug(
+            "state(%s): %s (up_to_date=%d, stale=%d, missing=%d)",
+            fn_name, state,
+            result.get("up_to_date", 0),
+            result.get("stale", 0),
+            result.get("missing", 0),
+        )
+        return state
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception(
+        logger.exception(
             "check_node_state failed for %s — falling back to red", fn_name
         )
         return "red"
@@ -191,6 +221,7 @@ def _compute_run_states(
     Returns {node_id: "green"|"grey"|"red"} for fn__ and var__ nodes.
     """
     # --- Pass 1: own state per function ---
+    t0 = time.monotonic()
     fn_own_state: dict[str, str] = {}
     for fn_name in fn_input_params:
         fn_own_state[fn_name] = _own_state_for_function(
@@ -259,6 +290,16 @@ def _compute_run_states(
         result[f"fn__{fn_name}"] = state
     for vtype, state in var_state.items():
         result[f"var__{vtype}"] = state
+
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    counts = {"green": 0, "grey": 0, "red": 0}
+    for s in fn_effective_state.values():
+        counts[s] = counts.get(s, 0) + 1
+    logger.debug(
+        "run_states complete: %d functions in %.1fms (%d green, %d grey, %d red)",
+        len(fn_effective_state), elapsed_ms,
+        counts["green"], counts["grey"], counts["red"],
+    )
     return result
 
 
@@ -274,6 +315,7 @@ def _build_graph(db: DatabaseManager) -> dict:
     hidden_ids = _ps.get_hidden_node_ids(db)
 
     variants: list[dict] = db.list_pipeline_variants()
+    logger.debug("_build_graph: %d pipeline variants from DB", len(variants))
     all_var_types: set[str] = set()
     # function_name → dict of param_name → type_name (variable inputs only)
     fn_input_params: dict[str, dict] = defaultdict(dict)
@@ -647,11 +689,24 @@ def _build_graph(db: DatabaseManager) -> dict:
             for p, t in inferred_inputs.items():
                 if p not in input_params:
                     input_params[p] = t
+            # Compute actual run state when we have inferred outputs,
+            # instead of hardcoding "red".  _own_state_for_function queries
+            # _lineage directly, so it finds scihist outputs that
+            # list_pipeline_variants() misses (empty version_keys).
+            if inferred_outputs:
+                computed_state = _own_state_for_function(db, fn_label, set(inferred_outputs))
+                logger.debug(
+                    "manual fn %s: computed state=%s (outputs=%s)",
+                    fn_label, computed_state, inferred_outputs,
+                )
+            else:
+                computed_state = "red"
+                logger.debug("manual fn %s: no inferred outputs, defaulting to red", fn_label)
             extra = {
                 "input_params": input_params,
                 "output_types": sorted(inferred_outputs),
                 "constant_params": [],
-                "run_state": "red",
+                "run_state": computed_state,
             }
             # Tag MATLAB functions so the extension intercepts start_run
             # and routes to handleMatlabRun (otherwise the Python registry
@@ -675,6 +730,17 @@ def _build_graph(db: DatabaseManager) -> dict:
             "position": {"x": 0, "y": 0},
             "data": node_data,
         })
+
+    node_types = {}
+    for n in nodes:
+        t = n["type"]
+        node_types[t] = node_types.get(t, 0) + 1
+    logger.debug(
+        "graph built: %d nodes (%s), %d edges",
+        len(nodes),
+        ", ".join(f"{c} {t}" for t, c in sorted(node_types.items())),
+        len(edges),
+    )
 
     return {"nodes": nodes, "edges": edges}
 

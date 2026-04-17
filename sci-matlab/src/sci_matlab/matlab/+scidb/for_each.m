@@ -470,18 +470,29 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     end
 
     if isempty(result_tbl) || dry_run
-        % scifor already logged the summary via _log_fn
+        if dry_run
+            scidb.Log.debug('for_each(%s): dry_run=true, skipping save', fn_name);
+        else
+            scidb.Log.warn('for_each(%s): result_tbl is empty, skipping save', fn_name);
+        end
         return;
     end
 
     % --- Save results ---
     if do_save && ~isempty(outputs)
+        scidb.Log.debug('for_each(%s): saving %d outputs, result_tbl=%dx%d', ...
+            fn_name, numel(outputs), height(result_tbl), width(result_tbl));
         for oi = 1:numel(outputs)
             tbl_i = result_tables{oi};
             if ~isempty(tbl_i) && height(tbl_i) > 0
                 save_results(tbl_i, outputs(oi), output_names(oi), config_nv, constant_nv, db_nv, py_db);
             end
         end
+    elseif ~do_save
+        scidb.Log.debug('for_each(%s): save=false, skipping save', fn_name);
+    elseif isempty(outputs)
+        scidb.Log.warn(['for_each(%s): outputs is empty {}, skipping save — ' ...
+            'outputs must be specified for results to persist'], fn_name);
     end
 
     % --- Flatten nested table outputs for return ---
@@ -744,6 +755,7 @@ end
 
 function save_results(result_tbl, outputs, output_names, config_nv, constant_nv, db_nv, py_db)
 %SAVE_RESULTS  Save results from the result table to output variable types.
+    save_all_t0 = tic;
     n_outputs = numel(outputs);
 
     scidb.Log.debug('save_results: %d outputs, result_tbl=%dx%d', ...
@@ -821,13 +833,19 @@ function save_results(result_tbl, outputs, output_names, config_nv, constant_nv,
                     end
                     lineage_save_nv = [lineage_save_nv, constant_nv];
                     try
+                        lineage_t0 = tic;
                         type_name = class(outputs{o});
                         out_py_class = scidb.internal.ensure_registered(type_name);
                         py_kwargs = scidb.internal.metadata_to_pykwargs(lineage_save_nv{:});
                         py.scihist.foreach.save(out_py_class, output_value.py_obj, pyargs(py_kwargs{:}));
+                        lineage_elapsed = toc(lineage_t0);
+                        meta_str = format_save_meta(save_nv);
+                        scidb.Log.info('[save] %s: %s (lineage) saved in %.3fs', meta_str, type_name, lineage_elapsed);
                     catch err
                         meta_str = format_save_meta(save_nv);
                         scidb.Log.err('%s: lineage save failed: %s', meta_str, err.message);
+                        fprintf(2, '[SciStack] lineage save FAILED for %s: %s\n', meta_str, err.message);
+                        fprintf(2, '           %s\n', err.getReport('basic'));
                     end
                 else
                     % Unwrap BaseVariable to raw data if needed
@@ -899,11 +917,17 @@ function save_results(result_tbl, outputs, output_names, config_nv, constant_nv,
                     type_name, batch_accum{o}.count, class(first_val), format_size(first_val));
             end
 
+            batch_t0 = tic;
             py.sci_matlab.bridge.for_each_batch_save( ...
                 type_name, batch_accum{o}.py_data, ...
                 batch_accum{o}.py_metas, py_db);
+            batch_elapsed = toc(batch_t0);
+            scidb.Log.info('[save] %s: batch saved %d items in %.3fs', ...
+                type_name, batch_accum{o}.count, batch_elapsed);
         end
     end
+    save_all_elapsed = toc(save_all_t0);
+    scidb.Log.info('save_results: saved all outputs in %.3fs', save_all_elapsed);
 end
 
 
@@ -1346,9 +1370,11 @@ function [completed, skipped, total] = run_parallel(fn, inputs, outputs, ...
             if save_count > 0
                 scidb.Log.debug('[parallel] save_batch: flushing %s — %d items', ...
                     type_name, save_count);
+                par_batch_t0 = tic;
                 py.sci_matlab.bridge.for_each_batch_save( ...
                     type_name, py_data, py_metas, py_db);
-                scidb.Log.info('[save] %s: %d items (batch)', type_name, save_count);
+                par_batch_elapsed = toc(par_batch_t0);
+                scidb.Log.info('[save] %s: %d items (batch) in %.3fs', type_name, save_count, par_batch_elapsed);
             end
         end
     end

@@ -32,7 +32,7 @@ class Log:
     WARN = 2
     ERROR = 3
 
-    _level: int = INFO
+    _level: int = DEBUG
     _path: "str | None" = None
     _lock = threading.Lock()
 
@@ -121,3 +121,47 @@ class Log:
             )
             return cls.INFO
         return levels[name]
+
+    @classmethod
+    def bridge_python_logging(cls) -> None:
+        """Attach a handler that forwards Python logging → scidb Log file.
+
+        Bridges the ``scistack_gui`` and ``scihist`` logger hierarchies so
+        that their existing ``logger.debug/info/warning`` calls also appear
+        in ``scidb.log``.  Safe to call multiple times (idempotent).
+        """
+        import logging as _logging
+
+        class _ScidbLogHandler(_logging.Handler):
+            """Maps Python log levels to scidb Log levels."""
+
+            _LEVEL_MAP = {
+                _logging.DEBUG: cls.DEBUG,
+                _logging.INFO: cls.INFO,
+                _logging.WARNING: cls.WARN,
+                _logging.ERROR: cls.ERROR,
+                _logging.CRITICAL: cls.ERROR,
+            }
+
+            def emit(self, record: _logging.LogRecord) -> None:
+                try:
+                    scidb_level = self._LEVEL_MAP.get(record.levelno, cls.INFO)
+                    if scidb_level < cls._level:
+                        return
+                    level_str = {cls.DEBUG: "DEBUG", cls.INFO: "INFO",
+                                 cls.WARN: "WARN", cls.ERROR: "ERROR"}.get(
+                        scidb_level, "INFO"
+                    )
+                    msg = f"[{record.name}] {self.format(record)}"
+                    cls._emit(level_str, msg)
+                except Exception:
+                    pass
+
+        handler = _ScidbLogHandler()
+        handler.setLevel(_logging.DEBUG)
+
+        for name in ("scistack_gui", "scihist"):
+            py_logger = _logging.getLogger(name)
+            # Idempotent: skip if already bridged.
+            if not any(isinstance(h, _ScidbLogHandler) for h in py_logger.handlers):
+                py_logger.addHandler(handler)

@@ -1,10 +1,16 @@
 """SciHist for_each — auto-wraps function in LineageFcn and records lineage."""
 
 import logging
+import time
 import sys
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+try:
+    from scidb.log import Log as _Log
+except ImportError:
+    _Log = None
 
 def _diag(msg):
     """Temporary diagnostic print to file (bypasses capsys)."""
@@ -58,6 +64,10 @@ def for_each(
     """
     from scilineage import LineageFcn
     from scidb.foreach import for_each as _scidb_for_each, _output_name
+
+    fn_name = getattr(fn, "__name__", repr(fn))
+    if _Log:
+        _Log.info(f"scihist.for_each({fn_name}): skip_computed={skip_computed}")
 
     # Auto-wrap plain functions in LineageFcn
     if not isinstance(fn, LineageFcn):
@@ -215,11 +225,15 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
             msg = f"[recompute] {combo_str} — no lineage record"
             print(msg)
             logger.debug(msg)
+            if _Log:
+                _Log.info(msg)
             return False
         if stored_hash != fn.hash:
             msg = f"[recompute] {combo_str} — function hash changed"
             print(msg)
             logger.debug(msg)
+            if _Log:
+                _Log.info(msg)
             return False
         _diag(f"[DIAG] step2: function hash matches")
 
@@ -242,11 +256,15 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
                     msg = f"[recompute] {combo_str} — no stored {rid_key}"
                     print(msg)
                     logger.debug(msg)
+                    if _Log:
+                        _Log.info(msg)
                     return False
                 if str(rid_val) != str(stored_rid):
                     msg = f"[recompute] {combo_str} — {rid_key} changed"
                     print(msg)
                     logger.debug(msg)
+                    if _Log:
+                        _Log.info(msg)
                     return False
             _diag(f"[DIAG] step3: all combo_rids match")
 
@@ -271,17 +289,23 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
                     msg = f"[recompute] {combo_str} — fixed input {name} not found"
                     print(msg)
                     logger.debug(msg)
+                    if _Log:
+                        _Log.info(msg)
                     return False
                 stored_rid = stored_rids.get(rid_key)
                 if stored_rid is None:
                     msg = f"[recompute] {combo_str} — no stored {rid_key}"
                     print(msg)
                     logger.debug(msg)
+                    if _Log:
+                        _Log.info(msg)
                     return False
                 if str(current_rid) != str(stored_rid):
                     msg = f"[recompute] {combo_str} — {rid_key} changed"
                     print(msg)
                     logger.debug(msg)
+                    if _Log:
+                        _Log.info(msg)
                     return False
 
         # Step 4: compare constant input hashes against stored lineage.
@@ -298,17 +322,23 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
                     msg = f"[recompute] {combo_str} — constant {name} changed"
                     print(msg)
                     logger.debug(msg)
+                    if _Log:
+                        _Log.info(msg)
                     return False
                 if stored_hash is None and stored_const_hashes:
                     # New constant not in stored lineage → recompute.
                     msg = f"[recompute] {combo_str} — new constant {name}"
                     print(msg)
                     logger.debug(msg)
+                    if _Log:
+                        _Log.info(msg)
                     return False
 
         msg = f"[skip] {combo_str}"
         print(msg)
         logger.debug(msg)
+        if _Log:
+            _Log.info(msg)
         return True
 
     return _should_skip
@@ -371,21 +401,33 @@ def _save_with_lineage(
             output_value = row[output_name]
 
             try:
+                save_t0 = time.perf_counter()
                 if isinstance(output_value, LineageFcnResult):
-                    _save_lineage_fcn_result(
+                    rid = _save_lineage_fcn_result(
                         output_obj, output_value, save_metadata, active_db,
                         input_rids=input_rids,
                     )
                 else:
-                    output_obj.save(output_value, **db_kwargs, **save_metadata)
+                    rid = output_obj.save(output_value, **db_kwargs, **save_metadata)
+                save_elapsed = time.perf_counter() - save_t0
 
                 meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
                                      if not k.startswith("__"))
-                logger.debug("save: %s: %s", meta_str, _output_name(output_obj))
+                out_name = _output_name(output_obj)
+                rid_short = str(rid)[:12] if rid else "None"
+                lineage_tag = " (lineage)" if isinstance(output_value, LineageFcnResult) else ""
+                msg = f"[save] {meta_str}: {out_name}{lineage_tag} -> record_id={rid_short} in {save_elapsed:.3f}s"
+                logger.debug(msg)
+                if _Log:
+                    _Log.info(msg)
             except Exception as e:
                 meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
                                      if not k.startswith("__"))
-                logger.error("save failed: %s: %s: %s", meta_str, _output_name(output_obj), e)
+                out_name = _output_name(output_obj)
+                msg = f"[error] {meta_str}: save failed for {out_name}: {e}"
+                logger.error(msg)
+                if _Log:
+                    _Log.error(msg)
 
 
 def _save_lineage_fcn_result(
@@ -400,67 +442,91 @@ def _save_lineage_fcn_result(
     from scidb.database import get_database, get_user_id
     from datetime import datetime
 
-    active_db = db
-    if active_db is None:
-        active_db = get_database()
+    output_name = output_obj.__name__ if isinstance(output_obj, type) else type(output_obj).__name__
+    fn_name = data.invoked.fcn.fn.__name__ if hasattr(data.invoked.fcn, 'fn') else "unknown"
+    logger.debug("_save_lineage_fcn_result entry: output=%s, fn=%s, generates_file=%s, metadata=%s",
+                 output_name, fn_name, data.invoked.fcn.generates_file, metadata)
+    t0 = time.time()
 
-    # Lineage-only save for side-effect functions (generates_file=True)
-    if data.invoked.fcn.generates_file:
+    try:
+        active_db = db
+        if active_db is None:
+            active_db = get_database()
+
+        # Lineage-only save for side-effect functions (generates_file=True)
+        if data.invoked.fcn.generates_file:
+            lineage_record = extract_lineage(data)
+            lineage_dict = _lineage_to_dict(lineage_record)
+            _append_rid_tracking(lineage_dict, input_rids)
+            pipeline_lineage_hash = data.invoked.compute_lineage_hash()
+            generated_id = f"generated:{pipeline_lineage_hash[:32]}"
+            user_id = get_user_id()
+            nested_metadata = active_db._split_metadata(metadata)
+
+            schema_keys = nested_metadata.get("schema", {})
+            version_keys = nested_metadata.get("version", {})
+            schema_level = active_db._infer_schema_level(schema_keys)
+            schema_id = (
+                active_db._duck._get_or_create_schema_id(schema_level, schema_keys)
+                if schema_level is not None and schema_keys
+                else 0
+            )
+            active_db._save_record_metadata(
+                record_id=generated_id,
+                timestamp=datetime.now().isoformat(),
+                variable_name=output_name,
+                schema_id=schema_id,
+                version_keys=version_keys or None,
+                content_hash=None,
+                lineage_hash=pipeline_lineage_hash,
+                schema_version=getattr(output_obj, 'schema_version', 1),
+                user_id=user_id,
+            )
+            active_db._save_lineage(
+                output_record_id=generated_id,
+                output_type=output_name,
+                lineage=lineage_dict,
+                lineage_hash=pipeline_lineage_hash,
+                user_id=user_id,
+                schema_keys=nested_metadata.get("schema"),
+                output_content_hash=None,
+            )
+            elapsed = time.time() - t0
+            logger.debug("_save_lineage_fcn_result exit: output=%s, record_id=%s (generates_file), elapsed=%.3fs",
+                         output_name, generated_id[:12], elapsed)
+            if _Log:
+                _Log.info(f"[save-lineage] {output_name}: record_id={generated_id[:12]} (generates_file)")
+                _Log.debug(f"[save-lineage] {output_name}: pipeline_lineage_hash={pipeline_lineage_hash[:12]}")
+            return generated_id
+
         lineage_record = extract_lineage(data)
         lineage_dict = _lineage_to_dict(lineage_record)
         _append_rid_tracking(lineage_dict, input_rids)
+        lineage_hash = data.hash
         pipeline_lineage_hash = data.invoked.compute_lineage_hash()
-        generated_id = f"generated:{pipeline_lineage_hash[:32]}"
-        user_id = get_user_id()
-        nested_metadata = active_db._split_metadata(metadata)
+        raw_data = get_raw_value(data)
 
-        output_name = output_obj.__name__ if isinstance(output_obj, type) else type(output_obj).__name__
-        schema_keys = nested_metadata.get("schema", {})
-        version_keys = nested_metadata.get("version", {})
-        schema_level = active_db._infer_schema_level(schema_keys)
-        schema_id = (
-            active_db._duck._get_or_create_schema_id(schema_level, schema_keys)
-            if schema_level is not None and schema_keys
-            else 0
-        )
-        active_db._save_record_metadata(
-            record_id=generated_id,
-            timestamp=datetime.now().isoformat(),
-            variable_name=output_name,
-            schema_id=schema_id,
-            version_keys=version_keys or None,
-            content_hash=None,
-            lineage_hash=pipeline_lineage_hash,
-            schema_version=getattr(output_obj, 'schema_version', 1),
-            user_id=user_id,
-        )
-        active_db._save_lineage(
-            output_record_id=generated_id,
-            output_type=output_name,
+        variable_class = output_obj if isinstance(output_obj, type) else type(output_obj)
+        instance = variable_class(raw_data)
+        rid = active_db.save(
+            instance,
+            metadata,
             lineage=lineage_dict,
-            lineage_hash=pipeline_lineage_hash,
-            user_id=user_id,
-            schema_keys=nested_metadata.get("schema"),
-            output_content_hash=None,
+            lineage_hash=lineage_hash,
+            pipeline_lineage_hash=pipeline_lineage_hash,
         )
-        return generated_id
-
-    lineage_record = extract_lineage(data)
-    lineage_dict = _lineage_to_dict(lineage_record)
-    _append_rid_tracking(lineage_dict, input_rids)
-    lineage_hash = data.hash
-    pipeline_lineage_hash = data.invoked.compute_lineage_hash()
-    raw_data = get_raw_value(data)
-
-    variable_class = output_obj if isinstance(output_obj, type) else type(output_obj)
-    instance = variable_class(raw_data)
-    return active_db.save(
-        instance,
-        metadata,
-        lineage=lineage_dict,
-        lineage_hash=lineage_hash,
-        pipeline_lineage_hash=pipeline_lineage_hash,
-    )
+        elapsed = time.time() - t0
+        logger.debug("_save_lineage_fcn_result exit: output=%s, record_id=%s, elapsed=%.3fs",
+                     output_name, rid[:12] if rid else None, elapsed)
+        if _Log and rid:
+            _Log.info(f"[save-lineage] {output_name}: record_id={rid[:12]}")
+            _Log.debug(f"[save-lineage] {output_name}: lineage_hash={lineage_hash[:12] if lineage_hash else 'None'}, pipeline_lineage_hash={pipeline_lineage_hash[:12]}")
+        return rid
+    except Exception:
+        elapsed = time.time() - t0
+        logger.exception("_save_lineage_fcn_result FAILED: output=%s, fn=%s, elapsed=%.3fs",
+                         output_name, fn_name, elapsed)
+        raise
 
 
 def save(variable_class, data, db=None, **metadata) -> str | None:
@@ -482,11 +548,22 @@ def save(variable_class, data, db=None, **metadata) -> str | None:
     """
     from scilineage import LineageFcnResult
 
-    if isinstance(data, LineageFcnResult):
-        return _save_lineage_fcn_result(variable_class, data, metadata, db)
+    var_name = variable_class.__name__ if isinstance(variable_class, type) else type(variable_class).__name__
+    is_lineage = isinstance(data, LineageFcnResult)
+    logger.debug("save() entry: variable=%s, is_lineage_result=%s, metadata_keys=%s",
+                 var_name, is_lineage, list(metadata.keys()))
+
+    if is_lineage:
+        rid = _save_lineage_fcn_result(variable_class, data, metadata, db)
+        logger.debug("save() exit: variable=%s, record_id=%s (lineage path)",
+                     var_name, rid[:12] if rid else None)
+        return rid
     else:
         db_kwargs = {"db": db} if db is not None else {}
-        return variable_class.save(data, **db_kwargs, **metadata)
+        rid = variable_class.save(data, **db_kwargs, **metadata)
+        logger.debug("save() exit: variable=%s, record_id=%s (plain path)",
+                     var_name, rid[:12] if rid else None)
+        return rid
 
 
 def _append_rid_tracking(lineage_dict: dict, input_rids: dict | None) -> None:

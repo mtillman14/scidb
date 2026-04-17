@@ -31,6 +31,7 @@ class TestParseMatlabFunction:
         assert info.params == ["signal", "low_hz", "high_hz"]
         assert info.language == "matlab"
         assert len(info.source_hash) == 64  # SHA-256 hex
+        assert info.n_outputs == 1  # [filtered]
 
     def test_single_output(self, tmp_path):
         from scistack_gui.matlab_parser import parse_matlab_function
@@ -42,6 +43,7 @@ class TestParseMatlabFunction:
         assert info is not None
         assert info.name == "compute_vo2"
         assert info.params == ["breath_data"]
+        assert info.n_outputs == 1
 
     def test_no_output(self, tmp_path):
         from scistack_gui.matlab_parser import parse_matlab_function
@@ -53,6 +55,7 @@ class TestParseMatlabFunction:
         assert info is not None
         assert info.name == "plot_results"
         assert info.params == ["data", "title_str"]
+        assert info.n_outputs == 0
 
     def test_no_params(self, tmp_path):
         from scistack_gui.matlab_parser import parse_matlab_function
@@ -90,6 +93,7 @@ class TestParseMatlabFunction:
         assert info is not None
         assert info.name == "decompose"
         assert info.params == ["signal", "fs"]
+        assert info.n_outputs == 3  # [amp, phase, freq]
 
     def test_source_hash_changes(self, tmp_path):
         from scistack_gui.matlab_parser import parse_matlab_function

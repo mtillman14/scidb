@@ -665,6 +665,7 @@ class DatabaseManager:
         branch_params: dict | None = None,
     ) -> None:
         """Insert a new audit row into _record_metadata. Always inserts (audit trail)."""
+        Log.debug(f"_save_record_metadata: {variable_name}, record_id={record_id[:12]}, schema_id={schema_id}")
         vk_json = json.dumps(version_keys or {}, sort_keys=True)
         bp_json = json.dumps(branch_params or {}, sort_keys=True)
         self._duck._execute(
@@ -712,7 +713,9 @@ class DatabaseManager:
         )
 
         # Ensure table exists
+        table_created = False
         if not self._duck._table_exists(table_name):
+            table_created = True
             col_defs = []
             for col in df.columns:
                 dtype = df[col].dtype
@@ -747,6 +750,7 @@ class DatabaseManager:
                 )
             """)
             self._create_variable_view(variable_class)
+            Log.debug(f"_save_columnar: created table '{table_name}'")
 
         # Only insert if this record_id doesn't already exist
         existing_count = self._duck._fetchall(
@@ -761,6 +765,9 @@ class DatabaseManager:
             self._duck.con.execute(
                 f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM insert_df'
             )
+            Log.debug(f"_save_columnar: inserted {len(df)} rows into '{table_name}', record_id={record_id[:12]}")
+        else:
+            Log.debug(f"_save_columnar: record_id={record_id[:12]} already exists in '{table_name}', skipped")
 
         # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
@@ -832,6 +839,7 @@ class DatabaseManager:
                 )
             ''')
             self._create_variable_view(variable_class)
+            Log.debug(f"_save_native: created table '{table_name}'")
 
         if is_dataframe:
             # Idempotency: skip all inserts if this record_id already exists.
@@ -848,6 +856,9 @@ class DatabaseManager:
                         f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders})',
                         [record_id] + storage_row,
                     )
+                Log.debug(f"_save_native: inserted {len(data)} rows (dataframe) into '{table_name}', record_id={record_id[:12]}")
+            else:
+                Log.debug(f"_save_native: record_id={record_id[:12]} already exists in '{table_name}', skipped")
         else:
             storage_values = _value_to_storage_row(data, dtype_meta)
             col_names = ["record_id"] + list(data_col_types.keys())
@@ -858,6 +869,7 @@ class DatabaseManager:
                 f'ON CONFLICT (record_id) DO NOTHING',
                 [record_id] + storage_values,
             )
+            Log.debug(f"_save_native: inserted single record into '{table_name}', record_id={record_id[:12]}")
 
         # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
@@ -1305,6 +1317,8 @@ class DatabaseManager:
                     )
                 df = df[mask]
 
+        Log.debug(f"_find_record({type_name}): {len(df)} record(s) matched (before branch_params filter)")
+
         # Filter by branch_params_filter via Python-side matching.
         # Keys are checked against version_keys first (direct saves store
         # non-schema kwargs there), then fall back to branch_params suffix
@@ -1596,6 +1610,10 @@ class DatabaseManager:
         Returns:
             The record_id of the saved data
         """
+        type_name = variable_class.__name__
+        user_keys = {k: v for k, v in metadata.items() if not k.startswith("__")}
+        Log.info(f"save_variable({type_name}): metadata={user_keys}")
+
         lineage_hash = None
         lineage_dict = None
         pipeline_version_keys: dict = {}
@@ -1645,6 +1663,7 @@ class DatabaseManager:
         instance.metadata = metadata
         instance.lineage_hash = lineage_hash
 
+        Log.info(f"save_variable({type_name}): saved -> record_id={record_id[:12]}")
         return record_id
 
     def save(
@@ -1719,6 +1738,9 @@ class DatabaseManager:
             metadata=nested_metadata,
         )
 
+        serialization = "custom" if self._has_custom_serialization(type(variable)) else "native"
+        Log.debug(f"save({type_name}): record_id={record_id[:12]}, content_hash={content_hash[:12]}, serialization={serialization}")
+
         # Wrap all writes in a single transaction to avoid repeated
         # WAL checkpoints (each auto-committed statement can trigger a
         # checkpoint/fsync, causing random multi-second stalls).
@@ -1779,8 +1801,10 @@ class DatabaseManager:
                 )
 
             self._duck._commit()
+            Log.debug(f"save({type_name}): transaction committed")
 
-        except Exception:
+        except Exception as e:
+            Log.error(f"save({type_name}): transaction rolled back: {e}")
             try:
                 self._duck._rollback()
             except Exception:
@@ -1805,6 +1829,7 @@ class DatabaseManager:
             lineage: Dict with keys 'function_name', 'function_hash',
                      'inputs', 'constants'.
         """
+        Log.debug(f"_save_lineage: {output_type}, fn={lineage.get('function_name')}, lineage_hash={str(lineage_hash)[:12] if lineage_hash else 'None'}")
         lh = lineage_hash or output_record_id
         inputs_json = json.dumps(lineage.get("inputs", []), sort_keys=True)
         constants_json = json.dumps(lineage.get("constants", {}), sort_keys=True)
@@ -1898,6 +1923,9 @@ class DatabaseManager:
         Returns:
             The matching variable instance
         """
+        type_name = variable_class.__name__
+        user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
+        Log.info(f"load({type_name}): metadata={user_summary}")
         table_name = self._ensure_registered(variable_class, auto_register=True)
 
         try:
@@ -1925,14 +1953,18 @@ class DatabaseManager:
             # Take the first (latest) record
             row = records.iloc[0]
         except NotFoundError:
+            Log.warn(f"load({type_name}): not found for metadata={user_summary}")
             raise
         except Exception as e:
             if "does not exist" in str(e).lower() or "not found" in str(e).lower():
+                Log.warn(f"load({type_name}): not found for metadata={user_summary}")
                 raise NotFoundError(
                     f"No {variable_class.__name__} found matching metadata: {metadata}"
                 )
             raise
 
+        rid = row.get("record_id", "?")
+        Log.info(f"load({type_name}): found record_id={str(rid)[:12]}")
         return self._load_by_record_row(variable_class, row, loc=loc, iloc=iloc)
 
     def load_all(
@@ -1960,6 +1992,9 @@ class DatabaseManager:
         Yields:
             BaseVariable instances matching the metadata
         """
+        type_name = variable_class.__name__
+        user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
+        Log.info(f"load_all({type_name}): metadata={user_summary}")
         table_name = self._ensure_registered(variable_class, auto_register=True)
 
         if where is not None:
@@ -1970,6 +2005,7 @@ class DatabaseManager:
                     version_id=version_id,
                 )
             except NotFoundError:
+                Log.info(f"load_all({type_name}): no records found")
                 return
         else:
             nested_metadata = self._split_metadata(metadata)
@@ -1980,10 +2016,14 @@ class DatabaseManager:
                     branch_params_filter=branch_params_filter,
                 )
             except NotFoundError:
+                Log.info(f"load_all({type_name}): no records found")
                 return  # No data
 
             if len(records) == 0:
+                Log.info(f"load_all({type_name}): no records found")
                 return
+
+        Log.info(f"load_all({type_name}): found {len(records)} record(s)")
 
         # --- Bulk loading path ---
 

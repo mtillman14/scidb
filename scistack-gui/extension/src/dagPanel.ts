@@ -234,6 +234,23 @@ export class DagPanel {
       }
 
       this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
+
+      // Immediately notify the frontend that the MATLAB run was dispatched.
+      // We cannot track actual MATLAB execution, so treat dispatch-to-terminal
+      // as "done" from the GUI's perspective. The DB file watcher will trigger
+      // a dag_updated when MATLAB writes results to the database.
+      const runId = params.run_id as string | undefined;
+      if (runId) {
+        this.panel.webview.postMessage({
+          method: 'run_done',
+          params: {
+            run_id: runId,
+            success: true,
+            duration_ms: 0,
+            cancelled: false,
+          },
+        });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`handleMatlabRun: failed: ${msg}`);
@@ -241,6 +258,19 @@ export class DagPanel {
         id: msgId,
         error: { message: String(err) },
       });
+      // Also reset the running state on error so the button doesn't stay stuck.
+      const runId = params.run_id as string | undefined;
+      if (runId) {
+        this.panel.webview.postMessage({
+          method: 'run_done',
+          params: {
+            run_id: runId,
+            success: false,
+            duration_ms: 0,
+            cancelled: false,
+          },
+        });
+      }
     }
   }
 

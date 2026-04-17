@@ -118,6 +118,11 @@ def main():
         print(f"Error opening database: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Bridge Python logging → scidb.log so that scihist/scistack_gui logger
+    # calls appear in the unified log file.
+    from scidb.log import Log
+    Log.bridge_python_logging()
+
     # Phase 8: Stale lockfile detection on project open.
     # If pyproject.toml exists next to the db, check whether uv.lock is
     # out of date and silently sync if so. On failure, the error is

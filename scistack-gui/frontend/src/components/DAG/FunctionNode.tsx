@@ -126,6 +126,8 @@ export default function FunctionNode({ id, data }: Props) {
       // Forward language so the extension can intercept MATLAB runs
       // (dagPanel.ts checks params.language === 'matlab').
       language: data.language,
+      // Output types for MATLAB command generation when no DB variants exist.
+      output_types: data.output_types ?? null,
     })
   }, [id, data, getNodes, getEdges, startRun])
 

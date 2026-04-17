@@ -53,6 +53,9 @@ class MatlabFunctionInfo:
     source_hash: str
     """SHA-256 hex digest of the file contents (for lineage)."""
 
+    n_outputs: int = 0
+    """Number of declared output arguments (0 = void, 1 = scalar, 2+ = multi)."""
+
     language: str = "matlab"
 
 
@@ -81,6 +84,17 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
     raw_params = m.group(4).strip()
     params = [p.strip() for p in raw_params.split(",") if p.strip()] if raw_params else []
 
+    # Count output arguments from the declaration.
+    #   Group 1: "[out1, out2]" → count comma-separated names
+    #   Group 2: "out"          → single output
+    #   Neither:                → void (0 outputs)
+    if m.group(1) is not None:
+        n_outputs = len([o.strip() for o in m.group(1).split(",") if o.strip()])
+    elif m.group(2) is not None:
+        n_outputs = 1
+    else:
+        n_outputs = 0
+
     return MatlabFunctionInfo(
         name=fn_name,
         # The caller (config._resolve_glob_paths) already normalizes paths
@@ -92,6 +106,7 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
         file_path=path,
         params=params,
         source_hash=source_hash,
+        n_outputs=n_outputs,
     )
 
 

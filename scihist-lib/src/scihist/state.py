@@ -69,7 +69,7 @@ def check_combo_state(
         from scidb.database import get_database
         db = get_database()
 
-    if not isinstance(fn, LineageFcn):
+    if not hasattr(fn, 'hash'):
         fn = LineageFcn(fn)
 
     combo_str = _combo_str(schema_combo, branch_params)

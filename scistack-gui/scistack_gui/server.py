@@ -25,7 +25,7 @@ from pathlib import Path
 # Configure logging to stderr so it doesn't corrupt the JSON-RPC stream.
 logging.basicConfig(
     stream=sys.stderr,
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="[scistack] %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -650,19 +650,52 @@ def _h_generate_matlab_command(params):
                     pi["template"] = saved_pis[pi_name]["template"]
                     pi["root_folder"] = saved_pis[pi_name].get("root_folder")
 
-    return {
-        "command": generate_matlab_command(
-            function_name=function_name,
-            db_path=db_path,
-            schema_keys=list(db.dataset_schema_keys),
-            variants=fn_variants if fn_variants else params.get("variants"),
-            schema_filter=params.get("schema_filter"),
-            schema_level=params.get("schema_level"),
-            addpath_dirs=addpath_dirs if addpath_dirs else None,
-            python_executable=sys.executable,
-            path_inputs=path_input_params if path_input_params else None,
-        )
-    }
+    # Infer output types from manual edges when no DB variants exist.
+    # Edge from function → variable node = an output of this function.
+    output_types: list[str] = params.get("output_types") or []
+    if not output_types and not fn_variants:
+        manual_nodes = layout_store.get_manual_nodes()
+        for edge in layout_store.read_manual_edges():
+            src = edge.get("source", "")
+            src_parts = src.split("__")
+            if len(src_parts) < 2 or src_parts[0] != "fn":
+                continue
+            if src_parts[1] != function_name:
+                continue
+            # This edge goes FROM our function — target is an output variable.
+            tgt = edge.get("target", "")
+            tgt_label = None
+            if tgt.startswith("var__"):
+                tgt_parts = tgt.split("__")
+                if len(tgt_parts) >= 2:
+                    tgt_label = tgt_parts[1]
+            else:
+                meta = manual_nodes.get(tgt)
+                if meta and meta.get("type") == "variableNode":
+                    tgt_label = meta.get("label")
+            if tgt_label and tgt_label not in output_types:
+                output_types.append(tgt_label)
+        logger.info("generate_matlab_command: inferred output_types=%s from manual edges", output_types)
+
+    logger.info("generate_matlab_command: fn=%s, total_variants=%d, fn_variants=%d, "
+                "path_input_params=%d, output_types=%s",
+                function_name, len(all_variants), len(fn_variants),
+                len(path_input_params), output_types)
+
+    cmd = generate_matlab_command(
+        function_name=function_name,
+        db_path=db_path,
+        schema_keys=list(db.dataset_schema_keys),
+        variants=fn_variants if fn_variants else params.get("variants"),
+        schema_filter=params.get("schema_filter"),
+        schema_level=params.get("schema_level"),
+        addpath_dirs=addpath_dirs if addpath_dirs else None,
+        python_executable=sys.executable,
+        path_inputs=path_input_params if path_input_params else None,
+        output_types=output_types if output_types else None,
+    )
+    logger.info("generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd))
+    return {"command": cmd}
 
 
 # ---------------------------------------------------------------------------
@@ -713,8 +746,24 @@ METHODS = {
 # Main loop
 # ---------------------------------------------------------------------------
 
+def _summarize_params(params: dict, max_len: int = 120) -> str:
+    """Return a compact one-line summary of RPC params for logging."""
+    if not params:
+        return ""
+    parts = []
+    for k, v in params.items():
+        if isinstance(v, str) and len(v) > 40:
+            v = v[:37] + "..."
+        elif isinstance(v, (list, dict)) and len(str(v)) > 40:
+            v = f"{type(v).__name__}[{len(v)}]"
+        parts.append(f"{k}={v}")
+    s = ", ".join(parts)
+    return s[:max_len] + "..." if len(s) > max_len else s
+
+
 def _handle_request(req: dict) -> None:
     """Process a single JSON-RPC request."""
+    from scidb.log import Log
     from scistack_gui.db import acquire_db_connection, release_db_connection
 
     req_id = req.get("id")
@@ -727,12 +776,20 @@ def _handle_request(req: dict) -> None:
             _respond_error(req_id, -32601, f"Method not found: {method}")
         return
 
+    summary = _summarize_params(params)
+    Log.debug(f"RPC >> {method}({summary})")
+    t0 = time.monotonic()
+
     acquire_db_connection()
     try:
         result = handler(params)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        Log.debug(f"RPC << {method} OK ({elapsed_ms:.1f}ms)")
         if req_id is not None:
             _respond(req_id, result)
     except Exception as e:
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        Log.error(f"RPC << {method} FAILED ({elapsed_ms:.1f}ms): {e}")
         logger.exception("Error handling %s", method)
         if req_id is not None:
             _respond_error(req_id, -32000, str(e))
@@ -855,6 +912,11 @@ def main():
             "params": {"message": f"Error opening database: {e}"}
         }))
         sys.exit(1)
+
+    # Bridge Python logging → scidb.log so that scihist/scistack_gui logger
+    # calls appear in the unified log file.
+    from scidb.log import Log
+    Log.bridge_python_logging()
 
     # Enable JSON-RPC notifications on stdout
     from scistack_gui.notify import enable
