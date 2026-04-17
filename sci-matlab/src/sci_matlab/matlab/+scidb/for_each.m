@@ -69,6 +69,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % Get function name for display
     if isa(fn, 'function_handle')
         fn_name = func2str(fn);
+    elseif isa(fn, 'scidb.LineageFcn')
+        fn_name = func2str(fn.fcn);
     else
         fn_name = 'unknown';
     end
@@ -805,13 +807,41 @@ function save_results(result_tbl, outputs, output_names, config_nv, constant_nv,
                 scidb.Log.debug('  row %d, output %s: %s %s', ...
                     ri, output_names{o}, class(output_value), format_size(output_value));
 
-                try
-                    batch_accum{o}.py_data.append(scidb.internal.to_python(output_value));
-                    batch_accum{o}.py_metas.append(scidb.internal.metadata_to_pydict(save_nv{:}));
-                    batch_accum{o}.count = batch_accum{o}.count + 1;
-                catch err
-                    meta_str = format_save_meta(save_nv);
-                    scidb.Log.err('%s: failed to convert for batch: %s', meta_str, err.message);
+                if isa(output_value, 'scidb.LineageFcnResult')
+                    % Lineage-aware save: route through scihist to preserve
+                    % lineage hash and provenance tracking.
+                    % Use row metadata + constants only (no __fn/__inputs
+                    % config keys — scihist strips those; see MEMORY.md).
+                    lineage_save_nv = {};
+                    for mc2 = 1:numel(meta_cols)
+                        lineage_save_nv{end+1} = meta_cols{mc2}; %#ok<AGROW>
+                        val2 = row.(meta_cols{mc2});
+                        if iscell(val2); val2 = val2{1}; end
+                        lineage_save_nv{end+1} = val2; %#ok<AGROW>
+                    end
+                    lineage_save_nv = [lineage_save_nv, constant_nv];
+                    try
+                        type_name = class(outputs{o});
+                        out_py_class = scidb.internal.ensure_registered(type_name);
+                        py_kwargs = scidb.internal.metadata_to_pykwargs(lineage_save_nv{:});
+                        py.scihist.foreach.save(out_py_class, output_value.py_obj, pyargs(py_kwargs{:}));
+                    catch err
+                        meta_str = format_save_meta(save_nv);
+                        scidb.Log.err('%s: lineage save failed: %s', meta_str, err.message);
+                    end
+                else
+                    % Unwrap BaseVariable to raw data if needed
+                    if isa(output_value, 'scidb.BaseVariable')
+                        output_value = output_value.data;
+                    end
+                    try
+                        batch_accum{o}.py_data.append(scidb.internal.to_python(output_value));
+                        batch_accum{o}.py_metas.append(scidb.internal.metadata_to_pydict(save_nv{:}));
+                        batch_accum{o}.count = batch_accum{o}.count + 1;
+                    catch err
+                        meta_str = format_save_meta(save_nv);
+                        scidb.Log.err('%s: failed to convert for batch: %s', meta_str, err.message);
+                    end
                 end
             end
         end
