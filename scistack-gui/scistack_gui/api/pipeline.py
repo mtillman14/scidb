@@ -11,11 +11,9 @@ Positions are set to (0, 0) here; the layout endpoint overwrites them with
 saved positions, and the frontend assigns dagre positions for new nodes.
 """
 
-import json
 import logging
 import time
 import inspect
-from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends
@@ -31,38 +29,10 @@ router = APIRouter()
 def _parse_path_input(value: str) -> dict | None:
     """If *value* (from __inputs) represents a PathInput, return parsed info.
 
-    Handles two formats:
-    - New: JSON with ``__type: "PathInput"`` (from PathInput.to_key())
-    - Legacy: repr string like ``PathInput('{subject}/...', root_folder=...)``
-
-    Returns ``{"template": ..., "root_folder": ...}`` or ``None``.
+    Delegates to domain.graph_builder.parse_path_input.
     """
-    import re
-
-    # New JSON format
-    if value.startswith("{"):
-        try:
-            parsed = json.loads(value)
-            if parsed.get("__type") == "PathInput":
-                return {
-                    "template": parsed["template"],
-                    "root_folder": parsed.get("root_folder"),
-                }
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-    # Legacy repr format: PathInput('...', root_folder=PosixPath('...'))
-    if value.startswith("PathInput("):
-        m = re.match(r"PathInput\('([^']*)'", value)
-        if m:
-            template = m.group(1)
-            root_match = re.search(
-                r"root_folder=(?:Posix|Windows|Pure\w*)?Path\('([^']*)'\)", value
-            )
-            root = root_match.group(1) if root_match else None
-            return {"template": template, "root_folder": root}
-
-    return None
+    from scistack_gui.domain.graph_builder import parse_path_input
+    return parse_path_input(value)
 
 
 def _fn_params_from_registry(fn_name: str) -> list[str]:
@@ -92,22 +62,14 @@ def _node_id_to_var_label(
     nodes: list[dict],
     manual_nodes: dict[str, dict],
 ) -> str | None:
-    """Resolve a node ID to its variable label, or None if not a variable node."""
-    # DB-derived nodes use the convention "var__TypeName".
-    if node_id.startswith("var__"):
-        # Could be a canonical DB node or a manual node with that prefix.
-        for n in nodes:
-            if n["id"] == node_id:
-                return n["data"]["label"]
-        # Manual node not yet appended — check raw ID.
-        parts = node_id.split("__")
-        if len(parts) >= 2:
-            return parts[1]
-    # Check the manual_nodes dict.
-    meta = manual_nodes.get(node_id)
-    if meta and meta["type"] == "variableNode":
-        return meta["label"]
-    return None
+    """Resolve a node ID to its variable label, or None if not a variable node.
+
+    Thin wrapper around domain.edge_resolver.node_id_to_var_label that
+    builds the existing_node_labels dict from the nodes list.
+    """
+    from scistack_gui.domain.edge_resolver import node_id_to_var_label
+    existing_node_labels = {n["id"]: n["data"]["label"] for n in nodes}
+    return node_id_to_var_label(node_id, existing_node_labels, manual_nodes)
 
 
 def _get_record_counts(db: DatabaseManager, var_types: set[str]) -> dict[str, int]:
@@ -124,9 +86,6 @@ def _get_record_counts(db: DatabaseManager, var_types: set[str]) -> dict[str, in
         except Exception:
             counts[vtype] = 0
     return counts
-
-
-_STATE_ORDER = {"red": 0, "grey": 1, "green": 2}
 
 
 def _build_matlab_fn_proxy(fn_name: str):
@@ -215,90 +174,35 @@ def _compute_run_states(
       falling back to __fn_hash + timestamps for scidb.for_each outputs.
       Unregistered functions default to "red".
 
-    Pass 2 — propagate staleness through the DAG (topological order):
-      effective_state(fn) = min(own_state, state of each input variable)
-      variable state      = upstream function's effective state
+    Pass 2 — propagate staleness through the DAG (delegated to domain layer).
 
     Returns {node_id: "green"|"grey"|"red"} for fn__ and var__ nodes.
     """
-    # --- Pass 1: own state per function ---
+    from scistack_gui.domain.run_state import propagate_run_states
+
     t0 = time.monotonic()
+
+    # --- Pass 1: own state per function ---
     fn_own_state: dict[str, str] = {}
     for fn_name in fn_input_params:
         fn_own_state[fn_name] = _own_state_for_function(
             db, fn_name, fn_outputs.get(fn_name, set())
         )
 
-    # Downgrade "green" → "grey" for functions that have unrun pending constant values.
-    if fn_constants and pending_constants:
-        for fn_name in fn_own_state:
-            if fn_own_state[fn_name] == "green":
-                for const_name in fn_constants.get(fn_name, set()):
-                    if pending_constants.get(const_name):
-                        fn_own_state[fn_name] = "grey"
-                        break
-
-    # --- Pass 2: DAG propagation ---
-    var_producer: dict[str, str] = {}
-    for fn_name, out_types in fn_outputs.items():
-        for ot in out_types:
-            var_producer[ot] = fn_name
-
-    fn_effective_state: dict[str, str] = {}
-    var_state: dict[str, str] = {}
-
-    fn_input_types: dict[str, set] = {
-        fn: set(params.values()) for fn, params in fn_input_params.items()
-    }
-
-    remaining = set(fn_own_state.keys())
-    for _ in range(len(remaining) + 1):
-        if not remaining:
-            break
-        progress = False
-        for fn_name in list(remaining):
-            input_var_states: list[str] = []
-            all_resolved = True
-            for vtype in fn_input_types.get(fn_name, set()):
-                if vtype in var_state:
-                    input_var_states.append(var_state[vtype])
-                elif vtype not in var_producer:
-                    # Root variable — no upstream producer, treat as green.
-                    input_var_states.append("green")
-                else:
-                    all_resolved = False
-                    break
-            if not all_resolved:
-                continue
-
-            all_states = [fn_own_state[fn_name]] + input_var_states
-            fn_effective_state[fn_name] = min(all_states, key=lambda s: _STATE_ORDER[s])
-            for vtype in fn_outputs.get(fn_name, set()):
-                var_state[vtype] = fn_effective_state[fn_name]
-            remaining.remove(fn_name)
-            progress = True
-
-        if not progress:
-            # Cycle or unresolvable — mark remaining as red.
-            for fn_name in remaining:
-                fn_effective_state[fn_name] = "red"
-                for vtype in fn_outputs.get(fn_name, set()):
-                    var_state[vtype] = "red"
-            break
-
-    result: dict[str, str] = {}
-    for fn_name, state in fn_effective_state.items():
-        result[f"fn__{fn_name}"] = state
-    for vtype, state in var_state.items():
-        result[f"var__{vtype}"] = state
+    # --- Pass 2: DAG propagation (pure) ---
+    result = propagate_run_states(
+        fn_own_state, fn_input_params, fn_outputs,
+        fn_constants, pending_constants,
+    )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     counts = {"green": 0, "grey": 0, "red": 0}
-    for s in fn_effective_state.values():
-        counts[s] = counts.get(s, 0) + 1
+    for nid, s in result.items():
+        if nid.startswith("fn__"):
+            counts[s] = counts.get(s, 0) + 1
     logger.debug(
         "run_states complete: %d functions in %.1fms (%d green, %d grey, %d red)",
-        len(fn_effective_state), elapsed_ms,
+        len([k for k in result if k.startswith("fn__")]), elapsed_ms,
         counts["green"], counts["grey"], counts["red"],
     )
     return result
@@ -308,429 +212,132 @@ def _build_graph(db: DatabaseManager) -> dict:
     """
     Build nodes and edges from list_pipeline_variants() and list_variables().
 
-    list_pipeline_variants() is the primary source — it covers every for_each
-    run and does not require scilineage. list_variables() fills in any variable
-    types that exist in the DB but have never been run through for_each.
+    Delegates pure logic to domain.graph_builder and domain.edge_resolver;
+    this function orchestrates data fetching and side effects.
     """
     from scistack_gui import pipeline_store as _ps
+    from scistack_gui import matlab_registry as _mr
+    from scistack_gui.domain import graph_builder as gb
+    from scistack_gui.domain.edge_resolver import resolve_function_edges
+
     hidden_ids = _ps.get_hidden_node_ids(db)
 
+    # --- Fetch data ---
     variants: list[dict] = db.list_pipeline_variants()
     logger.debug("_build_graph: %d pipeline variants from DB", len(variants))
-    all_var_types: set[str] = set()
-    # function_name → dict of param_name → type_name (variable inputs only)
-    fn_input_params: dict[str, dict] = defaultdict(dict)
-    fn_outputs: dict[str, set] = defaultdict(set)
-    # constant_name → {str(value): total_record_count}
-    const_counts: dict[str, dict] = defaultdict(lambda: defaultdict(int))
-    # constant_name → set of function names that use it
-    const_fns: dict[str, set] = defaultdict(set)
-    # function_name → set of constant param names
-    fn_constants: dict[str, set] = defaultdict(set)
-    # param_name → {"template": ..., "root_folder": ..., "functions": set}
-    path_inputs: dict[str, dict] = {}
 
-    for v in variants:
-        fn = v["function_name"]
-        out = v["output_type"]
-        inputs = v["input_types"]   # dict: param_name → variable_type_name
-        constants = v["constants"]  # dict: param_name → scalar value
-        count = v["record_count"]
-
-        all_var_types.add(out)
-
-        # Separate PathInput entries from normal variable inputs.
-        for param_name, type_val in inputs.items():
-            pi = _parse_path_input(type_val)
-            if pi is not None:
-                existing = path_inputs.get(param_name)
-                if existing is None:
-                    path_inputs[param_name] = {**pi, "functions": {fn}}
-                else:
-                    existing["functions"].add(fn)
-            else:
-                all_var_types.add(type_val)
-                fn_input_params[fn][param_name] = type_val
-
-        fn_outputs[fn].add(out)
-
-        for k, val in constants.items():
-            const_counts[k][str(val)] += count
-            const_fns[k].add(fn)
-            fn_constants[fn].add(k)
-
-    # Add any variables in the DB that weren't in any for_each run
+    listed_var_names: set[str] = set()
     try:
         listed = db.list_variables()
         for _, row in listed.iterrows():
-            all_var_types.add(row["variable_name"])
+            listed_var_names.add(row["variable_name"])
     except Exception:
         pass
 
-    # Get raw record counts for each variable type
-    record_counts = _get_record_counts(db, all_var_types)
+    # --- Aggregate and filter (pure) ---
+    agg = gb.aggregate_variants(variants, listed_var_names)
+    gb.filter_hidden(agg, hidden_ids)
 
-    # Pending constant values — user-declared variants not yet in the DB.
+    record_counts = _get_record_counts(db, agg.all_var_types)
+
     pending_constants = layout_store.get_pending_constants()
+    pending_constants, removals = gb.auto_clean_pending_constants(
+        pending_constants, agg.const_counts)
+    for const_name, pval in removals:
+        layout_store.remove_pending_constant(const_name, pval)
 
-    # Auto-clean pending values that are now in const_counts (they've been run).
-    # This must happen BEFORE computing run states so resolved values don't
-    # incorrectly keep the function grey/red.
-    for const_name in list(pending_constants.keys()):
-        still_pending: set[str] = set()
-        for pval in pending_constants[const_name]:
-            if pval in const_counts.get(const_name, {}):
-                layout_store.remove_pending_constant(const_name, pval)
-            else:
-                still_pending.add(pval)
-        pending_constants[const_name] = still_pending
+    # --- Compute run states ---
+    run_states = _compute_run_states(
+        db, agg.fn_input_params, agg.fn_outputs,
+        agg.fn_constants, pending_constants,
+    )
 
-    # --- Filter out user-hidden nodes ---
-    # Remove variable types, functions, constants, and path inputs that the
-    # user explicitly deleted from the canvas.  Done before computing run
-    # states so hidden nodes don't affect state propagation.
-    hidden_var_types = {nid.replace("var__", "", 1) for nid in hidden_ids
-                        if nid.startswith("var__")}
-    hidden_fn_names = {nid.replace("fn__", "", 1) for nid in hidden_ids
-                       if nid.startswith("fn__")}
-    hidden_const_names = {nid.replace("const__", "", 1) for nid in hidden_ids
-                          if nid.startswith("const__")}
-    hidden_path_names = {nid.replace("pathInput__", "", 1) for nid in hidden_ids
-                         if nid.startswith("pathInput__")}
-    all_var_types -= hidden_var_types
-    # Also remove hidden var types from fn_outputs so edges aren't created.
-    for fn_name in list(fn_outputs.keys()):
-        fn_outputs[fn_name] -= hidden_var_types
-    # Remove hidden var types from fn_input_params values.
-    for fn_name in list(fn_input_params.keys()):
-        fn_input_params[fn_name] = {
-            p: t for p, t in fn_input_params[fn_name].items()
-            if t not in hidden_var_types
-        }
-    for fn_name in hidden_fn_names:
-        fn_input_params.pop(fn_name, None)
-        fn_outputs.pop(fn_name, None)
-        fn_constants.pop(fn_name, None)
-    for cname in hidden_const_names:
-        const_counts.pop(cname, None)
-        const_fns.pop(cname, None)
-    for pname in hidden_path_names:
-        path_inputs.pop(pname, None)
-
-    # Compute run states for all function and variable nodes
-    run_states = _compute_run_states(db, fn_input_params, fn_outputs, fn_constants, pending_constants)
-
-    # --- Build nodes ---
-    nodes = []
-
-    for vtype in sorted(all_var_types):
-        data: dict = {
-            "label": vtype,
-            "total_records": record_counts.get(vtype, 0),
-        }
-        # Root variable nodes (no upstream function) are always up to date.
-        state = run_states.get(f"var__{vtype}", "green")
-        data["run_state"] = state
-        nodes.append({
-            "id": f"var__{vtype}",
-            "type": "variableNode",
-            "position": {"x": 0, "y": 0},   # overwritten by layout endpoint
-            "data": data,
-        })
-
-    for const_name in sorted(const_counts.keys()):
-        values = [
-            {"value": val, "record_count": cnt}
-            for val, cnt in sorted(const_counts[const_name].items())
-        ]
-        # Add any still-pending values (not yet run) to the display list.
-        existing_values = {v["value"] for v in values}
-        for pval in sorted(pending_constants.get(const_name, set())):
-            if pval not in existing_values:
-                values.append({"value": pval, "record_count": 0})
-        nodes.append({
-            "id": f"const__{const_name}",
-            "type": "constantNode",
-            "position": {"x": 0, "y": 0},
-            "data": {"label": const_name, "values": values},
-        })
-
-    # --- PathInput nodes ---
-    # Overlay saved template/root_folder from layout.json so that user edits
-    # persist across DAG refreshes (variants from the DB may have stale or
-    # empty values until the pipeline is actually run).
-    for saved_pi in layout_store.read_all_path_input_names():
-        pname = saved_pi["name"]
-        if pname in path_inputs:
-            if saved_pi.get("template"):
-                path_inputs[pname]["template"] = saved_pi["template"]
-            if saved_pi.get("root_folder") is not None:
-                path_inputs[pname]["root_folder"] = saved_pi["root_folder"]
+    # --- Build fn_params_map and saved_configs ---
+    fn_params_map: dict[str, list[str]] = {}
+    for fn in agg.fn_input_params:
+        if _mr.is_matlab_function(fn):
+            fn_params_map[fn] = list(_mr.get_matlab_function(fn).params)
         else:
-            # PathInput created via the palette but not yet in any variant.
-            path_inputs[pname] = {
-                "template": saved_pi.get("template", ""),
-                "root_folder": saved_pi.get("root_folder"),
-                "functions": set(),
-            }
+            fn_params_map[fn] = _fn_params_from_registry(fn)
 
-    for param_name in sorted(path_inputs.keys()):
-        pi = path_inputs[param_name]
-        nodes.append({
-            "id": f"pathInput__{param_name}",
-            "type": "pathInputNode",
-            "position": {"x": 0, "y": 0},
-            "data": {
-                "label": param_name,
-                "template": pi["template"],
-                "root_folder": pi.get("root_folder"),
-            },
-        })
-
-    # Build per-function variant list for the settings panel.
-    fn_variants: dict[str, list] = defaultdict(list)
-    for v in variants:
-        fn_variants[v["function_name"]].append({
-            "constants": v["constants"],
-            "input_types": v["input_types"],
-            "output_type": v["output_type"],
-            "record_count": v["record_count"],
-        })
-
-    # Load saved node configs (schema filter, run options) from manual nodes.
     manual_nodes = _ps.get_manual_nodes(db)
-
-    from scistack_gui import matlab_registry as _mr
-
-    for fn in sorted(fn_input_params.keys()):
-        input_params = dict(sorted(fn_input_params[fn].items()))
-        constant_params = sorted(fn_constants[fn])
-        # Fill in any params the DB didn't capture (e.g. never run via for_each).
-        # For MATLAB functions, use the MATLAB parser's param list.
-        known = set(input_params) | set(constant_params)
-        if _mr.is_matlab_function(fn):
-            matlab_params = _mr.get_matlab_function(fn).params
-            for name in matlab_params:
-                if name not in known:
-                    input_params[name] = ""
-        else:
-            for name in _fn_params_from_registry(fn):
-                if name not in known:
-                    input_params[name] = ""
-        fn_data: dict = {
-            "label": fn,
-            "variants": fn_variants.get(fn, []),
-            "input_params": input_params,
-            "output_types": sorted(fn_outputs[fn]),
-            "constant_params": constant_params,
-        }
-        state = run_states.get(f"fn__{fn}")
-        if state:
-            fn_data["run_state"] = state
-        # Tag MATLAB functions so the frontend can style them differently.
-        if _mr.is_matlab_function(fn):
-            fn_data["language"] = "matlab"
-        # Apply saved config (schemaFilter, runOptions) if present.
+    saved_configs: dict[str, dict | None] = {}
+    for fn in agg.fn_input_params:
         node_id = f"fn__{fn}"
-        saved = manual_nodes.get(node_id, {}).get("config")
-        if saved:
-            if "schemaFilter" in saved:
-                fn_data["schemaFilter"] = saved["schemaFilter"]
-            if "schemaLevel" in saved:
-                fn_data["schemaLevel"] = saved["schemaLevel"]
-            if "runOptions" in saved:
-                fn_data["runOptions"] = saved["runOptions"]
-        nodes.append({
-            "id": node_id,
-            "type": "functionNode",
-            "position": {"x": 0, "y": 0},
-            "data": fn_data,
-        })
+        saved_configs[fn] = manual_nodes.get(node_id, {}).get("config")
 
-    # --- Build edges (deduplicated) ---
-    edges = []
-    seen_edges: set[tuple] = set()
+    matlab_functions = set(_mr.get_all_function_names())
 
-    for fn, params in fn_input_params.items():
-        for param_name, in_type in params.items():
-            key = (f"var__{in_type}", f"fn__{fn}")
-            if key not in seen_edges:
-                seen_edges.add(key)
-                edges.append({
-                    "id": f"e__{in_type}__{fn}",
-                    "source": f"var__{in_type}",
-                    "target": f"fn__{fn}",
-                    "targetHandle": f"in__{param_name}",
-                })
+    # --- Overlay saved path inputs ---
+    saved_path_inputs = layout_store.read_all_path_input_names()
+    gb.overlay_saved_path_inputs(agg.path_inputs, saved_path_inputs)
 
-    for fn, out_types in fn_outputs.items():
-        for out_type in out_types:
-            key = (f"fn__{fn}", f"var__{out_type}")
-            if key not in seen_edges:
-                seen_edges.add(key)
-                edges.append({
-                    "id": f"e__{fn}__{out_type}",
-                    "source": f"fn__{fn}",
-                    "target": f"var__{out_type}",
-                    "sourceHandle": f"out__{out_type}",
-                })
+    # --- Build nodes (pure) ---
+    nodes = gb.build_variable_nodes(agg.all_var_types, record_counts, run_states)
+    nodes += gb.build_constant_nodes(agg.const_counts, pending_constants)
+    nodes += gb.build_path_input_nodes(agg.path_inputs)
+    nodes += gb.build_function_nodes(
+        agg.fn_input_params, agg.fn_outputs, agg.fn_constants,
+        agg.fn_variants_map, fn_params_map, run_states,
+        matlab_functions, saved_configs,
+    )
 
-    for const_name, fns in const_fns.items():
-        for fn in fns:
-            key = (f"const__{const_name}", f"fn__{fn}")
-            if key not in seen_edges:
-                seen_edges.add(key)
-                edges.append({
-                    "id": f"e__{const_name}__{fn}",
-                    "source": f"const__{const_name}",
-                    "target": f"fn__{fn}",
-                    "targetHandle": f"const__{const_name}",
-                })
+    # --- Build edges (pure) ---
+    manual_edges_list = layout_store.read_manual_edges()
+    edges = gb.build_edges(
+        agg.fn_input_params, agg.fn_outputs, agg.const_fns,
+        agg.path_inputs, manual_edges_list, hidden_ids,
+    )
 
-    for param_name, pi in path_inputs.items():
-        for fn in pi["functions"]:
-            key = (f"pathInput__{param_name}", f"fn__{fn}")
-            if key not in seen_edges:
-                seen_edges.add(key)
-                edges.append({
-                    "id": f"e__{param_name}__{fn}",
-                    "source": f"pathInput__{param_name}",
-                    "target": f"fn__{fn}",
-                    "targetHandle": f"in__{param_name}",
-                })
-
-    # Merge in manually-created edges (tagged so the frontend can delete them).
-    # Skip edges that reference hidden nodes.
-    for me in layout_store.read_manual_edges():
-        if me["source"] in hidden_ids or me["target"] in hidden_ids:
-            continue
-        if any(e["id"] == me["id"] for e in edges):
-            continue
-        edge: dict = {
-            "id": me["id"],
-            "source": me["source"],
-            "target": me["target"],
-            "data": {"manual": True},
-        }
-        if me.get("sourceHandle"):
-            edge["sourceHandle"] = me["sourceHandle"]
-        if me.get("targetHandle"):
-            edge["targetHandle"] = me["targetHandle"]
-        edges.append(edge)
-
-    # Merge in manually-placed nodes that aren't already present from DB data.
-    existing_ids = {n["id"] for n in nodes}
-    # Map (type, label) → canonical DB node ID so we can detect graduated nodes.
-    db_node_by_label: dict[tuple, str] = {
-        (n["type"], n["data"]["label"]): n["id"] for n in nodes
-    }
-    # Snapshot positions once so we can tell whether a canonical node was already
-    # an established canvas node before this refresh.
+    # --- Merge manual nodes ---
     saved_positions = layout_store.read_layout()["positions"]
-    for node_id, meta in layout_store.get_manual_nodes().items():
-        if node_id in existing_ids:
-            continue
-        key = (meta["type"], meta["label"])
-        if key in db_node_by_label:
-            canonical_id = db_node_by_label[key]
-            # Only graduate (transfer position → canonical, remove manual entry)
-            # when the canonical node has NO saved position yet — meaning it just
-            # appeared in the DB for the first time and this manual node was its
-            # placeholder.  If the canonical node already has a saved position the
-            # user intentionally placed an extra instance; keep it on the canvas.
-            if canonical_id not in saved_positions:
-                layout_store.graduate_manual_node(node_id, canonical_id)
-                continue
-            # Intentional extra instance — fall through to add it to the canvas.
-        fn_label = meta["label"]
-        extra: dict = {}
-        if meta["type"] == "variableNode":
-            extra = {"total_records": 0, "run_state": "red"}
-        elif meta["type"] == "constantNode":
-            # Include any pending (user-declared, not yet in DB) values.
-            pending_vals = [
-                {"value": pval, "record_count": 0}
-                for pval in sorted(pending_constants.get(fn_label, set()))
-            ]
-            extra = {"values": pending_vals}
-        elif meta["type"] == "pathInputNode":
-            extra = {"template": "", "root_folder": None}
-        elif meta["type"] == "functionNode":
+    to_add, graduations = gb.merge_manual_nodes(nodes, manual_nodes, saved_positions)
+
+    # Execute graduation side effects.
+    for action in graduations:
+        layout_store.graduate_manual_node(action.old_id, action.new_id)
+
+    # Build and append manual nodes that should be added.
+    existing_node_labels = {n["id"]: n["data"]["label"] for n in nodes}
+    for node_id in to_add:
+        meta = manual_nodes[node_id]
+        # For function nodes, resolve edges and compute state.
+        resolved_input_params = None
+        resolved_output_types = None
+        manual_fn_state = None
+        if meta["type"] == "functionNode":
+            fn_label = meta["label"]
             sig_params = _fn_params_from_registry(fn_label)
-            # Infer output_types and input_params from manual edges so that
-            # newly-wired functions show their connections before the first run.
-            inferred_outputs: list[str] = []
-            inferred_inputs: dict[str, str] = {}
-            unmatched_inputs: list[str] = []
-            manual_nodes_snapshot = layout_store.get_manual_nodes()
-            for me in layout_store.read_manual_edges():
-                if me["source"] == node_id:
-                    # Edge from this function → a variable node (output).
-                    tgt = me["target"]
-                    var_label = _node_id_to_var_label(tgt, existing_ids, nodes,
-                                                      manual_nodes_snapshot)
-                    if var_label and var_label not in inferred_outputs:
-                        inferred_outputs.append(var_label)
-                elif me["target"] == node_id:
-                    # Edge from a variable node → this function (input).
-                    src = me["source"]
-                    var_label = _node_id_to_var_label(src, existing_ids, nodes,
-                                                      manual_nodes_snapshot)
-                    if var_label:
-                        th = me.get("targetHandle") or ""
-                        if th.startswith("in__"):
-                            inferred_inputs[th.replace("in__", "")] = var_label
-                        else:
-                            unmatched_inputs.append(var_label)
-            # Match unmatched inputs to signature params by position.
-            remaining_params = [p for p in sig_params if p not in inferred_inputs]
-            for param, var_type in zip(remaining_params, unmatched_inputs):
-                inferred_inputs[param] = var_type
-            input_params = {p: inferred_inputs.get(p, "") for p in sig_params}
-            for p, t in inferred_inputs.items():
-                if p not in input_params:
-                    input_params[p] = t
-            # Compute actual run state when we have inferred outputs,
-            # instead of hardcoding "red".  _own_state_for_function queries
-            # _lineage directly, so it finds scihist outputs that
-            # list_pipeline_variants() misses (empty version_keys).
-            if inferred_outputs:
-                computed_state = _own_state_for_function(db, fn_label, set(inferred_outputs))
-                logger.debug(
-                    "manual fn %s: computed state=%s (outputs=%s)",
-                    fn_label, computed_state, inferred_outputs,
-                )
-            else:
-                computed_state = "red"
-                logger.debug("manual fn %s: no inferred outputs, defaulting to red", fn_label)
-            extra = {
-                "input_params": input_params,
-                "output_types": sorted(inferred_outputs),
-                "constant_params": [],
-                "run_state": computed_state,
+            resolved = resolve_function_edges(
+                fn_node_ids={node_id},
+                manual_edges=manual_edges_list,
+                manual_nodes=manual_nodes,
+                existing_node_labels=existing_node_labels,
+                sig_params=sig_params,
+            )
+            inferred_inputs = {
+                p: ts[0] for p, ts in resolved.input_types.items() if ts
             }
-            # Tag MATLAB functions so the extension intercepts start_run
-            # and routes to handleMatlabRun (otherwise the Python registry
-            # lookup fails with "Function X not found in registry").
-            # Mirrors the DB-derived branch above at fn_data["language"]=...
-            if _mr.is_matlab_function(fn_label):
-                extra["language"] = "matlab"
-        node_data: dict = {"label": fn_label, **extra}
-        # Apply saved config for manually-placed function nodes.
-        saved_cfg = meta.get("config")
-        if saved_cfg and meta["type"] == "functionNode":
-            if "schemaFilter" in saved_cfg:
-                node_data["schemaFilter"] = saved_cfg["schemaFilter"]
-            if "schemaLevel" in saved_cfg:
-                node_data["schemaLevel"] = saved_cfg["schemaLevel"]
-            if "runOptions" in saved_cfg:
-                node_data["runOptions"] = saved_cfg["runOptions"]
-        nodes.append({
-            "id": node_id,
-            "type": meta["type"],
-            "position": {"x": 0, "y": 0},
-            "data": node_data,
-        })
+            resolved_input_params = {p: inferred_inputs.get(p, "") for p in sig_params}
+            for p, t in inferred_inputs.items():
+                if p not in resolved_input_params:
+                    resolved_input_params[p] = t
+            resolved_output_types = resolved.output_types
+            if resolved_output_types:
+                manual_fn_state = _own_state_for_function(
+                    db, fn_label, set(resolved_output_types))
+                logger.debug("manual fn %s: computed state=%s (outputs=%s)",
+                             fn_label, manual_fn_state, resolved_output_types)
+            else:
+                manual_fn_state = "red"
+                logger.debug("manual fn %s: no inferred outputs, defaulting to red", fn_label)
+
+        node = gb.build_manual_node(
+            node_id, meta, pending_constants,
+            manual_fn_state, resolved_input_params, resolved_output_types,
+            matlab_functions,
+        )
+        nodes.append(node)
 
     node_types = {}
     for n in nodes:
@@ -748,39 +355,33 @@ def _build_graph(db: DatabaseManager) -> dict:
 
 @router.get("/pipeline")
 def get_pipeline(db: DatabaseManager = Depends(get_db)):
-    return _build_graph(db)
+    from scistack_gui.services.pipeline_service import get_pipeline_graph
+    return get_pipeline_graph(db)
 
 
 @router.get("/function/{fn_name}/params")
 def get_function_params(fn_name: str):
-    """Return parameter names from the registered function's signature."""
-    params = _fn_params_from_registry(fn_name)
-    return {"params": params}
+    from scistack_gui.services.pipeline_service import get_function_params as _get_params
+    return {"params": _get_params(fn_name)}
 
 
 @router.get("/function/{fn_name}/source")
 def get_function_source(fn_name: str):
-    """Return the source file path and first line number for a registered function."""
-    fn = registry._functions.get(fn_name)
-    if fn is None:
-        return {"ok": False, "error": f"Function '{fn_name}' is not registered."}
-    try:
-        file = inspect.getsourcefile(fn) or inspect.getfile(fn)
-        _, line = inspect.getsourcelines(fn)
-    except (TypeError, OSError) as e:
-        return {"ok": False, "error": f"Could not locate source for '{fn_name}': {e}"}
-    return {"ok": True, "file": file, "line": line}
+    from scistack_gui.services.pipeline_service import get_function_source as _get_source
+    return _get_source(fn_name)
 
 
 @router.put("/constants/{name}/pending/{value}")
 async def add_pending_constant_value(name: str, value: str):
-    layout_store.add_pending_constant(name, value)
+    from scistack_gui.services.layout_service import put_pending_constant
+    put_pending_constant(name, value)
     await ws.broadcast({"type": "dag_updated"})
     return {"ok": True}
 
 
 @router.delete("/constants/{name}/pending/{value}")
 async def remove_pending_constant_value(name: str, value: str):
-    layout_store.remove_pending_constant(name, value)
+    from scistack_gui.services.layout_service import delete_pending_constant
+    delete_pending_constant(name, value)
     await ws.broadcast({"type": "dag_updated"})
     return {"ok": True}

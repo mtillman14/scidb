@@ -159,9 +159,8 @@ async def create_variable(req: CreateVariableRequest) -> dict:
         # No Python target — fall back to MATLAB if configured.
         from scistack_gui import matlab_registry
         if matlab_registry.has_matlab_config() and matlab_registry._config is not None and matlab_registry._config.matlab_variable_dir is not None:
-            from scistack_gui.server import _create_matlab_variable
-            from scistack_gui.notify import notify
-            result = _create_matlab_variable(name, req.docstring, matlab_registry, notify)
+            from scistack_gui.services.variable_service import _create_matlab_variable
+            result = _create_matlab_variable(name, req.docstring)
             if result.get("ok"):
                 await ws.broadcast({"type": "dag_updated"})
             return result

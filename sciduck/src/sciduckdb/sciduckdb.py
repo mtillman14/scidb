@@ -12,6 +12,7 @@ DuckDB-compatible viewer.
 """
 
 import duckdb
+import logging
 import pandas as pd
 import numpy as np
 import json
@@ -19,6 +20,8 @@ import datetime
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+logger = logging.getLogger("sciduck")
 
 
 def _schema_str(value):
@@ -451,6 +454,7 @@ class SciDuck:
         self.db_path = str(db_path)
         self.dataset_schema = list(dataset_schema)
         self._lock = threading.Lock()
+        logger.info("DuckDB lock ACQUIRED: %s", self.db_path)
         self.con = duckdb.connect(self.db_path)
         self._init_metadata_tables()
 
@@ -1151,9 +1155,11 @@ class SciDuck:
     def close(self):
         """Close the DuckDB connection."""
         self.con.close()
+        logger.info("DuckDB lock RELEASED: %s", self.db_path)
 
     def reopen(self):
         """Reopen the DuckDB connection after close()."""
+        logger.info("DuckDB lock ACQUIRED (reopen): %s", self.db_path)
         self.con = duckdb.connect(str(self.db_path))
 
     def __enter__(self):

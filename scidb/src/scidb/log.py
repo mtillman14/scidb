@@ -160,7 +160,7 @@ class Log:
         handler = _ScidbLogHandler()
         handler.setLevel(_logging.DEBUG)
 
-        for name in ("scistack_gui", "scihist"):
+        for name in ("scistack_gui", "scihist", "sciduck"):
             py_logger = _logging.getLogger(name)
             # Idempotent: skip if already bridged.
             if not any(isinstance(h, _ScidbLogHandler) for h in py_logger.handlers):

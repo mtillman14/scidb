@@ -5,11 +5,14 @@ The DatabaseManager instance is created once at startup (in __main__.py)
 and shared by all API endpoints and the Jupyter kernel.
 """
 
+import logging
 from pathlib import Path
 import threading
 import duckdb
 import scidb
 from scidb.database import DatabaseManager
+
+logger = logging.getLogger("scistack_gui.db")
 
 _db: DatabaseManager | None = None
 _db_path: Path | None = None
@@ -31,9 +34,12 @@ def acquire_db_connection() -> None:
     global _db_open, _db_refcount
     with _db_lifecycle_lock:
         _db_refcount += 1
+        reopened = False
         if not _db_open and _db is not None:
             _db.reopen()
             _db_open = True
+            reopened = True
+        logger.debug("acquire_db_connection: refcount=%d, reopened=%s", _db_refcount, reopened)
 
 
 def release_db_connection() -> None:
@@ -41,9 +47,12 @@ def release_db_connection() -> None:
     global _db_open, _db_refcount
     with _db_lifecycle_lock:
         _db_refcount = max(0, _db_refcount - 1)
+        closed = False
         if _db_refcount == 0 and _db_open and _db is not None:
             _db._duck.close()
             _db_open = False
+            closed = True
+        logger.debug("release_db_connection: refcount=%d, closed=%s", _db_refcount, closed)
 
 
 def close_initial_connection() -> None:
@@ -56,6 +65,7 @@ def close_initial_connection() -> None:
     global _db_open
     with _db_lifecycle_lock:
         if _db_open and _db is not None:
+            logger.debug("close_initial_connection: releasing startup lock")
             _db._duck.close()
             _db_open = False
 
@@ -66,6 +76,7 @@ def read_schema_keys(db_path: Path) -> list[str]:
     to know them in advance. The schema keys are stored as columns in the
     _schema table (all columns except schema_id and schema_level).
     """
+    logger.debug("read_schema_keys: opening read-only connection to %s", db_path)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         rows = con.execute(
@@ -77,6 +88,7 @@ def read_schema_keys(db_path: Path) -> list[str]:
         return [row[0] for row in rows]
     finally:
         con.close()
+        logger.debug("read_schema_keys: closed read-only connection to %s", db_path)
 
 
 def init_db(db_path: Path) -> DatabaseManager:

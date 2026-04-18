@@ -81,199 +81,132 @@ def _send_progress(message: str) -> None:
 # They call into the same business logic as the FastAPI route handlers.
 
 def _h_get_pipeline(params):
-    from scistack_gui.api.pipeline import _build_graph
+    from scistack_gui.services.pipeline_service import get_pipeline_graph
     from scistack_gui.db import get_db
-    return _build_graph(get_db())
+    return get_pipeline_graph(get_db())
 
 
 def _h_get_layout(params):
-    from scistack_gui import layout as layout_store
-    return layout_store.read_layout()
+    from scistack_gui.services.layout_service import get_layout
+    return get_layout()
 
 
 def _h_get_schema(params):
+    from scistack_gui.services.pipeline_service import get_schema
     from scistack_gui.db import get_db
-    db = get_db()
-    keys = db.dataset_schema_keys
-    values = {key: db.distinct_schema_values(key) for key in keys}
-    return {"keys": keys, "values": values}
+    return get_schema(get_db())
 
 
 def _h_get_info(params):
-    from scistack_gui.db import get_db_path
-    from scistack_gui import startup as _startup
-    return {
-        "db_name": get_db_path().name,
-        "startup_errors": [e.to_dict() for e in _startup.get_startup_errors()],
-    }
+    from scistack_gui.services.pipeline_service import get_info
+    return get_info()
 
 
 def _h_get_registry(params):
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
-    from scidb import BaseVariable
-    matlab_fns = matlab_registry.get_all_function_names()
-    logger.info(
-        "get_registry: %d python fns, %d matlab fns, %d vars",
-        len(registry._functions), len(matlab_fns),
-        len(BaseVariable._all_subclasses),
-    )
-    if matlab_fns:
-        logger.info("matlab_functions: %s", matlab_fns)
-    return {
-        "functions": sorted(registry._functions.keys()),
-        "variables": sorted(BaseVariable._all_subclasses.keys()),
-        "matlab_functions": matlab_fns,
-    }
+    from scistack_gui.services.pipeline_service import get_registry
+    return get_registry()
 
 
 def _h_get_function_params(params):
-    from scistack_gui.api.pipeline import _fn_params_from_registry
-    from scistack_gui import matlab_registry
-    name = params["name"]
-    # Check MATLAB registry first for MATLAB functions.
-    if matlab_registry.is_matlab_function(name):
-        info = matlab_registry.get_matlab_function(name)
-        return {"params": info.params}
-    return {"params": _fn_params_from_registry(name)}
+    from scistack_gui.services.pipeline_service import get_function_params
+    return {"params": get_function_params(params["name"])}
 
 
 def _h_get_function_source(params):
-    """Return the source file path and line number for a registered function."""
-    import inspect
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
-    name = params["name"]
-    # Check MATLAB registry first.
-    if matlab_registry.is_matlab_function(name):
-        info = matlab_registry.get_matlab_function(name)
-        return {"ok": True, "file": str(info.file_path), "line": 1}
-    fn = registry._functions.get(name)
-    if fn is None:
-        return {"ok": False, "error": f"Function '{name}' is not registered (pass --module at startup)."}
-    try:
-        file = inspect.getsourcefile(fn) or inspect.getfile(fn)
-        _, line = inspect.getsourcelines(fn)
-    except (TypeError, OSError) as e:
-        return {"ok": False, "error": f"Could not locate source for '{name}': {e}"}
-    return {"ok": True, "file": file, "line": line}
+    from scistack_gui.services.pipeline_service import get_function_source
+    return get_function_source(params["name"])
 
 
 def _h_get_variable_records(params):
+    from scistack_gui.services.variable_service import get_variable_records
     from scistack_gui.db import get_db
-    # Reuse the logic from api/variables.py but without FastAPI dependencies.
-    from scistack_gui.api.variables import get_variable_records as _get_var_records
-    # The FastAPI handler uses Depends(get_db), we pass it directly.
-    return _get_var_records(params["name"], get_db())
+    return get_variable_records(params["name"], get_db())
 
 
 def _h_get_constants(params):
-    from scistack_gui import layout as layout_store
-    return layout_store.read_all_constant_names()
+    from scistack_gui.services.layout_service import get_constants
+    return get_constants()
 
 
 def _h_get_path_inputs(params):
-    from scistack_gui import layout as layout_store
-    return layout_store.read_all_path_input_names()
+    from scistack_gui.services.layout_service import get_path_inputs
+    return get_path_inputs()
 
 
 def _h_put_layout(params):
-    from scistack_gui import layout as layout_store
-    node_id = params["node_id"]
-    x, y = params["x"], params["y"]
-    node_type = params.get("node_type")
-    label = params.get("label")
-    if node_type and label:
-        layout_store.write_manual_node(node_id, x, y, node_type, label)
-    else:
-        layout_store.write_node_position(node_id, x, y)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import put_layout
+    return put_layout(params["node_id"], params["x"], params["y"],
+                      params.get("node_type"), params.get("label"))
 
 
 def _h_delete_layout(params):
-    from scistack_gui import layout as layout_store
-    layout_store.delete_node(params["node_id"])
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_layout
+    return delete_layout(params["node_id"])
 
 
 def _h_put_edge(params):
-    from scistack_gui import layout as layout_store
-    layout_store.write_manual_edge({
-        "id": params["edge_id"],
-        "source": params["source"],
-        "target": params["target"],
-        "sourceHandle": params.get("source_handle"),
-        "targetHandle": params.get("target_handle"),
-    })
-    return {"ok": True}
+    from scistack_gui.services.layout_service import put_edge
+    return put_edge(params["edge_id"], params["source"], params["target"],
+                    params.get("source_handle"), params.get("target_handle"))
 
 
 def _h_delete_edge(params):
-    from scistack_gui import layout as layout_store
-    layout_store.delete_manual_edge(params["edge_id"])
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_edge
+    return delete_edge(params["edge_id"])
 
 
 def _h_put_pending_constant(params):
-    from scistack_gui import layout as layout_store
+    from scistack_gui.services.layout_service import put_pending_constant
     from scistack_gui.notify import notify
-    layout_store.add_pending_constant(params["name"], params["value"])
+    result = put_pending_constant(params["name"], params["value"])
     notify("dag_updated", {})
-    return {"ok": True}
+    return result
 
 
 def _h_delete_pending_constant(params):
-    from scistack_gui import layout as layout_store
+    from scistack_gui.services.layout_service import delete_pending_constant
     from scistack_gui.notify import notify
-    layout_store.remove_pending_constant(params["name"], params["value"])
+    result = delete_pending_constant(params["name"], params["value"])
     notify("dag_updated", {})
-    return {"ok": True}
+    return result
 
 
 def _h_create_constant(params):
-    from scistack_gui import layout as layout_store
-    layout_store.write_constant(params["name"])
-    return {"ok": True}
+    from scistack_gui.services.layout_service import create_constant
+    return create_constant(params["name"])
 
 
 def _h_delete_constant(params):
-    from scistack_gui import layout as layout_store
-    layout_store.delete_constant(params["name"])
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_constant
+    return delete_constant(params["name"])
 
 
 def _h_create_path_input(params):
-    from scistack_gui import layout as layout_store
-    layout_store.write_path_input(
-        params["name"], params.get("template", ""), params.get("root_folder"))
-    return {"ok": True}
+    from scistack_gui.services.layout_service import create_path_input
+    return create_path_input(params["name"], params.get("template", ""),
+                             params.get("root_folder"))
 
 
 def _h_update_path_input(params):
-    from scistack_gui import layout as layout_store
-    layout_store.write_path_input(
-        params["name"], params.get("template", ""), params.get("root_folder"))
-    return {"ok": True}
+    from scistack_gui.services.layout_service import update_path_input
+    return update_path_input(params["name"], params.get("template", ""),
+                             params.get("root_folder"))
 
 
 def _h_delete_path_input(params):
-    from scistack_gui import layout as layout_store
-    layout_store.delete_path_input(params["name"])
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_path_input
+    return delete_path_input(params["name"])
 
 
 def _h_put_node_config(params):
+    from scistack_gui.services.layout_service import put_node_config
     from scistack_gui.db import get_db
-    from scistack_gui import pipeline_store
-    node_id = params["node_id"]
-    config = params.get("config", {})
-    pipeline_store.update_node_config(get_db(), node_id, config)
-    return {"ok": True}
+    return put_node_config(get_db(), params["node_id"], params.get("config", {}))
 
 
 def _h_get_variables_list(params):
-    from scidb import BaseVariable
-    return [{"variable_name": name} for name in sorted(BaseVariable._all_subclasses.keys())]
+    from scistack_gui.services.pipeline_service import get_variables_list
+    return get_variables_list()
 
 
 def _h_start_run(params):
@@ -292,8 +225,6 @@ def _h_start_run(params):
     where_filters = [WhereFilterSpec(**f) for f in raw_where] if raw_where else None
     db = get_db()
 
-    # Surface the start_run request to the SciStack Output channel (via stderr).
-    # This is the Python-side counterpart to the extension's outputChannel log.
     logger.info(
         "start_run[%s]: function=%s, language=%s, variants=%d, "
         "schema_filter=%s, schema_level=%s, run_options=%s, where_filters=%d",
@@ -303,10 +234,6 @@ def _h_start_run(params):
         len(where_filters) if where_filters else 0,
     )
 
-    # Hold the DB connection open for the full duration of the run (the
-    # _handle_request wrapper will release its reference when this handler
-    # returns, but we acquire an extra one here so the count stays ≥ 1 until
-    # the run thread finishes).
     acquire_db_connection()
 
     def _run_wrapper():
@@ -322,142 +249,39 @@ def _h_start_run(params):
 
 
 def _h_cancel_run(params):
-    """Cooperatively cancel an in-flight run."""
-    from scistack_gui.api.run import cancel_run
+    from scistack_gui.services.run_service import cancel_run
     run_id = params["run_id"]
     logger.info("cancel_run[%s]: cooperative cancel requested", run_id)
     return cancel_run(run_id)
 
 
 def _h_force_cancel_run(params):
-    """Force-cancel an in-flight run by injecting KeyboardInterrupt."""
-    from scistack_gui.api.run import force_cancel_run
+    from scistack_gui.services.run_service import force_cancel_run
     run_id = params["run_id"]
     logger.info("force_cancel_run[%s]: force cancel requested", run_id)
     return force_cancel_run(run_id)
 
 
 def _h_refresh_module(params):
-    # NOTE: The VS Code extension does NOT call this RPC. It uses a full
-    # subprocess restart ("SciStack: Restart Python Process") instead, which
-    # also picks up edits to scistack_gui server code. This handler is kept
-    # for other JSON-RPC clients and internal callers (e.g. variable creation
-    # in api/variables.py) that only need to re-import the user module.
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
+    from scistack_gui.services.pipeline_service import refresh_module
     from scistack_gui.notify import notify
-    try:
-        # Project mode refreshes all sources; single-file mode refreshes one.
-        if registry._config is not None:
-            result = registry.refresh_all()
-        else:
-            result = registry.refresh_module()
-        # Also refresh MATLAB registry if configured.
-        matlab_registry.refresh_all()
-    except RuntimeError as e:
-        return {"ok": False, "error": str(e)}
-    except Exception as e:
-        logger.exception("Failed to refresh module")
-        return {"ok": False, "error": f"Import error: {e}"}
-    notify("dag_updated", {})
-    return {"ok": True, **result}
+    result = refresh_module()
+    if result.get("ok"):
+        notify("dag_updated", {})
+    return result
 
 
 def _h_create_variable(params):
-    import keyword
-    from scidb import BaseVariable
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
+    from scistack_gui.services.variable_service import create_variable
     from scistack_gui.notify import notify
-
-    name = params.get("name", "").strip()
-    docstring = params.get("docstring")
-    language = params.get("language", "python")
-
-    if not name.isidentifier() or keyword.iskeyword(name):
-        return {"ok": False, "error": f"'{name}' is not a valid class name."}
-    if name.startswith("_"):
-        return {"ok": False, "error": "Variable names must not start with an underscore."}
-    if not name[0].isupper():
-        return {"ok": False, "error": "Variable names should start with an uppercase letter."}
-    if name in BaseVariable._all_subclasses:
-        return {"ok": False, "error": f"A variable named '{name}' already exists."}
-
-    # MATLAB variable creation: write a .m classdef file.
-    if language == "matlab":
-        return _create_matlab_variable(name, docstring, matlab_registry, notify)
-
-    # Python variable creation (original path).
-    target_file: Path | None = None
-    if registry._config is not None and registry._config.variable_file is not None:
-        target_file = registry._config.variable_file
-    elif registry._module_path is not None:
-        target_file = registry._module_path
-    if target_file is None:
-        # No Python target available — fall back to MATLAB if configured.
-        if matlab_registry.has_matlab_config() and matlab_registry._config is not None and matlab_registry._config.matlab_variable_dir is not None:
-            return _create_matlab_variable(name, docstring, matlab_registry, notify)
-        return {"ok": False, "error": "No module file was loaded at startup."}
-
-    lines = ["\n"]
-    if docstring:
-        escaped = docstring.replace('"""', '\\"\\"\\"')
-        lines.append(f'class {name}(BaseVariable):\n    """{escaped}"""\n    pass\n')
-    else:
-        lines.append(f"class {name}(BaseVariable):\n    pass\n")
-
-    try:
-        with open(target_file, "a") as f:
-            f.writelines(lines)
-    except OSError as e:
-        return {"ok": False, "error": f"Failed to write to module file: {e}"}
-
-    try:
-        if registry._config is not None:
-            registry.refresh_all()
-        else:
-            registry.refresh_module()
-    except Exception as e:
-        return {"ok": False, "error": f"Class was written but refresh failed: {e}"}
-
-    notify("dag_updated", {})
-    return {"ok": True, "name": name}
-
-
-def _create_matlab_variable(name, docstring, matlab_registry, notify):
-    """Create a MATLAB classdef variable file and register the surrogate."""
-    if matlab_registry._config is None or matlab_registry._config.matlab_variable_dir is None:
-        return {"ok": False, "error": "No matlab.variable_dir configured in [tool.scistack.matlab]."}
-
-    target_dir = matlab_registry._config.matlab_variable_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_file = target_dir / f"{name}.m"
-
-    if target_file.exists():
-        return {"ok": False, "error": f"File already exists: {target_file}"}
-
-    # Build the .m classdef content.
-    m_lines = [f"classdef {name} < scidb.BaseVariable"]
-    if docstring:
-        m_lines.append(f"    % {docstring}")
-    m_lines.append("end")
-    m_lines.append("")  # trailing newline
-
-    try:
-        target_file.write_text("\n".join(m_lines), encoding="utf-8")
-    except OSError as e:
-        return {"ok": False, "error": f"Failed to write .m file: {e}"}
-
-    # Create the Python surrogate and refresh the MATLAB registry.
-    try:
-        from sci_matlab.bridge import register_matlab_variable
-        register_matlab_variable(name)
-        matlab_registry.refresh_all()
-    except Exception as e:
-        return {"ok": False, "error": f"File written but registration failed: {e}"}
-
-    notify("dag_updated", {})
-    return {"ok": True, "name": name}
+    result = create_variable(
+        params.get("name", ""),
+        params.get("docstring"),
+        params.get("language", "python"),
+    )
+    if result.get("ok"):
+        notify("dag_updated", {})
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -476,17 +300,17 @@ def _create_matlab_variable(name, docstring, matlab_registry, notify):
 # ---------------------------------------------------------------------------
 
 def _h_get_project_code(params):
-    from scistack_gui.api.project import get_project_code
+    from scistack_gui.services.project_service import get_project_code
     return get_project_code()
 
 
 def _h_get_project_libraries(params):
-    from scistack_gui.api.project import get_project_libraries
+    from scistack_gui.services.project_service import get_project_libraries
     return get_project_libraries()
 
 
 def _h_refresh_project(params):
-    from scistack_gui.api.project import refresh_project
+    from scistack_gui.services.project_service import refresh_project
     return refresh_project()
 
 
@@ -495,22 +319,22 @@ def _h_refresh_project(params):
 # ---------------------------------------------------------------------------
 
 def _h_get_indexes(params):
-    from scistack_gui.api.indexes import list_indexes
+    from scistack_gui.services.indexes_service import list_indexes
     return list_indexes()
 
 
 def _h_search_index_packages(params):
-    from scistack_gui.api.indexes import search_index_packages
+    from scistack_gui.services.indexes_service import search_index_packages
     return search_index_packages(params.get("name", ""), q=params.get("q", ""))
 
 
 def _h_add_library(params):
-    from scistack_gui.api.indexes import add_library
+    from scistack_gui.services.indexes_service import add_library
     return add_library(params)
 
 
 def _h_remove_library(params):
-    from scistack_gui.api.indexes import remove_library
+    from scistack_gui.services.indexes_service import remove_library
     return remove_library(params.get("name", ""))
 
 
@@ -571,131 +395,9 @@ def _find_sci_matlab_matlab_dir() -> str | None:
 
 
 def _h_generate_matlab_command(params):
-    """Generate a ready-to-paste MATLAB command for a pipeline function."""
-    from scistack_gui.api.matlab_command import generate_matlab_command
-    from scistack_gui.db import get_db, get_db_path
-    from scistack_gui import matlab_registry
-
-    db = get_db()
-    db_path = str(get_db_path())
-
-    # Collect addpath directories from MATLAB config.
-    addpath_dirs: list[str] = []
-    if matlab_registry._config is not None:
-        addpath_dirs = [str(p) for p in matlab_registry._config.matlab_addpath]
-
-    # Prepend the sci-matlab MATLAB package directory so that +scihist,
-    # +scidb, and +scifor resolve regardless of what the user configured.
-    sci_matlab_dir = _find_sci_matlab_matlab_dir()
-    if sci_matlab_dir:
-        addpath_dirs = [sci_matlab_dir] + addpath_dirs
-        logger.info("generate_matlab_command: prepended sci-matlab dir: %s", sci_matlab_dir)
-    else:
-        logger.warning(
-            "generate_matlab_command: sci-matlab MATLAB directory not found; "
-            "scihist.* / scidb.* may be unavailable in MATLAB"
-        )
-
-    # Resolve variants for this function from DB history.
-    function_name = params["function_name"]
-    all_variants = db.list_pipeline_variants()
-    fn_variants = [v for v in all_variants if v["function_name"] == function_name]
-
-    # Collect PathInput param mappings: param_name → {template, root_folder}.
-    # Source 1: DB variants — PathInput values are stored in input_types as JSON.
-    from scistack_gui.api.pipeline import _parse_path_input
-    from scistack_gui import layout as layout_store
-    path_input_params: dict[str, dict] = {}
-    for v in fn_variants:
-        for param_name, type_val in (v.get("input_types") or {}).items():
-            pi = _parse_path_input(str(type_val))
-            if pi is not None:
-                path_input_params[param_name] = pi
-
-    # Source 2: layout manual edges — for functions not yet in the DB.
-    # Edge: source=pathInput__<name>, target=fn__<funcname>[__hash],
-    #        targetHandle=in__<param>
-    saved_pis = {pi["name"]: pi for pi in layout_store.read_all_path_input_names()}
-    for edge in layout_store.read_manual_edges():
-        src = edge.get("source", "")
-        tgt = edge.get("target", "")
-        th = edge.get("targetHandle", "")
-        if not (src.startswith("pathInput__") and th.startswith("in__")):
-            continue
-        # Match target to this function by name (strip "fn__" prefix and hash suffix).
-        tgt_parts = tgt.split("__")
-        if len(tgt_parts) < 2 or tgt_parts[0] != "fn":
-            continue
-        tgt_fn_name = tgt_parts[1]
-        if tgt_fn_name != function_name:
-            continue
-        pi_name = src.split("__")[1] if len(src.split("__")) >= 2 else src[len("pathInput__"):]
-        param_name = th[len("in__"):]
-        if pi_name in saved_pis:
-            # Prefer the saved template (most up-to-date) over whatever is in the variant.
-            path_input_params[param_name] = {
-                "template": saved_pis[pi_name].get("template", ""),
-                "root_folder": saved_pis[pi_name].get("root_folder"),
-            }
-
-    # Overlay saved templates onto DB-variant-derived PathInput params.
-    for param_name, pi in path_input_params.items():
-        # Find which saved PathInput name maps to this param via manual edges.
-        for edge in layout_store.read_manual_edges():
-            th = edge.get("targetHandle", "")
-            if th == f"in__{param_name}":
-                src = edge.get("source", "")
-                pi_name = src.split("__")[1] if len(src.split("__")) >= 2 else ""
-                if pi_name in saved_pis and saved_pis[pi_name].get("template"):
-                    pi["template"] = saved_pis[pi_name]["template"]
-                    pi["root_folder"] = saved_pis[pi_name].get("root_folder")
-
-    # Infer output types from manual edges when no DB variants exist.
-    # Edge from function → variable node = an output of this function.
-    output_types: list[str] = params.get("output_types") or []
-    if not output_types and not fn_variants:
-        manual_nodes = layout_store.get_manual_nodes()
-        for edge in layout_store.read_manual_edges():
-            src = edge.get("source", "")
-            src_parts = src.split("__")
-            if len(src_parts) < 2 or src_parts[0] != "fn":
-                continue
-            if src_parts[1] != function_name:
-                continue
-            # This edge goes FROM our function — target is an output variable.
-            tgt = edge.get("target", "")
-            tgt_label = None
-            if tgt.startswith("var__"):
-                tgt_parts = tgt.split("__")
-                if len(tgt_parts) >= 2:
-                    tgt_label = tgt_parts[1]
-            else:
-                meta = manual_nodes.get(tgt)
-                if meta and meta.get("type") == "variableNode":
-                    tgt_label = meta.get("label")
-            if tgt_label and tgt_label not in output_types:
-                output_types.append(tgt_label)
-        logger.info("generate_matlab_command: inferred output_types=%s from manual edges", output_types)
-
-    logger.info("generate_matlab_command: fn=%s, total_variants=%d, fn_variants=%d, "
-                "path_input_params=%d, output_types=%s",
-                function_name, len(all_variants), len(fn_variants),
-                len(path_input_params), output_types)
-
-    cmd = generate_matlab_command(
-        function_name=function_name,
-        db_path=db_path,
-        schema_keys=list(db.dataset_schema_keys),
-        variants=fn_variants if fn_variants else params.get("variants"),
-        schema_filter=params.get("schema_filter"),
-        schema_level=params.get("schema_level"),
-        addpath_dirs=addpath_dirs if addpath_dirs else None,
-        python_executable=sys.executable,
-        path_inputs=path_input_params if path_input_params else None,
-        output_types=output_types if output_types else None,
-    )
-    logger.info("generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd))
-    return {"command": cmd}
+    from scistack_gui.services.matlab_command_service import generate_matlab_command
+    from scistack_gui.db import get_db
+    return generate_matlab_command(params["function_name"], get_db(), params)
 
 
 # ---------------------------------------------------------------------------

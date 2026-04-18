@@ -53,4 +53,6 @@ function db = configure_database(dataset_db_path, dataset_schema_keys)
     [db_dir, ~, ~] = fileparts(dataset_db_path);
     scidb.Log.set_path(fullfile(db_dir, 'scidb.log'));
 
+    scidb.Log.info('MATLAB: configure_database — DuckDB lock ACQUIRED: %s', dataset_db_path);
+
 end

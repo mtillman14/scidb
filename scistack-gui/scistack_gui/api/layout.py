@@ -8,7 +8,6 @@ import logging
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from scidb.database import DatabaseManager
-from scistack_gui import layout as layout_store, pipeline_store
 from scistack_gui.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -46,89 +45,81 @@ class NodeConfigUpdate(BaseModel):
 
 @router.get("/layout")
 def get_layout() -> dict:
-    return layout_store.read_layout()
+    from scistack_gui.services.layout_service import get_layout as _get
+    return _get()
 
 
 @router.put("/layout/{node_id}")
 def put_layout(node_id: str, body: PositionUpdate):
-    if body.node_type and body.label:
-        layout_store.write_manual_node(node_id, body.x, body.y,
-                                       body.node_type, body.label)
-    else:
-        layout_store.write_node_position(node_id, body.x, body.y)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import put_layout as _put
+    return _put(node_id, body.x, body.y, body.node_type, body.label)
 
 
 @router.delete("/layout/{node_id}")
 def delete_layout(node_id: str):
-    layout_store.delete_node(node_id)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_layout as _del
+    return _del(node_id)
 
 
 @router.get("/constants")
 def get_constants() -> list[str]:
-    return layout_store.read_all_constant_names()
+    from scistack_gui.services.layout_service import get_constants as _get
+    return _get()
 
 
 @router.post("/constants")
 def post_constant(body: ConstantCreate):
-    layout_store.write_constant(body.name)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import create_constant
+    return create_constant(body.name)
 
 
 @router.delete("/constants/{name}")
 def delete_constant(name: str):
-    layout_store.delete_constant(name)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_constant as _del
+    return _del(name)
 
 
 @router.get("/path-inputs")
 def get_path_inputs() -> list[dict]:
-    result = layout_store.read_all_path_input_names()
+    from scistack_gui.services.layout_service import get_path_inputs as _get
+    result = _get()
     logger.info("GET /path-inputs → %s", result)
     return result
 
 
 @router.post("/path-inputs")
 def post_path_input(body: PathInputCreate):
-    logger.info("POST /path-inputs name=%r template=%r root_folder=%r",
-                body.name, body.template, body.root_folder)
-    layout_store.write_path_input(body.name, body.template, body.root_folder)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import create_path_input
+    return create_path_input(body.name, body.template, body.root_folder)
 
 
 @router.put("/path-inputs/{name}")
 def put_path_input(name: str, body: PathInputCreate):
-    layout_store.write_path_input(name, body.template, body.root_folder)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import update_path_input
+    return update_path_input(name, body.template, body.root_folder)
 
 
 @router.delete("/path-inputs/{name}")
 def delete_path_input(name: str):
-    layout_store.delete_path_input(name)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_path_input as _del
+    return _del(name)
 
 
 @router.put("/edges/{edge_id}")
 def put_edge(edge_id: str, body: EdgeCreate):
-    layout_store.write_manual_edge({
-        "id": edge_id,
-        "source": body.source,
-        "target": body.target,
-        "sourceHandle": body.source_handle,
-        "targetHandle": body.target_handle,
-    })
-    return {"ok": True}
+    from scistack_gui.services.layout_service import put_edge as _put
+    return _put(edge_id, body.source, body.target,
+                body.source_handle, body.target_handle)
 
 
 @router.put("/layout/{node_id}/config")
 def put_node_config(node_id: str, body: NodeConfigUpdate,
                     db: DatabaseManager = Depends(get_db)):
-    pipeline_store.update_node_config(db, node_id, body.config)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import put_node_config as _put
+    return _put(db, node_id, body.config)
 
 
 @router.delete("/edges/{edge_id}")
 def delete_edge(edge_id: str):
-    layout_store.delete_manual_edge(edge_id)
-    return {"ok": True}
+    from scistack_gui.services.layout_service import delete_edge as _del
+    return _del(edge_id)

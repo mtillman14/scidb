@@ -134,6 +134,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             % Case 1: No metadata keys passed at all
             if isempty(meta_keys)
                 combos = pi.discover();
+                scidb.Log.debug('PathInput discovery: template="%s", root_folder="%s", matching_files=%d', ...
+                    pi.path_template, pi.root_folder, numel(combos));
                 if ~isempty(combos)
                     combo_fields = fieldnames(combos{1});
                     for f = 1:numel(combo_fields)
@@ -155,6 +157,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             end
             if any(still_empty)
                 combos = pi.discover();
+                scidb.Log.debug('PathInput discovery: template="%s", root_folder="%s", matching_files=%d', ...
+                    pi.path_template, pi.root_folder, numel(combos));
                 if ~isempty(combos)
                     for i = find(still_empty)
                         key = char(meta_keys(i));

@@ -139,7 +139,10 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     # node and connected a new one), manual edges should override DB-derived
     # output types.  This prevents stale DB history from resurrecting old nodes.
     from scistack_gui import pipeline_store, layout as layout_store
-    from scistack_gui.api.pipeline import _node_id_to_var_label, _fn_params_from_registry
+    from scistack_gui.api.pipeline import _fn_params_from_registry
+    from scistack_gui.domain.edge_resolver import (
+        resolve_function_edges, infer_manual_fn_output_types,
+    )
 
     all_edges = pipeline_store.get_manual_edges(db)
     manual_nodes = pipeline_store.get_manual_nodes(db)
@@ -150,13 +153,8 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         if meta["type"] == "functionNode" and meta["label"] == function_name:
             fn_node_ids.add(nid)
 
-    manual_output_types: list[str] = []
-    for edge in all_edges:
-        if edge["source"] in fn_node_ids:
-            var_label = _node_id_to_var_label(
-                edge["target"], set(), [], manual_nodes)
-            if var_label and var_label not in manual_output_types:
-                manual_output_types.append(var_label)
+    manual_output_types = infer_manual_fn_output_types(
+        fn_node_ids, all_edges, manual_nodes, existing_node_labels={})
 
     if fn_variants and manual_output_types:
         # Override output types in DB-derived variants with the current wiring.
@@ -181,73 +179,20 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         Log.info(f"run: manual_nodes = {manual_nodes}")
         Log.info(f"run: fn_node_ids = {fn_node_ids}")
 
-        input_types: dict[str, list[str]] = {}  # param_name → [type_names]
-        # Collect inputs that have no targetHandle so we can match by signature.
-        unmatched_inputs: list[str] = []
-        output_types: list[str] = []
-        constant_names: set[str] = set()  # constant param names wired to this fn
-        for edge in all_edges:
-            if edge["source"] in fn_node_ids:
-                var_label = _node_id_to_var_label(
-                    edge["target"], set(), [], manual_nodes)
-                if var_label and var_label not in output_types:
-                    output_types.append(var_label)
-            elif edge["target"] in fn_node_ids:
-                src = edge["source"]
-                th = edge.get("targetHandle") or ""
-                # Check if source is a constant node.
-                is_const = False
-                const_label = None
-                if src.startswith("const__"):
-                    is_const = True
-                    # Prefer the manual_nodes label (e.g. "perc") over the
-                    # suffixed node ID (e.g. "const__perc__xd93hn").
-                    src_meta = manual_nodes.get(src)
-                    if src_meta:
-                        const_label = src_meta["label"]
-                    else:
-                        # DB-derived constant: ID is "const__<name>" (no suffix).
-                        const_label = src.replace("const__", "", 1)
-                else:
-                    src_meta = manual_nodes.get(src)
-                    if src_meta and src_meta["type"] == "constantNode":
-                        is_const = True
-                        const_label = src_meta["label"]
-                if is_const and const_label is not None:
-                    # Determine param name from targetHandle or fall back to label.
-                    if th.startswith("const__"):
-                        constant_names.add(th.replace("const__", "", 1))
-                    elif th.startswith("in__"):
-                        constant_names.add(th.replace("in__", "", 1))
-                    else:
-                        constant_names.add(const_label)
-                    continue
-                var_label = _node_id_to_var_label(
-                    src, set(), [], manual_nodes)
-                if var_label:
-                    if th.startswith("in__"):
-                        param = th.replace("in__", "")
-                        input_types.setdefault(param, [])
-                        if var_label not in input_types[param]:
-                            input_types[param].append(var_label)
-                    else:
-                        unmatched_inputs.append(var_label)
+        sig_params = _fn_params_from_registry(function_name)
+        resolved = resolve_function_edges(
+            fn_node_ids=fn_node_ids,
+            manual_edges=all_edges,
+            manual_nodes=manual_nodes,
+            existing_node_labels={},
+            sig_params=sig_params,
+        )
+        input_types = resolved.input_types
+        output_types = resolved.output_types
+        constant_names = resolved.constant_names
 
         Log.info(f"run: after edge scan: input_types={input_types}, output_types={output_types}, "
-                 f"constant_names={constant_names}, unmatched_inputs={unmatched_inputs}")
-
-        # Match unmatched inputs to function signature params by position.
-        if unmatched_inputs:
-            sig_params = _fn_params_from_registry(function_name)
-            # Remove params already matched via targetHandle.
-            remaining_params = [p for p in sig_params if p not in input_types]
-            for param, var_type in zip(remaining_params, unmatched_inputs):
-                input_types.setdefault(param, [])
-                if var_type not in input_types[param]:
-                    input_types[param].append(var_type)
-            if len(unmatched_inputs) > len(remaining_params):
-                Log.warn(f"run: {len(unmatched_inputs)} input edges but only "
-                         f"{len(remaining_params)} unmatched params for '{function_name}'")
+                 f"constant_names={constant_names}")
 
         if not output_types:
             Log.warn(f"run: no outputs found for '{function_name}' from DB or edges")
@@ -299,97 +244,33 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                 for out in output_types
             ]
 
-    # Determine which variants to run. If caller sent specific variants, filter;
-    # otherwise run all known variants.
+    # --- Variant resolution via domain layer ---
+    from scistack_gui.domain.variant_resolver import (
+        filter_variants, deduplicate_variants,
+        merge_pending_constants, build_schema_kwargs,
+    )
+
+    # Determine which variants to run.
     if variants:
-        targets = [v for v in fn_variants
-                   if any(_constants_match(v["constants"], sel) for sel in variants)]
-        if not targets:
-            targets = fn_variants  # fallback: run all
+        targets = filter_variants(fn_variants, variants)
     else:
         targets = fn_variants
 
-    # Deduplicate by constants (list_pipeline_variants may return duplicates
-    # across different output types for the same function).
-    seen = set()
-    unique_targets = []
-    for v in targets:
-        key = tuple(sorted(v["constants"].items()))
-        if key not in seen:
-            seen.add(key)
-            unique_targets.append(v)
+    unique_targets = deduplicate_variants(targets)
 
-    # Add synthetic targets for pending constant values (variants the user
-    # declared but hasn't run yet).  For each pending value we cross-product
-    # with the existing combinations of all other constants, preserving their
-    # original types.  The pending value itself is stored as a string, so we
-    # coerce it back to a Python literal where possible.
+    # Add synthetic targets for pending constant values.
     if fn_variants:
-        import ast
         from scistack_gui import pipeline_store as _ps
-
-        def _coerce(s: str):
-            try:
-                return ast.literal_eval(s)
-            except (ValueError, SyntaxError):
-                return s
-
         pending_consts = _ps.get_pending_constants(db)
-        fn_const_names = {k for v in fn_variants for k in v["constants"]}
-        pending_for_fn = {k: vals for k, vals in pending_consts.items()
-                          if k in fn_const_names}
+        unique_targets = merge_pending_constants(unique_targets, pending_consts)
 
-        if pending_for_fn:
-            existing_keys = {
-                tuple(sorted((k, str(v)) for k, v in t["constants"].items()))
-                for t in unique_targets
-            }
-            template = fn_variants[0]
-
-            for const_name, pending_values in pending_for_fn.items():
-                # Collect unique combinations of other constants (typed).
-                other_seen: set[tuple] = set()
-                other_combos: list[dict] = []
-                for v in fn_variants:
-                    other = {k: val for k, val in v["constants"].items()
-                             if k != const_name}
-                    okey = tuple(sorted((k, str(val)) for k, val in other.items()))
-                    if okey not in other_seen:
-                        other_seen.add(okey)
-                        other_combos.append(other)
-
-                for pval_str in pending_values:
-                    pval = _coerce(pval_str)
-                    for other in other_combos:
-                        new_constants = dict(other)
-                        new_constants[const_name] = pval
-                        key = tuple(sorted(
-                            (k, str(v)) for k, v in new_constants.items()
-                        ))
-                        if key not in existing_keys:
-                            existing_keys.add(key)
-                            unique_targets.append({
-                                "input_types": template["input_types"],
-                                "constants": new_constants,
-                                "output_type": template["output_type"],
-                            })
-
-    # Determine which schema keys to iterate over.
+    # Build schema kwargs.
     iterate_keys = schema_level if schema_level is not None else list(db.dataset_schema_keys)
-
-    # Build schema kwargs: use filter if provided, otherwise all values.
-    if schema_filter:
-        schema_kwargs = {}
-        for key in iterate_keys:
-            if key in schema_filter and schema_filter[key]:
-                schema_kwargs[key] = schema_filter[key]
-            else:
-                schema_kwargs[key] = db.distinct_schema_values(key)
-    else:
-        schema_kwargs = {
-            key: db.distinct_schema_values(key)
-            for key in iterate_keys
-        }
+    distinct_values = {key: db.distinct_schema_values(key) for key in iterate_keys}
+    schema_kwargs = build_schema_kwargs(
+        schema_level, list(db.dataset_schema_keys),
+        schema_filter, distinct_values,
+    )
 
     # Extract run options (dry_run, save, distribute, as_table).
     opts = run_options or {}
@@ -569,11 +450,6 @@ def _build_where(where_filters: list[WhereFilterSpec] | None):
 
     from scidb import EachOf
     return EachOf(*scidb_filters)
-
-
-def _constants_match(db_constants: dict, selected: dict) -> bool:
-    """True if selected is a subset of db_constants (value equality as strings)."""
-    return all(str(db_constants.get(k)) == str(v) for k, v in selected.items())
 
 
 def _summarize_schema_filter(schema_filter: dict[str, list] | None) -> str:

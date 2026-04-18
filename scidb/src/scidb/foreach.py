@@ -209,6 +209,9 @@ def for_each(
             # Case 1: No metadata keys passed at all — discover everything
             if not metadata_iterables:
                 combos = pi.discover()
+                Log.debug(f"PathInput discovery: template={pi.path_template!r}, "
+                          f"root_folder={pi.root_folder!r}, "
+                          f"matching_files={len(combos)}")
                 if combos:
                     for key in combos[0].keys():
                         metadata_iterables[key] = list(dict.fromkeys(c[key] for c in combos))
@@ -220,6 +223,9 @@ def for_each(
                            if isinstance(v, list) and len(v) == 0]
             if still_empty:
                 combos = pi.discover()
+                Log.debug(f"PathInput discovery: template={pi.path_template!r}, "
+                          f"root_folder={pi.root_folder!r}, "
+                          f"matching_files={len(combos)}")
                 if combos:
                     for key in still_empty:
                         if key in combos[0]:
@@ -510,6 +516,16 @@ def for_each(
                         resolved[k] = v
             return _orig_fn(**resolved)
 
+    # Wrap _progress_fn to track final completed/skipped counts for logging.
+    _run_summary = {"total": 0, "completed": 0, "skipped": 0}
+
+    def _tracking_progress_fn(info: dict):
+        _run_summary["total"] = info.get("total", _run_summary["total"])
+        _run_summary["completed"] = info.get("completed", _run_summary["completed"])
+        _run_summary["skipped"] = info.get("skipped", _run_summary["skipped"])
+        if _progress_fn is not None:
+            _progress_fn(info)
+
     # Delegate core loop to scifor
     result_tbl = _scifor_for_each(
         fn,
@@ -520,10 +536,15 @@ def for_each(
         output_names=output_names,
         _all_combos=full_combos,
         _log_fn=Log.info,
-        _progress_fn=_progress_fn,
+        _progress_fn=_tracking_progress_fn,
         _cancel_check=_cancel_check,
         **extended_metadata_iterables,
     )
+
+    # Log run summary with failed repetition count.
+    if _run_summary["total"] > 0:
+        Log.debug(f"for_each({fn_name}): completed={_run_summary['completed']}, "
+                  f"failed={_run_summary['skipped']}, total={_run_summary['total']}")
 
     # Restore scifor's schema
     if rid_keys:
