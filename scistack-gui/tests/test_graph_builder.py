@@ -134,6 +134,37 @@ class TestAggregateVariants:
         agg = aggregate_variants([], listed_var_names=set())
         assert agg.all_var_types == set()
 
+    def test_pathinput_only_function_registered_in_fn_input_params(self):
+        """A function with only PathInput inputs (no variable inputs) must
+        still appear in fn_input_params so build_function_nodes and
+        _compute_run_states don't skip it."""
+        pi_json = json.dumps({"__type": "PathInput", "template": "{subject}/raw.csv"})
+        variants = [_variant("loadFile", "Loaded", inputs={"filepath": pi_json})]
+        agg = aggregate_variants(variants, listed_var_names=set())
+        assert "loadFile" in agg.fn_input_params
+        # No variable inputs, so the dict should be empty
+        assert agg.fn_input_params["loadFile"] == {}
+        # But the function should still be in fn_outputs
+        assert "Loaded" in agg.fn_outputs["loadFile"]
+
+    def test_pathinput_only_function_with_constants(self):
+        """PathInput-only function with constants: still in fn_input_params."""
+        pi_json = json.dumps({"__type": "PathInput", "template": "{subject}/raw.csv"})
+        variants = [_variant("loadFile", "Loaded", inputs={"filepath": pi_json}, constants={"hz": 100})]
+        agg = aggregate_variants(variants, listed_var_names=set())
+        assert "loadFile" in agg.fn_input_params
+        assert agg.fn_input_params["loadFile"] == {}
+        assert "hz" in agg.fn_constants["loadFile"]
+
+    def test_mixed_pathinput_and_variable_inputs(self):
+        """Function with both PathInput and variable inputs: variable input in fn_input_params."""
+        pi_json = json.dumps({"__type": "PathInput", "template": "{subject}/raw.csv"})
+        variants = [_variant("process", "Out", inputs={"filepath": pi_json, "signal": "Raw"})]
+        agg = aggregate_variants(variants, listed_var_names=set())
+        assert "process" in agg.fn_input_params
+        assert agg.fn_input_params["process"]["signal"] == "Raw"
+        assert "filepath" not in agg.fn_input_params["process"]
+
 
 # ---------------------------------------------------------------------------
 # filter_hidden

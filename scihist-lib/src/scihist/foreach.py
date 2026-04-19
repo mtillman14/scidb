@@ -216,13 +216,19 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
         _diag(f"[DIAG] _should_skip: combo_str={combo_str}, combo_rids={list(combo_rids.keys())}")
 
         # Step 1: all outputs must exist.
-        # Include constant values in lookup so variants are disambiguated.
+        # Include constant values and __fn/__fn_hash in lookup so variants
+        # are disambiguated (matches version_keys written by save path).
         lookup_combo = dict(schema_combo)
         lookup_combo.update(constant_values)
+        lookup_combo["__fn"] = fn.fcn.__name__
+        lookup_combo["__fn_hash"] = fn.hash
 
         output_record_id = None
         for OutputCls in outputs:
-            rid = db.find_record_id(OutputCls, lookup_combo)
+            try:
+                rid = db.find_record_id(OutputCls, lookup_combo)
+            except (KeyError, Exception):
+                rid = None
             if rid is None:
                 _diag(f"[DIAG] step1: output {OutputCls.__name__} NOT FOUND for {lookup_combo}")
                 logger.debug("missing: %s — no output record for %s",
@@ -477,6 +483,8 @@ def _save_lineage_fcn_result(
 
             schema_keys = nested_metadata.get("schema", {})
             version_keys = nested_metadata.get("version", {})
+            version_keys["__fn"] = lineage_dict.get("function_name", fn_name)
+            version_keys["__fn_hash"] = lineage_dict.get("function_hash", "")
             schema_level = active_db._infer_schema_level(schema_keys)
             schema_id = (
                 active_db._duck._get_or_create_schema_id(schema_level, schema_keys)
@@ -520,9 +528,12 @@ def _save_lineage_fcn_result(
 
         variable_class = output_obj if isinstance(output_obj, type) else type(output_obj)
         instance = variable_class(raw_data)
+        fn_metadata = dict(metadata)
+        fn_metadata["__fn"] = lineage_dict.get("function_name", fn_name)
+        fn_metadata["__fn_hash"] = lineage_dict.get("function_hash", "")
         rid = active_db.save(
             instance,
-            metadata,
+            fn_metadata,
             lineage=lineage_dict,
             lineage_hash=lineage_hash,
             pipeline_lineage_hash=pipeline_lineage_hash,

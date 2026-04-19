@@ -328,6 +328,10 @@ def _build_graph(db: DatabaseManager) -> dict:
                 if p not in resolved_input_params:
                     resolved_input_params[p] = t
             resolved_output_types = resolved.output_types
+            # For state computation, always use the edge-resolved output types
+            # (the actual variable class names like 'XSENSLoaded'), NOT the
+            # MATLAB declared output parameter names (like 'extracted_data').
+            state_output_types = resolved_output_types
             # For manual MATLAB function nodes, always use the declared output
             # names from the function signature as handles. Connected edges carry
             # the actual var-label mapping via sourceHandle, so the handle set
@@ -336,14 +340,15 @@ def _build_graph(db: DatabaseManager) -> dict:
                 info = _mr.get_matlab_function(fn_label)
                 resolved_output_types = list(info.output_names)
                 logger.debug(
-                    "manual fn %s (MATLAB): using declared output_names=%s",
-                    fn_label, resolved_output_types,
+                    "manual fn %s (MATLAB): using declared output_names=%s, "
+                    "edge-resolved output_types=%s",
+                    fn_label, resolved_output_types, state_output_types,
                 )
-            if resolved_output_types:
+            if state_output_types:
                 manual_fn_state = _own_state_for_function(
-                    db, fn_label, set(resolved_output_types))
+                    db, fn_label, set(state_output_types))
                 logger.debug("manual fn %s: computed state=%s (outputs=%s)",
-                             fn_label, manual_fn_state, resolved_output_types)
+                             fn_label, manual_fn_state, state_output_types)
             else:
                 manual_fn_state = "red"
                 logger.debug("manual fn %s: no inferred outputs, defaulting to red", fn_label)

@@ -110,6 +110,10 @@ def aggregate_variants(
 
         agg.fn_outputs[fn].add(out)
 
+        # Ensure fn is tracked even with only PathInput/constant inputs
+        if fn not in agg.fn_input_params:
+            agg.fn_input_params[fn] = {}
+
         for k, val in constants.items():
             agg.const_counts[k][str(val)] += count
             agg.const_fns[k].add(fn)

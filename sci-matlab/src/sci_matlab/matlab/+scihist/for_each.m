@@ -36,6 +36,21 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % Wrap LineageFcn in a plain function handle for scidb.for_each
     fn_plain = @(varargin) lineage_obj(varargin{:});
 
+    % Pass the real function name so scidb.for_each can persist expected
+    % combos with the correct name (not the anonymous wrapper name)
+    if isa(fn, 'function_handle')
+        real_fn_name = func2str(fn);
+    elseif isa(fn, 'scidb.LineageFcn')
+        real_fn_name = func2str(fn.fcn);
+    else
+        real_fn_name = '';
+    end
+
     % Delegate to scidb.for_each
-    result_tbl = scidb.for_each(fn_plain, inputs, outputs, varargin{:});
+    if ~isempty(real_fn_name)
+        result_tbl = scidb.for_each(fn_plain, inputs, outputs, ...
+            '_fn_name', real_fn_name, varargin{:});
+    else
+        result_tbl = scidb.for_each(fn_plain, inputs, outputs, varargin{:});
+    end
 end

@@ -75,6 +75,12 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         fn_name = 'unknown';
     end
 
+    % Override fn_name if provided (used by scihist.for_each to pass the
+    % real function name instead of the anonymous wrapper name)
+    if ~isempty(opts.fn_name_override)
+        fn_name = opts.fn_name_override;
+    end
+
     scidb.Log.info('===== for_each(%s) start =====', fn_name);
 
     % Parse metadata iterables
@@ -356,6 +362,34 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     if isempty(all_combos) && ~isempty(discovered_combos)
         all_combos = discovered_combos;
         scidb.Log.info('using %d filesystem-discovered combos', numel(all_combos));
+    end
+
+    % --- Persist expected combos for check_node_state ---
+    if ~dry_run && ~isempty(all_combos) && ~isempty(outputs)
+        try
+            if isempty(opts.db)
+                persist_db = py.scidb.database.get_database();
+            else
+                persist_db = opts.db;
+            end
+            % Convert MATLAB cell-of-structs to Python list-of-dicts
+            py_combos = py.list();
+            for ci = 1:numel(all_combos)
+                combo_struct = all_combos{ci};
+                py_dict = py.dict();
+                fnames = fieldnames(combo_struct);
+                for fi = 1:numel(fnames)
+                    py_dict{fnames{fi}} = combo_struct.(fnames{fi});
+                end
+                py_combos.append(py_dict);
+            end
+            foreach_mod = py.importlib.import_module('scidb.foreach');
+            persist_fn = py.getattr(foreach_mod, '_persist_expected_combos');
+            persist_fn(persist_db, fn_name, py_combos);
+            scidb.Log.info('persisted %d expected combos for %s', numel(all_combos), fn_name);
+        catch me
+            scidb.Log.warn('_persist_expected_combos failed: %s', me.message);
+        end
     end
 
     % --- Build log summary for parallel banner ---
@@ -1852,6 +1886,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.parallel = false;
     opts.distribute = false;
     opts.where = [];
+    opts.fn_name_override = '';
 
     meta_args = {};
     i = 1;
@@ -1891,6 +1926,9 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2; continue;
                 case "where"
                     opts.where = varargin{i+1};
+                    i = i + 2; continue;
+                case "_fn_name"
+                    opts.fn_name_override = char(varargin{i+1});
                     i = i + 2; continue;
             end
         end

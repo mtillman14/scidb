@@ -184,6 +184,18 @@ def _has_superseded_ancestor(db, record_id: str, combo_str: str,
                     combo_str, var_type, depth + 1, used_rid, current_latest,
                 )
                 return True
+            # Also check for newer records at same (variable_name, schema_id)
+            # with different version_keys — catches direct .save() updates
+            # that don't carry __fn in version_keys.
+            latest_any = _get_latest_record_at_location(db, used_rid)
+            if latest_any is not None and latest_any != used_rid:
+                var_type = inp.get("type") or inp.get("name") or "unknown"
+                logger.debug(
+                    "stale: %s — upstream %s at depth %d superseded "
+                    "by different variant (was %s, now %s)",
+                    combo_str, var_type, depth + 1, used_rid, latest_any,
+                )
+                return True
             queue.append((used_rid, depth + 1))
 
     return False
@@ -687,3 +699,32 @@ def _schema_id_to_combo(db, schema_id) -> dict:
         return {}
 
     return {k: v for k, v in zip(schema_keys, rows[0]) if v is not None}
+
+
+def _get_latest_record_at_location(db, record_id: str) -> str | None:
+    """Get the latest record_id at the same (variable_name, schema_id),
+    ignoring version_keys.
+
+    Used by ``_has_superseded_ancestor`` to detect direct ``.save()``
+    updates that don't carry ``__fn`` in version_keys — they would be
+    in a different partition from pipeline-produced records and invisible
+    to ``get_latest_record_id_for_variant``.
+    """
+    rows = db._duck._fetchall(
+        "SELECT variable_name, schema_id FROM _record_metadata "
+        "WHERE record_id = ? LIMIT 1",
+        [record_id],
+    )
+    if not rows:
+        return None
+    vn, sid = rows[0]
+    latest = db._duck._fetchall(
+        "SELECT record_id FROM _record_metadata "
+        "WHERE variable_name = ? AND schema_id = ? "
+        "AND COALESCE(excluded, FALSE) = FALSE "
+        "ORDER BY timestamp DESC LIMIT 1",
+        [vn, int(sid)],
+    )
+    if not latest:
+        return None
+    return latest[0][0]
