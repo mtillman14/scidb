@@ -739,3 +739,212 @@ class TestRunStatePropagation:
         nodes = client_propagation.get("/api/pipeline").json()["nodes"]
         var_node = next(n for n in nodes if n["id"] == "var__ProcessedSignal")
         assert var_node["data"].get("run_state") == "grey"
+
+
+# ---------------------------------------------------------------------------
+# Pending constant lifecycle: green → pending → grey → run → green
+# ---------------------------------------------------------------------------
+
+class TestPendingConstantLifecycle:
+    """End-to-end: user drags a new constant value in the GUI, the consumer
+    function node greys out, the user runs for_each with that new value, and
+    on the next /api/pipeline request the pending value is auto-cleaned and
+    the function returns to green.
+
+    The `populated_db` fixture leaves bandpass_filter fully run with low_hz=20.
+    """
+
+    def _fn_state(self, client):
+        nodes = client.get("/api/pipeline").json()["nodes"]
+        return next(n for n in nodes if n["id"] == "fn__bandpass_filter")["data"].get("run_state")
+
+    def _const_values(self, client):
+        """Return the set of value strings under const__low_hz."""
+        nodes = client.get("/api/pipeline").json()["nodes"]
+        cnode = next(n for n in nodes if n["id"] == "const__low_hz")
+        return {v["value"] for v in cnode["data"]["values"]}
+
+    def test_starts_green(self, client):
+        assert self._fn_state(client) == "green"
+
+    def test_adding_pending_value_greys_consumer(self, client):
+        assert self._fn_state(client) == "green"
+
+        r = client.put("/api/constants/low_hz/pending/42")
+        assert r.status_code == 200
+
+        # Consumer downgraded green → grey.
+        assert self._fn_state(client) == "grey"
+
+        # Downstream variable inherits the grey via DAG propagation.
+        nodes = client.get("/api/pipeline").json()["nodes"]
+        var_node = next(n for n in nodes if n["id"] == "var__FilteredSignal")
+        assert var_node["data"].get("run_state") == "grey"
+
+    def test_pending_value_appears_under_constant_node(self, client):
+        client.put("/api/constants/low_hz/pending/42")
+        values = self._const_values(client)
+        assert "42" in values
+
+    def test_removing_pending_restores_green(self, client):
+        client.put("/api/constants/low_hz/pending/42")
+        assert self._fn_state(client) == "grey"
+
+        r = client.delete("/api/constants/low_hz/pending/42")
+        assert r.status_code == 200
+
+        assert self._fn_state(client) == "green"
+
+    def test_running_pipeline_with_new_value_auto_cleans_pending(self, client, populated_db):
+        """Running for_each with the pending scale produces matching records;
+        on the next /api/pipeline call, auto_clean_pending_constants removes
+        the pending row and the node returns to green."""
+        client.put("/api/constants/low_hz/pending/42")
+        assert self._fn_state(client) == "grey"
+
+        # Simulate the user running with the new constant value.
+        for_each(
+            bandpass_filter,
+            inputs={"signal": RawSignal, "low_hz": 42},
+            outputs=[FilteredSignal],
+            subject=[1, 2],
+            session=["pre", "post"],
+        )
+
+        # Next pipeline request: auto-clean removes "42" from pending, and
+        # both variants (20 and 42) are fully populated → green.
+        assert self._fn_state(client) == "green"
+
+        # The layout_store no longer reports "42" as pending.
+        pending = layout_store.get_pending_constants()
+        assert "42" not in pending.get("low_hz", set())
+
+    def test_already_red_not_affected_by_pending(self, client, populated_db):
+        """If a function is already red (stale input), adding a pending value
+        does NOT reset it to grey — the more severe state wins."""
+        # Re-save an input record to put the function into red.
+        RawSignal.save(np.ones(10), subject=1, session="pre")
+        assert self._fn_state(client) == "red"
+
+        client.put("/api/constants/low_hz/pending/99")
+        assert self._fn_state(client) == "red"
+
+
+class TestPendingConstantRecovery:
+    """Recovery paths — a function that is grey or red, has a pending
+    constant added, and then is fully run, should end up green.
+    """
+
+    def _fn_state(self, c):
+        nodes = c.get("/api/pipeline").json()["nodes"]
+        fn_node = next((n for n in nodes if n["id"] == "fn__bandpass_filter"), None)
+        return fn_node["data"].get("run_state") if fn_node else None
+
+    @pytest.fixture
+    def client_partial(self, tmp_path):
+        """bandpass_filter ran for subject=1 only with low_hz=20 → grey."""
+        if hasattr(_local, "database"):
+            delattr(_local, "database")
+        _gui_db._db = None
+
+        db = configure_database(tmp_path / "grey_recover.duckdb", ["subject", "session"])
+        for subj in [1, 2]:
+            for sess in ["pre", "post"]:
+                RawSignal.save(np.random.randn(10), subject=subj, session=sess)
+
+        for_each(
+            bandpass_filter,
+            inputs={"signal": RawSignal, "low_hz": 20},
+            outputs=[FilteredSignal],
+            subject=[1],
+            session=["pre", "post"],
+        )
+
+        _gui_db._db = db
+        _gui_db._db_path = tmp_path / "grey_recover.duckdb"
+        _registry._functions["bandpass_filter"] = bandpass_filter
+
+        from fastapi.testclient import TestClient
+        from scistack_gui.app import create_app
+        with TestClient(create_app()) as c:
+            yield c
+
+        db.close()
+
+    @pytest.fixture
+    def client_never_run(self, tmp_path):
+        """No for_each run yet → function would be red (if visible)."""
+        if hasattr(_local, "database"):
+            delattr(_local, "database")
+        _gui_db._db = None
+
+        db = configure_database(tmp_path / "red_recover.duckdb", ["subject", "session"])
+        for subj in [1, 2]:
+            for sess in ["pre", "post"]:
+                RawSignal.save(np.random.randn(10), subject=subj, session=sess)
+
+        _gui_db._db = db
+        _gui_db._db_path = tmp_path / "red_recover.duckdb"
+        _registry._functions["bandpass_filter"] = bandpass_filter
+
+        from fastapi.testclient import TestClient
+        from scistack_gui.app import create_app
+        with TestClient(create_app()) as c:
+            yield c
+
+        db.close()
+
+    def test_grey_plus_pending_resolves_to_green_after_full_run(self, client_partial):
+        """grey (partial run) + pending low_hz=42 → run both variants fully → green."""
+        assert self._fn_state(client_partial) == "grey"
+
+        # Add pending on top of grey — still grey (pending can't worsen grey,
+        # and auto_clean only downgrades green → grey).
+        client_partial.put("/api/constants/low_hz/pending/42")
+        assert self._fn_state(client_partial) == "grey"
+
+        # Complete both variants.
+        for_each(
+            bandpass_filter,
+            inputs={"signal": RawSignal, "low_hz": 20},
+            outputs=[FilteredSignal],
+            subject=[2], session=["pre", "post"],   # remaining subjects
+        )
+        for_each(
+            bandpass_filter,
+            inputs={"signal": RawSignal, "low_hz": 42},
+            outputs=[FilteredSignal],
+            subject=[1, 2], session=["pre", "post"],
+        )
+
+        # Auto-clean removes pending; all variants fully populated → green.
+        assert self._fn_state(client_partial) == "green"
+        pending = layout_store.get_pending_constants()
+        assert "42" not in pending.get("low_hz", set())
+
+    def test_red_never_run_plus_pending_resolves_to_green(self, client_never_run):
+        """red (never run, via DB variants path) + pending low_hz=42 → run → green.
+
+        Because no variants exist yet, the fn node may not appear in the
+        pipeline at all. Run the pipeline with the pending value first,
+        then assert the node exists and is green.
+        """
+        # Prior state: no fn node visible (no variants), so state == None.
+        assert self._fn_state(client_never_run) is None
+
+        client_never_run.put("/api/constants/low_hz/pending/42")
+
+        # Still no variants → still no fn node.
+        assert self._fn_state(client_never_run) is None
+
+        # Run with the pending value for all combos.
+        for_each(
+            bandpass_filter,
+            inputs={"signal": RawSignal, "low_hz": 42},
+            outputs=[FilteredSignal],
+            subject=[1, 2], session=["pre", "post"],
+        )
+
+        assert self._fn_state(client_never_run) == "green"
+        pending = layout_store.get_pending_constants()
+        assert "42" not in pending.get("low_hz", set())

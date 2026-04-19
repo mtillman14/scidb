@@ -128,24 +128,37 @@ def generate_matlab_command(
             lines.append(f"scidb.register_variable('{vtype}');")
         lines.append("")
 
-    # Deduplicate variants by constants (same logic as run.py).
-    seen_constants: set[tuple] = set()
-    unique_variants: list[dict] = []
+    # Group variants by (input_types, constants). Multi-output MATLAB
+    # functions (e.g. load_csv → [Time, Force_Left, Force_Right]) surface
+    # in the DB as one variant row per output_type, all sharing the same
+    # inputs and constants. They must collapse into a single for_each
+    # call whose outputs cell lists every output_type.
+    grouped: dict[tuple, dict] = {}
     for v in variants:
-        key = tuple(sorted(v.get("constants", {}).items()))
-        if key not in seen_constants:
-            seen_constants.add(key)
-            unique_variants.append(v)
+        input_types = v.get("input_types", {}) or {}
+        constants = v.get("constants", {}) or {}
+        key = (
+            tuple(sorted(input_types.items())) if isinstance(input_types, dict) else (),
+            tuple(sorted(constants.items())) if isinstance(constants, dict) else (),
+        )
+        entry = grouped.setdefault(key, {
+            "input_types": input_types,
+            "constants": constants,
+            "output_types": [],
+        })
+        output_type = v.get("output_type", "")
+        if output_type and output_type not in entry["output_types"]:
+            entry["output_types"].append(output_type)
 
     # Wrap all for_each calls in a try/catch so db.close() always runs,
     # even if the run errors out or is interrupted.
     lines.append("try")
 
-    # Generate for_each call for each unique variant.
-    for v in unique_variants:
-        input_types = v.get("input_types", {})
-        output_type = v.get("output_type", "")
-        constants = v.get("constants", {})
+    # Generate for_each call for each unique (inputs, constants) group.
+    for entry in grouped.values():
+        input_types = entry["input_types"]
+        output_types_list = entry["output_types"]
+        constants = entry["constants"]
 
         # Build inputs struct — skip PathInput entries (handled via path_inputs).
         from scistack_gui.api.pipeline import _parse_path_input
@@ -163,7 +176,10 @@ def generate_matlab_command(
             inputs_dict[k] = _format_matlab_value(val)
 
         inputs_str = _format_matlab_struct(inputs_dict)
-        outputs_str = f"{{{output_type}()}}" if output_type else "{}"
+        outputs_str = (
+            _format_matlab_cell([f"{t}()" for t in output_types_list])
+            if output_types_list else "{}"
+        )
 
         # Build schema kwargs
         iterate_keys = schema_level if schema_level else schema_keys

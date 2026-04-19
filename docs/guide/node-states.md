@@ -109,6 +109,52 @@ Workaround: once the ancestor is re-run, it produces a new `record_id`. That new
 
 ---
 
+## Constants
+
+"Constant" means two very different things in this system. Both influence node color, but through independent mechanisms.
+
+### 1. Runtime constants — a **variant discriminator**
+
+Values passed via `inputs={"scale": 2.0}` or wrapped in `scidb.constant(...)`. Stored in `version_keys` on every output record. A run with `scale=2.0` and a run with `scale=3.0` produce **two independent variants** of the same function — they never shadow each other.
+
+Consequences for state:
+
+- Changing a constant's value at a call site does _not_ make the old combo stale. It creates a new variant; the old one stays green.
+- `check_node_state` enumerates expected combos **per variant** (via `list_pipeline_variants` for scidb-saved outputs, and via `_lineage` rows for scihist-saved outputs). If `scale=2.0` has 4 of 4 combos and `scale=3.0` has 2 of 4, the node is **grey** (aggregate over all variants).
+- Editing the function body that _reads_ the constant still changes `fn.hash` → the normal fn-hash stale path applies.
+
+### 2. Pending constants — a **GUI-only grey downgrade**
+
+A pending constant is a value the user has dragged onto a constant node in the canvas but has **not yet run**. It lives in the `_pipeline_pending_constants` table (scistack-gui only) and has no corresponding record in `_record_metadata`.
+
+Rule (`scistack_gui/domain/run_state.py::propagate_run_states`):
+
+> If a function consumes constant `c` AND `c` has at least one pending value AND the function's own state is `green`, downgrade to **grey**.
+
+The downgrade cascades like any other grey through `propagate_run_states`'s DAG walk — downstream functions also turn grey.
+
+Lifecycle:
+
+1. User adds pending value `c=4.0` → `add_pending_constant` writes the row.
+2. Graph builder downgrades every consumer (and its descendants) green → grey.
+3. User runs the pipeline; the new combo is saved and `c=4.0` now appears in `const_counts`.
+4. `auto_clean_pending_constants` removes the pending row on the next graph build. Node returns to green.
+
+Scope of the downgrade:
+
+- Only applies to `green` functions. A function that is already `grey` or `red` is left alone — the more severe state wins.
+- `red` is **never** promoted or reset by pending constants.
+- Pending constants do not affect scihist-level state (`check_node_state`). They are evaluated only when the GUI assembles the React Flow graph.
+
+| Change type                      | Where handled                        | Result                                            |
+| -------------------------------- | ------------------------------------ | ------------------------------------------------- |
+| New variant value, not run yet   | GUI (`propagate_run_states`)         | Green → grey                                      |
+| New variant value, run           | scihist (`check_node_state`)         | New variant counted as up_to_date                 |
+| Old variant's constant edited    | scihist (fn-hash mismatch)           | Red (function body changed)                       |
+| Pending + downstream dependency  | GUI (DAG propagation)                | Downstream also grey                              |
+
+---
+
 ## Common Scenarios
 
 ### Full run, all combos succeed → Green

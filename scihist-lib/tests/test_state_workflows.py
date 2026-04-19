@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from scidb import BaseVariable
+from scidb import BaseVariable, for_each as scidb_for_each
 from scifor import PathInput
 from scilineage import lineage_fcn
 from scihist import for_each
@@ -78,6 +78,12 @@ class WfMultiB(BaseVariable):
 class WfMultiC(BaseVariable):
     schema_version = 1
 
+class WfVariantRaw(BaseVariable):
+    schema_version = 1
+
+class WfVariantOut(BaseVariable):
+    schema_version = 1
+
 
 # ---------------------------------------------------------------------------
 # Pipeline functions
@@ -112,6 +118,14 @@ def mixed_inputs(filepath, baseline, scale):
     """PathInput + Variable + Constant, all in one function."""
     df = pd.read_csv(filepath)
     return float(np.mean(df["force_left"].values) - np.mean(np.asarray(baseline))) * float(scale)
+
+def scale_raw(raw, scale):
+    """Plain (non-lineage) fn so scidb.for_each writes constants to
+    branch_params — which is what makes each (scale=N) a distinct
+    variant at the state-tracking level.
+    """
+    return np.asarray(raw, dtype=float) * float(scale)
+
 
 @lineage_fcn(unpack_output=True)
 def multi_output(raw):
@@ -431,3 +445,96 @@ class TestMultiOutputSingleFunction:
         assert r["state"] == "red"
         assert r["counts"]["stale"] == 1
         assert r["counts"]["up_to_date"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 5. Multiple constant variants of the same function
+# ---------------------------------------------------------------------------
+
+class TestMultipleConstantVariants:
+    """Running the same function with two different constant values produces
+    two independent variants. check_node_state aggregates across variants.
+
+    Uses scidb.for_each (not scihist.for_each) because constants on that path
+    are namespaced into ``branch_params`` (e.g. ``scale_raw.scale``), which
+    is what lets _get_expected_combos enumerate them as distinct variants.
+    scihist.for_each puts constants in ``version_keys``, where they do not
+    generate separate branch_params rows and so cannot be distinguished by
+    the per-combo state check.
+    """
+
+    def _seed_raw(self, db, subjects=(1, 2), trials=("A", "B")):
+        for subj in subjects:
+            for trial in trials:
+                WfVariantRaw.save(np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+                                  subject=subj, trial=trial, db=db)
+
+    def test_green_when_both_variants_fully_run(self, db):
+        self._seed_raw(db)
+        for scale in (2.0, 3.0):
+            scidb_for_each(
+                scale_raw,
+                inputs={"raw": WfVariantRaw, "scale": scale},
+                outputs=[WfVariantOut],
+                subject=[1, 2], trial=["A", "B"],
+                db=db,
+            )
+
+        r = check_node_state(scale_raw, [WfVariantOut], db=db)
+        # 2 variants × 4 combos = 8 total.
+        assert r["state"] == "green", f"Got {r['state']} counts={r['counts']}"
+        assert r["counts"]["up_to_date"] == 8
+        assert r["counts"]["missing"] == 0
+
+    def test_grey_when_one_variant_fully_run_other_partial(self, db):
+        """scale=2.0 ran for all 4 combos, scale=3.0 for 2 combos → grey."""
+        self._seed_raw(db)
+
+        scidb_for_each(
+            scale_raw,
+            inputs={"raw": WfVariantRaw, "scale": 2.0},
+            outputs=[WfVariantOut],
+            subject=[1, 2], trial=["A", "B"],
+            db=db,
+        )
+        scidb_for_each(
+            scale_raw,
+            inputs={"raw": WfVariantRaw, "scale": 3.0},
+            outputs=[WfVariantOut],
+            subject=[1], trial=["A", "B"],  # only subject=1
+            db=db,
+        )
+
+        r = check_node_state(scale_raw, [WfVariantOut], db=db)
+        # variant A: 4 up_to_date, variant B: 2 up_to_date + 2 missing
+        # (_get_expected_combos enumerates all input (schema, bp) pairs
+        # per variant, so subject=2 combos count as missing for scale=3.0)
+        assert r["state"] == "grey", f"Got {r['state']} counts={r['counts']}"
+        assert r["counts"]["up_to_date"] == 6
+        assert r["counts"]["missing"] == 2
+
+    def test_variants_independent_under_input_resave(self, db):
+        """Re-saving WfVariantRaw[1,A] taints the combo in BOTH variants —
+        they share an upstream record. Both variants' counts["stale"] rise.
+        """
+        self._seed_raw(db)
+        for scale in (2.0, 3.0):
+            scidb_for_each(
+                scale_raw,
+                inputs={"raw": WfVariantRaw, "scale": scale},
+                outputs=[WfVariantOut],
+                subject=[1, 2], trial=["A", "B"],
+                db=db,
+            )
+        assert check_node_state(scale_raw, [WfVariantOut], db=db)["state"] == "green"
+
+        # Re-save ONE raw combo → both variants' (1, A) outputs go stale.
+        WfVariantRaw.save(np.array([99.0] * 5), subject=1, trial="A", db=db)
+
+        r = check_node_state(scale_raw, [WfVariantOut], db=db)
+        assert r["state"] == "red"
+        # One superseded input × 2 variants = 2 stale combos.
+        assert r["counts"]["stale"] == 2, (
+            f"Expected 2 stale combos (one per variant), got {r['counts']}"
+        )
+        assert r["counts"]["up_to_date"] == 6
