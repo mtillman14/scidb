@@ -109,22 +109,65 @@ def _check_via_lineage(fn, db, output_record_id: str, stored_hash: str,
                         combo_str: str) -> ComboState:
     """Staleness check using full scihist lineage records.
 
-    Uses exact record_ids for input freshness — no timestamps needed.
+    Walks the entire upstream lineage graph via the ``_lineage`` table. A
+    descendant is stale if ANY ancestor record_id in its provenance has been
+    superseded. This cascades data changes through arbitrarily deep chains
+    and DAG shapes (fork/join).
+
+    Scope (see docs/guide/node-states.md, "Propagation"):
+
+    - ✅ Ancestor data re-saved (record_id superseded) → stale.
+    - ✅ fn's own function hash mismatched → stale.
+    - ❌ Ancestor function code changed but not yet re-run → NOT detected
+      here. scihist cannot introspect the "current" version of an ancestor
+      function from inside check_combo_state(fn, ...) — only `fn` itself is
+      passed in. The GUI layer's DAG walk handles this case, or the user
+      re-runs the changed ancestor (which creates a new record_id that then
+      cascades as a data change).
     """
-    # a. Function hash.
+    # a. Function hash of the queried fn.
     if stored_hash != fn.hash:
         logger.debug("stale: %s — function hash changed (lineage)", combo_str)
         return "stale"
 
-    # b. Walk upstream provenance; check each input record_id is still current.
-    try:
-        nodes = db.get_upstream_provenance(output_record_id)
-    except Exception as e:
-        logger.debug("stale: %s — provenance lookup failed: %s", combo_str, e)
+    # b. Deep walk: is ANY ancestor record_id superseded?
+    if _has_superseded_ancestor(db, output_record_id, combo_str):
         return "stale"
 
-    for node in nodes:
-        lineage_inputs = db.get_lineage_inputs(node["record_id"])
+    logger.debug("up_to_date: %s (lineage, deep walk clean)", combo_str)
+    return "up_to_date"
+
+
+def _has_superseded_ancestor(db, record_id: str, combo_str: str,
+                              visited: set | None = None,
+                              max_depth: int = 50) -> bool:
+    """BFS across the ``_lineage`` graph from ``record_id`` backwards.
+
+    Returns True as soon as an ancestor record is found whose latest
+    variant-version differs from the record_id referenced in its
+    downstream's lineage inputs — i.e., something upstream has been
+    re-saved since the descendant was computed.
+
+    ``visited`` guards against cycles; ``max_depth`` bounds cost on
+    pathological graphs (matches ``get_upstream_provenance`` default × 2).
+    """
+    if visited is None:
+        visited = set()
+
+    queue: list[tuple[str, int]] = [(record_id, 0)]
+    while queue:
+        current_rid, depth = queue.pop(0)
+        if current_rid in visited or depth > max_depth:
+            continue
+        visited.add(current_rid)
+
+        try:
+            lineage_inputs = db.get_lineage_inputs(current_rid)
+        except Exception as e:
+            logger.debug("stale: %s — lineage lookup failed at %s: %s",
+                         combo_str, current_rid, e)
+            return True
+
         for inp in lineage_inputs:
             source_type = inp.get("source_type")
             if source_type not in ("variable", "rid_tracking"):
@@ -132,17 +175,18 @@ def _check_via_lineage(fn, db, output_record_id: str, stored_hash: str,
             used_rid = inp.get("record_id")
             if not used_rid:
                 continue
-            current_rid = db.get_latest_record_id_for_variant(used_rid)
-            if current_rid != used_rid:
+            current_latest = db.get_latest_record_id_for_variant(used_rid)
+            if current_latest != used_rid:
                 var_type = inp.get("type") or inp.get("name") or "unknown"
                 logger.debug(
-                    "stale: %s — upstream %s updated (was %s, now %s)",
-                    combo_str, var_type, used_rid, current_rid,
+                    "stale: %s — upstream %s at depth %d superseded "
+                    "(was %s, now %s)",
+                    combo_str, var_type, depth + 1, used_rid, current_latest,
                 )
-                return "stale"
+                return True
+            queue.append((used_rid, depth + 1))
 
-    logger.debug("up_to_date: %s (lineage)", combo_str)
-    return "up_to_date"
+    return False
 
 
 def _check_via_fn_hash(fn, db, output_record_id: str, output_timestamp: str | None,
@@ -481,11 +525,15 @@ def _get_expected_combos(db, fn_name: str, inputs_fallback: dict | None = None) 
                 expected_bp = {**input_bp, **namespaced_own}
                 expected.add((schema_id, json.dumps(expected_bp, sort_keys=True)))
 
-    # _lineage variants: own constants are NOT namespaced in the output's
-    # branch_params (scihist.for_each merges them in directly).
+    # _lineage variants: scihist.for_each stores user constants in
+    # version_keys, not branch_params — scidb.save() writes
+    # branch_params={} for scihist records.  Therefore the expected
+    # branch_params template equals the input's branch_params; we do
+    # NOT merge own_constants here (doing so would produce phantom
+    # missing combos, especially when PathInput resolves to a different
+    # filepath per combo and scilineage captures that as a "constant").
     for variant in lineage_variants:
         input_types = variant["input_types"]
-        own_constants = variant["constants"]
 
         for itype in input_types.values():
             rows = db._duck._fetchall(
@@ -495,8 +543,7 @@ def _get_expected_combos(db, fn_name: str, inputs_fallback: dict | None = None) 
             )
             for schema_id, bp_raw in rows:
                 input_bp = json.loads(bp_raw or "{}") if bp_raw else {}
-                expected_bp = {**input_bp, **own_constants}
-                expected.add((schema_id, json.dumps(expected_bp, sort_keys=True)))
+                expected.add((schema_id, json.dumps(input_bp, sort_keys=True)))
 
     # Fallback: PathInput-only functions have no DB-variable inputs, so the
     # loops above produce an empty set.  scidb.for_each persists the full
@@ -519,45 +566,43 @@ def _get_expected_combos(db, fn_name: str, inputs_fallback: dict | None = None) 
 def _get_lineage_variants(db, fn_name: str) -> list[dict]:
     """Extract variants for fn_name from the ``_lineage`` table.
 
-    Returns a list of dicts with:
+    Returns a list of dicts with one key:
         ``input_types``  (dict: param_name → type_name) — variable inputs only.
-        ``constants``    (dict: param_name → value) — direct constants from
-                         lineage records, excluding any that are actually
-                         variable inputs (see below).
 
-    Pulls distinct ``(inputs, constants)`` JSON pairs from ``_lineage`` rows
-    whose ``function_name`` equals ``fn_name``.  Used for scihist.for_each
-    outputs, which write to ``_lineage`` but not to ``version_keys.__fn``.
+    Used for scihist.for_each outputs, which write to ``_lineage`` but not
+    to ``version_keys.__fn``.
 
-    Variable input detection — three sources, in priority order:
+    Variable input detection — two sources:
 
-    1. ``inputs`` entries with ``source_type == "variable"`` (rare for scihist
-       since the @lineage_fcn receives raw numpy arrays, not BaseVariables —
-       those get classified as CONSTANT by scilineage).
+    1. ``inputs`` entries with ``source_type == "variable"`` (rare for
+       scihist since the @lineage_fcn receives raw numpy arrays, not
+       BaseVariables — those get classified as CONSTANT by scilineage).
     2. ``inputs`` entries with ``source_type == "rid_tracking"`` (added by
        scihist.for_each via :func:`_append_rid_tracking`).  The entry name
        is ``__rid_<param>``; the variable type is recovered by looking up
        ``record_id`` in ``_record_metadata.variable_name``.
-    3. ``constants`` entries whose name appears among the rid_tracking
-       params are stripped — they were variable inputs misclassified by
-       scilineage as constants.
+
+    We intentionally do NOT use ``_lineage.constants`` to discriminate
+    between variants: scilineage classifies per-combo values (e.g. a
+    PathInput-resolved filepath that differs per combo) as CONSTANTs,
+    which would produce one spurious variant per combo.  The expected
+    branch_params template is derived from the input variables'
+    branch_params in :func:`_get_expected_combos` — scihist.for_each
+    writes ``branch_params={}`` for all its outputs, so no constant
+    merging is needed there.
     """
     rows = db._duck._fetchall(
-        "SELECT DISTINCT inputs, constants FROM _lineage WHERE function_name = ?",
+        "SELECT DISTINCT inputs FROM _lineage WHERE function_name = ?",
         [fn_name],
     )
 
     variants: list[dict] = []
     seen: set = set()
-    for inputs_json, constants_json in rows:
+    for (inputs_json,) in rows:
         try:
             inputs_list = json.loads(inputs_json or "[]")
         except (json.JSONDecodeError, TypeError):
             inputs_list = []
-        try:
-            constants_list = json.loads(constants_json or "[]")
-        except (json.JSONDecodeError, TypeError):
-            constants_list = []
 
         input_types: dict = {}
 
@@ -593,28 +638,14 @@ def _get_lineage_variants(db, fn_name: str) -> list[dict]:
             if vn_rows and vn_rows[0][0]:
                 input_types[param_name] = vn_rows[0][0]
 
-        # Direct constants: name → value_repr (used to disambiguate variants).
-        constants: dict = {}
-        if isinstance(constants_list, list):
-            for c in constants_list:
-                if isinstance(c, dict) and "name" in c:
-                    constants[c["name"]] = c.get("value_repr")
-
-        # Source 3: strip names that are actually variable inputs.
-        for name in input_types:
-            constants.pop(name, None)
-
-        if not input_types and not constants:
+        if not input_types:
             continue
 
-        key = (
-            json.dumps(input_types, sort_keys=True),
-            json.dumps(constants, sort_keys=True),
-        )
+        key = json.dumps(input_types, sort_keys=True)
         if key in seen:
             continue
         seen.add(key)
-        variants.append({"input_types": input_types, "constants": constants})
+        variants.append({"input_types": input_types})
 
     return variants
 

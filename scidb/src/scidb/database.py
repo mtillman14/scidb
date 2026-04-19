@@ -56,15 +56,24 @@ def _from_schema_str(value):
     Schema keys are stored as VARCHAR, so loaded values are always strings.
     This restores the original type (int or float) so that user-facing
     metadata has the same type as what was originally saved.
+
+    Only converts when the round-trip preserves the original string exactly.
+    This keeps zero-padded identifiers like "01" as strings (since str(1) ==
+    "1" ≠ "01"), which is critical for subject/trial IDs that must match
+    what the user passed into for_each.
     """
     if not isinstance(value, str):
         return value
     try:
-        return int(value)
+        as_int = int(value)
+        if str(as_int) == value:
+            return as_int
     except (ValueError, TypeError):
         pass
     try:
-        return float(value)
+        as_float = float(value)
+        if str(as_float) == value:
+            return as_float
     except (ValueError, TypeError):
         pass
     return value

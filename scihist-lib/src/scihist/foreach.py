@@ -139,6 +139,12 @@ def for_each(
                             if rid:
                                 fixed_rids[f"__rid_{name}"] = rid
                 continue  # Wrapper (Fixed, ColumnSelection, Merge, etc.)
+            try:
+                from scifor import PathInput as _PathInput
+                if isinstance(value, _PathInput):
+                    continue  # PathInput — resolved per-combo by scidb.for_each
+            except ImportError:
+                pass
             constant_inputs[name] = value
 
         _diag(f"[DIAG] save path: fixed_rids={fixed_rids}")
@@ -170,6 +176,10 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
     constant_hashes: dict[str, str] = {}
     # Collect Fixed inputs for record_id tracking.
     fixed_inputs: dict[str, tuple] = {}  # name -> (inner_type, fixed_metadata)
+    try:
+        from scifor import PathInput as _PathInput
+    except ImportError:
+        _PathInput = None
     for name, value in inputs.items():
         if isinstance(value, type):
             continue  # Variable type (BaseVariable subclass)
@@ -183,6 +193,8 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
                 if isinstance(inner, type):
                     fixed_inputs[name] = (inner, value.fixed_metadata)
             continue  # Wrapper (Fixed, ColumnSelection, Merge, etc.)
+        if _PathInput is not None and isinstance(value, _PathInput):
+            continue  # PathInput — resolved per-combo by scidb.for_each
         constant_values[name] = value
         constant_hashes[name] = _chash(value)
 
