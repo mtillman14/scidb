@@ -172,6 +172,69 @@ class TestMatlabPathInputPartialRunGoesGrey:
                 f"Expected 15 lineage rows for {output_name}, got {rows[0][0]}"
             )
 
+    def test_grey_persists_across_db_close_reopen(self, db, matlab_run, tmp_path):
+        """Regression: partial-run grey must survive a full DB close/reopen cycle.
+
+        Mirrors the real GUI workflow: MATLAB completes 15/16 combos → node is
+        grey → GUI is closed (DuckDB file lock released) → GUI reopens (fresh
+        ``DatabaseManager`` at the same path) → node must STILL be grey, not red.
+
+        A previous bug showed all nodes red after reopen because the MATLAB
+        side wasn't flushing/releasing the DB lock cleanly before exit, so
+        ``_for_each_expected`` and/or ``_lineage`` rows were missing when the
+        next process opened the file.  Closing through ``scidb.close_database``
+        (which awaits the actual close before logging RELEASED) fixed it.
+        This test locks that guarantee in at the scihist layer by driving the
+        close/reopen cycle directly — no GUI or MATLAB involved.
+        """
+        from scidb import configure_database
+        from scidb.database import _local
+
+        # Sanity: starting state is grey in the live session.
+        before = check_node_state(matlab_run["fn"], matlab_run["outputs"], db=db)
+        assert before["state"] == "grey"
+        assert before["counts"]["up_to_date"] == 15
+        assert before["counts"]["missing"] == 1
+
+        # --- Simulate GUI close: release the DuckDB file lock. ---
+        db_path = db.dataset_db_path
+        schema_keys = list(db.dataset_schema_keys)
+        db.close()
+        # The conftest `db` fixture ran `set_current_db()` during setup; clear
+        # that thread-local so the reopen truly starts from a fresh state
+        # (matching how a brand-new GUI process would initialise).
+        if hasattr(_local, "database"):
+            delattr(_local, "database")
+
+        # --- Simulate GUI reopen: brand-new DatabaseManager at the same path. ---
+        reopened = configure_database(db_path, schema_keys)
+
+        # Rebuild the MATLAB proxy fresh, matching what _build_matlab_fn_proxy
+        # does in the GUI on startup (same source_hash → same proxy.hash).
+        fresh_fn = MatlabLineageFcn(FN_SOURCE_HASH, FN_NAME, unpack_output=False)
+        fresh_fn.__name__ = FN_NAME
+        fresh_outputs = [BaseVariable._all_subclasses[n]
+                         for n in ("Time", "Force_Left", "Force_Right")]
+
+        try:
+            after = check_node_state(fresh_fn, fresh_outputs, db=reopened)
+            assert after["state"] == "grey", (
+                f"Expected grey to persist after reopen, got {after['state']}. "
+                f"Counts: {after['counts']}"
+            )
+            assert after["counts"]["up_to_date"] == 15
+            assert after["counts"]["missing"] == 1
+            assert after["counts"]["stale"] == 0
+
+            # Sanity: _for_each_expected also survived the reopen.
+            rows = reopened._duck._fetchall(
+                "SELECT schema_id FROM _for_each_expected WHERE function_name = ?",
+                [FN_NAME],
+            )
+            assert len(rows) == 16
+        finally:
+            reopened.close()
+
     def test_grey_goes_green_after_fix_and_rerun(self, db, matlab_run):
         """Full workflow: grey → fix → re-run the failing combo → green.
 

@@ -1,964 +1,1020 @@
-[23:43:19.203] [INFO] configure_database: path=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb, schema_keys=['subject', 'trial']
-[23:43:19.204] [DEBUG] [scistack_gui.startup] No pyproject.toml at /Users/mitchelltillman/Documents/Stroke-R01-Aim-2 — skipping lockfile staleness check
-[23:43:19.204] [DEBUG] [scistack_gui.db] close_initial_connection: releasing startup lock
-[23:43:19.209] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:19.402] [DEBUG] RPC >> get_pipeline()
-[23:43:19.403] [DEBUG] RPC >> get_schema()
-[23:43:19.403] [DEBUG] RPC >> get_info()
-[23:43:19.403] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:19.411] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:19.411] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:43:19.411] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
-[23:43:19.412] [DEBUG] RPC << get_info OK (9.0ms)
-[23:43:19.412] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
-[23:43:19.415] [DEBUG] RPC << get_schema OK (11.2ms)
-[23:43:19.415] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:43:19.775] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:43:19.778] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:43:19.782] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:43:19.784] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
-[23:43:19.786] [DEBUG] [scistack_gui.api.pipeline] graph built: 0 nodes (), 0 edges
-[23:43:19.786] [DEBUG] RPC << get_pipeline OK (383.2ms)
-[23:43:19.788] [DEBUG] RPC >> get_layout()
-[23:43:19.789] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:19.789] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:19.789] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:19.797] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:19.800] [DEBUG] RPC << get_layout OK (11.9ms)
-[23:43:19.802] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:19.802] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:21.777] [DEBUG] RPC >> get_registry()
-[23:43:21.779] [DEBUG] RPC >> get_constants()
-[23:43:21.780] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:21.781] [DEBUG] RPC >> get_path_inputs()
-[23:43:21.799] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:21.800] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
-[23:43:21.800] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:43:21.800] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
-[23:43:21.801] [DEBUG] RPC << get_registry OK (21.2ms)
-[23:43:21.801] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
-[23:43:21.801] [DEBUG] RPC << get_path_inputs OK (18.9ms)
-[23:43:21.801] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
-[23:43:21.802] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:43:21.803] [DEBUG] RPC << get_constants OK (21.7ms)
-[23:43:21.806] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:21.806] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:21.948] [DEBUG] RPC >> get_pipeline()
-[23:43:21.949] [DEBUG] RPC >> get_registry()
-[23:43:21.949] [DEBUG] RPC >> get_path_inputs()
-[23:43:21.949] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:21.957] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:21.958] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:43:21.958] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
-[23:43:21.958] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
-[23:43:21.958] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
-[23:43:21.958] [DEBUG] RPC << get_path_inputs OK (9.0ms)
-[23:43:21.958] [DEBUG] RPC << get_registry OK (9.2ms)
-[23:43:21.959] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
-[23:43:21.959] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:43:21.960] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:43:21.961] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:43:21.962] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:43:21.964] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
-[23:43:21.966] [DEBUG] [scistack_gui.api.pipeline] graph built: 0 nodes (), 0 edges
-[23:43:21.966] [DEBUG] RPC << get_pipeline OK (17.2ms)
-[23:43:21.968] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:21.968] [DEBUG] RPC >> get_layout()
-[23:43:21.968] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:21.968] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:21.975] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:21.977] [DEBUG] RPC << get_layout OK (9.3ms)
-[23:43:21.979] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:21.979] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:23.397] [DEBUG] RPC >> get_function_params(name=load_csv)
-[23:43:23.398] [DEBUG] RPC >> put_layout(node_id=fn__load_csv__hrao05, x=630, y=281, node_type=functionNode, label=load_csv)
-[23:43:23.398] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:23.405] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:23.405] [DEBUG] RPC << get_function_params OK (7.4ms)
-[23:43:23.405] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:43:23.405] [INFO] [scistack_gui.services.layout_service] Function node placed: 'load_csv' (MATLAB, n_outputs=3, output_names=['time', 'force_left', 'force_right'])
-[23:43:23.405] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:43:23.412] [DEBUG] RPC << put_layout OK (14.3ms)
-[23:43:23.416] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:23.416] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:24.545] [DEBUG] RPC >> put_layout(node_id=fn__load_csv__hrao05, x=590, y=261.5)
-[23:43:24.545] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:24.561] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:24.563] [DEBUG] RPC << put_layout OK (17.7ms)
-[23:43:24.565] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:24.565] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:25.489] [DEBUG] RPC >> get_pipeline()
-[23:43:25.490] [DEBUG] RPC >> get_registry()
-[23:43:25.491] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:25.492] [DEBUG] RPC >> get_path_inputs()
-[23:43:25.502] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:25.502] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:43:25.503] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
-[23:43:25.503] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
-[23:43:25.503] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
-[23:43:25.503] [DEBUG] RPC << get_registry OK (11.5ms)
-[23:43:25.503] [DEBUG] RPC << get_path_inputs OK (11.4ms)
-[23:43:25.504] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
-[23:43:25.504] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:43:25.504] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:43:25.506] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:43:25.507] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:43:25.512] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
-[23:43:25.516] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
-[23:43:25.517] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
-[23:43:25.517] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
-[23:43:25.517] [DEBUG] [scistack_gui.api.pipeline] graph built: 1 nodes (1 functionNode), 0 edges
-[23:43:25.517] [DEBUG] RPC << get_pipeline OK (26.3ms)
-[23:43:25.518] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:25.518] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:25.532] [DEBUG] RPC >> get_layout()
-[23:43:25.532] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:25.543] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:25.545] [DEBUG] RPC << get_layout OK (13.2ms)
-[23:43:25.547] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:25.547] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:27.661] [DEBUG] RPC >> put_layout(node_id=var__Force_Right__0frowu, x=885.5, y=318.25, node_type=variableNode, label=Force_Right)
-[23:43:27.662] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:27.670] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:27.670] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='var__Force_Right__0frowu', type='variableNode', label='Force_Right', position=(885.5, 318.2)
-[23:43:27.674] [DEBUG] RPC << put_layout OK (12.4ms)
-[23:43:27.678] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:27.678] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:29.118] [DEBUG] RPC >> put_layout(node_id=var__Force_Left__gjmmur, x=888.5, y=277.75, node_type=variableNode, label=Force_Left)
-[23:43:29.118] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:29.127] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:29.127] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='var__Force_Left__gjmmur', type='variableNode', label='Force_Left', position=(888.5, 277.8)
-[23:43:29.131] [DEBUG] RPC << put_layout OK (13.4ms)
-[23:43:29.135] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:29.135] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:31.210] [DEBUG] RPC >> get_pipeline()
-[23:43:31.211] [DEBUG] RPC >> get_registry()
-[23:43:31.211] [DEBUG] RPC >> get_path_inputs()
-[23:43:31.212] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:31.221] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:31.221] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:43:31.221] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
-[23:43:31.221] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
-[23:43:31.222] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
-[23:43:31.222] [DEBUG] RPC << get_registry OK (10.1ms)
-[23:43:31.222] [DEBUG] RPC << get_path_inputs OK (10.1ms)
-[23:43:31.222] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
-[23:43:31.222] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:43:31.223] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:43:31.224] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:43:31.225] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:43:31.228] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
-[23:43:31.230] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
-[23:43:31.230] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
-[23:43:31.230] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
-[23:43:31.230] [DEBUG] [scistack_gui.api.pipeline] graph built: 3 nodes (1 functionNode, 2 variableNode), 0 edges
-[23:43:31.231] [DEBUG] RPC << get_pipeline OK (19.1ms)
-[23:43:31.232] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:31.232] [DEBUG] RPC >> get_layout()
-[23:43:31.232] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:31.233] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:31.240] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:31.243] [DEBUG] RPC << get_layout OK (10.0ms)
-[23:43:31.244] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:31.244] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:32.413] [DEBUG] RPC >> put_layout(node_id=var__Force_Left__gjmmur, x=831.5, y=230.75)
-[23:43:32.413] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:32.431] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:32.433] [DEBUG] RPC << put_layout OK (19.8ms)
-[23:43:32.435] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:32.435] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:33.263] [DEBUG] RPC >> put_layout(node_id=var__Force_Right__0frowu, x=838, y=347.75)
-[23:43:33.265] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:33.280] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:33.281] [DEBUG] RPC << put_layout OK (16.9ms)
-[23:43:33.283] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:33.283] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:34.226] [DEBUG] RPC >> put_layout(node_id=var__Force_Left__gjmmur, x=839, y=262.75)
-[23:43:34.226] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:34.237] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:34.237] [DEBUG] RPC << put_layout OK (11.2ms)
-[23:43:34.239] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:34.239] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:36.400] [DEBUG] RPC >> put_layout(node_id=var__Time__7560rf, x=861.5, y=228.75, node_type=variableNode, label=Time)
-[23:43:36.401] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:36.416] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:36.417] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='var__Time__7560rf', type='variableNode', label='Time', position=(861.5, 228.8)
-[23:43:36.422] [DEBUG] RPC << put_layout OK (21.5ms)
-[23:43:36.427] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:36.427] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:38.495] [DEBUG] RPC >> get_pipeline()
-[23:43:38.497] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:38.497] [DEBUG] RPC >> get_registry()
-[23:43:38.499] [DEBUG] RPC >> get_path_inputs()
-[23:43:38.516] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:38.517] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:43:38.517] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
-[23:43:38.518] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
-[23:43:38.518] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
-[23:43:38.519] [DEBUG] RPC << get_path_inputs OK (19.1ms)
-[23:43:38.519] [DEBUG] RPC << get_registry OK (19.3ms)
-[23:43:38.519] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
-[23:43:38.520] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:43:38.521] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:43:38.522] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:43:38.525] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:43:38.529] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
-[23:43:38.533] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
-[23:43:38.533] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
-[23:43:38.533] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
-[23:43:38.533] [DEBUG] [scistack_gui.api.pipeline] graph built: 4 nodes (1 functionNode, 3 variableNode), 0 edges
-[23:43:38.533] [DEBUG] RPC << get_pipeline OK (36.7ms)
-[23:43:38.536] [DEBUG] RPC >> get_layout()
-[23:43:38.536] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:38.536] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:38.536] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:38.547] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:38.550] [DEBUG] RPC << get_layout OK (14.1ms)
-[23:43:38.552] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:38.552] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:38.695] [DEBUG] RPC >> put_layout(node_id=var__Time__7560rf, x=839, y=170)
-[23:43:38.695] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:38.710] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:38.712] [DEBUG] RPC << put_layout OK (16.9ms)
-[23:43:38.714] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:38.714] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:45.273] [DEBUG] RPC >> create_path_input(name=test)
-[23:43:45.273] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:45.281] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:45.281] [DEBUG] [scistack_gui.services.layout_service] Node created (added to palette): type=pathInput, name='test', template='', root_folder=None
-[23:43:45.282] [DEBUG] RPC << create_path_input OK (9.0ms)
-[23:43:45.283] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:45.284] [DEBUG] RPC >> get_path_inputs()
-[23:43:45.284] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:45.284] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:45.291] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:45.291] [DEBUG] RPC << get_path_inputs OK (7.4ms)
-[23:43:45.293] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:45.293] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:47.126] [DEBUG] RPC >> put_layout(node_id=pathInput__test__a3tasp, x=322.9171865045156, y=194.26699481244418, node_type=pathInputNode, label=test)
-[23:43:47.126] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:47.135] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:47.135] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='pathInput__test__a3tasp', type='pathInputNode', label='test', position=(322.9, 194.3)
-[23:43:47.140] [DEBUG] RPC << put_layout OK (13.5ms)
-[23:43:47.144] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:47.144] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:47.972] [DEBUG] RPC >> put_layout(node_id=pathInput__test__a3tasp, x=373.91265725809393, y=237.210549131247)
-[23:43:47.972] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:47.980] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:47.981] [DEBUG] RPC << put_layout OK (8.9ms)
-[23:43:47.982] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:47.982] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:49.223] [DEBUG] RPC >> get_pipeline()
-[23:43:49.224] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:49.232] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:49.234] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:43:49.237] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:43:49.240] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:43:49.245] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
-[23:43:49.248] [DEBUG] [scistack_gui.domain.graph_builder] merge_manual_nodes: graduating 1 node(s): [('pathInput__test__a3tasp', 'pathInput__test')]
-[23:43:49.250] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
-[23:43:49.250] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
-[23:43:49.250] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
-[23:43:49.250] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 0 edges
-[23:43:49.250] [DEBUG] RPC << get_pipeline OK (26.8ms)
-[23:43:49.252] [DEBUG] RPC >> get_layout()
-[23:43:49.254] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:49.254] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:49.254] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:49.261] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:49.264] [DEBUG] RPC << get_layout OK (11.5ms)
-[23:43:49.265] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:49.265] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:51.418] [DEBUG] RPC >> get_pipeline()
-[23:43:51.419] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:51.434] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:51.436] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:43:51.438] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:43:51.440] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:43:51.444] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
-[23:43:51.447] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
-[23:43:51.447] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
-[23:43:51.447] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
-[23:43:51.447] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 0 edges
-[23:43:51.448] [DEBUG] RPC << get_pipeline OK (29.1ms)
-[23:43:51.449] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:51.450] [DEBUG] RPC >> get_layout()
-[23:43:51.451] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:43:51.451] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:51.462] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:43:51.464] [DEBUG] RPC << get_layout OK (13.9ms)
-[23:43:51.466] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:43:51.466] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:07.322] [DEBUG] RPC >> update_path_input(name=test, template=data/sub{subject}/trial{trial}.csv, root_folder=None)
-[23:44:07.323] [DEBUG] RPC >> update_path_input(name=test, template=data/sub{subject}/trial{trial}.csv, root_folder=None)
-[23:44:07.323] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:07.330] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:07.330] [DEBUG] [scistack_gui.services.layout_service] PathInput updated: name='test', template='data/sub{subject}/trial{trial}.csv', root_folder=None
-[23:44:07.330] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:44:07.330] [DEBUG] [scistack_gui.services.layout_service] PathInput updated: name='test', template='data/sub{subject}/trial{trial}.csv', root_folder=None
-[23:44:07.331] [DEBUG] RPC << update_path_input OK (8.3ms)
-[23:44:07.332] [DEBUG] RPC << update_path_input OK (8.9ms)
-[23:44:07.332] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:44:07.333] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:07.333] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:09.399] [DEBUG] RPC >> put_layout(node_id=pathInput__test, x=239.71405001183513, y=198.74028172065277)
-[23:44:09.399] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:09.411] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:09.413] [DEBUG] RPC << put_layout OK (13.8ms)
-[23:44:09.415] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:09.415] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:11.453] [DEBUG] RPC >> put_edge(edge_id=manual__ozoquo, source=pathInput__test, target=fn__load_csv__hrao05, source_handle=None, target_handle=in__filep...)
-[23:44:11.453] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:11.471] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:11.476] [DEBUG] RPC << put_edge OK (22.4ms)
-[23:44:11.482] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:11.482] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:13.077] [DEBUG] RPC >> put_edge(edge_id=manual__2thrxl, source=fn__load_csv__hrao05, target=var__Time__7560rf, source_handle=out__time, target_handle=No...)
-[23:44:13.078] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:13.090] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:13.094] [DEBUG] RPC << put_edge OK (16.8ms)
-[23:44:13.100] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:13.100] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:14.857] [DEBUG] RPC >> put_edge(edge_id=manual__2i9s3d, source=fn__load_csv__hrao05, target=var__Force_Left__gjmmur, source_handle=out__force_left, targ...)
-[23:44:14.858] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:14.878] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:14.884] [DEBUG] RPC << put_edge OK (26.2ms)
-[23:44:14.889] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:14.889] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:16.745] [DEBUG] RPC >> put_edge(edge_id=manual__dnwbhz, source=fn__load_csv__hrao05, target=var__Force_Right__0frowu, source_handle=out__force_right, ta...)
-[23:44:16.746] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:16.766] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:16.772] [DEBUG] RPC << put_edge OK (26.2ms)
-[23:44:16.779] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:16.779] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:18.927] [DEBUG] RPC >> get_pipeline()
-[23:44:18.927] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:18.943] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:18.946] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
-[23:44:18.947] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
-[23:44:18.950] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
-[23:44:18.954] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
-[23:44:18.958] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=['Time', 'Force_Left', 'Force_Right'] constants=set() unmatched=0
-[23:44:18.958] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=['Time', 'Force_Left', 'Force_Right']
-[23:44:18.961] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=6c89d10bcf06 unpack=False hash=d0e4ce44172d
-[23:44:18.964] [DEBUG] [scihist.state] node load_csv: red (up_to_date=0, stale=0, missing=0)
-[23:44:18.965] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): red (up_to_date=0, stale=0, missing=0)
-[23:44:18.965] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: computed state=red (outputs=['Time', 'Force_Left', 'Force_Right'])
-[23:44:18.965] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 4 edges
-[23:44:18.965] [DEBUG] RPC << get_pipeline OK (37.8ms)
-[23:44:18.967] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:18.968] [DEBUG] RPC >> get_layout()
-[23:44:18.968] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:18.968] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:18.978] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:18.981] [DEBUG] RPC << get_layout OK (13.0ms)
-[23:44:18.982] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:18.983] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:27.813] [DEBUG] RPC >> get_schema()
-[23:44:27.814] [DEBUG] RPC >> get_variables_list()
-[23:44:27.815] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:27.830] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:27.831] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:44:27.831] [DEBUG] RPC << get_variables_list OK (16.2ms)
-[23:44:27.832] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:44:27.832] [DEBUG] RPC << get_schema OK (17.8ms)
-[23:44:27.836] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:27.836] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:27.937] [DEBUG] RPC >> get_function_source(name=load_csv)
-[23:44:27.938] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:27.945] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:27.946] [DEBUG] RPC << get_function_source OK (8.1ms)
-[23:44:27.947] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:27.947] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:41.759] [DEBUG] RPC >> generate_matlab_command(function_name=load_csv, variants=[], run_id=55tj31on, schema_filter=None, schema_level=None, run_options=None, where_fil...)
-[23:44:41.765] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:41.780] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
-[23:44:41.793] [WARN] [scistack_gui.server] failed to start debugpy listener: debugpy.listen() has already been called on this process
-[23:44:41.795] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: editable install at file:///Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab
-[23:44:41.796] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: found /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
-[23:44:41.796] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: prepended sci-matlab dir: /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
-[23:44:41.809] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: inferred output_types=['Time', 'Force_Left', 'Force_Right'] from manual edges (overrides params output_types=['time', 'force_left', 'force_right'])
-[23:44:41.810] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, total_variants=0, fn_variants=0, path_input_params=1, output_types=['Time', 'Force_Left', 'Force_Right'], project_root=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2
-[23:44:41.810] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, command_length=3977
-[23:44:41.810] [DEBUG] RPC << generate_matlab_command OK (50.8ms)
-[23:44:41.813] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:41.813] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
-[23:44:50.441] [INFO] configure_database: path=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb, schema_keys=['subject', 'trial']
-[23:44:50.565] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:50.771] [INFO] ===== for_each(load_csv) start =====
-[23:44:50.816] [INFO] discovered subject -> 3 values from filesystem
-[23:44:50.819] [INFO] discovered trial -> 6 values from filesystem
-[23:44:50.828] [INFO] using 16 filesystem-discovered combos
-[23:44:50.877] [DEBUG] _persist_expected_combos(load_csv): wrote 16 expected combos
-[23:44:50.879] [INFO] persisted 16 expected combos for load_csv
-[23:44:50.885] [INFO] input 'filepath': loaded PathInput in 0.000s
-[23:44:50.886] [INFO] loaded 1 inputs in 0.004s
-[23:44:50.908] [INFO] ================================================================
-[23:44:50.910] [INFO] for_each(@(varargin)lineage_obj(varargin{:})) — 16 iterations
-[23:44:50.911] [INFO] subject=[3 values], trial=[6 values]
-[23:44:50.912] [INFO] ================================================================
-[23:44:50.946] [INFO] inputs: {filepath: <scifor.PathInput>}
-[23:44:50.948] [INFO] subject=[01, 02, 03]
-[23:44:50.951] [INFO] trial=[01, 02, 03, 04, 05, 06]
-[23:44:50.963] [INFO] [run] subject=01, trial=01: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.432] [INFO] [run] subject=01, trial=02: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.520] [INFO] [run] subject=01, trial=03: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.592] [INFO] [run] subject=01, trial=04: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.651] [INFO] [run] subject=01, trial=05: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.712] [INFO] [run] subject=01, trial=06: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.795] [INFO] [skip] subject=01, trial=06: @(varargin)lineage_obj(varargin{:}) raised: Assertion failed.
-[23:44:52.802] [INFO] [run] subject=02, trial=01: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.869] [INFO] [run] subject=02, trial=02: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.936] [INFO] [run] subject=02, trial=03: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:52.990] [INFO] [run] subject=02, trial=04: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:53.045] [INFO] [run] subject=02, trial=05: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:53.088] [INFO] [run] subject=03, trial=01: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:53.116] [DEBUG] RPC >> get_pipeline()
-[23:44:53.117] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:53.147] [INFO] [run] subject=03, trial=02: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:53.200] [INFO] [run] subject=03, trial=03: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:53.284] [INFO] [run] subject=03, trial=04: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:53.340] [INFO] [run] subject=03, trial=05: @(varargin)lineage_obj(varargin{:})(filepath)
-[23:44:53.401] [INFO] ----------------------------------------------------------------
-[23:44:53.403] [INFO] for_each(@(varargin)lineage_obj(varargin{:})) done: completed=15, skipped=1, total=16
-[23:44:53.407] [INFO] ================================================================
-[23:44:53.515] [DEBUG] save(Time): record_id=fcb21952996b, content_hash=7aaeec570aaf, serialization=native
-[23:44:53.525] [DEBUG] _save_native: created table 'Time_data'
-[23:44:53.527] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=fcb21952996b
-[23:44:53.528] [DEBUG] _save_record_metadata: Time, record_id=fcb21952996b, schema_id=1
-[23:44:53.530] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=2f3c11de16ab
-[23:44:53.532] [DEBUG] save(Time): transaction committed
-[23:44:53.532] [INFO] [save-lineage] Time: record_id=fcb21952996b
-[23:44:53.532] [DEBUG] [save-lineage] Time: lineage_hash=68ba4e407d40, pipeline_lineage_hash=2f3c11de16ab
-[23:44:53.534] [INFO] [save] subject=01, trial=01: Time (lineage) saved in 0.042s
-[23:44:53.539] [DEBUG] save(Time): record_id=8133d7db36bf, content_hash=d2d3591a4621, serialization=native
-[23:44:53.543] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=8133d7db36bf
-[23:44:53.545] [DEBUG] _save_record_metadata: Time, record_id=8133d7db36bf, schema_id=2
-[23:44:53.547] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=d383560c742f
-[23:44:53.549] [DEBUG] save(Time): transaction committed
-[23:44:53.549] [INFO] [save-lineage] Time: record_id=8133d7db36bf
-[23:44:53.549] [DEBUG] [save-lineage] Time: lineage_hash=68a15b0c915f, pipeline_lineage_hash=d383560c742f
-[23:44:53.550] [INFO] [save] subject=01, trial=02: Time (lineage) saved in 0.011s
-[23:44:53.554] [DEBUG] save(Time): record_id=ba86a0252ecc, content_hash=c20e295704b0, serialization=native
-[23:44:53.557] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=ba86a0252ecc
-[23:44:53.559] [DEBUG] _save_record_metadata: Time, record_id=ba86a0252ecc, schema_id=3
-[23:44:53.560] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=c69b0ca81793
-[23:44:53.562] [DEBUG] save(Time): transaction committed
-[23:44:53.562] [INFO] [save-lineage] Time: record_id=ba86a0252ecc
-[23:44:53.562] [DEBUG] [save-lineage] Time: lineage_hash=6ec62e57de5c, pipeline_lineage_hash=c69b0ca81793
-[23:44:53.563] [INFO] [save] subject=01, trial=03: Time (lineage) saved in 0.008s
-[23:44:53.566] [DEBUG] save(Time): record_id=7093a9823a90, content_hash=205901ea2c49, serialization=native
-[23:44:53.570] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=7093a9823a90
-[23:44:53.571] [DEBUG] _save_record_metadata: Time, record_id=7093a9823a90, schema_id=4
-[23:44:53.573] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=6366d2eec561
-[23:44:53.574] [DEBUG] save(Time): transaction committed
-[23:44:53.574] [INFO] [save-lineage] Time: record_id=7093a9823a90
-[23:44:53.574] [DEBUG] [save-lineage] Time: lineage_hash=b91f8d181e95, pipeline_lineage_hash=6366d2eec561
-[23:44:53.576] [INFO] [save] subject=01, trial=04: Time (lineage) saved in 0.008s
-[23:44:53.579] [DEBUG] save(Time): record_id=7c9fd08e4805, content_hash=032411aa9bd1, serialization=native
-[23:44:53.583] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=7c9fd08e4805
-[23:44:53.584] [DEBUG] _save_record_metadata: Time, record_id=7c9fd08e4805, schema_id=5
-[23:44:53.586] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=acfc41c5b134
-[23:44:53.587] [DEBUG] save(Time): transaction committed
-[23:44:53.587] [INFO] [save-lineage] Time: record_id=7c9fd08e4805
-[23:44:53.587] [DEBUG] [save-lineage] Time: lineage_hash=82e83b612db1, pipeline_lineage_hash=acfc41c5b134
-[23:44:53.589] [INFO] [save] subject=01, trial=05: Time (lineage) saved in 0.009s
-[23:44:53.592] [DEBUG] save(Time): record_id=7ed10b005cce, content_hash=3350b9cf7fcd, serialization=native
-[23:44:53.596] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=7ed10b005cce
-[23:44:53.597] [DEBUG] _save_record_metadata: Time, record_id=7ed10b005cce, schema_id=7
-[23:44:53.599] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=ac3e2225cfa3
-[23:44:53.601] [DEBUG] save(Time): transaction committed
-[23:44:53.601] [INFO] [save-lineage] Time: record_id=7ed10b005cce
-[23:44:53.601] [DEBUG] [save-lineage] Time: lineage_hash=46860bd7a150, pipeline_lineage_hash=ac3e2225cfa3
-[23:44:53.602] [INFO] [save] subject=02, trial=01: Time (lineage) saved in 0.009s
-[23:44:53.606] [DEBUG] save(Time): record_id=11d28b6c0eea, content_hash=f749b4c0a555, serialization=native
-[23:44:53.609] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=11d28b6c0eea
-[23:44:53.610] [DEBUG] _save_record_metadata: Time, record_id=11d28b6c0eea, schema_id=8
-[23:44:53.612] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=90cff4887f34
-[23:44:53.614] [DEBUG] save(Time): transaction committed
-[23:44:53.614] [INFO] [save-lineage] Time: record_id=11d28b6c0eea
-[23:44:53.614] [DEBUG] [save-lineage] Time: lineage_hash=1a0d9e2d5247, pipeline_lineage_hash=90cff4887f34
-[23:44:53.616] [INFO] [save] subject=02, trial=02: Time (lineage) saved in 0.009s
-[23:44:53.619] [DEBUG] save(Time): record_id=1b7eaaa04d33, content_hash=e05bc3a789f2, serialization=native
-[23:44:53.623] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=1b7eaaa04d33
-[23:44:53.624] [DEBUG] _save_record_metadata: Time, record_id=1b7eaaa04d33, schema_id=9
-[23:44:53.626] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=5635877bcb6d
-[23:44:53.628] [DEBUG] save(Time): transaction committed
-[23:44:53.628] [INFO] [save-lineage] Time: record_id=1b7eaaa04d33
-[23:44:53.628] [DEBUG] [save-lineage] Time: lineage_hash=abb3f77bf600, pipeline_lineage_hash=5635877bcb6d
-[23:44:53.629] [INFO] [save] subject=02, trial=03: Time (lineage) saved in 0.009s
-[23:44:53.633] [DEBUG] save(Time): record_id=cfa6a4f9de7d, content_hash=04440d796920, serialization=native
-[23:44:53.636] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=cfa6a4f9de7d
-[23:44:53.637] [DEBUG] _save_record_metadata: Time, record_id=cfa6a4f9de7d, schema_id=10
-[23:44:53.639] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=c6a51406574c
-[23:44:53.641] [DEBUG] save(Time): transaction committed
-[23:44:53.641] [INFO] [save-lineage] Time: record_id=cfa6a4f9de7d
-[23:44:53.641] [DEBUG] [save-lineage] Time: lineage_hash=b8b3d42edb72, pipeline_lineage_hash=c6a51406574c
-[23:44:53.642] [INFO] [save] subject=02, trial=04: Time (lineage) saved in 0.009s
-[23:44:53.646] [DEBUG] save(Time): record_id=e1d2172a6840, content_hash=d55995da6dfc, serialization=native
-[23:44:53.649] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=e1d2172a6840
-[23:44:53.651] [DEBUG] _save_record_metadata: Time, record_id=e1d2172a6840, schema_id=11
-[23:44:53.653] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=cfa3fe6e064f
-[23:44:53.655] [DEBUG] save(Time): transaction committed
-[23:44:53.655] [INFO] [save-lineage] Time: record_id=e1d2172a6840
-[23:44:53.655] [DEBUG] [save-lineage] Time: lineage_hash=9655712341dc, pipeline_lineage_hash=cfa3fe6e064f
-[23:44:53.657] [INFO] [save] subject=02, trial=05: Time (lineage) saved in 0.010s
-[23:44:53.661] [DEBUG] save(Time): record_id=75c092f357db, content_hash=7f894e4335c6, serialization=native
-[23:44:53.667] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=75c092f357db
-[23:44:53.669] [DEBUG] _save_record_metadata: Time, record_id=75c092f357db, schema_id=12
-[23:44:53.670] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=68a161c3f9c1
-[23:44:53.672] [DEBUG] save(Time): transaction committed
-[23:44:53.672] [INFO] [save-lineage] Time: record_id=75c092f357db
-[23:44:53.672] [DEBUG] [save-lineage] Time: lineage_hash=bdf66cee5e71, pipeline_lineage_hash=68a161c3f9c1
-[23:44:53.674] [INFO] [save] subject=03, trial=01: Time (lineage) saved in 0.012s
-[23:44:53.678] [DEBUG] save(Time): record_id=c006d5660dbb, content_hash=c20e295704b0, serialization=native
-[23:44:53.681] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=c006d5660dbb
-[23:44:53.683] [DEBUG] _save_record_metadata: Time, record_id=c006d5660dbb, schema_id=13
-[23:44:53.684] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=aeff539747a1
-[23:44:53.686] [DEBUG] save(Time): transaction committed
-[23:44:53.686] [INFO] [save-lineage] Time: record_id=c006d5660dbb
-[23:44:53.686] [DEBUG] [save-lineage] Time: lineage_hash=70f5fae2a295, pipeline_lineage_hash=aeff539747a1
-[23:44:53.688] [INFO] [save] subject=03, trial=02: Time (lineage) saved in 0.009s
-[23:44:53.691] [DEBUG] save(Time): record_id=96500fdf3a54, content_hash=d2d3591a4621, serialization=native
-[23:44:53.695] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=96500fdf3a54
-[23:44:53.696] [DEBUG] _save_record_metadata: Time, record_id=96500fdf3a54, schema_id=14
-[23:44:53.698] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=79251da091e1
-[23:44:53.699] [DEBUG] save(Time): transaction committed
-[23:44:53.699] [INFO] [save-lineage] Time: record_id=96500fdf3a54
-[23:44:53.699] [DEBUG] [save-lineage] Time: lineage_hash=589787670453, pipeline_lineage_hash=79251da091e1
-[23:44:53.701] [INFO] [save] subject=03, trial=03: Time (lineage) saved in 0.009s
-[23:44:53.705] [DEBUG] save(Time): record_id=d5c22b66ea6b, content_hash=7aaeec570aaf, serialization=native
-[23:44:53.709] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=d5c22b66ea6b
-[23:44:53.710] [DEBUG] _save_record_metadata: Time, record_id=d5c22b66ea6b, schema_id=15
-[23:44:53.712] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=f7bba6adc2ed
-[23:44:53.714] [DEBUG] save(Time): transaction committed
-[23:44:53.714] [INFO] [save-lineage] Time: record_id=d5c22b66ea6b
-[23:44:53.714] [DEBUG] [save-lineage] Time: lineage_hash=95f702a31a94, pipeline_lineage_hash=f7bba6adc2ed
-[23:44:53.716] [INFO] [save] subject=03, trial=04: Time (lineage) saved in 0.009s
-[23:44:53.720] [DEBUG] save(Time): record_id=b1c4a8c71855, content_hash=205901ea2c49, serialization=native
-[23:44:53.723] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=b1c4a8c71855
-[23:44:53.725] [DEBUG] _save_record_metadata: Time, record_id=b1c4a8c71855, schema_id=16
-[23:44:53.726] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=8787cd650c08
-[23:44:53.728] [DEBUG] save(Time): transaction committed
-[23:44:53.728] [INFO] [save-lineage] Time: record_id=b1c4a8c71855
-[23:44:53.728] [DEBUG] [save-lineage] Time: lineage_hash=6b73436e9daf, pipeline_lineage_hash=8787cd650c08
-[23:44:53.730] [INFO] [save] subject=03, trial=05: Time (lineage) saved in 0.009s
-[23:44:53.737] [INFO] save_results: saved all outputs in 0.265s
-[23:44:53.747] [DEBUG] save(Force_Left): record_id=245988a2aecc, content_hash=a5fc363096fb, serialization=native
-[23:44:53.751] [DEBUG] _save_native: created table 'Force_Left_data'
-[23:44:53.752] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=245988a2aecc
-[23:44:53.756] [DEBUG] _save_record_metadata: Force_Left, record_id=245988a2aecc, schema_id=1
-[23:44:53.759] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=2f3c11de16ab
-[23:44:53.764] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.765] [INFO] [save-lineage] Force_Left: record_id=245988a2aecc
-[23:44:53.765] [DEBUG] [save-lineage] Force_Left: lineage_hash=5a3b54522178, pipeline_lineage_hash=2f3c11de16ab
-[23:44:53.767] [INFO] [save] subject=01, trial=01: Force_Left (lineage) saved in 0.019s
-[23:44:53.775] [DEBUG] save(Force_Left): record_id=5e427612f773, content_hash=d38f2f79171c, serialization=native
-[23:44:53.782] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=5e427612f773
-[23:44:53.785] [DEBUG] _save_record_metadata: Force_Left, record_id=5e427612f773, schema_id=2
-[23:44:53.789] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=d383560c742f
-[23:44:53.792] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.792] [INFO] [save-lineage] Force_Left: record_id=5e427612f773
-[23:44:53.792] [DEBUG] [save-lineage] Force_Left: lineage_hash=2dd717f290c9, pipeline_lineage_hash=d383560c742f
-[23:44:53.794] [INFO] [save] subject=01, trial=02: Force_Left (lineage) saved in 0.017s
-[23:44:53.799] [DEBUG] save(Force_Left): record_id=db1cb0038fd5, content_hash=d12b7fae1a96, serialization=native
-[23:44:53.803] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=db1cb0038fd5
-[23:44:53.805] [DEBUG] _save_record_metadata: Force_Left, record_id=db1cb0038fd5, schema_id=3
-[23:44:53.807] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=c69b0ca81793
-[23:44:53.808] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.808] [INFO] [save-lineage] Force_Left: record_id=db1cb0038fd5
-[23:44:53.809] [DEBUG] [save-lineage] Force_Left: lineage_hash=2562621c6fd9, pipeline_lineage_hash=c69b0ca81793
-[23:44:53.810] [INFO] [save] subject=01, trial=03: Force_Left (lineage) saved in 0.010s
-[23:44:53.815] [DEBUG] save(Force_Left): record_id=05ecd55e51af, content_hash=6e173a217c00, serialization=native
-[23:44:53.819] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=05ecd55e51af
-[23:44:53.820] [DEBUG] _save_record_metadata: Force_Left, record_id=05ecd55e51af, schema_id=4
-[23:44:53.822] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=6366d2eec561
-[23:44:53.824] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.824] [INFO] [save-lineage] Force_Left: record_id=05ecd55e51af
-[23:44:53.824] [DEBUG] [save-lineage] Force_Left: lineage_hash=c3f7e5b96ff2, pipeline_lineage_hash=6366d2eec561
-[23:44:53.825] [INFO] [save] subject=01, trial=04: Force_Left (lineage) saved in 0.009s
-[23:44:53.829] [DEBUG] save(Force_Left): record_id=875400424e51, content_hash=fc65a8fa7f44, serialization=native
-[23:44:53.833] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=875400424e51
-[23:44:53.834] [DEBUG] _save_record_metadata: Force_Left, record_id=875400424e51, schema_id=5
-[23:44:53.836] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=acfc41c5b134
-[23:44:53.838] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.838] [INFO] [save-lineage] Force_Left: record_id=875400424e51
-[23:44:53.838] [DEBUG] [save-lineage] Force_Left: lineage_hash=9f475fcd86ae, pipeline_lineage_hash=acfc41c5b134
-[23:44:53.839] [INFO] [save] subject=01, trial=05: Force_Left (lineage) saved in 0.009s
-[23:44:53.845] [DEBUG] save(Force_Left): record_id=bc709c39bfa9, content_hash=524713f0c2cf, serialization=native
-[23:44:53.849] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=bc709c39bfa9
-[23:44:53.850] [DEBUG] _save_record_metadata: Force_Left, record_id=bc709c39bfa9, schema_id=7
-[23:44:53.852] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=ac3e2225cfa3
-[23:44:53.854] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.854] [INFO] [save-lineage] Force_Left: record_id=bc709c39bfa9
-[23:44:53.854] [DEBUG] [save-lineage] Force_Left: lineage_hash=76d4d6fe75ce, pipeline_lineage_hash=ac3e2225cfa3
-[23:44:53.855] [INFO] [save] subject=02, trial=01: Force_Left (lineage) saved in 0.010s
-[23:44:53.860] [DEBUG] save(Force_Left): record_id=26c37ecfb2a4, content_hash=de4453fded99, serialization=native
-[23:44:53.864] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=26c37ecfb2a4
-[23:44:53.866] [DEBUG] _save_record_metadata: Force_Left, record_id=26c37ecfb2a4, schema_id=8
-[23:44:53.867] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=90cff4887f34
-[23:44:53.869] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.869] [INFO] [save-lineage] Force_Left: record_id=26c37ecfb2a4
-[23:44:53.869] [DEBUG] [save-lineage] Force_Left: lineage_hash=8d0d3322482d, pipeline_lineage_hash=90cff4887f34
-[23:44:53.870] [INFO] [save] subject=02, trial=02: Force_Left (lineage) saved in 0.010s
-[23:44:53.875] [DEBUG] save(Force_Left): record_id=62fd2a13dceb, content_hash=77ce1fc6e7b9, serialization=native
-[23:44:53.879] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=62fd2a13dceb
-[23:44:53.881] [DEBUG] _save_record_metadata: Force_Left, record_id=62fd2a13dceb, schema_id=9
-[23:44:53.882] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=5635877bcb6d
-[23:44:53.884] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.885] [INFO] [save-lineage] Force_Left: record_id=62fd2a13dceb
-[23:44:53.885] [DEBUG] [save-lineage] Force_Left: lineage_hash=8942a8463f42, pipeline_lineage_hash=5635877bcb6d
-[23:44:53.886] [INFO] [save] subject=02, trial=03: Force_Left (lineage) saved in 0.010s
-[23:44:53.890] [DEBUG] save(Force_Left): record_id=da2b898c4859, content_hash=a741b56566c7, serialization=native
-[23:44:53.894] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=da2b898c4859
-[23:44:53.896] [DEBUG] _save_record_metadata: Force_Left, record_id=da2b898c4859, schema_id=10
-[23:44:53.898] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=c6a51406574c
-[23:44:53.900] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.900] [INFO] [save-lineage] Force_Left: record_id=da2b898c4859
-[23:44:53.900] [DEBUG] [save-lineage] Force_Left: lineage_hash=90347d1469fd, pipeline_lineage_hash=c6a51406574c
-[23:44:53.901] [INFO] [save] subject=02, trial=04: Force_Left (lineage) saved in 0.011s
-[23:44:53.906] [DEBUG] save(Force_Left): record_id=f3de545c4fe0, content_hash=32c7e42aee9d, serialization=native
-[23:44:53.910] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=f3de545c4fe0
-[23:44:53.912] [DEBUG] _save_record_metadata: Force_Left, record_id=f3de545c4fe0, schema_id=11
-[23:44:53.914] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=cfa3fe6e064f
-[23:44:53.916] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.916] [INFO] [save-lineage] Force_Left: record_id=f3de545c4fe0
-[23:44:53.916] [DEBUG] [save-lineage] Force_Left: lineage_hash=34744584d5e2, pipeline_lineage_hash=cfa3fe6e064f
-[23:44:53.918] [INFO] [save] subject=02, trial=05: Force_Left (lineage) saved in 0.011s
-[23:44:53.926] [DEBUG] save(Force_Left): record_id=bcd755a9bbc2, content_hash=5a0b90a10ef9, serialization=native
-[23:44:53.931] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=bcd755a9bbc2
-[23:44:53.933] [DEBUG] _save_record_metadata: Force_Left, record_id=bcd755a9bbc2, schema_id=12
-[23:44:53.934] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=68a161c3f9c1
-[23:44:53.936] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.936] [INFO] [save-lineage] Force_Left: record_id=bcd755a9bbc2
-[23:44:53.936] [DEBUG] [save-lineage] Force_Left: lineage_hash=8ff4518c8a96, pipeline_lineage_hash=68a161c3f9c1
-[23:44:53.938] [INFO] [save] subject=03, trial=01: Force_Left (lineage) saved in 0.012s
-[23:44:53.941] [DEBUG] save(Force_Left): record_id=d6f445de56ef, content_hash=337c893a5ffe, serialization=native
-[23:44:53.945] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=d6f445de56ef
-[23:44:53.946] [DEBUG] _save_record_metadata: Force_Left, record_id=d6f445de56ef, schema_id=13
-[23:44:53.948] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=aeff539747a1
-[23:44:53.950] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.950] [INFO] [save-lineage] Force_Left: record_id=d6f445de56ef
-[23:44:53.950] [DEBUG] [save-lineage] Force_Left: lineage_hash=72978245b447, pipeline_lineage_hash=aeff539747a1
-[23:44:53.951] [INFO] [save] subject=03, trial=02: Force_Left (lineage) saved in 0.009s
-[23:44:53.956] [DEBUG] save(Force_Left): record_id=75e93b1ce0c0, content_hash=dd6d4ccb7669, serialization=native
-[23:44:53.962] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=75e93b1ce0c0
-[23:44:53.963] [DEBUG] _save_record_metadata: Force_Left, record_id=75e93b1ce0c0, schema_id=14
-[23:44:53.965] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=79251da091e1
-[23:44:53.967] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.967] [INFO] [save-lineage] Force_Left: record_id=75e93b1ce0c0
-[23:44:53.967] [DEBUG] [save-lineage] Force_Left: lineage_hash=54bc20c21299, pipeline_lineage_hash=79251da091e1
-[23:44:53.968] [INFO] [save] subject=03, trial=03: Force_Left (lineage) saved in 0.012s
-[23:44:53.972] [DEBUG] save(Force_Left): record_id=66f670287329, content_hash=d1f90ff36129, serialization=native
-[23:44:53.976] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=66f670287329
-[23:44:53.978] [DEBUG] _save_record_metadata: Force_Left, record_id=66f670287329, schema_id=15
-[23:44:53.980] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=f7bba6adc2ed
-[23:44:53.982] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.982] [INFO] [save-lineage] Force_Left: record_id=66f670287329
-[23:44:53.982] [DEBUG] [save-lineage] Force_Left: lineage_hash=93d7a632e862, pipeline_lineage_hash=f7bba6adc2ed
-[23:44:53.983] [INFO] [save] subject=03, trial=04: Force_Left (lineage) saved in 0.010s
-[23:44:53.986] [DEBUG] save(Force_Left): record_id=bb5cbc47eb28, content_hash=f942d477b1ac, serialization=native
-[23:44:53.990] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=bb5cbc47eb28
-[23:44:53.991] [DEBUG] _save_record_metadata: Force_Left, record_id=bb5cbc47eb28, schema_id=16
-[23:44:53.993] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=8787cd650c08
-[23:44:53.995] [DEBUG] save(Force_Left): transaction committed
-[23:44:53.995] [INFO] [save-lineage] Force_Left: record_id=bb5cbc47eb28
-[23:44:53.995] [DEBUG] [save-lineage] Force_Left: lineage_hash=3a91f87505fb, pipeline_lineage_hash=8787cd650c08
-[23:44:53.997] [INFO] [save] subject=03, trial=05: Force_Left (lineage) saved in 0.010s
-[23:44:53.998] [INFO] save_results: saved all outputs in 0.257s
-[23:44:54.005] [DEBUG] save(Force_Right): record_id=17c0c10a640f, content_hash=8bcd8a8fb8d9, serialization=native
-[23:44:54.009] [DEBUG] _save_native: created table 'Force_Right_data'
-[23:44:54.010] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=17c0c10a640f
-[23:44:54.012] [DEBUG] _save_record_metadata: Force_Right, record_id=17c0c10a640f, schema_id=1
-[23:44:54.013] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=2f3c11de16ab
-[23:44:54.015] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.015] [INFO] [save-lineage] Force_Right: record_id=17c0c10a640f
-[23:44:54.015] [DEBUG] [save-lineage] Force_Right: lineage_hash=f435d3406027, pipeline_lineage_hash=2f3c11de16ab
-[23:44:54.016] [INFO] [save] subject=01, trial=01: Force_Right (lineage) saved in 0.011s
-[23:44:54.019] [DEBUG] save(Force_Right): record_id=3262a78cfe4d, content_hash=0e5eac276c78, serialization=native
-[23:44:54.023] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=3262a78cfe4d
-[23:44:54.024] [DEBUG] _save_record_metadata: Force_Right, record_id=3262a78cfe4d, schema_id=2
-[23:44:54.026] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=d383560c742f
-[23:44:54.027] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.027] [INFO] [save-lineage] Force_Right: record_id=3262a78cfe4d
-[23:44:54.028] [DEBUG] [save-lineage] Force_Right: lineage_hash=e306c93d278d, pipeline_lineage_hash=d383560c742f
-[23:44:54.028] [INFO] [save] subject=01, trial=02: Force_Right (lineage) saved in 0.009s
-[23:44:54.031] [DEBUG] save(Force_Right): record_id=4058312cf524, content_hash=cd69568267c9, serialization=native
-[23:44:54.034] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=4058312cf524
-[23:44:54.036] [DEBUG] _save_record_metadata: Force_Right, record_id=4058312cf524, schema_id=3
-[23:44:54.037] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=c69b0ca81793
-[23:44:54.039] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.039] [INFO] [save-lineage] Force_Right: record_id=4058312cf524
-[23:44:54.039] [DEBUG] [save-lineage] Force_Right: lineage_hash=481a276e0160, pipeline_lineage_hash=c69b0ca81793
-[23:44:54.040] [INFO] [save] subject=01, trial=03: Force_Right (lineage) saved in 0.009s
-[23:44:54.042] [DEBUG] save(Force_Right): record_id=f75e81176acc, content_hash=c900dfea90ef, serialization=native
-[23:44:54.046] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=f75e81176acc
-[23:44:54.047] [DEBUG] _save_record_metadata: Force_Right, record_id=f75e81176acc, schema_id=4
-[23:44:54.049] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=6366d2eec561
-[23:44:54.050] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.050] [INFO] [save-lineage] Force_Right: record_id=f75e81176acc
-[23:44:54.050] [DEBUG] [save-lineage] Force_Right: lineage_hash=fbeaeb795da6, pipeline_lineage_hash=6366d2eec561
-[23:44:54.051] [INFO] [save] subject=01, trial=04: Force_Right (lineage) saved in 0.009s
-[23:44:54.054] [DEBUG] save(Force_Right): record_id=a0b4324b4cf4, content_hash=11699c94633e, serialization=native
-[23:44:54.059] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=a0b4324b4cf4
-[23:44:54.060] [DEBUG] _save_record_metadata: Force_Right, record_id=a0b4324b4cf4, schema_id=5
-[23:44:54.062] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=acfc41c5b134
-[23:44:54.064] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.064] [INFO] [save-lineage] Force_Right: record_id=a0b4324b4cf4
-[23:44:54.064] [DEBUG] [save-lineage] Force_Right: lineage_hash=e28d63b5ed2f, pipeline_lineage_hash=acfc41c5b134
-[23:44:54.065] [INFO] [save] subject=01, trial=05: Force_Right (lineage) saved in 0.010s
-[23:44:54.071] [DEBUG] save(Force_Right): record_id=0d7374a1c844, content_hash=52f09aee2137, serialization=native
-[23:44:54.076] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=0d7374a1c844
-[23:44:54.077] [DEBUG] _save_record_metadata: Force_Right, record_id=0d7374a1c844, schema_id=7
-[23:44:54.079] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=ac3e2225cfa3
-[23:44:54.081] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.081] [INFO] [save-lineage] Force_Right: record_id=0d7374a1c844
-[23:44:54.081] [DEBUG] [save-lineage] Force_Right: lineage_hash=8c564cee47d5, pipeline_lineage_hash=ac3e2225cfa3
-[23:44:54.082] [INFO] [save] subject=02, trial=01: Force_Right (lineage) saved in 0.010s
-[23:44:54.084] [DEBUG] save(Force_Right): record_id=c1c37aac1e4a, content_hash=d4b6e80370fe, serialization=native
-[23:44:54.088] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=c1c37aac1e4a
-[23:44:54.089] [DEBUG] _save_record_metadata: Force_Right, record_id=c1c37aac1e4a, schema_id=8
-[23:44:54.091] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=90cff4887f34
-[23:44:54.092] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.093] [INFO] [save-lineage] Force_Right: record_id=c1c37aac1e4a
-[23:44:54.093] [DEBUG] [save-lineage] Force_Right: lineage_hash=dfe74b6442a1, pipeline_lineage_hash=90cff4887f34
-[23:44:54.094] [INFO] [save] subject=02, trial=02: Force_Right (lineage) saved in 0.009s
-[23:44:54.096] [DEBUG] save(Force_Right): record_id=df74cd130a76, content_hash=7640034b54c5, serialization=native
-[23:44:54.099] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=df74cd130a76
-[23:44:54.100] [DEBUG] _save_record_metadata: Force_Right, record_id=df74cd130a76, schema_id=9
-[23:44:54.102] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=5635877bcb6d
-[23:44:54.104] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.104] [INFO] [save-lineage] Force_Right: record_id=df74cd130a76
-[23:44:54.104] [DEBUG] [save-lineage] Force_Right: lineage_hash=a2128e36200e, pipeline_lineage_hash=5635877bcb6d
-[23:44:54.105] [INFO] [save] subject=02, trial=03: Force_Right (lineage) saved in 0.009s
-[23:44:54.106] [DEBUG] save(Force_Right): record_id=ff3264a75b97, content_hash=aa84c875d50c, serialization=native
-[23:44:54.110] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=ff3264a75b97
-[23:44:54.111] [DEBUG] _save_record_metadata: Force_Right, record_id=ff3264a75b97, schema_id=10
-[23:44:54.113] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=c6a51406574c
-[23:44:54.114] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.114] [INFO] [save-lineage] Force_Right: record_id=ff3264a75b97
-[23:44:54.114] [DEBUG] [save-lineage] Force_Right: lineage_hash=32f5a291e784, pipeline_lineage_hash=c6a51406574c
-[23:44:54.115] [INFO] [save] subject=02, trial=04: Force_Right (lineage) saved in 0.008s
-[23:44:54.117] [DEBUG] save(Force_Right): record_id=698711b4c491, content_hash=39e521593f8f, serialization=native
-[23:44:54.121] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=698711b4c491
-[23:44:54.122] [DEBUG] _save_record_metadata: Force_Right, record_id=698711b4c491, schema_id=11
-[23:44:54.124] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=cfa3fe6e064f
-[23:44:54.125] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.125] [INFO] [save-lineage] Force_Right: record_id=698711b4c491
-[23:44:54.125] [DEBUG] [save-lineage] Force_Right: lineage_hash=236711291a56, pipeline_lineage_hash=cfa3fe6e064f
-[23:44:54.126] [INFO] [save] subject=02, trial=05: Force_Right (lineage) saved in 0.009s
-[23:44:54.128] [DEBUG] save(Force_Right): record_id=5230d1b45b0e, content_hash=95899b30a21f, serialization=native
-[23:44:54.132] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=5230d1b45b0e
-[23:44:54.133] [DEBUG] _save_record_metadata: Force_Right, record_id=5230d1b45b0e, schema_id=12
-[23:44:54.135] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=68a161c3f9c1
-[23:44:54.136] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.136] [INFO] [save-lineage] Force_Right: record_id=5230d1b45b0e
-[23:44:54.136] [DEBUG] [save-lineage] Force_Right: lineage_hash=631033c912e4, pipeline_lineage_hash=68a161c3f9c1
-[23:44:54.137] [INFO] [save] subject=03, trial=01: Force_Right (lineage) saved in 0.009s
-[23:44:54.139] [DEBUG] save(Force_Right): record_id=d199d5a6850d, content_hash=f12dbdf33d5e, serialization=native
-[23:44:54.142] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=d199d5a6850d
-[23:44:54.144] [DEBUG] _save_record_metadata: Force_Right, record_id=d199d5a6850d, schema_id=13
-[23:44:54.145] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=aeff539747a1
-[23:44:54.147] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.147] [INFO] [save-lineage] Force_Right: record_id=d199d5a6850d
-[23:44:54.147] [DEBUG] [save-lineage] Force_Right: lineage_hash=682fc3863743, pipeline_lineage_hash=aeff539747a1
-[23:44:54.148] [INFO] [save] subject=03, trial=02: Force_Right (lineage) saved in 0.009s
-[23:44:54.151] [DEBUG] save(Force_Right): record_id=159e4767f615, content_hash=7294c06267d6, serialization=native
-[23:44:54.154] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=159e4767f615
-[23:44:54.156] [DEBUG] _save_record_metadata: Force_Right, record_id=159e4767f615, schema_id=14
-[23:44:54.158] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=79251da091e1
-[23:44:54.160] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.160] [INFO] [save-lineage] Force_Right: record_id=159e4767f615
-[23:44:54.160] [DEBUG] [save-lineage] Force_Right: lineage_hash=19b0f494b1ba, pipeline_lineage_hash=79251da091e1
-[23:44:54.161] [INFO] [save] subject=03, trial=03: Force_Right (lineage) saved in 0.010s
-[23:44:54.164] [DEBUG] save(Force_Right): record_id=834e08719f8e, content_hash=9932efb6bcdc, serialization=native
-[23:44:54.167] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=834e08719f8e
-[23:44:54.169] [DEBUG] _save_record_metadata: Force_Right, record_id=834e08719f8e, schema_id=15
-[23:44:54.171] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=f7bba6adc2ed
-[23:44:54.173] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.173] [INFO] [save-lineage] Force_Right: record_id=834e08719f8e
-[23:44:54.173] [DEBUG] [save-lineage] Force_Right: lineage_hash=89fcdaa60bc7, pipeline_lineage_hash=f7bba6adc2ed
-[23:44:54.174] [INFO] [save] subject=03, trial=04: Force_Right (lineage) saved in 0.010s
-[23:44:54.176] [DEBUG] save(Force_Right): record_id=ef8f643a9246, content_hash=f7b144442e25, serialization=native
-[23:44:54.180] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=ef8f643a9246
-[23:44:54.181] [DEBUG] _save_record_metadata: Force_Right, record_id=ef8f643a9246, schema_id=16
-[23:44:54.183] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=8787cd650c08
-[23:44:54.185] [DEBUG] save(Force_Right): transaction committed
-[23:44:54.185] [INFO] [save-lineage] Force_Right: record_id=ef8f643a9246
-[23:44:54.185] [DEBUG] [save-lineage] Force_Right: lineage_hash=7560bf37935c, pipeline_lineage_hash=8787cd650c08
-[23:44:54.186] [INFO] [save] subject=03, trial=05: Force_Right (lineage) saved in 0.009s
-[23:44:54.187] [INFO] save_results: saved all outputs in 0.188s
-[23:44:54.215] [INFO] MATLAB: db.close — DuckDB lock RELEASED: 
-[23:44:56.370] [DEBUG] RPC >> get_pipeline()
-[23:44:56.370] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
-[23:44:56.381] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=True
-[23:44:56.384] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 3 pipeline variants from DB
-[23:44:56.391] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 3 variants → 3 var types, 1 functions, 0 constants, 0 path inputs
-[23:44:56.402] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=6c89d10bcf06 unpack=False hash=d0e4ce44172d
-[23:44:56.411] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.413] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.416] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.417] [DEBUG] [scihist.state] up_to_date: subject=02, trial=01 (lineage, deep walk clean)
-[23:44:56.419] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.421] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.423] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.424] [DEBUG] [scihist.state] up_to_date: subject=02, trial=05 (lineage, deep walk clean)
-[23:44:56.427] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.429] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.432] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.433] [DEBUG] [scihist.state] up_to_date: subject=03, trial=01 (lineage, deep walk clean)
-[23:44:56.436] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.438] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.441] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.442] [DEBUG] [scihist.state] up_to_date: subject=03, trial=02 (lineage, deep walk clean)
-[23:44:56.444] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.447] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.449] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.450] [DEBUG] [scihist.state] up_to_date: subject=03, trial=03 (lineage, deep walk clean)
-[23:44:56.452] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.454] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.456] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.457] [DEBUG] [scihist.state] up_to_date: subject=01, trial=02 (lineage, deep walk clean)
-[23:44:56.459] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.461] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.463] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.465] [DEBUG] [scihist.state] up_to_date: subject=02, trial=03 (lineage, deep walk clean)
-[23:44:56.467] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.469] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.471] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.472] [DEBUG] [scihist.state] up_to_date: subject=02, trial=04 (lineage, deep walk clean)
-[23:44:56.474] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.477] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.479] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.480] [DEBUG] [scihist.state] up_to_date: subject=01, trial=05 (lineage, deep walk clean)
-[23:44:56.482] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.484] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.486] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.487] [DEBUG] [scihist.state] up_to_date: subject=03, trial=04 (lineage, deep walk clean)
-[23:44:56.489] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.491] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.493] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.494] [DEBUG] [scihist.state] up_to_date: subject=03, trial=05 (lineage, deep walk clean)
-[23:44:56.496] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.498] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.500] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.501] [DEBUG] [scihist.state] up_to_date: subject=01, trial=01 (lineage, deep walk clean)
-[23:44:56.503] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.505] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.507] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.508] [DEBUG] [scihist.state] up_to_date: subject=01, trial=03 (lineage, deep walk clean)
-[23:44:56.510] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.512] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.514] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.515] [DEBUG] [scihist.state] up_to_date: subject=01, trial=04 (lineage, deep walk clean)
-[23:44:56.517] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:56.519] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:56.521] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:56.522] [DEBUG] [scihist.state] up_to_date: subject=02, trial=02 (lineage, deep walk clean)
-[23:44:56.522] [DEBUG] [scihist.state] node load_csv: grey (up_to_date=15, stale=0, missing=1)
-[23:44:56.523] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): grey (up_to_date=15, stale=0, missing=1)
-[23:44:56.523] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 1 functions in 121.9ms (0 green, 1 grey, 0 red)
-[23:44:56.527] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
-[23:44:56.527] [DEBUG] [scistack_gui.domain.graph_builder] [graph_builder] matlab fn=load_csv handles=['time', 'force_left', 'force_right'] param→class={'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}
-[23:44:56.529] [DEBUG] [scistack_gui.domain.graph_builder] merge_manual_nodes: graduating 4 node(s): [('fn__load_csv__hrao05', 'fn__load_csv'), ('var__Force_Right__0frowu', 'var__Force_Right'), ('var__Force_Left__gjmmur', 'var__Force_Left'), ('var__Time__7560rf', 'var__Time')]
-[23:44:56.535] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 7 edges
-[23:44:56.535] [DEBUG] RPC << get_pipeline OK (165.4ms)
-[23:44:56.535] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:44:56.537] [DEBUG] RPC >> get_layout()
-[23:44:56.537] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:44:56.539] [DEBUG] RPC << get_layout OK (1.9ms)
-[23:44:56.539] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:44:58.687] [DEBUG] RPC >> get_pipeline()
-[23:44:58.687] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:44:58.692] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 3 pipeline variants from DB
-[23:44:58.693] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 3 variants → 3 var types, 1 functions, 0 constants, 0 path inputs
-[23:44:58.700] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=6c89d10bcf06 unpack=False hash=d0e4ce44172d
-[23:44:58.706] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.709] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.711] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.712] [DEBUG] [scihist.state] up_to_date: subject=01, trial=01 (lineage, deep walk clean)
-[23:44:58.714] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.716] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.718] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.720] [DEBUG] [scihist.state] up_to_date: subject=01, trial=03 (lineage, deep walk clean)
-[23:44:58.722] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.724] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.726] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.728] [DEBUG] [scihist.state] up_to_date: subject=01, trial=04 (lineage, deep walk clean)
-[23:44:58.730] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.732] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.734] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.735] [DEBUG] [scihist.state] up_to_date: subject=02, trial=02 (lineage, deep walk clean)
-[23:44:58.737] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.739] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.742] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.743] [DEBUG] [scihist.state] up_to_date: subject=02, trial=04 (lineage, deep walk clean)
-[23:44:58.745] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.747] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.749] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.750] [DEBUG] [scihist.state] up_to_date: subject=01, trial=05 (lineage, deep walk clean)
-[23:44:58.753] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.755] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.758] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.759] [DEBUG] [scihist.state] up_to_date: subject=03, trial=04 (lineage, deep walk clean)
-[23:44:58.761] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.763] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.765] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.767] [DEBUG] [scihist.state] up_to_date: subject=03, trial=05 (lineage, deep walk clean)
-[23:44:58.769] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.771] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.774] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.775] [DEBUG] [scihist.state] up_to_date: subject=01, trial=02 (lineage, deep walk clean)
-[23:44:58.777] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.780] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.783] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.784] [DEBUG] [scihist.state] up_to_date: subject=02, trial=03 (lineage, deep walk clean)
-[23:44:58.786] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.788] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.790] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.792] [DEBUG] [scihist.state] up_to_date: subject=03, trial=03 (lineage, deep walk clean)
-[23:44:58.794] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.797] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.799] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.800] [DEBUG] [scihist.state] up_to_date: subject=02, trial=01 (lineage, deep walk clean)
-[23:44:58.803] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.805] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.807] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.808] [DEBUG] [scihist.state] up_to_date: subject=02, trial=05 (lineage, deep walk clean)
-[23:44:58.811] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.813] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.816] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.817] [DEBUG] [scihist.state] up_to_date: subject=03, trial=01 (lineage, deep walk clean)
-[23:44:58.819] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
-[23:44:58.822] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
-[23:44:58.824] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
-[23:44:58.825] [DEBUG] [scihist.state] up_to_date: subject=03, trial=02 (lineage, deep walk clean)
-[23:44:58.825] [DEBUG] [scihist.state] node load_csv: grey (up_to_date=15, stale=0, missing=1)
-[23:44:58.825] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): grey (up_to_date=15, stale=0, missing=1)
-[23:44:58.825] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 1 functions in 125.8ms (0 green, 1 grey, 0 red)
-[23:44:58.827] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
-[23:44:58.828] [DEBUG] [scistack_gui.domain.graph_builder] [graph_builder] matlab fn=load_csv handles=['time', 'force_left', 'force_right'] param→class={'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}
-[23:44:58.829] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 7 edges
-[23:44:58.830] [DEBUG] RPC << get_pipeline OK (142.4ms)
-[23:44:58.830] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:44:58.831] [DEBUG] RPC >> get_layout()
-[23:44:58.831] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:44:58.833] [DEBUG] RPC << get_layout OK (1.9ms)
-[23:44:58.833] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
-[23:47:45.788] [DEBUG] RPC >> generate_matlab_command(function_name=load_csv, variants=[], run_id=oqm5tkdh, schema_filter=None, schema_level=None, run_options=None, where_fil...)
-[23:47:45.790] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
-[23:47:45.794] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: editable install at file:///Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab
-[23:47:45.794] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: found /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
-[23:47:45.795] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: prepended sci-matlab dir: /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
-[23:47:45.807] [DEBUG] RPC >> get_schema()
-[23:47:45.808] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
-[23:47:45.809] [DEBUG] RPC >> get_variables_list()
-[23:47:45.809] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=4, reopened=False
-[23:47:45.810] [DEBUG] RPC << get_variables_list OK (0.5ms)
-[23:47:45.810] [DEBUG] [scistack_gui.db] release_db_connection: refcount=3, closed=False
-[23:47:45.816] [DEBUG] RPC << get_schema OK (7.4ms)
-[23:47:45.816] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
-[23:47:45.819] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, total_variants=3, fn_variants=3, path_input_params=1, output_types=['time', 'force_left', 'force_right'], project_root=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2
-[23:47:45.820] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, command_length=4132
-[23:47:45.820] [DEBUG] RPC << generate_matlab_command OK (30.3ms)
-[23:47:45.820] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:04.195] [INFO] configure_database: path=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb, schema_keys=['subject', 'trial']
+[00:39:04.197] [DEBUG] [scistack_gui.startup] No pyproject.toml at /Users/mitchelltillman/Documents/Stroke-R01-Aim-2 — skipping lockfile staleness check
+[00:39:04.197] [DEBUG] [scistack_gui.db] close_initial_connection: releasing startup lock
+[00:39:04.200] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:04.424] [DEBUG] RPC >> get_pipeline()
+[00:39:04.424] [DEBUG] RPC >> get_info()
+[00:39:04.425] [DEBUG] RPC >> get_schema()
+[00:39:04.425] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:04.432] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:04.432] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:04.432] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:39:04.433] [DEBUG] RPC << get_info OK (8.1ms)
+[00:39:04.433] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:39:04.434] [DEBUG] RPC << get_schema OK (9.5ms)
+[00:39:04.435] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:04.779] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:04.781] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:04.782] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:04.784] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
+[00:39:04.786] [DEBUG] [scistack_gui.api.pipeline] graph built: 0 nodes (), 0 edges
+[00:39:04.786] [DEBUG] RPC << get_pipeline OK (361.2ms)
+[00:39:04.788] [DEBUG] RPC >> get_layout()
+[00:39:04.788] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:04.789] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:04.789] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:04.797] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:04.799] [DEBUG] RPC << get_layout OK (11.0ms)
+[00:39:04.800] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:04.801] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:06.951] [DEBUG] RPC >> get_pipeline()
+[00:39:06.951] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:06.959] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:06.961] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:06.962] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:06.963] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:06.965] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
+[00:39:06.967] [DEBUG] [scistack_gui.api.pipeline] graph built: 0 nodes (), 0 edges
+[00:39:06.967] [DEBUG] RPC << get_pipeline OK (16.4ms)
+[00:39:06.969] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:06.969] [DEBUG] RPC >> get_layout()
+[00:39:06.969] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:06.969] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:06.977] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:06.979] [DEBUG] RPC << get_layout OK (9.6ms)
+[00:39:06.980] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:06.980] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:07.500] [DEBUG] RPC >> get_registry()
+[00:39:07.502] [DEBUG] RPC >> get_constants()
+[00:39:07.503] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:07.503] [DEBUG] RPC >> get_path_inputs()
+[00:39:07.521] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:07.521] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
+[00:39:07.522] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:07.522] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
+[00:39:07.522] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:39:07.522] [DEBUG] RPC << get_registry OK (19.4ms)
+[00:39:07.523] [DEBUG] RPC << get_path_inputs OK (18.5ms)
+[00:39:07.523] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:39:07.523] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:07.525] [DEBUG] RPC << get_constants OK (21.4ms)
+[00:39:07.528] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:07.528] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:09.384] [DEBUG] RPC >> get_function_params(name=load_csv)
+[00:39:09.386] [DEBUG] RPC >> put_layout(node_id=fn__load_csv__gddvp7, x=410, y=208, node_type=functionNode, label=load_csv)
+[00:39:09.386] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:09.403] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:09.404] [DEBUG] RPC << get_function_params OK (18.0ms)
+[00:39:09.404] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:09.404] [INFO] [scistack_gui.services.layout_service] Function node placed: 'load_csv' (MATLAB, n_outputs=3, output_names=['time', 'force_left', 'force_right'])
+[00:39:09.404] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:09.413] [DEBUG] RPC << put_layout OK (27.1ms)
+[00:39:09.419] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:09.419] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:11.133] [DEBUG] RPC >> put_layout(node_id=fn__load_csv__gddvp7, x=328.5, y=196)
+[00:39:11.133] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:11.141] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:11.142] [DEBUG] RPC << put_layout OK (8.7ms)
+[00:39:11.143] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:11.143] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:11.568] [DEBUG] RPC >> get_pipeline()
+[00:39:11.569] [DEBUG] RPC >> get_registry()
+[00:39:11.570] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:11.570] [DEBUG] RPC >> get_path_inputs()
+[00:39:11.586] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:11.587] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:11.587] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
+[00:39:11.588] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:39:11.588] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
+[00:39:11.588] [DEBUG] RPC << get_path_inputs OK (17.1ms)
+[00:39:11.588] [DEBUG] RPC << get_registry OK (17.6ms)
+[00:39:11.589] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:39:11.589] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:11.590] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:11.591] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:11.593] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:11.597] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
+[00:39:11.600] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
+[00:39:11.600] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
+[00:39:11.601] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
+[00:39:11.601] [DEBUG] [scistack_gui.api.pipeline] graph built: 1 nodes (1 functionNode), 0 edges
+[00:39:11.601] [DEBUG] RPC << get_pipeline OK (30.8ms)
+[00:39:11.603] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:11.603] [DEBUG] RPC >> get_layout()
+[00:39:11.603] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:11.604] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:11.613] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:11.615] [DEBUG] RPC << get_layout OK (12.0ms)
+[00:39:11.617] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:11.617] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:20.725] [DEBUG] RPC >> put_layout(node_id=var__Time__ti1no6, x=657.3812802699925, y=120.97326451945007, node_type=variableNode, label=Time)
+[00:39:20.726] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:20.745] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:20.745] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='var__Time__ti1no6', type='variableNode', label='Time', position=(657.4, 121.0)
+[00:39:20.752] [DEBUG] RPC << put_layout OK (26.0ms)
+[00:39:20.758] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:20.758] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:22.912] [DEBUG] RPC >> get_pipeline()
+[00:39:22.914] [DEBUG] RPC >> get_registry()
+[00:39:22.915] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:22.915] [DEBUG] RPC >> get_path_inputs()
+[00:39:22.934] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:22.935] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:22.935] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
+[00:39:22.936] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:39:22.936] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
+[00:39:22.936] [DEBUG] RPC << get_path_inputs OK (20.4ms)
+[00:39:22.937] [DEBUG] RPC << get_registry OK (21.4ms)
+[00:39:22.937] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:39:22.938] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:22.939] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:22.941] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:22.943] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:22.947] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
+[00:39:22.951] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
+[00:39:22.951] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
+[00:39:22.951] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
+[00:39:22.951] [DEBUG] [scistack_gui.api.pipeline] graph built: 2 nodes (1 functionNode, 1 variableNode), 0 edges
+[00:39:22.951] [DEBUG] RPC << get_pipeline OK (36.5ms)
+[00:39:22.953] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:22.954] [DEBUG] RPC >> get_layout()
+[00:39:22.954] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:22.954] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:22.965] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:22.968] [DEBUG] RPC << get_layout OK (14.5ms)
+[00:39:22.970] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:22.970] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:23.670] [DEBUG] RPC >> put_layout(node_id=var__Force_Left__owvqta, x=704.1051930927312, y=210.93423099905124, node_type=variableNode, label=Force_Left)
+[00:39:23.671] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:23.689] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:23.690] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='var__Force_Left__owvqta', type='variableNode', label='Force_Left', position=(704.1, 210.9)
+[00:39:23.696] [DEBUG] RPC << put_layout OK (25.6ms)
+[00:39:23.702] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:23.703] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:25.295] [DEBUG] RPC >> put_layout(node_id=var__Force_Right__m5gann, x=676.210319765723, y=321.11898064073324, node_type=variableNode, label=Force_Right)
+[00:39:25.296] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:25.308] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:25.309] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='var__Force_Right__m5gann', type='variableNode', label='Force_Right', position=(676.2, 321.1)
+[00:39:25.314] [DEBUG] RPC << put_layout OK (18.6ms)
+[00:39:25.319] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:25.319] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:26.196] [DEBUG] RPC >> put_layout(node_id=var__Force_Right__m5gann, x=653.1970492709413, y=308.5662876435796)
+[00:39:26.197] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:26.204] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:26.205] [DEBUG] RPC << put_layout OK (8.8ms)
+[00:39:26.207] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:26.207] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:27.117] [DEBUG] RPC >> put_layout(node_id=var__Force_Left__owvqta, x=653.8944211041164, y=206.0526281668248)
+[00:39:27.118] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:27.125] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:27.126] [DEBUG] RPC << put_layout OK (8.2ms)
+[00:39:27.127] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:27.127] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:27.394] [DEBUG] RPC >> get_pipeline()
+[00:39:27.395] [DEBUG] RPC >> get_registry()
+[00:39:27.396] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:27.397] [DEBUG] RPC >> get_path_inputs()
+[00:39:27.413] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:27.414] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:27.414] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
+[00:39:27.414] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:39:27.415] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
+[00:39:27.415] [DEBUG] RPC << get_registry OK (17.8ms)
+[00:39:27.415] [DEBUG] RPC << get_path_inputs OK (17.4ms)
+[00:39:27.415] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:39:27.416] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:27.417] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:27.419] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:27.421] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:27.424] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={}
+[00:39:27.427] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=[] constants=set() unmatched=0
+[00:39:27.427] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=[]
+[00:39:27.427] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: no inferred outputs, defaulting to red
+[00:39:27.427] [DEBUG] [scistack_gui.api.pipeline] graph built: 4 nodes (1 functionNode, 3 variableNode), 0 edges
+[00:39:27.428] [DEBUG] RPC << get_pipeline OK (31.5ms)
+[00:39:27.430] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:27.430] [DEBUG] RPC >> get_layout()
+[00:39:27.430] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:27.430] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:27.441] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:27.444] [DEBUG] RPC << get_layout OK (13.7ms)
+[00:39:27.445] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:27.446] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:28.712] [DEBUG] RPC >> put_edge(edge_id=manual__zsxb80, source=fn__load_csv__gddvp7, target=var__Time__ti1no6, source_handle=out__time, target_handle=No...)
+[00:39:28.713] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:28.733] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:28.739] [DEBUG] RPC << put_edge OK (26.2ms)
+[00:39:28.746] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:28.746] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:30.342] [DEBUG] RPC >> put_edge(edge_id=manual__arll7a, source=fn__load_csv__gddvp7, target=var__Force_Left__owvqta, source_handle=out__force_left, targ...)
+[00:39:30.342] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:30.355] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:30.359] [DEBUG] RPC << put_edge OK (16.6ms)
+[00:39:30.364] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:30.364] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:32.097] [DEBUG] RPC >> put_edge(edge_id=manual__3d651q, source=fn__load_csv__gddvp7, target=var__Force_Right__m5gann, source_handle=out__force_right, ta...)
+[00:39:32.097] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:32.106] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:32.108] [DEBUG] RPC << put_edge OK (11.5ms)
+[00:39:32.113] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:32.113] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:34.181] [DEBUG] RPC >> get_pipeline()
+[00:39:34.182] [DEBUG] RPC >> get_registry()
+[00:39:34.182] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:34.183] [DEBUG] RPC >> get_path_inputs()
+[00:39:34.190] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:34.191] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:34.191] [INFO] [scistack_gui.services.pipeline_service] get_registry: 0 python fns, 15 matlab fns, 36 vars
+[00:39:34.191] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:39:34.191] [INFO] [scistack_gui.services.pipeline_service] matlab_functions: ['LRtoUA', 'computeCohensD', 'getSubjectGroupingFromRandomization', 'load10MWTREDCapReport', 'loadFunctionalOutcomesREDCapReport', 'loadMVCAllInterventions', 'loadMVCOneIntervention', 'loadTXParametersREDCApReport', 'load_csv', 'mapEventsTX', 'meanChangeFromReference', 'plot10MWTOneSubject', 'plotPerSessionPerSubject', 'plotPerSessionPerSubjectMeanDiffsPerSide', 'plotTrainingVariablesOverTimeOneSubject']
+[00:39:34.191] [DEBUG] RPC << get_registry OK (8.8ms)
+[00:39:34.191] [DEBUG] RPC << get_path_inputs OK (8.6ms)
+[00:39:34.192] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:39:34.192] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:34.193] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:34.194] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:34.195] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:34.197] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
+[00:39:34.200] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=['Time', 'Force_Left', 'Force_Right'] constants=set() unmatched=0
+[00:39:34.200] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=['Time', 'Force_Left', 'Force_Right']
+[00:39:34.202] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=387621759246 unpack=False hash=ce634fb42246
+[00:39:34.204] [DEBUG] [scihist.state] node load_csv: red (up_to_date=0, stale=0, missing=0)
+[00:39:34.204] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): red (up_to_date=0, stale=0, missing=0)
+[00:39:34.204] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: computed state=red (outputs=['Time', 'Force_Left', 'Force_Right'])
+[00:39:34.204] [DEBUG] [scistack_gui.api.pipeline] graph built: 4 nodes (1 functionNode, 3 variableNode), 3 edges
+[00:39:34.204] [DEBUG] RPC << get_pipeline OK (22.3ms)
+[00:39:34.206] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:34.206] [DEBUG] RPC >> get_layout()
+[00:39:34.206] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:34.206] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:34.213] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:34.216] [DEBUG] RPC << get_layout OK (9.8ms)
+[00:39:34.217] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:34.218] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:37.150] [DEBUG] RPC >> create_path_input(name=test)
+[00:39:37.150] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:37.157] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:37.158] [DEBUG] [scistack_gui.services.layout_service] Node created (added to palette): type=pathInput, name='test', template='', root_folder=None
+[00:39:37.159] [DEBUG] RPC << create_path_input OK (8.5ms)
+[00:39:37.160] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:37.160] [DEBUG] RPC >> get_path_inputs()
+[00:39:37.160] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:37.161] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:37.168] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:37.168] [DEBUG] RPC << get_path_inputs OK (7.6ms)
+[00:39:37.169] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:37.169] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:39.206] [DEBUG] RPC >> put_layout(node_id=pathInput__test__mmppac, x=113.25228786438582, y=139.37046947545304, node_type=pathInputNode, label=test)
+[00:39:39.210] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:39.219] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:39.220] [DEBUG] [scistack_gui.services.layout_service] Node added to DAG: node_id='pathInput__test__mmppac', type='pathInputNode', label='test', position=(113.3, 139.4)
+[00:39:39.224] [DEBUG] RPC << put_layout OK (13.9ms)
+[00:39:39.228] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:39.228] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:40.785] [DEBUG] RPC >> put_layout(node_id=pathInput__test__mmppac, x=53.13014360385297, y=134.4289233718476)
+[00:39:40.786] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:40.805] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:40.807] [DEBUG] RPC << put_layout OK (21.7ms)
+[00:39:40.810] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:40.810] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:41.304] [DEBUG] RPC >> get_pipeline()
+[00:39:41.304] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:41.313] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:41.314] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:41.316] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:41.317] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:41.319] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
+[00:39:41.322] [DEBUG] [scistack_gui.domain.graph_builder] merge_manual_nodes: graduating 1 node(s): [('pathInput__test__mmppac', 'pathInput__test')]
+[00:39:41.324] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=['Time', 'Force_Left', 'Force_Right'] constants=set() unmatched=0
+[00:39:41.324] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=['Time', 'Force_Left', 'Force_Right']
+[00:39:41.324] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=387621759246 unpack=False hash=ce634fb42246
+[00:39:41.326] [DEBUG] [scihist.state] node load_csv: red (up_to_date=0, stale=0, missing=0)
+[00:39:41.326] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): red (up_to_date=0, stale=0, missing=0)
+[00:39:41.327] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: computed state=red (outputs=['Time', 'Force_Left', 'Force_Right'])
+[00:39:41.327] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 3 edges
+[00:39:41.327] [DEBUG] RPC << get_pipeline OK (22.9ms)
+[00:39:41.328] [DEBUG] RPC >> get_layout()
+[00:39:41.330] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:41.330] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:41.330] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:41.337] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:41.340] [DEBUG] RPC << get_layout OK (11.1ms)
+[00:39:41.341] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:41.341] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:43.491] [DEBUG] RPC >> get_pipeline()
+[00:39:43.494] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:43.501] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:43.504] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:43.506] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:43.508] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:43.513] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
+[00:39:43.517] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=['Time', 'Force_Left', 'Force_Right'] constants=set() unmatched=0
+[00:39:43.518] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=['Time', 'Force_Left', 'Force_Right']
+[00:39:43.518] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=387621759246 unpack=False hash=ce634fb42246
+[00:39:43.522] [DEBUG] [scihist.state] node load_csv: red (up_to_date=0, stale=0, missing=0)
+[00:39:43.523] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): red (up_to_date=0, stale=0, missing=0)
+[00:39:43.523] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: computed state=red (outputs=['Time', 'Force_Left', 'Force_Right'])
+[00:39:43.523] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 3 edges
+[00:39:43.523] [DEBUG] RPC << get_pipeline OK (29.6ms)
+[00:39:43.525] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:43.526] [DEBUG] RPC >> get_layout()
+[00:39:43.526] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:43.526] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:43.538] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:43.542] [DEBUG] RPC << get_layout OK (16.0ms)
+[00:39:43.544] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:43.544] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:43.906] [DEBUG] RPC >> put_edge(edge_id=manual__73t612, source=pathInput__test, target=fn__load_csv__gddvp7, source_handle=None, target_handle=in__filep...)
+[00:39:43.907] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:43.928] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:43.933] [DEBUG] RPC << put_edge OK (26.8ms)
+[00:39:43.941] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:43.941] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:46.097] [DEBUG] RPC >> get_pipeline()
+[00:39:46.097] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:46.109] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:46.111] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 0 pipeline variants from DB
+[00:39:46.112] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 0 variants → 0 var types, 0 functions, 0 constants, 0 path inputs
+[00:39:46.114] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 0 functions in 0.0ms (0 green, 0 grey, 0 red)
+[00:39:46.117] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
+[00:39:46.120] [DEBUG] [scistack_gui.domain.edge_resolver] resolve_function_edges: inputs=[] outputs=['Time', 'Force_Left', 'Force_Right'] constants=set() unmatched=0
+[00:39:46.120] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv (MATLAB): using declared output_names=['time', 'force_left', 'force_right'], edge-resolved output_types=['Time', 'Force_Left', 'Force_Right']
+[00:39:46.120] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=387621759246 unpack=False hash=ce634fb42246
+[00:39:46.123] [DEBUG] [scihist.state] node load_csv: red (up_to_date=0, stale=0, missing=0)
+[00:39:46.123] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): red (up_to_date=0, stale=0, missing=0)
+[00:39:46.123] [DEBUG] [scistack_gui.api.pipeline] manual fn load_csv: computed state=red (outputs=['Time', 'Force_Left', 'Force_Right'])
+[00:39:46.123] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 4 edges
+[00:39:46.124] [DEBUG] RPC << get_pipeline OK (26.8ms)
+[00:39:46.125] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:46.125] [DEBUG] RPC >> get_layout()
+[00:39:46.126] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:46.126] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:46.134] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:46.137] [DEBUG] RPC << get_layout OK (11.3ms)
+[00:39:46.138] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:46.139] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:54.326] [DEBUG] RPC >> update_path_input(name=test, template=data/sub{subject{/trial{trial}.csv, root_folder=None)
+[00:39:54.326] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:54.327] [DEBUG] RPC >> update_path_input(name=test, template=data/sub{subject{/trial{trial}.csv, root_folder=None)
+[00:39:54.334] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:54.334] [DEBUG] [scistack_gui.services.layout_service] PathInput updated: name='test', template='data/sub{subject{/trial{trial}.csv', root_folder=None
+[00:39:54.334] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:54.335] [DEBUG] [scistack_gui.services.layout_service] PathInput updated: name='test', template='data/sub{subject{/trial{trial}.csv', root_folder=None
+[00:39:54.335] [DEBUG] RPC << update_path_input OK (8.9ms)
+[00:39:54.335] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:54.336] [DEBUG] RPC << update_path_input OK (9.4ms)
+[00:39:54.337] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:54.337] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:56.607] [DEBUG] RPC >> get_schema()
+[00:39:56.608] [DEBUG] RPC >> get_variables_list()
+[00:39:56.608] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:56.623] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:56.624] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:39:56.624] [DEBUG] RPC << get_variables_list OK (16.2ms)
+[00:39:56.625] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:39:56.626] [DEBUG] RPC << get_schema OK (18.2ms)
+[00:39:56.628] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:56.628] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:39:56.711] [DEBUG] RPC >> get_function_source(name=load_csv)
+[00:39:56.712] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:56.726] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:39:56.726] [DEBUG] RPC << get_function_source OK (14.5ms)
+[00:39:56.728] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:39:56.729] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:40:15.057] [DEBUG] RPC >> generate_matlab_command(function_name=load_csv, variants=[], run_id=t78s3tub, schema_filter=None, schema_level=None, run_options=None, where_fil...)
+[00:40:15.058] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:15.068] [DEBUG] RPC >> get_schema()
+[00:40:15.070] [DEBUG] RPC >> get_variables_list()
+[00:40:15.077] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:40:15.079] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:40:15.080] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:40:15.081] [DEBUG] RPC << get_variables_list OK (10.1ms)
+[00:40:15.081] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:40:15.082] [DEBUG] RPC << get_schema OK (13.3ms)
+[00:40:15.082] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:40:15.093] [WARN] [scistack_gui.server] failed to start debugpy listener: debugpy.listen() has already been called on this process
+[00:40:15.095] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: editable install at file:///Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab
+[00:40:15.096] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: found /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
+[00:40:15.096] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: prepended sci-matlab dir: /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
+[00:40:15.103] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: inferred output_types=['Time', 'Force_Left', 'Force_Right'] from manual edges (overrides params output_types=['time', 'force_left', 'force_right'])
+[00:40:15.104] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, total_variants=0, fn_variants=0, path_input_params=1, output_types=['Time', 'Force_Left', 'Force_Right'], project_root=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2
+[00:40:15.105] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, command_length=3977
+[00:40:15.105] [DEBUG] RPC << generate_matlab_command OK (47.3ms)
+[00:40:15.108] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:15.109] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:40:21.195] [INFO] configure_database: path=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb, schema_keys=['subject', 'trial']
+[00:40:21.309] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:21.470] [INFO] ===== for_each(load_csv) start =====
+[00:40:21.480] [INFO] input 'filepath': loaded PathInput in 0.000s
+[00:40:21.481] [INFO] loaded 1 inputs in 0.003s
+[00:40:21.497] [INFO] ================================================================
+[00:40:21.498] [INFO] for_each(@(varargin)lineage_obj(varargin{:})) — 1 iteration
+[00:40:21.499] [INFO] no metadata
+[00:40:21.500] [INFO] ================================================================
+[00:40:21.516] [INFO] inputs: {filepath: <scifor.PathInput>}
+[00:40:21.520] [INFO] [run] : @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:22.156] [INFO] [skip] : @(varargin)lineage_obj(varargin{:}) raised: Unable to find or open '/Users/mitchelltillman/Documents/Stroke-R01-Aim-2/data/sub{subject{/trial{trial}.csv'. Check the path and filename or file permissions.
+[00:40:22.157] [INFO] ----------------------------------------------------------------
+[00:40:22.158] [INFO] for_each(@(varargin)lineage_obj(varargin{:})) done: completed=0, skipped=1, total=1
+[00:40:22.159] [INFO] ================================================================
+[00:40:22.163] [WARN] for_each(load_csv): result_tbl is empty, skipping save
+[00:40:22.172] [INFO] MATLAB: db.close — DuckDB lock RELEASED: 
+[00:40:35.175] [DEBUG] RPC >> update_path_input(name=test, template=data/sub{subject}/trial{trial}.csv, root_folder=None)
+[00:40:35.177] [DEBUG] RPC >> update_path_input(name=test, template=data/sub{subject}/trial{trial}.csv, root_folder=None)
+[00:40:35.177] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:35.196] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:40:35.196] [DEBUG] [scistack_gui.services.layout_service] PathInput updated: name='test', template='data/sub{subject}/trial{trial}.csv', root_folder=None
+[00:40:35.197] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:40:35.197] [DEBUG] [scistack_gui.services.layout_service] PathInput updated: name='test', template='data/sub{subject}/trial{trial}.csv', root_folder=None
+[00:40:35.199] [DEBUG] RPC << update_path_input OK (21.5ms)
+[00:40:35.199] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:40:35.200] [DEBUG] RPC << update_path_input OK (22.9ms)
+[00:40:35.203] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:35.203] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:40:36.890] [DEBUG] RPC >> generate_matlab_command(function_name=load_csv, variants=[], run_id=j5j2e9va, schema_filter=None, schema_level=None, run_options=None, where_fil...)
+[00:40:36.891] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:36.898] [DEBUG] RPC >> get_schema()
+[00:40:36.899] [DEBUG] RPC >> get_variables_list()
+[00:40:36.909] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:40:36.910] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=2, reopened=False
+[00:40:36.910] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=3, reopened=False
+[00:40:36.911] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: editable install at file:///Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab
+[00:40:36.911] [DEBUG] RPC << get_variables_list OK (11.6ms)
+[00:40:36.911] [INFO] [scistack_gui.server] _find_sci_matlab_matlab_dir: found /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
+[00:40:36.912] [DEBUG] [scistack_gui.db] release_db_connection: refcount=2, closed=False
+[00:40:36.912] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: prepended sci-matlab dir: /Users/mitchelltillman/Documents/general-sqlite-database/sci-matlab/src/sci_matlab/matlab
+[00:40:36.912] [DEBUG] RPC << get_schema OK (13.2ms)
+[00:40:36.913] [DEBUG] [scistack_gui.db] release_db_connection: refcount=1, closed=False
+[00:40:36.921] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: inferred output_types=['Time', 'Force_Left', 'Force_Right'] from manual edges (overrides params output_types=['time', 'force_left', 'force_right'])
+[00:40:36.921] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, total_variants=0, fn_variants=0, path_input_params=1, output_types=['Time', 'Force_Left', 'Force_Right'], project_root=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2
+[00:40:36.921] [INFO] [scistack_gui.services.matlab_command_service] generate_matlab_command: fn=load_csv, command_length=3977
+[00:40:36.922] [DEBUG] RPC << generate_matlab_command OK (30.7ms)
+[00:40:36.924] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:36.924] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:40:37.655] [INFO] configure_database: path=/Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb, schema_keys=['subject', 'trial']
+[00:40:37.658] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:37.695] [INFO] ===== for_each(load_csv) start =====
+[00:40:37.712] [INFO] discovered subject -> 3 values from filesystem
+[00:40:37.714] [INFO] discovered trial -> 6 values from filesystem
+[00:40:37.719] [INFO] using 16 filesystem-discovered combos
+[00:40:37.748] [DEBUG] _persist_expected_combos(load_csv): wrote 16 expected combos
+[00:40:37.749] [INFO] persisted 16 expected combos for load_csv
+[00:40:37.752] [INFO] input 'filepath': loaded PathInput in 0.000s
+[00:40:37.754] [INFO] loaded 1 inputs in 0.001s
+[00:40:37.757] [INFO] ================================================================
+[00:40:37.758] [INFO] for_each(@(varargin)lineage_obj(varargin{:})) — 16 iterations
+[00:40:37.759] [INFO] subject=[3 values], trial=[6 values]
+[00:40:37.760] [INFO] ================================================================
+[00:40:37.763] [INFO] inputs: {filepath: <scifor.PathInput>}
+[00:40:37.766] [INFO] subject=[01, 02, 03]
+[00:40:37.768] [INFO] trial=[01, 02, 03, 04, 05, 06]
+[00:40:37.772] [INFO] [run] subject=01, trial=01: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.246] [INFO] [run] subject=01, trial=02: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.303] [INFO] [run] subject=01, trial=03: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.346] [INFO] [run] subject=01, trial=04: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.392] [INFO] [run] subject=01, trial=05: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.440] [INFO] [run] subject=01, trial=06: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.486] [INFO] [skip] subject=01, trial=06: @(varargin)lineage_obj(varargin{:}) raised: Assertion failed.
+[00:40:38.488] [INFO] [run] subject=02, trial=01: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.533] [INFO] [run] subject=02, trial=02: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.575] [INFO] [run] subject=02, trial=03: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.617] [INFO] [run] subject=02, trial=04: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.659] [INFO] [run] subject=02, trial=05: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.702] [INFO] [run] subject=03, trial=01: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.753] [INFO] [run] subject=03, trial=02: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.808] [INFO] [run] subject=03, trial=03: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.859] [INFO] [run] subject=03, trial=04: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.903] [INFO] [run] subject=03, trial=05: @(varargin)lineage_obj(varargin{:})(filepath)
+[00:40:38.948] [INFO] ----------------------------------------------------------------
+[00:40:38.952] [INFO] for_each(@(varargin)lineage_obj(varargin{:})) done: completed=15, skipped=1, total=16
+[00:40:38.963] [INFO] ================================================================
+[00:40:39.055] [DEBUG] save(Time): record_id=fcb21952996b, content_hash=7aaeec570aaf, serialization=native
+[00:40:39.077] [DEBUG] _save_native: created table 'Time_data'
+[00:40:39.079] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=fcb21952996b
+[00:40:39.082] [DEBUG] _save_record_metadata: Time, record_id=fcb21952996b, schema_id=1
+[00:40:39.086] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=2f3c11de16ab
+[00:40:39.090] [DEBUG] save(Time): transaction committed
+[00:40:39.090] [INFO] [save-lineage] Time: record_id=fcb21952996b
+[00:40:39.090] [DEBUG] [save-lineage] Time: lineage_hash=68ba4e407d40, pipeline_lineage_hash=2f3c11de16ab
+[00:40:39.093] [INFO] [save] subject=01, trial=01: Time (lineage) saved in 0.063s
+[00:40:39.103] [DEBUG] save(Time): record_id=8133d7db36bf, content_hash=d2d3591a4621, serialization=native
+[00:40:39.109] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=8133d7db36bf
+[00:40:39.111] [DEBUG] _save_record_metadata: Time, record_id=8133d7db36bf, schema_id=2
+[00:40:39.112] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=d383560c742f
+[00:40:39.114] [DEBUG] save(Time): transaction committed
+[00:40:39.114] [INFO] [save-lineage] Time: record_id=8133d7db36bf
+[00:40:39.114] [DEBUG] [save-lineage] Time: lineage_hash=68a15b0c915f, pipeline_lineage_hash=d383560c742f
+[00:40:39.116] [INFO] [save] subject=01, trial=02: Time (lineage) saved in 0.012s
+[00:40:39.123] [DEBUG] save(Time): record_id=ba86a0252ecc, content_hash=c20e295704b0, serialization=native
+[00:40:39.129] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=ba86a0252ecc
+[00:40:39.132] [DEBUG] _save_record_metadata: Time, record_id=ba86a0252ecc, schema_id=3
+[00:40:39.135] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=c69b0ca81793
+[00:40:39.136] [DEBUG] save(Time): transaction committed
+[00:40:39.136] [INFO] [save-lineage] Time: record_id=ba86a0252ecc
+[00:40:39.136] [DEBUG] [save-lineage] Time: lineage_hash=6ec62e57de5c, pipeline_lineage_hash=c69b0ca81793
+[00:40:39.138] [INFO] [save] subject=01, trial=03: Time (lineage) saved in 0.015s
+[00:40:39.142] [DEBUG] save(Time): record_id=7093a9823a90, content_hash=205901ea2c49, serialization=native
+[00:40:39.146] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=7093a9823a90
+[00:40:39.147] [DEBUG] _save_record_metadata: Time, record_id=7093a9823a90, schema_id=4
+[00:40:39.149] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=6366d2eec561
+[00:40:39.150] [DEBUG] save(Time): transaction committed
+[00:40:39.150] [INFO] [save-lineage] Time: record_id=7093a9823a90
+[00:40:39.151] [DEBUG] [save-lineage] Time: lineage_hash=b91f8d181e95, pipeline_lineage_hash=6366d2eec561
+[00:40:39.152] [INFO] [save] subject=01, trial=04: Time (lineage) saved in 0.009s
+[00:40:39.155] [DEBUG] save(Time): record_id=7c9fd08e4805, content_hash=032411aa9bd1, serialization=native
+[00:40:39.159] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=7c9fd08e4805
+[00:40:39.160] [DEBUG] _save_record_metadata: Time, record_id=7c9fd08e4805, schema_id=5
+[00:40:39.161] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=acfc41c5b134
+[00:40:39.163] [DEBUG] save(Time): transaction committed
+[00:40:39.163] [INFO] [save-lineage] Time: record_id=7c9fd08e4805
+[00:40:39.163] [DEBUG] [save-lineage] Time: lineage_hash=82e83b612db1, pipeline_lineage_hash=acfc41c5b134
+[00:40:39.165] [INFO] [save] subject=01, trial=05: Time (lineage) saved in 0.009s
+[00:40:39.169] [DEBUG] save(Time): record_id=7ed10b005cce, content_hash=3350b9cf7fcd, serialization=native
+[00:40:39.173] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=7ed10b005cce
+[00:40:39.174] [DEBUG] _save_record_metadata: Time, record_id=7ed10b005cce, schema_id=7
+[00:40:39.176] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=ac3e2225cfa3
+[00:40:39.177] [DEBUG] save(Time): transaction committed
+[00:40:39.177] [INFO] [save-lineage] Time: record_id=7ed10b005cce
+[00:40:39.177] [DEBUG] [save-lineage] Time: lineage_hash=46860bd7a150, pipeline_lineage_hash=ac3e2225cfa3
+[00:40:39.179] [INFO] [save] subject=02, trial=01: Time (lineage) saved in 0.009s
+[00:40:39.183] [DEBUG] save(Time): record_id=11d28b6c0eea, content_hash=f749b4c0a555, serialization=native
+[00:40:39.186] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=11d28b6c0eea
+[00:40:39.188] [DEBUG] _save_record_metadata: Time, record_id=11d28b6c0eea, schema_id=8
+[00:40:39.189] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=90cff4887f34
+[00:40:39.191] [DEBUG] save(Time): transaction committed
+[00:40:39.191] [INFO] [save-lineage] Time: record_id=11d28b6c0eea
+[00:40:39.191] [DEBUG] [save-lineage] Time: lineage_hash=1a0d9e2d5247, pipeline_lineage_hash=90cff4887f34
+[00:40:39.193] [INFO] [save] subject=02, trial=02: Time (lineage) saved in 0.009s
+[00:40:39.196] [DEBUG] save(Time): record_id=1b7eaaa04d33, content_hash=e05bc3a789f2, serialization=native
+[00:40:39.200] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=1b7eaaa04d33
+[00:40:39.201] [DEBUG] _save_record_metadata: Time, record_id=1b7eaaa04d33, schema_id=9
+[00:40:39.203] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=5635877bcb6d
+[00:40:39.204] [DEBUG] save(Time): transaction committed
+[00:40:39.204] [INFO] [save-lineage] Time: record_id=1b7eaaa04d33
+[00:40:39.204] [DEBUG] [save-lineage] Time: lineage_hash=abb3f77bf600, pipeline_lineage_hash=5635877bcb6d
+[00:40:39.206] [INFO] [save] subject=02, trial=03: Time (lineage) saved in 0.009s
+[00:40:39.210] [DEBUG] save(Time): record_id=cfa6a4f9de7d, content_hash=04440d796920, serialization=native
+[00:40:39.214] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=cfa6a4f9de7d
+[00:40:39.215] [DEBUG] _save_record_metadata: Time, record_id=cfa6a4f9de7d, schema_id=10
+[00:40:39.217] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=c6a51406574c
+[00:40:39.218] [DEBUG] save(Time): transaction committed
+[00:40:39.218] [INFO] [save-lineage] Time: record_id=cfa6a4f9de7d
+[00:40:39.218] [DEBUG] [save-lineage] Time: lineage_hash=b8b3d42edb72, pipeline_lineage_hash=c6a51406574c
+[00:40:39.220] [INFO] [save] subject=02, trial=04: Time (lineage) saved in 0.009s
+[00:40:39.224] [DEBUG] save(Time): record_id=e1d2172a6840, content_hash=d55995da6dfc, serialization=native
+[00:40:39.227] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=e1d2172a6840
+[00:40:39.228] [DEBUG] _save_record_metadata: Time, record_id=e1d2172a6840, schema_id=11
+[00:40:39.230] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=cfa3fe6e064f
+[00:40:39.232] [DEBUG] save(Time): transaction committed
+[00:40:39.232] [INFO] [save-lineage] Time: record_id=e1d2172a6840
+[00:40:39.232] [DEBUG] [save-lineage] Time: lineage_hash=9655712341dc, pipeline_lineage_hash=cfa3fe6e064f
+[00:40:39.233] [INFO] [save] subject=02, trial=05: Time (lineage) saved in 0.009s
+[00:40:39.238] [DEBUG] save(Time): record_id=75c092f357db, content_hash=7f894e4335c6, serialization=native
+[00:40:39.242] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=75c092f357db
+[00:40:39.244] [DEBUG] _save_record_metadata: Time, record_id=75c092f357db, schema_id=12
+[00:40:39.246] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=68a161c3f9c1
+[00:40:39.248] [DEBUG] save(Time): transaction committed
+[00:40:39.248] [INFO] [save-lineage] Time: record_id=75c092f357db
+[00:40:39.248] [DEBUG] [save-lineage] Time: lineage_hash=bdf66cee5e71, pipeline_lineage_hash=68a161c3f9c1
+[00:40:39.250] [INFO] [save] subject=03, trial=01: Time (lineage) saved in 0.011s
+[00:40:39.254] [DEBUG] save(Time): record_id=c006d5660dbb, content_hash=c20e295704b0, serialization=native
+[00:40:39.257] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=c006d5660dbb
+[00:40:39.259] [DEBUG] _save_record_metadata: Time, record_id=c006d5660dbb, schema_id=13
+[00:40:39.260] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=aeff539747a1
+[00:40:39.262] [DEBUG] save(Time): transaction committed
+[00:40:39.262] [INFO] [save-lineage] Time: record_id=c006d5660dbb
+[00:40:39.262] [DEBUG] [save-lineage] Time: lineage_hash=70f5fae2a295, pipeline_lineage_hash=aeff539747a1
+[00:40:39.264] [INFO] [save] subject=03, trial=02: Time (lineage) saved in 0.009s
+[00:40:39.267] [DEBUG] save(Time): record_id=96500fdf3a54, content_hash=d2d3591a4621, serialization=native
+[00:40:39.270] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=96500fdf3a54
+[00:40:39.272] [DEBUG] _save_record_metadata: Time, record_id=96500fdf3a54, schema_id=14
+[00:40:39.273] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=79251da091e1
+[00:40:39.275] [DEBUG] save(Time): transaction committed
+[00:40:39.275] [INFO] [save-lineage] Time: record_id=96500fdf3a54
+[00:40:39.275] [DEBUG] [save-lineage] Time: lineage_hash=589787670453, pipeline_lineage_hash=79251da091e1
+[00:40:39.276] [INFO] [save] subject=03, trial=03: Time (lineage) saved in 0.009s
+[00:40:39.281] [DEBUG] save(Time): record_id=d5c22b66ea6b, content_hash=7aaeec570aaf, serialization=native
+[00:40:39.284] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=d5c22b66ea6b
+[00:40:39.286] [DEBUG] _save_record_metadata: Time, record_id=d5c22b66ea6b, schema_id=15
+[00:40:39.287] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=f7bba6adc2ed
+[00:40:39.289] [DEBUG] save(Time): transaction committed
+[00:40:39.289] [INFO] [save-lineage] Time: record_id=d5c22b66ea6b
+[00:40:39.289] [DEBUG] [save-lineage] Time: lineage_hash=95f702a31a94, pipeline_lineage_hash=f7bba6adc2ed
+[00:40:39.291] [INFO] [save] subject=03, trial=04: Time (lineage) saved in 0.009s
+[00:40:39.294] [DEBUG] save(Time): record_id=b1c4a8c71855, content_hash=205901ea2c49, serialization=native
+[00:40:39.297] [DEBUG] _save_native: inserted single record into 'Time_data', record_id=b1c4a8c71855
+[00:40:39.298] [DEBUG] _save_record_metadata: Time, record_id=b1c4a8c71855, schema_id=16
+[00:40:39.300] [DEBUG] _save_lineage: Time, fn=load_csv, lineage_hash=8787cd650c08
+[00:40:39.302] [DEBUG] save(Time): transaction committed
+[00:40:39.302] [INFO] [save-lineage] Time: record_id=b1c4a8c71855
+[00:40:39.302] [DEBUG] [save-lineage] Time: lineage_hash=6b73436e9daf, pipeline_lineage_hash=8787cd650c08
+[00:40:39.303] [INFO] [save] subject=03, trial=05: Time (lineage) saved in 0.008s
+[00:40:39.304] [INFO] save_results: saved all outputs in 0.292s
+[00:40:39.313] [DEBUG] save(Force_Left): record_id=245988a2aecc, content_hash=a5fc363096fb, serialization=native
+[00:40:39.315] [DEBUG] _save_native: created table 'Force_Left_data'
+[00:40:39.316] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=245988a2aecc
+[00:40:39.318] [DEBUG] _save_record_metadata: Force_Left, record_id=245988a2aecc, schema_id=1
+[00:40:39.319] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=2f3c11de16ab
+[00:40:39.321] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.321] [INFO] [save-lineage] Force_Left: record_id=245988a2aecc
+[00:40:39.321] [DEBUG] [save-lineage] Force_Left: lineage_hash=5a3b54522178, pipeline_lineage_hash=2f3c11de16ab
+[00:40:39.323] [INFO] [save] subject=01, trial=01: Force_Left (lineage) saved in 0.010s
+[00:40:39.326] [DEBUG] save(Force_Left): record_id=5e427612f773, content_hash=d38f2f79171c, serialization=native
+[00:40:39.330] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=5e427612f773
+[00:40:39.331] [DEBUG] _save_record_metadata: Force_Left, record_id=5e427612f773, schema_id=2
+[00:40:39.332] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=d383560c742f
+[00:40:39.334] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.334] [INFO] [save-lineage] Force_Left: record_id=5e427612f773
+[00:40:39.334] [DEBUG] [save-lineage] Force_Left: lineage_hash=2dd717f290c9, pipeline_lineage_hash=d383560c742f
+[00:40:39.336] [INFO] [save] subject=01, trial=02: Force_Left (lineage) saved in 0.009s
+[00:40:39.339] [DEBUG] save(Force_Left): record_id=db1cb0038fd5, content_hash=d12b7fae1a96, serialization=native
+[00:40:39.343] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=db1cb0038fd5
+[00:40:39.344] [DEBUG] _save_record_metadata: Force_Left, record_id=db1cb0038fd5, schema_id=3
+[00:40:39.346] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=c69b0ca81793
+[00:40:39.347] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.347] [INFO] [save-lineage] Force_Left: record_id=db1cb0038fd5
+[00:40:39.347] [DEBUG] [save-lineage] Force_Left: lineage_hash=2562621c6fd9, pipeline_lineage_hash=c69b0ca81793
+[00:40:39.349] [INFO] [save] subject=01, trial=03: Force_Left (lineage) saved in 0.009s
+[00:40:39.352] [DEBUG] save(Force_Left): record_id=05ecd55e51af, content_hash=6e173a217c00, serialization=native
+[00:40:39.356] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=05ecd55e51af
+[00:40:39.357] [DEBUG] _save_record_metadata: Force_Left, record_id=05ecd55e51af, schema_id=4
+[00:40:39.358] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=6366d2eec561
+[00:40:39.360] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.360] [INFO] [save-lineage] Force_Left: record_id=05ecd55e51af
+[00:40:39.360] [DEBUG] [save-lineage] Force_Left: lineage_hash=c3f7e5b96ff2, pipeline_lineage_hash=6366d2eec561
+[00:40:39.361] [INFO] [save] subject=01, trial=04: Force_Left (lineage) saved in 0.008s
+[00:40:39.364] [DEBUG] save(Force_Left): record_id=875400424e51, content_hash=fc65a8fa7f44, serialization=native
+[00:40:39.367] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=875400424e51
+[00:40:39.369] [DEBUG] _save_record_metadata: Force_Left, record_id=875400424e51, schema_id=5
+[00:40:39.370] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=acfc41c5b134
+[00:40:39.372] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.372] [INFO] [save-lineage] Force_Left: record_id=875400424e51
+[00:40:39.372] [DEBUG] [save-lineage] Force_Left: lineage_hash=9f475fcd86ae, pipeline_lineage_hash=acfc41c5b134
+[00:40:39.373] [INFO] [save] subject=01, trial=05: Force_Left (lineage) saved in 0.008s
+[00:40:39.376] [DEBUG] save(Force_Left): record_id=bc709c39bfa9, content_hash=524713f0c2cf, serialization=native
+[00:40:39.382] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=bc709c39bfa9
+[00:40:39.383] [DEBUG] _save_record_metadata: Force_Left, record_id=bc709c39bfa9, schema_id=7
+[00:40:39.385] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=ac3e2225cfa3
+[00:40:39.387] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.387] [INFO] [save-lineage] Force_Left: record_id=bc709c39bfa9
+[00:40:39.387] [DEBUG] [save-lineage] Force_Left: lineage_hash=76d4d6fe75ce, pipeline_lineage_hash=ac3e2225cfa3
+[00:40:39.388] [INFO] [save] subject=02, trial=01: Force_Left (lineage) saved in 0.011s
+[00:40:39.392] [DEBUG] save(Force_Left): record_id=26c37ecfb2a4, content_hash=de4453fded99, serialization=native
+[00:40:39.395] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=26c37ecfb2a4
+[00:40:39.397] [DEBUG] _save_record_metadata: Force_Left, record_id=26c37ecfb2a4, schema_id=8
+[00:40:39.398] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=90cff4887f34
+[00:40:39.400] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.400] [INFO] [save-lineage] Force_Left: record_id=26c37ecfb2a4
+[00:40:39.400] [DEBUG] [save-lineage] Force_Left: lineage_hash=8d0d3322482d, pipeline_lineage_hash=90cff4887f34
+[00:40:39.401] [INFO] [save] subject=02, trial=02: Force_Left (lineage) saved in 0.009s
+[00:40:39.405] [DEBUG] save(Force_Left): record_id=62fd2a13dceb, content_hash=77ce1fc6e7b9, serialization=native
+[00:40:39.409] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=62fd2a13dceb
+[00:40:39.411] [DEBUG] _save_record_metadata: Force_Left, record_id=62fd2a13dceb, schema_id=9
+[00:40:39.413] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=5635877bcb6d
+[00:40:39.415] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.415] [INFO] [save-lineage] Force_Left: record_id=62fd2a13dceb
+[00:40:39.415] [DEBUG] [save-lineage] Force_Left: lineage_hash=8942a8463f42, pipeline_lineage_hash=5635877bcb6d
+[00:40:39.416] [INFO] [save] subject=02, trial=03: Force_Left (lineage) saved in 0.010s
+[00:40:39.420] [DEBUG] save(Force_Left): record_id=da2b898c4859, content_hash=a741b56566c7, serialization=native
+[00:40:39.424] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=da2b898c4859
+[00:40:39.425] [DEBUG] _save_record_metadata: Force_Left, record_id=da2b898c4859, schema_id=10
+[00:40:39.427] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=c6a51406574c
+[00:40:39.428] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.428] [INFO] [save-lineage] Force_Left: record_id=da2b898c4859
+[00:40:39.428] [DEBUG] [save-lineage] Force_Left: lineage_hash=90347d1469fd, pipeline_lineage_hash=c6a51406574c
+[00:40:39.430] [INFO] [save] subject=02, trial=04: Force_Left (lineage) saved in 0.009s
+[00:40:39.434] [DEBUG] save(Force_Left): record_id=f3de545c4fe0, content_hash=32c7e42aee9d, serialization=native
+[00:40:39.440] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=f3de545c4fe0
+[00:40:39.441] [DEBUG] _save_record_metadata: Force_Left, record_id=f3de545c4fe0, schema_id=11
+[00:40:39.443] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=cfa3fe6e064f
+[00:40:39.445] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.445] [INFO] [save-lineage] Force_Left: record_id=f3de545c4fe0
+[00:40:39.445] [DEBUG] [save-lineage] Force_Left: lineage_hash=34744584d5e2, pipeline_lineage_hash=cfa3fe6e064f
+[00:40:39.446] [INFO] [save] subject=02, trial=05: Force_Left (lineage) saved in 0.012s
+[00:40:39.450] [DEBUG] save(Force_Left): record_id=bcd755a9bbc2, content_hash=5a0b90a10ef9, serialization=native
+[00:40:39.455] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=bcd755a9bbc2
+[00:40:39.456] [DEBUG] _save_record_metadata: Force_Left, record_id=bcd755a9bbc2, schema_id=12
+[00:40:39.458] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=68a161c3f9c1
+[00:40:39.460] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.460] [INFO] [save-lineage] Force_Left: record_id=bcd755a9bbc2
+[00:40:39.460] [DEBUG] [save-lineage] Force_Left: lineage_hash=8ff4518c8a96, pipeline_lineage_hash=68a161c3f9c1
+[00:40:39.461] [INFO] [save] subject=03, trial=01: Force_Left (lineage) saved in 0.011s
+[00:40:39.464] [DEBUG] save(Force_Left): record_id=d6f445de56ef, content_hash=337c893a5ffe, serialization=native
+[00:40:39.469] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=d6f445de56ef
+[00:40:39.470] [DEBUG] _save_record_metadata: Force_Left, record_id=d6f445de56ef, schema_id=13
+[00:40:39.471] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=aeff539747a1
+[00:40:39.473] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.473] [INFO] [save-lineage] Force_Left: record_id=d6f445de56ef
+[00:40:39.473] [DEBUG] [save-lineage] Force_Left: lineage_hash=72978245b447, pipeline_lineage_hash=aeff539747a1
+[00:40:39.474] [INFO] [save] subject=03, trial=02: Force_Left (lineage) saved in 0.010s
+[00:40:39.482] [DEBUG] save(Force_Left): record_id=75e93b1ce0c0, content_hash=dd6d4ccb7669, serialization=native
+[00:40:39.487] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=75e93b1ce0c0
+[00:40:39.489] [DEBUG] _save_record_metadata: Force_Left, record_id=75e93b1ce0c0, schema_id=14
+[00:40:39.490] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=79251da091e1
+[00:40:39.492] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.492] [INFO] [save-lineage] Force_Left: record_id=75e93b1ce0c0
+[00:40:39.492] [DEBUG] [save-lineage] Force_Left: lineage_hash=54bc20c21299, pipeline_lineage_hash=79251da091e1
+[00:40:39.493] [INFO] [save] subject=03, trial=03: Force_Left (lineage) saved in 0.010s
+[00:40:39.497] [DEBUG] save(Force_Left): record_id=66f670287329, content_hash=d1f90ff36129, serialization=native
+[00:40:39.502] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=66f670287329
+[00:40:39.503] [DEBUG] _save_record_metadata: Force_Left, record_id=66f670287329, schema_id=15
+[00:40:39.505] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=f7bba6adc2ed
+[00:40:39.507] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.507] [INFO] [save-lineage] Force_Left: record_id=66f670287329
+[00:40:39.507] [DEBUG] [save-lineage] Force_Left: lineage_hash=93d7a632e862, pipeline_lineage_hash=f7bba6adc2ed
+[00:40:39.508] [INFO] [save] subject=03, trial=04: Force_Left (lineage) saved in 0.011s
+[00:40:39.511] [DEBUG] save(Force_Left): record_id=bb5cbc47eb28, content_hash=f942d477b1ac, serialization=native
+[00:40:39.514] [DEBUG] _save_native: inserted single record into 'Force_Left_data', record_id=bb5cbc47eb28
+[00:40:39.516] [DEBUG] _save_record_metadata: Force_Left, record_id=bb5cbc47eb28, schema_id=16
+[00:40:39.517] [DEBUG] _save_lineage: Force_Left, fn=load_csv, lineage_hash=8787cd650c08
+[00:40:39.519] [DEBUG] save(Force_Left): transaction committed
+[00:40:39.519] [INFO] [save-lineage] Force_Left: record_id=bb5cbc47eb28
+[00:40:39.519] [DEBUG] [save-lineage] Force_Left: lineage_hash=3a91f87505fb, pipeline_lineage_hash=8787cd650c08
+[00:40:39.520] [INFO] [save] subject=03, trial=05: Force_Left (lineage) saved in 0.009s
+[00:40:39.521] [INFO] save_results: saved all outputs in 0.215s
+[00:40:39.527] [DEBUG] save(Force_Right): record_id=17c0c10a640f, content_hash=8bcd8a8fb8d9, serialization=native
+[00:40:39.531] [DEBUG] _save_native: created table 'Force_Right_data'
+[00:40:39.531] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=17c0c10a640f
+[00:40:39.533] [DEBUG] _save_record_metadata: Force_Right, record_id=17c0c10a640f, schema_id=1
+[00:40:39.534] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=2f3c11de16ab
+[00:40:39.536] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.536] [INFO] [save-lineage] Force_Right: record_id=17c0c10a640f
+[00:40:39.536] [DEBUG] [save-lineage] Force_Right: lineage_hash=f435d3406027, pipeline_lineage_hash=2f3c11de16ab
+[00:40:39.537] [INFO] [save] subject=01, trial=01: Force_Right (lineage) saved in 0.011s
+[00:40:39.539] [DEBUG] save(Force_Right): record_id=3262a78cfe4d, content_hash=0e5eac276c78, serialization=native
+[00:40:39.543] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=3262a78cfe4d
+[00:40:39.544] [DEBUG] _save_record_metadata: Force_Right, record_id=3262a78cfe4d, schema_id=2
+[00:40:39.545] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=d383560c742f
+[00:40:39.547] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.547] [INFO] [save-lineage] Force_Right: record_id=3262a78cfe4d
+[00:40:39.547] [DEBUG] [save-lineage] Force_Right: lineage_hash=e306c93d278d, pipeline_lineage_hash=d383560c742f
+[00:40:39.548] [INFO] [save] subject=01, trial=02: Force_Right (lineage) saved in 0.008s
+[00:40:39.550] [DEBUG] save(Force_Right): record_id=4058312cf524, content_hash=cd69568267c9, serialization=native
+[00:40:39.553] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=4058312cf524
+[00:40:39.554] [DEBUG] _save_record_metadata: Force_Right, record_id=4058312cf524, schema_id=3
+[00:40:39.556] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=c69b0ca81793
+[00:40:39.558] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.558] [INFO] [save-lineage] Force_Right: record_id=4058312cf524
+[00:40:39.558] [DEBUG] [save-lineage] Force_Right: lineage_hash=481a276e0160, pipeline_lineage_hash=c69b0ca81793
+[00:40:39.559] [INFO] [save] subject=01, trial=03: Force_Right (lineage) saved in 0.008s
+[00:40:39.561] [DEBUG] save(Force_Right): record_id=f75e81176acc, content_hash=c900dfea90ef, serialization=native
+[00:40:39.564] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=f75e81176acc
+[00:40:39.565] [DEBUG] _save_record_metadata: Force_Right, record_id=f75e81176acc, schema_id=4
+[00:40:39.567] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=6366d2eec561
+[00:40:39.569] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.569] [INFO] [save-lineage] Force_Right: record_id=f75e81176acc
+[00:40:39.569] [DEBUG] [save-lineage] Force_Right: lineage_hash=fbeaeb795da6, pipeline_lineage_hash=6366d2eec561
+[00:40:39.570] [INFO] [save] subject=01, trial=04: Force_Right (lineage) saved in 0.009s
+[00:40:39.573] [DEBUG] save(Force_Right): record_id=a0b4324b4cf4, content_hash=11699c94633e, serialization=native
+[00:40:39.577] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=a0b4324b4cf4
+[00:40:39.579] [DEBUG] _save_record_metadata: Force_Right, record_id=a0b4324b4cf4, schema_id=5
+[00:40:39.580] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=acfc41c5b134
+[00:40:39.582] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.582] [INFO] [save-lineage] Force_Right: record_id=a0b4324b4cf4
+[00:40:39.582] [DEBUG] [save-lineage] Force_Right: lineage_hash=e28d63b5ed2f, pipeline_lineage_hash=acfc41c5b134
+[00:40:39.583] [INFO] [save] subject=01, trial=05: Force_Right (lineage) saved in 0.010s
+[00:40:39.586] [DEBUG] save(Force_Right): record_id=0d7374a1c844, content_hash=52f09aee2137, serialization=native
+[00:40:39.589] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=0d7374a1c844
+[00:40:39.590] [DEBUG] _save_record_metadata: Force_Right, record_id=0d7374a1c844, schema_id=7
+[00:40:39.592] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=ac3e2225cfa3
+[00:40:39.594] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.594] [INFO] [save-lineage] Force_Right: record_id=0d7374a1c844
+[00:40:39.594] [DEBUG] [save-lineage] Force_Right: lineage_hash=8c564cee47d5, pipeline_lineage_hash=ac3e2225cfa3
+[00:40:39.595] [INFO] [save] subject=02, trial=01: Force_Right (lineage) saved in 0.009s
+[00:40:39.597] [DEBUG] save(Force_Right): record_id=c1c37aac1e4a, content_hash=d4b6e80370fe, serialization=native
+[00:40:39.601] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=c1c37aac1e4a
+[00:40:39.602] [DEBUG] _save_record_metadata: Force_Right, record_id=c1c37aac1e4a, schema_id=8
+[00:40:39.604] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=90cff4887f34
+[00:40:39.605] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.605] [INFO] [save-lineage] Force_Right: record_id=c1c37aac1e4a
+[00:40:39.605] [DEBUG] [save-lineage] Force_Right: lineage_hash=dfe74b6442a1, pipeline_lineage_hash=90cff4887f34
+[00:40:39.606] [INFO] [save] subject=02, trial=02: Force_Right (lineage) saved in 0.009s
+[00:40:39.608] [DEBUG] save(Force_Right): record_id=df74cd130a76, content_hash=7640034b54c5, serialization=native
+[00:40:39.612] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=df74cd130a76
+[00:40:39.613] [DEBUG] _save_record_metadata: Force_Right, record_id=df74cd130a76, schema_id=9
+[00:40:39.614] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=5635877bcb6d
+[00:40:39.616] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.616] [INFO] [save-lineage] Force_Right: record_id=df74cd130a76
+[00:40:39.616] [DEBUG] [save-lineage] Force_Right: lineage_hash=a2128e36200e, pipeline_lineage_hash=5635877bcb6d
+[00:40:39.618] [INFO] [save] subject=02, trial=03: Force_Right (lineage) saved in 0.009s
+[00:40:39.620] [DEBUG] save(Force_Right): record_id=ff3264a75b97, content_hash=aa84c875d50c, serialization=native
+[00:40:39.623] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=ff3264a75b97
+[00:40:39.624] [DEBUG] _save_record_metadata: Force_Right, record_id=ff3264a75b97, schema_id=10
+[00:40:39.626] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=c6a51406574c
+[00:40:39.627] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.628] [INFO] [save-lineage] Force_Right: record_id=ff3264a75b97
+[00:40:39.628] [DEBUG] [save-lineage] Force_Right: lineage_hash=32f5a291e784, pipeline_lineage_hash=c6a51406574c
+[00:40:39.629] [INFO] [save] subject=02, trial=04: Force_Right (lineage) saved in 0.008s
+[00:40:39.630] [DEBUG] save(Force_Right): record_id=698711b4c491, content_hash=39e521593f8f, serialization=native
+[00:40:39.634] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=698711b4c491
+[00:40:39.635] [DEBUG] _save_record_metadata: Force_Right, record_id=698711b4c491, schema_id=11
+[00:40:39.637] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=cfa3fe6e064f
+[00:40:39.639] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.639] [INFO] [save-lineage] Force_Right: record_id=698711b4c491
+[00:40:39.639] [DEBUG] [save-lineage] Force_Right: lineage_hash=236711291a56, pipeline_lineage_hash=cfa3fe6e064f
+[00:40:39.640] [INFO] [save] subject=02, trial=05: Force_Right (lineage) saved in 0.009s
+[00:40:39.642] [DEBUG] save(Force_Right): record_id=5230d1b45b0e, content_hash=95899b30a21f, serialization=native
+[00:40:39.645] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=5230d1b45b0e
+[00:40:39.646] [DEBUG] _save_record_metadata: Force_Right, record_id=5230d1b45b0e, schema_id=12
+[00:40:39.648] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=68a161c3f9c1
+[00:40:39.650] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.650] [INFO] [save-lineage] Force_Right: record_id=5230d1b45b0e
+[00:40:39.650] [DEBUG] [save-lineage] Force_Right: lineage_hash=631033c912e4, pipeline_lineage_hash=68a161c3f9c1
+[00:40:39.651] [INFO] [save] subject=03, trial=01: Force_Right (lineage) saved in 0.009s
+[00:40:39.653] [DEBUG] save(Force_Right): record_id=d199d5a6850d, content_hash=f12dbdf33d5e, serialization=native
+[00:40:39.656] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=d199d5a6850d
+[00:40:39.658] [DEBUG] _save_record_metadata: Force_Right, record_id=d199d5a6850d, schema_id=13
+[00:40:39.659] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=aeff539747a1
+[00:40:39.661] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.661] [INFO] [save-lineage] Force_Right: record_id=d199d5a6850d
+[00:40:39.661] [DEBUG] [save-lineage] Force_Right: lineage_hash=682fc3863743, pipeline_lineage_hash=aeff539747a1
+[00:40:39.662] [INFO] [save] subject=03, trial=02: Force_Right (lineage) saved in 0.009s
+[00:40:39.664] [DEBUG] save(Force_Right): record_id=159e4767f615, content_hash=7294c06267d6, serialization=native
+[00:40:39.667] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=159e4767f615
+[00:40:39.669] [DEBUG] _save_record_metadata: Force_Right, record_id=159e4767f615, schema_id=14
+[00:40:39.670] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=79251da091e1
+[00:40:39.672] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.672] [INFO] [save-lineage] Force_Right: record_id=159e4767f615
+[00:40:39.672] [DEBUG] [save-lineage] Force_Right: lineage_hash=19b0f494b1ba, pipeline_lineage_hash=79251da091e1
+[00:40:39.673] [INFO] [save] subject=03, trial=03: Force_Right (lineage) saved in 0.009s
+[00:40:39.676] [DEBUG] save(Force_Right): record_id=834e08719f8e, content_hash=9932efb6bcdc, serialization=native
+[00:40:39.680] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=834e08719f8e
+[00:40:39.682] [DEBUG] _save_record_metadata: Force_Right, record_id=834e08719f8e, schema_id=15
+[00:40:39.684] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=f7bba6adc2ed
+[00:40:39.685] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.685] [INFO] [save-lineage] Force_Right: record_id=834e08719f8e
+[00:40:39.686] [DEBUG] [save-lineage] Force_Right: lineage_hash=89fcdaa60bc7, pipeline_lineage_hash=f7bba6adc2ed
+[00:40:39.687] [INFO] [save] subject=03, trial=04: Force_Right (lineage) saved in 0.010s
+[00:40:39.689] [DEBUG] save(Force_Right): record_id=ef8f643a9246, content_hash=f7b144442e25, serialization=native
+[00:40:39.692] [DEBUG] _save_native: inserted single record into 'Force_Right_data', record_id=ef8f643a9246
+[00:40:39.694] [DEBUG] _save_record_metadata: Force_Right, record_id=ef8f643a9246, schema_id=16
+[00:40:39.695] [DEBUG] _save_lineage: Force_Right, fn=load_csv, lineage_hash=8787cd650c08
+[00:40:39.697] [DEBUG] save(Force_Right): transaction committed
+[00:40:39.697] [INFO] [save-lineage] Force_Right: record_id=ef8f643a9246
+[00:40:39.697] [DEBUG] [save-lineage] Force_Right: lineage_hash=7560bf37935c, pipeline_lineage_hash=8787cd650c08
+[00:40:39.698] [INFO] [save] subject=03, trial=05: Force_Right (lineage) saved in 0.009s
+[00:40:39.699] [INFO] save_results: saved all outputs in 0.177s
+[00:40:39.724] [INFO] MATLAB: db.close — DuckDB lock RELEASED: 
+[00:40:41.875] [DEBUG] RPC >> get_pipeline()
+[00:40:41.876] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:41.897] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:40:41.902] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 3 pipeline variants from DB
+[00:40:41.907] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 3 variants → 3 var types, 1 functions, 0 constants, 0 path inputs
+[00:40:41.921] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=387621759246 unpack=False hash=ce634fb42246
+[00:40:41.932] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.936] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.938] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.940] [DEBUG] [scihist.state] stale: subject=02, trial=01 — function hash changed (lineage)
+[00:40:41.943] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.945] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.948] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.949] [DEBUG] [scihist.state] stale: subject=02, trial=05 — function hash changed (lineage)
+[00:40:41.951] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.953] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.955] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.956] [DEBUG] [scihist.state] stale: subject=03, trial=01 — function hash changed (lineage)
+[00:40:41.958] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.960] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.963] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.964] [DEBUG] [scihist.state] stale: subject=03, trial=02 — function hash changed (lineage)
+[00:40:41.966] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.968] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.970] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.971] [DEBUG] [scihist.state] stale: subject=02, trial=04 — function hash changed (lineage)
+[00:40:41.973] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.975] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.978] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.978] [DEBUG] [scihist.state] stale: subject=01, trial=01 — function hash changed (lineage)
+[00:40:41.981] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.983] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.985] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.986] [DEBUG] [scihist.state] stale: subject=01, trial=03 — function hash changed (lineage)
+[00:40:41.988] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.990] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.992] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.992] [DEBUG] [scihist.state] stale: subject=01, trial=04 — function hash changed (lineage)
+[00:40:41.995] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:41.997] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:41.999] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:41.999] [DEBUG] [scihist.state] stale: subject=02, trial=02 — function hash changed (lineage)
+[00:40:42.002] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:42.004] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:42.006] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:42.007] [DEBUG] [scihist.state] stale: subject=01, trial=05 — function hash changed (lineage)
+[00:40:42.009] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:42.011] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:42.013] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:42.014] [DEBUG] [scihist.state] stale: subject=03, trial=04 — function hash changed (lineage)
+[00:40:42.016] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:42.018] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:42.020] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:42.021] [DEBUG] [scihist.state] stale: subject=03, trial=05 — function hash changed (lineage)
+[00:40:42.023] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:42.025] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:42.027] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:42.028] [DEBUG] [scihist.state] stale: subject=02, trial=03 — function hash changed (lineage)
+[00:40:42.031] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:42.034] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:42.037] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:42.038] [DEBUG] [scihist.state] stale: subject=01, trial=02 — function hash changed (lineage)
+[00:40:42.040] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:42.042] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:42.044] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:42.045] [DEBUG] [scihist.state] stale: subject=03, trial=03 — function hash changed (lineage)
+[00:40:42.046] [DEBUG] [scihist.state] node load_csv: red (up_to_date=0, stale=15, missing=1)
+[00:40:42.046] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): red (up_to_date=0, stale=15, missing=1)
+[00:40:42.046] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 1 functions in 125.5ms (0 green, 0 grey, 1 red)
+[00:40:42.048] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
+[00:40:42.048] [DEBUG] [scistack_gui.domain.graph_builder] [graph_builder] matlab fn=load_csv handles=['time', 'force_left', 'force_right'] param→class={'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}
+[00:40:42.050] [DEBUG] [scistack_gui.domain.graph_builder] merge_manual_nodes: graduating 4 node(s): [('fn__load_csv__gddvp7', 'fn__load_csv'), ('var__Time__ti1no6', 'var__Time'), ('var__Force_Left__owvqta', 'var__Force_Left'), ('var__Force_Right__m5gann', 'var__Force_Right')]
+[00:40:42.056] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 7 edges
+[00:40:42.057] [DEBUG] RPC << get_pipeline OK (180.8ms)
+[00:40:42.059] [DEBUG] RPC >> get_layout()
+[00:40:42.062] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:42.062] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:40:42.062] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:42.070] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:40:42.072] [DEBUG] RPC << get_layout OK (13.2ms)
+[00:40:42.074] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:42.074] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:40:44.220] [DEBUG] RPC >> get_pipeline()
+[00:40:44.220] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:44.238] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:40:44.241] [DEBUG] [scistack_gui.api.pipeline] _build_graph: 3 pipeline variants from DB
+[00:40:44.244] [DEBUG] [scistack_gui.domain.graph_builder] aggregate_variants: 3 variants → 3 var types, 1 functions, 0 constants, 0 path inputs
+[00:40:44.258] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab proxy fn=load_csv source_hash=387621759246 unpack=False hash=ce634fb42246
+[00:40:44.270] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.273] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.276] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.278] [DEBUG] [scihist.state] stale: subject=01, trial=05 — function hash changed (lineage)
+[00:40:44.281] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.283] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.287] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.288] [DEBUG] [scihist.state] stale: subject=03, trial=04 — function hash changed (lineage)
+[00:40:44.290] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.293] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.295] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.296] [DEBUG] [scihist.state] stale: subject=03, trial=05 — function hash changed (lineage)
+[00:40:44.298] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.300] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.303] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.304] [DEBUG] [scihist.state] stale: subject=01, trial=01 — function hash changed (lineage)
+[00:40:44.306] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.308] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.310] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.312] [DEBUG] [scihist.state] stale: subject=01, trial=03 — function hash changed (lineage)
+[00:40:44.314] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.316] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.346] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.349] [DEBUG] [scihist.state] stale: subject=01, trial=04 — function hash changed (lineage)
+[00:40:44.364] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.367] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.371] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.373] [DEBUG] [scihist.state] stale: subject=02, trial=02 — function hash changed (lineage)
+[00:40:44.379] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.381] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.383] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.384] [DEBUG] [scihist.state] stale: subject=02, trial=04 — function hash changed (lineage)
+[00:40:44.387] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.389] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.391] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.392] [DEBUG] [scihist.state] stale: subject=01, trial=02 — function hash changed (lineage)
+[00:40:44.394] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.396] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.398] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.399] [DEBUG] [scihist.state] stale: subject=02, trial=01 — function hash changed (lineage)
+[00:40:44.402] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.404] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.406] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.407] [DEBUG] [scihist.state] stale: subject=02, trial=05 — function hash changed (lineage)
+[00:40:44.409] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.411] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.413] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.414] [DEBUG] [scihist.state] stale: subject=03, trial=01 — function hash changed (lineage)
+[00:40:44.416] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.418] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.420] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.421] [DEBUG] [scihist.state] stale: subject=03, trial=02 — function hash changed (lineage)
+[00:40:44.424] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.426] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.428] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.429] [DEBUG] [scihist.state] stale: subject=03, trial=03 — function hash changed (lineage)
+[00:40:44.431] [DEBUG] _find_record(Force_Right): 1 record(s) matched (before branch_params filter)
+[00:40:44.433] [DEBUG] _find_record(Time): 1 record(s) matched (before branch_params filter)
+[00:40:44.435] [DEBUG] _find_record(Force_Left): 1 record(s) matched (before branch_params filter)
+[00:40:44.437] [DEBUG] [scihist.state] stale: subject=02, trial=03 — function hash changed (lineage)
+[00:40:44.437] [DEBUG] [scihist.state] node load_csv: red (up_to_date=0, stale=15, missing=1)
+[00:40:44.437] [DEBUG] [scistack_gui.api.pipeline] state(load_csv): red (up_to_date=0, stale=15, missing=1)
+[00:40:44.437] [DEBUG] [scistack_gui.api.pipeline] run_states complete: 1 functions in 179.6ms (0 green, 0 grey, 1 red)
+[00:40:44.439] [DEBUG] [scistack_gui.api.pipeline] [pipeline] matlab_param_to_class={'load_csv': {'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}}
+[00:40:44.440] [DEBUG] [scistack_gui.domain.graph_builder] [graph_builder] matlab fn=load_csv handles=['time', 'force_left', 'force_right'] param→class={'time': 'Time', 'force_left': 'Force_Left', 'force_right': 'Force_Right'}
+[00:40:44.441] [DEBUG] [scistack_gui.api.pipeline] graph built: 5 nodes (1 functionNode, 1 pathInputNode, 3 variableNode), 7 edges
+[00:40:44.442] [DEBUG] RPC << get_pipeline OK (221.3ms)
+[00:40:44.444] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:44.444] [DEBUG] RPC >> get_layout()
+[00:40:44.444] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True
+[00:40:44.444] [INFO] [sciduck] DuckDB lock ACQUIRED (reopen): /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:44.451] [DEBUG] [scistack_gui.db] acquire_db_connection: refcount=1, reopened=True
+[00:40:44.454] [DEBUG] RPC << get_layout OK (10.0ms)
+[00:40:44.455] [INFO] [sciduck] DuckDB lock RELEASED: /Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb
+[00:40:44.455] [DEBUG] [scistack_gui.db] release_db_connection: refcount=0, closed=True

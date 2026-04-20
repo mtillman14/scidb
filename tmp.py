@@ -1,24 +1,16 @@
-import numpy as np                                                                                                             
-import scifor as _scifor                                                                                                                                                            
-from scidb import BaseVariable, configure_database, for_each  
-import tempfile, pathlib                                                                                                                                                            
-                                                                                
-db = configure_database(pathlib.Path(tempfile.mkdtemp()) / 'test.duckdb', ['subject', 'session'])
-_scifor.set_schema([])                                                                                                                                                              
-
-class RawSignal(BaseVariable): pass                                                                                                                                                 
-class Aggregated(BaseVariable): pass                                             
-                                                                                                                                                                                    
-RawSignal.save(1.0, subject='S01', session='1')                                                                                                                                     
-RawSignal.save(1.0, subject='S01', session='2')
-RawSignal.save(1.0, subject='S02', session='1')                                                                                                                                     
-RawSignal.save(1.0, subject='S02', session='2')                                  
-                                    
-def agg(signal):                       
-    print(f"  signal type={type(signal).__name__}, val={signal}")                                                                                                                   
-    return np.float64(4.0)
-                                                                                                                                                                                    
-result = for_each(agg, {'signal': RawSignal}, [Aggregated], save=False)          
-print(f"result: {result}")                                                                                                                                                          
-print(f"columns: {list(result.columns) if result is not None else None}")                                                                                                           
-print(f"len: {len(result) if result is not None else None}")
+# tmp.py                                                                                                                                                                                               
+import duckdb                                                                                                                                                                                          
+conn = duckdb.connect(                                                                                                                                                                                 
+    '/Users/mitchelltillman/Documents/Stroke-R01-Aim-2/aim2.duckdb',                                                                                                                                   
+    read_only=True,                                                                                                                                                                                    
+)                                                                                                                                                                                                      
+rows = conn.execute("""                                                                                                                                                                                
+    SELECT DISTINCT function_hash, COUNT(*) as n_rows                                                                                                                                                  
+    FROM _lineage
+    WHERE function_name = 'load_csv'                                                                                                                                                                   
+    GROUP BY function_hash                                
+""").fetchall()                                                                                                                                                                                        
+print(f"{'function_hash':<68} n_rows")                    
+for h, n in rows:                                                                                                                                                                                      
+    marker = " <-- matches GUI proxy hash" if h and h.startswith("ce634fb42246") else ""
+    print(f"{h!s:<68} {n}{marker}")

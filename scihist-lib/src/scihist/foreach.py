@@ -515,7 +515,8 @@ def _save_lineage_fcn_result(
             logger.debug("_save_lineage_fcn_result exit: output=%s, record_id=%s (generates_file), elapsed=%.3fs",
                          output_name, generated_id[:12], elapsed)
             if _Log:
-                _Log.info(f"[save-lineage] {output_name}: record_id={generated_id[:12]} (generates_file)")
+                stored_fn_hash = lineage_dict.get("function_hash") or ""
+                _Log.info(f"[save-lineage] {output_name}: record_id={generated_id[:12]} function_hash={stored_fn_hash[:12] or 'None'} (generates_file)")
                 _Log.debug(f"[save-lineage] {output_name}: pipeline_lineage_hash={pipeline_lineage_hash[:12]}")
             return generated_id
 
@@ -542,7 +543,8 @@ def _save_lineage_fcn_result(
         logger.debug("_save_lineage_fcn_result exit: output=%s, record_id=%s, elapsed=%.3fs",
                      output_name, rid[:12] if rid else None, elapsed)
         if _Log and rid:
-            _Log.info(f"[save-lineage] {output_name}: record_id={rid[:12]}")
+            stored_fn_hash = lineage_dict.get("function_hash") or ""
+            _Log.info(f"[save-lineage] {output_name}: record_id={rid[:12]} function_hash={stored_fn_hash[:12] or 'None'}")
             _Log.debug(f"[save-lineage] {output_name}: lineage_hash={lineage_hash[:12] if lineage_hash else 'None'}, pipeline_lineage_hash={pipeline_lineage_hash[:12]}")
         return rid
     except Exception:

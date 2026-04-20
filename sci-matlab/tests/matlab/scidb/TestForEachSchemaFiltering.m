@@ -201,5 +201,79 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
             testCase.verifyEqual(numel(all_results), 3);
         end
 
+        function test_pathinput_rerun_does_not_invent_combos(testCase)
+            % Regression: on a re-run with a PathInput input, the filesystem
+            % must stay the source of truth for which combos exist.  Prior
+            % behavior re-ran the full Cartesian product of DB-resolved
+            % values, inventing combos for files that never existed.
+            %
+            % Scenario: 3 subjects x 2 sessions = 6 possible combos, but
+            % only 4 files on disk.  A prior run populated the DB so
+            % distinct_schema_values now returns all 3 subjects and both
+            % sessions — we must still iterate 4 combos, not 6.
+            disc_dir = tempname;
+            mkdir(disc_dir);
+            cleanupDir = onCleanup(@() rmdir(disc_dir, 's'));
+
+            % Files on disk: (1,A), (2,A), (1,B), (3,B).  Missing: (2,B), (3,A).
+            on_disk = {{'1','A'}, {'2','A'}, {'1','B'}, {'3','B'}};
+            for k = 1:numel(on_disk)
+                subj = on_disk{k}{1};
+                sess = on_disk{k}{2};
+                d = fullfile(disc_dir, ['sub' subj]);
+                if ~isfolder(d)
+                    mkdir(d);
+                end
+                fclose(fopen(fullfile(d, ['sess' sess '.csv']), 'w'));
+            end
+
+            % Prime the DB as if a prior run produced rows for every
+            % (subject, session) pair — including the two with no file.
+            % distinct_schema_values will now return all 3 subjects and
+            % both sessions.
+            for subj = [1 2 3]
+                for sess = ["A", "B"]
+                    RawSignal().save([1 2 3], 'subject', subj, 'session', sess);
+                end
+            end
+
+            pi = scifor.PathInput("sub{subject}/sess{session}.csv", ...
+                'root_folder', disc_dir);
+            scidb.for_each(@path_length, ...
+                struct('filepath', pi), ...
+                {ScalarVar()}, ...
+                'subject', [], ...
+                'session', []);
+
+            % Must match the 4 files on disk — not the 6-combo product.
+            all_results = ScalarVar().load_all();
+            testCase.verifyEqual(numel(all_results), 4, ...
+                'PathInput re-run invented combos that have no file on disk.');
+        end
+
+        function test_pathinput_filters_by_user_provided_values(testCase)
+            % When the user passes an explicit list for a template key,
+            % the discovered combos are intersected with that list.
+            disc_dir = tempname;
+            mkdir(disc_dir);
+            cleanupDir = onCleanup(@() rmdir(disc_dir, 's'));
+            for subj = ["1", "2", "3"]
+                d = fullfile(disc_dir, char("sub" + subj));
+                mkdir(d);
+                fclose(fopen(fullfile(d, 'data.csv'), 'w'));
+            end
+
+            pi = scifor.PathInput("sub{subject}/data.csv", 'root_folder', disc_dir);
+            scidb.for_each(@path_length, ...
+                struct('filepath', pi), ...
+                {ScalarVar()}, ...
+                'subject', ["1", "2"], ...
+                'session', "A");
+
+            % Only subjects 1 and 2 should run even though subject 3 is on disk.
+            all_results = ScalarVar().load_all();
+            testCase.verifyEqual(numel(all_results), 2);
+        end
+
     end
 end

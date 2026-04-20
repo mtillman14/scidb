@@ -132,18 +132,23 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         end
     end
 
-    % --- PathInput discovery: populate metadata from filesystem when DB is empty ---
+    % --- PathInput discovery: filesystem is the source of truth for which
+    %     combos exist whenever a PathInput is present. Must run on every call,
+    %     not only when meta_values are empty — otherwise a re-run picks up
+    %     lineage-resolved values from the DB and builds a Cartesian product
+    %     that invents combos with no file on disk. ---
     discovered_combos = {};
     if has_pathinput(inputs)
         pi = find_pathinput(inputs);
         if ~isempty(pi)
-            % Case 1: No metadata keys passed at all
-            if isempty(meta_keys)
-                combos = pi.discover();
-                scidb.Log.debug('PathInput discovery: template="%s", root_folder="%s", matching_files=%d', ...
-                    pi.path_template, pi.root_folder, numel(combos));
-                if ~isempty(combos)
-                    combo_fields = fieldnames(combos{1});
+            combos = pi.discover();
+            scidb.Log.debug('PathInput discovery: template="%s", root_folder="%s", matching_files=%d', ...
+                pi.path_template, pi.root_folder, numel(combos));
+            if ~isempty(combos)
+                combo_fields = fieldnames(combos{1});
+
+                if isempty(meta_keys)
+                    % No metadata args at all — adopt every discovered field.
                     for f = 1:numel(combo_fields)
                         meta_keys(end+1) = string(combo_fields{f}); %#ok<AGROW>
                         vals = cellfun(@(c) c.(combo_fields{f}), combos, 'UniformOutput', false);
@@ -153,30 +158,54 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
                             combo_fields{f}, numel(vals));
                     end
                     discovered_combos = combos;
-                end
-            end
-
-            % Case 2: Some keys have empty [] (resolved to empty from DB)
-            still_empty = false(1, numel(meta_keys));
-            for i = 1:numel(meta_values)
-                still_empty(i) = isempty(meta_values{i});
-            end
-            if any(still_empty)
-                combos = pi.discover();
-                scidb.Log.debug('PathInput discovery: template="%s", root_folder="%s", matching_files=%d', ...
-                    pi.path_template, pi.root_folder, numel(combos));
-                if ~isempty(combos)
-                    for i = find(still_empty)
+                else
+                    % Filter discovered combos by user-provided values. An empty
+                    % meta_values{i} (whether passed empty or DB-resolved empty)
+                    % means "no user constraint for this key" and does not filter.
+                    keep = true(1, numel(combos));
+                    for i = 1:numel(meta_keys)
                         key = char(meta_keys(i));
-                        if isfield(combos{1}, key)
-                            vals = cellfun(@(c) c.(key), combos, 'UniformOutput', false);
+                        if ~isfield(combos{1}, key)
+                            continue;
+                        end
+                        user_vals = meta_values{i};
+                        if isempty(user_vals)
+                            continue;
+                        end
+                        user_strs = string.empty;
+                        for vi = 1:numel(user_vals)
+                            user_strs(end+1) = string(user_vals{vi}); %#ok<AGROW>
+                        end
+                        for ci = 1:numel(combos)
+                            if keep(ci) && ~ismember(string(combos{ci}.(key)), user_strs)
+                                keep(ci) = false;
+                            end
+                        end
+                    end
+                    discovered_combos = combos(keep);
+
+                    % Reset meta_values for every template-covered key to the
+                    % values actually present in the filtered discovery result.
+                    % This drops invented combos (no file on disk) from both the
+                    % iteration banner and any downstream Cartesian fallbacks,
+                    % and fills in keys the user passed as [].
+                    for i = 1:numel(meta_keys)
+                        key = char(meta_keys(i));
+                        if isfield(combos{1}, key) && ~isempty(discovered_combos)
+                            vals = cellfun(@(c) c.(key), discovered_combos, 'UniformOutput', false);
                             vals = unique(string(vals), 'stable');
                             meta_values{i} = cellstr(vals);
                             scidb.Log.info('discovered %s -> %d values from filesystem', ...
                                 key, numel(vals));
                         end
                     end
-                    discovered_combos = combos;
+
+                    if numel(discovered_combos) < numel(combos)
+                        scidb.Log.info('filesystem-discovered %d combos (filtered from %d by user-provided values)', ...
+                            numel(discovered_combos), numel(combos));
+                    else
+                        scidb.Log.info('filesystem-discovered %d combos', numel(discovered_combos));
+                    end
                 end
             end
         end

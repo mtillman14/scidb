@@ -50,6 +50,16 @@ classdef LineageFcn < handle
             % Create the Python-side proxy
             obj.py_fcn = py.sci_matlab.bridge.MatlabLineageFcn( ...
                 source_hash, func_name, options.unpack_output);
+
+            % Traceability: log the source_hash + proxy hash + resolved
+            % path so the saved function_hash in _lineage can be matched
+            % against what the GUI's matlab_parser computes.
+            fn_path = which(func2str(fcn));
+            proxy_hash = char(obj.py_fcn.hash);
+            scidb.Log.debug( ...
+                'LineageFcn: fn=%s source_hash=%s proxy_hash=%s path=%s', ...
+                func_name, source_hash(1:min(12,end)), ...
+                proxy_hash(1:min(12,end)), fn_path);
         end
 
         function varargout = subsref(obj, s)

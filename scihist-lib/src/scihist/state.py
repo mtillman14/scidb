@@ -117,7 +117,10 @@ def _check_via_lineage(fn, db, output_record_id: str, stored_hash: str,
     Scope (see docs/guide/node-states.md, "Propagation"):
 
     - ✅ Ancestor data re-saved (record_id superseded) → stale.
-    - ✅ fn's own function hash mismatched → stale.
+    - ❌ fn's own function hash mismatched → NOT currently used for
+      staleness. ``stored_hash`` vs ``fn.hash`` is logged for traceability
+      only; a proper content-staleness feature (tokenized hashing,
+      opt-in surface, or per-Run snapshots) is planned separately.
     - ❌ Ancestor function code changed but not yet re-run → NOT detected
       here. scihist cannot introspect the "current" version of an ancestor
       function from inside check_combo_state(fn, ...) — only `fn` itself is
@@ -125,12 +128,19 @@ def _check_via_lineage(fn, db, output_record_id: str, stored_hash: str,
       re-runs the changed ancestor (which creates a new record_id that then
       cascades as a data change).
     """
-    # a. Function hash of the queried fn.
-    if stored_hash != fn.hash:
-        logger.debug("stale: %s — function hash changed (lineage)", combo_str)
-        return "stale"
+    # Traceability only — record whether the function contents have changed
+    # since this combo was saved. Does NOT influence the returned state.
+    current_hash = getattr(fn, "hash", None)
+    if stored_hash != current_hash:
+        logger.debug(
+            "function hash differs for %s (lineage): stored=%s fn=%s — "
+            "not treated as stale (content-staleness deferred)",
+            combo_str,
+            (stored_hash or "<none>")[:12],
+            (current_hash or "<none>")[:12],
+        )
 
-    # b. Deep walk: is ANY ancestor record_id superseded?
+    # Deep walk: is ANY ancestor record_id superseded?
     if _has_superseded_ancestor(db, output_record_id, combo_str):
         return "stale"
 
