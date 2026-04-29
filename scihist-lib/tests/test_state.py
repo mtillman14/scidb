@@ -89,13 +89,11 @@ class TestCheckComboState:
         )
         assert state == "stale"
 
-    def test_function_hash_change_not_stale_via_lineage(self, db):
-        """Lineage-path function-hash mismatch is traceability-only, not stale.
+    def test_function_hash_change_stale_via_lineage(self, db):
+        """Lineage-path function-hash mismatch is detected as stale.
 
-        TODO: when content-staleness is re-introduced as a first-class
-        feature (tokenized hash / opt-in surface / per-Run snapshot),
-        flip this back and update the plan file
-        ``.claude/defer-function-hash-staleness.md``.
+        The caller passes fn directly, so comparing fn.hash against the
+        stored lineage hash is reliable for the function's own code change.
         """
         _seed_raw(db)
         _run_all(db)
@@ -110,7 +108,7 @@ class TestCheckComboState:
             process_data_v2, [ProcessedState],
             {"subject": 1, "trial": "A"}, db=db,
         )
-        assert state == "up_to_date"
+        assert state == "stale"
 
     def test_missing_for_unknown_combo(self, db):
         _seed_raw(db)

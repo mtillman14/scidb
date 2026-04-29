@@ -23,8 +23,11 @@ Example:
     raw_value = get_raw_value(result)  # The actual computed array
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from .core import LineageFcnResult
 from .inputs import classify_inputs, InputKind, is_trackable_variable
@@ -97,6 +100,8 @@ def extract_lineage(result: LineageFcnResult) -> LineageRecord:
         else:
             inputs.append(c.to_lineage_dict())
 
+    logger.debug("extract_lineage(%s): %d inputs, %d constants",
+                  inv.fcn.fcn.__name__, len(inputs), len(constants))
     return LineageRecord(
         function_name=inv.fcn.fcn.__name__,
         function_hash=inv.fcn.hash,

@@ -4,9 +4,13 @@ This module provides utilities for classifying function inputs
 to determine how they should be tracked for lineage/provenance.
 """
 
+import logging
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .core import LineageFcnResult
@@ -137,13 +141,15 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
 
     if isinstance(value, LineageFcnResult):
         # Input came from another lineage-tracked computation
-        return ClassifiedInput(
+        result = ClassifiedInput(
             kind=InputKind.LINEAGE_RESULT,
             name=name,
             hash=value.hash,
             source_function=value.invoked.fcn.fcn.__name__,
             output_num=value.output_num,
         )
+        logger.debug("classify_input(%s): LINEAGE_RESULT from %s", name, result.source_function)
+        return result
 
     if is_trackable_variable(value):
         # Input is a trackable variable (e.g., scidb BaseVariable)
@@ -159,12 +165,14 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
                 # Variable was produced by a lineage-tracked computation —
                 # classify it the same way so that to_cache_tuple() matches
                 # the original LineageFcnResult
+                logger.debug("classify_input(%s): LINEAGE_RESULT (saved variable with lineage_hash)", name)
                 return ClassifiedInput(
                     kind=InputKind.LINEAGE_RESULT,
                     name=name,
                     hash=lineage_hash,
                 )
 
+            logger.debug("classify_input(%s): SAVED_VARIABLE record_id=%s", name, record_id)
             return ClassifiedInput(
                 kind=InputKind.SAVED_VARIABLE,
                 name=name,
@@ -178,6 +186,8 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
         # Unsaved variable - check if it wraps a LineageFcnResult
         inner_data = getattr(value, "data", None)
         if isinstance(inner_data, LineageFcnResult):
+            logger.debug("classify_input(%s): UNSAVED_RESULT from %s",
+                          name, inner_data.invoked.fcn.fcn.__name__)
             return ClassifiedInput(
                 kind=InputKind.UNSAVED_RESULT,
                 name=name,
@@ -188,6 +198,7 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
             )
 
         # Unsaved variable with raw data
+        logger.debug("classify_input(%s): RAW_DATA type=%s", name, type_name)
         return ClassifiedInput(
             kind=InputKind.RAW_DATA,
             name=name,
@@ -196,6 +207,7 @@ def classify_input(name: str, value: Any) -> ClassifiedInput:
         )
 
     # Constant/literal value
+    logger.debug("classify_input(%s): CONSTANT type=%s", name, type(value).__name__)
     return ClassifiedInput(
         kind=InputKind.CONSTANT,
         name=name,
@@ -215,7 +227,10 @@ def classify_inputs(inputs: dict[str, Any]) -> list[ClassifiedInput]:
     Returns:
         List of ClassifiedInput, sorted by name for determinism
     """
-    return [classify_input(name, value) for name in sorted(inputs.keys()) for value in [inputs[name]]]
+    result = [classify_input(name, value) for name in sorted(inputs.keys()) for value in [inputs[name]]]
+    counts = Counter(c.kind.name for c in result)
+    logger.debug("classified %d inputs: %s", len(result), dict(counts))
+    return result
 
 
 def _safe_hash(value: Any) -> str:

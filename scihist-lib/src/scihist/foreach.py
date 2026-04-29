@@ -12,12 +12,6 @@ try:
 except ImportError:
     _Log = None
 
-def _diag(msg):
-    """Temporary diagnostic print to file (bypasses capsys)."""
-    with open("/tmp/scihist_diag.log", "a") as f:
-        f.write(msg + "\n")
-        f.flush()
-
 
 def for_each(
     fn: Callable,
@@ -30,6 +24,8 @@ def for_each(
     distribute: bool = False,
     where=None,
     skip_computed: bool = True,
+    _progress_fn: "Callable[[dict], None] | None" = None,
+    _cancel_check: "Callable[[], bool] | None" = None,
     **metadata_iterables: list[Any],
 ) -> "pd.DataFrame | None":
     """
@@ -72,6 +68,9 @@ def for_each(
     # Auto-wrap plain functions in LineageFcn
     if not isinstance(fn, LineageFcn):
         fn = LineageFcn(fn)
+        logger.info("auto-wrapped %s in LineageFcn (hash=%s)", fn_name, fn.hash[:12])
+    else:
+        logger.debug("%s is already a LineageFcn (hash=%s)", fn_name, fn.hash[:12])
 
     # Wrap LineageFcn in a plain callable for scidb.for_each
     fn_plain = _make_plain(fn)
@@ -88,11 +87,21 @@ def for_each(
                 active_db = None
         if active_db is not None:
             pre_combo_hook = _build_skip_hook(fn, outputs, active_db, inputs)
+            logger.debug("built skip_computed hook for %s", fn_name)
+        else:
+            logger.debug("skip_computed disabled: no database available")
+    elif not skip_computed:
+        logger.debug("skip_computed disabled by caller")
+    elif dry_run:
+        logger.debug("skip_computed disabled: dry_run=True")
+    elif not outputs:
+        logger.debug("skip_computed disabled: no outputs specified")
 
     # Delegate to scidb.for_each with save=False (we handle saves ourselves).
     # For generates_file functions, inject combo metadata as kwargs so fn receives
     # schema keys (subject, session, etc.) as named arguments.
     _inject_meta = getattr(fn, 'generates_file', False)
+    logger.debug("delegating to scidb.for_each (save=False, distribute=%s)", distribute)
     result_tbl = _scidb_for_each(
         fn_plain,
         inputs,
@@ -105,11 +114,16 @@ def for_each(
         where=where,
         _inject_combo_metadata=_inject_meta,
         _pre_combo_hook=pre_combo_hook,
+        _progress_fn=_progress_fn,
+        _cancel_check=_cancel_check,
         **metadata_iterables,
     )
 
     if result_tbl is None:
+        logger.info("scidb.for_each returned None (dry_run)")
         return None
+
+    logger.info("scidb.for_each returned %d rows", len(result_tbl))
 
     # Save with lineage
     if save and outputs and not result_tbl.empty:
@@ -147,8 +161,10 @@ def for_each(
                 pass
             constant_inputs[name] = value
 
-        _diag(f"[DIAG] save path: fixed_rids={fixed_rids}")
+        logger.debug("input classification: %d constants, %d fixed_rids",
+                      len(constant_inputs), len(fixed_rids))
         output_names = [_output_name(o) for o in outputs]
+        logger.info("saving %d rows with lineage for %s", len(result_tbl), output_names)
         _save_with_lineage(result_tbl, outputs, output_names, db,
                            constant_inputs=constant_inputs,
                            fixed_input_rids=fixed_rids)
@@ -201,8 +217,8 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
     def _combo_str(schema_combo: dict) -> str:
         return ", ".join(f"{k}={v}" for k, v in sorted(schema_combo.items()))
 
-    _diag(f"[DIAG] _build_skip_hook: fixed_inputs={list(fixed_inputs.keys())}, "
-          f"constant_hashes={list(constant_hashes.keys())}")
+    logger.debug("_build_skip_hook: fixed_inputs=%s, constant_hashes=%s",
+                  list(fixed_inputs.keys()), list(constant_hashes.keys()))
 
     def _should_skip(combo: dict) -> bool:
         # Strip __rid_* and other internal keys — only schema keys for DB lookups.
@@ -213,7 +229,7 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
         # Current __rid_* values from the combo (freshly loaded inputs).
         combo_rids = {k: v for k, v in combo.items() if k.startswith("__rid_")}
 
-        _diag(f"[DIAG] _should_skip: combo_str={combo_str}, combo_rids={list(combo_rids.keys())}")
+        logger.debug("_should_skip: combo_str=%s, combo_rids=%s", combo_str, list(combo_rids.keys()))
 
         # Step 1: all outputs must exist.
         # Include constant values and __fn/__fn_hash in lookup so variants
@@ -230,12 +246,12 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
             except (KeyError, Exception):
                 rid = None
             if rid is None:
-                _diag(f"[DIAG] step1: output {OutputCls.__name__} NOT FOUND for {lookup_combo}")
+                logger.debug("step1: output %s NOT FOUND for %s", OutputCls.__name__, lookup_combo)
                 logger.debug("missing: %s — no output record for %s",
                              combo_str, OutputCls.__name__)
                 return False  # output missing → compute
             output_record_id = rid
-        _diag(f"[DIAG] step1: output found, record_id={output_record_id}")
+        logger.debug("step1: output found, record_id=%s", output_record_id)
 
         # Step 2: function hash check.
         stored_hash = db.get_function_hash_for_record(output_record_id)
@@ -253,7 +269,7 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
             if _Log:
                 _Log.info(msg)
             return False
-        _diag(f"[DIAG] step2: function hash matches")
+        logger.debug("step2: function hash matches")
 
         # Step 3: compare __rid_* values against stored lineage inputs.
         if combo_rids:
@@ -262,7 +278,7 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
             for inp in lineage_inputs:
                 if inp.get("source_type") == "rid_tracking":
                     stored_rids[inp["name"]] = inp["record_id"]
-            _diag(f"[DIAG] step3: combo_rids={combo_rids}, stored_rids={stored_rids}")
+            logger.debug("step3: combo_rids=%s, stored_rids=%s", combo_rids, stored_rids)
             for rid_key, rid_val in combo_rids.items():
                 # Self-referential case: the loaded "input" IS the output
                 # record (input type == output type). Pipeline is stable.
@@ -284,7 +300,7 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
                     if _Log:
                         _Log.info(msg)
                     return False
-            _diag(f"[DIAG] step3: all combo_rids match")
+            logger.debug("step3: all combo_rids match")
 
         # Step 3b: compare Fixed input record_ids against stored lineage.
         if fixed_inputs:
@@ -295,14 +311,14 @@ def _build_skip_hook(fn: "LineageFcn", outputs: list, db, inputs: dict) -> Calla
                 for inp in lineage_inputs:
                     if inp.get("source_type") == "rid_tracking":
                         stored_rids[inp["name"]] = inp["record_id"]
-            _diag(f"[DIAG] step3b: fixed_inputs={list(fixed_inputs.keys())}, "
-                  f"stored_rids={stored_rids}")
+            logger.debug("step3b: fixed_inputs=%s, stored_rids=%s",
+                          list(fixed_inputs.keys()), stored_rids)
             for name, (inner_type, fixed_meta) in fixed_inputs.items():
                 rid_key = f"__rid_{name}"
                 # Look up the current record_id for this Fixed input.
                 current_rid = db.find_record_id(inner_type, fixed_meta)
-                _diag(f"[DIAG] step3b: {rid_key}: current_rid={current_rid}, "
-                      f"stored_rid={stored_rids.get(rid_key)}")
+                logger.debug("step3b: %s: current_rid=%s, stored_rid=%s",
+                              rid_key, current_rid, stored_rids.get(rid_key))
                 if current_rid is None:
                     msg = f"[recompute] {combo_str} — fixed input {name} not found"
                     print(msg)
@@ -405,7 +421,7 @@ def _save_with_lineage(
         # Merge Fixed input record_ids into rid tracking.
         if fixed_input_rids:
             input_rids.update(fixed_input_rids)
-        _diag(f"[DIAG] _save_with_lineage: input_rids={input_rids}")
+        logger.debug("_save_with_lineage: input_rids=%s", input_rids)
         save_metadata = {k: v for k, v in raw_metadata.items()
                          if not k.startswith("__")}
 

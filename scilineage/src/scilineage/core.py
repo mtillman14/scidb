@@ -21,9 +21,12 @@ For multi-output functions:
 """
 
 import inspect
+import logging
 from functools import wraps
 from hashlib import sha256
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from .backend import _get_backend
 from .inputs import classify_inputs, is_trackable_variable
@@ -81,6 +84,7 @@ class LineageFcn:
 
         string_repr = f"{fcn_hash}{STRING_REPR_DELIMITER}{unpack_output}"
         self.hash = sha256(string_repr.encode()).hexdigest()
+        logger.debug("LineageFcn created: %s hash=%s", fcn.__name__, self.hash[:12])
 
     def __repr__(self) -> str:
         return f"LineageFcn(fcn={self.fcn.__name__}, unpack_output={self.unpack_output}, unwrap={self.unwrap})"
@@ -105,9 +109,11 @@ class LineageFcn:
         # Check for cached results
         _backend = _get_backend()
         if _backend is not None:
+            logger.debug("cache lookup for %s", self.fcn.__name__)
             try:
                 cached = _backend.find_by_lineage(invocation)
                 if cached is not None:
+                    logger.debug("cache HIT for %s — %d outputs", self.fcn.__name__, len(cached))
                     # Wrap cached values in LineageFcnResult
                     outputs = tuple(
                         LineageFcnResult(invocation, i, True, val)
@@ -118,7 +124,7 @@ class LineageFcn:
                         return outputs[0]
                     return outputs
             except Exception:
-                pass  # Not in database, proceed with execution
+                logger.debug("cache miss for %s, executing", self.fcn.__name__)
 
         return invocation(*args, **kwargs)
 
@@ -198,6 +204,8 @@ class LineageFcnInvocation:
             LineageFcnResult or tuple of LineageFcnResults wrapping the result(s)
         """
         if self.is_complete:
+            logger.debug("executing %s with %d args (unwrap=%s)",
+                          self.fcn.fcn.__name__, len(args), self.unwrap)
             # Resolve arguments - unwrap if self.unwrap is True
             resolved_args = []
             for arg in args:
@@ -234,6 +242,8 @@ class LineageFcnInvocation:
             outputs = (LineageFcnResult(self, 0, False, None),)
 
         self.outputs = outputs
+        logger.debug("executed %s -> %d outputs (unpack=%s)",
+                      self.fcn.fcn.__name__, len(outputs), self.fcn.unpack_output)
 
         if len(outputs) == 1:
             return outputs[0]
@@ -277,7 +287,10 @@ class LineageFcnInvocation:
         classified = classify_inputs(self.inputs)
         input_tuples = [c.to_cache_tuple() for c in classified]
         hash_input = f"{self.fcn.hash}{STRING_REPR_DELIMITER}{input_tuples}"
-        return sha256(hash_input.encode()).hexdigest()
+        result_hash = sha256(hash_input.encode()).hexdigest()
+        logger.debug("lineage hash for %s: %s (%d classified inputs)",
+                      self.fcn.fcn.__name__, result_hash[:12], len(classified))
+        return result_hash
 
     def _matches(self, other: "LineageFcnInvocation") -> bool:
         """Check if this is equivalent to another LineageFcnInvocation."""

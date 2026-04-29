@@ -28,7 +28,7 @@ from contextlib import redirect_stdout
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from scidb import for_each
+from scihist import for_each
 from scidb.database import DatabaseManager
 
 from scistack_gui.db import get_db
@@ -371,6 +371,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                              distribute=opt_distribute,
                              as_table=opt_as_table,
                              where=where_arg,
+                             skip_computed=False,
                              _progress_fn=_progress_fn,
                              _cancel_check=_is_cancelled,
                              **schema_kwargs)
