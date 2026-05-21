@@ -26,29 +26,70 @@ function data = from_python(py_obj)
         data = [];
 
     elseif isa(py_obj, 'py.numpy.ndarray')
-        % Ensure C-contiguous before extracting
+        % Bypass MATLAB-numpy bridge (libmwbuffer issues) by converting
+        % to Python list first, then to MATLAB
         py_c = py.numpy.ascontiguousarray(py_obj);
         dtype_kind = string(py_c.dtype.kind);
+        arr_shape = int64(py_c.shape);
+        arr_ndim = int64(py_c.ndim);
+        scidb.Log.debug('from_python: numpy array dtype=%s, shape=[%s], ndim=%d', ...
+            string(char(py.str(py_c.dtype))), strjoin(string(arr_shape), ' '), arr_ndim);
+
+        % Convert to Python list to avoid libmwbuffer errors
+        try
+            py_list = py_c.tolist();
+            scidb.Log.debug('from_python: tolist() succeeded, converting to MATLAB...');
+        catch list_err
+            scidb.Log.err('from_python: tolist() failed: %s', list_err.message);
+            rethrow(list_err);
+        end
+
         if dtype_kind == "b"
             % bool array -> logical
-            data = logical(double(py_c));
+            c = cell(py_list);
+            if isempty(c)
+                data = logical([]);
+            else
+                % Convert list of bools to MATLAB logical array
+                % Explicitly handle py.bool objects
+                if ~isempty(c) && isa(c{1}, 'py.bool')
+                    data = cellfun(@logical, c);
+                else
+                    data = cellfun(@logical, c);
+                end
+            end
         elseif dtype_kind == "O"
             % Object array -> cell array, convert each element
-            py_list = py_c.tolist();
             c = cell(py_list);
             data = cell(1, numel(c));
             for i = 1:numel(c)
                 data{i} = scidb.internal.from_python(c{i});
             end
         else
-            data = double(py_c);
+            % Numeric array -> MATLAB numeric array
+            c = cell(py_list);
+            if isempty(c)
+                data = [];
+            else
+                % Convert list of numbers to MATLAB array
+                % Handle case where c contains py.int/py.float objects
+                if ~isempty(c) && (isa(c{1}, 'py.int') || isa(c{1}, 'py.float'))
+                    % Explicitly convert Python numeric types to MATLAB doubles
+                    data = cellfun(@double, c);
+                else
+                    data = cell2mat(c);
+                end
+            end
         end
-        % 1-D numpy arrays (shape (N,)) arrive as 1×N row vectors after
-        % double()/logical(); force to Nx1 column vectors to match the
+
+        % 1-D numpy arrays: force to Nx1 column vectors to match the
         % columnar convention of DuckDB storage.  2-D arrays keep their shape.
-        if dtype_kind ~= "O" && int64(py_c.ndim) == 1
+        if dtype_kind ~= "O" && int64(py_c.ndim) == 1 && ~isempty(data)
             data = data(:);
         end
+
+        scidb.Log.debug('from_python: numpy conversion complete, result class=%s size=[%s]', ...
+            class(data), num2str(size(data)))
 
     elseif isa(py_obj, 'py.bool')
         % Must check py.bool BEFORE py.int: Python bool is a subclass of int,
@@ -146,50 +187,130 @@ end
 
 function data = convert_dataframe(py_obj)
 %CONVERT_DATAFRAME  Convert a pandas DataFrame to a MATLAB table.
-    py_cols = py_obj.columns.tolist();
-    col_names = cell(py_cols);
-    args = cell(1, numel(col_names));
-    n_rows = int64(py.builtins.len(py_obj));
+    try
+        py_cols = py_obj.columns.tolist();
+        scidb.Log.debug('convert_dataframe: got columns, converting to cell...');
+        col_names = cell(py_cols);
+        scidb.Log.debug('convert_dataframe: %d columns: %s', numel(col_names), strjoin(string(col_names(1:min(5,end))), ', '));
+        args = cell(1, numel(col_names));
+
+        scidb.Log.debug('convert_dataframe: getting row count...');
+        py_len = py.builtins.len(py_obj);
+        n_rows = int64(py_len);
+        scidb.Log.debug('convert_dataframe: py_len type = %s, n_rows = %d', class(py_len), n_rows);
+        scidb.Log.debug('convert_dataframe: converting DataFrame with %d rows, %d columns', ...
+            n_rows, numel(col_names));
+    catch init_err
+        scidb.Log.err('convert_dataframe: initialization failed: %s', init_err.message);
+        rethrow(init_err);
+    end
     for i = 1:numel(col_names)
-        col_key = col_names{i};
-        col = py.operator.getitem(py_obj, col_key);
-        dtype_str = string(col.dtype.name);
+        try
+            col_key = col_names{i};
+            scidb.Log.debug('convert_dataframe: column %d - getting column "%s"', i, string(col_key));
+            col = py.operator.getitem(py_obj, col_key);
+            scidb.Log.debug('convert_dataframe: column %d - got column, getting dtype...', i);
+
+            % Break down dtype conversion into steps to find where it fails
+            try
+                py_dtype = col.dtype;
+                scidb.Log.debug('convert_dataframe: got dtype object');
+                py_dtype_str = py.str(py_dtype);
+                scidb.Log.debug('convert_dataframe: converted dtype to py.str');
+                char_dtype = char(py_dtype_str);
+                scidb.Log.debug('convert_dataframe: converted py.str to char');
+                dtype_str = string(char_dtype);
+                scidb.Log.debug('convert_dataframe: converted char to string: %s', dtype_str);
+            catch dtype_err
+                scidb.Log.err('convert_dataframe: dtype conversion failed: %s', dtype_err.message);
+                rethrow(dtype_err);
+            end
+            scidb.Log.debug('convert_dataframe: column %d/%d "%s" dtype=%s', ...
+                i, numel(col_names), string(col_key), dtype_str);
+        catch col_err
+            scidb.Log.err('convert_dataframe: column %d "%s" failed: %s', i, string(col_key), col_err.message);
+            rethrow(col_err);
+        end
         if startsWith(dtype_str, "datetime")
+            scidb.Log.debug('convert_dataframe: column %d - datetime branch', i);
             % datetime64 column -> MATLAB datetime via ISO strings
             iso_strs = cell(col.dt.strftime('%Y-%m-%dT%H:%M:%S.%f').tolist());
             args{i} = datetime(iso_strs, 'InputFormat', 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS');
         elseif dtype_str == "object"
-            % Object column (e.g. dicts/structs) -> cell array via from_python
+            scidb.Log.debug('convert_dataframe: column %d "%s" - object branch', i, string(col_key));
+            % Object column (e.g. dicts/structs, array columns) -> cell array via from_python
             py_list = col.tolist();
-            c = cell(py_list);
-            col_data = cell(numel(c), 1);
-            for k = 1:numel(c)
-                col_data{k} = scidb.internal.from_python(c{k});
-                % Parse stringified arrays (e.g. "[[false], [true], ...]")
-                % that result from nested-list storage in DuckDB.
-                if isstring(col_data{k}) && strlength(col_data{k}) > 1 ...
-                        && startsWith(col_data{k}, "[")
-                    try
-                        col_data{k} = jsondecode(char(col_data{k}));
-                    catch
-                    end
+
+            % Diagnose what type of data we have
+            c_sample = cell(py_list);
+            if numel(c_sample) > 0
+                first_elem = c_sample{1};
+                scidb.Log.debug('convert_dataframe: column %d - first element type: %s', i, class(first_elem));
+                if isa(first_elem, 'py.numpy.ndarray')
+                    scidb.Log.debug('convert_dataframe: column %d - contains numpy arrays (NOT optimized by Python side)', i);
+                elseif isa(first_elem, 'py.list')
+                    scidb.Log.debug('convert_dataframe: column %d - contains Python lists (optimized by Python side)', i);
                 end
             end
-            % Reconstruct matrix if all elements are same-size numeric
-            % (round-trips multi-column table variables like Nx2 matrices)
-            col_data = try_stack_numeric(col_data);
-            % Coalesce all-string cell arrays into a MATLAB string array
-            % (round-trips string columns that pandas stores as object dtype)
-            col_data = try_stack_strings(col_data);
-            % Convert cell of structs to struct array so table columns
-            % are accessible as t.field.subfield instead of t.field{1}.subfield
-            args{i} = try_stack_structs(col_data);
+
+            % Optimized path: convert the entire Python list in one call to
+            % from_python(), which uses the optimized py.list branch. This is
+            % much faster than converting to a MATLAB cell first and iterating.
+            try
+                scidb.Log.debug('convert_dataframe: column %d - attempting optimized py.list conversion...', i);
+                col_data = scidb.internal.from_python(py_list);
+                scidb.Log.debug('convert_dataframe: column %d - SUCCESS: used optimized py.list conversion', i);
+
+                % Ensure we have a cell array (from_python might return a matrix
+                % for homogeneous data)
+                if ~iscell(col_data)
+                    col_data = num2cell(col_data);
+                end
+
+                % Try to stack into matrix if all same size
+                col_data = try_stack_numeric(col_data);
+                % Coalesce strings
+                col_data = try_stack_strings(col_data);
+                % Stack structs
+                col_data = try_stack_structs(col_data);
+                args{i} = col_data;
+            catch opt_err
+                % Fallback: element-by-element conversion (for complex types)
+                scidb.Log.warn('convert_dataframe: column %d - FAILED optimized conversion, using slow fallback', i);
+                scidb.Log.debug('convert_dataframe: column %d - error was: %s', i, opt_err.message);
+                c = cell(py_list);
+                col_data = cell(numel(c), 1);
+                scidb.Log.debug('convert_dataframe: column %d - converting %d elements individually (SLOW)...', i, numel(c));
+                for k = 1:numel(c)
+                    col_data{k} = scidb.internal.from_python(c{k});
+                    % Parse stringified arrays (e.g. "[[false], [true], ...]")
+                    if isstring(col_data{k}) && strlength(col_data{k}) > 1 ...
+                            && startsWith(col_data{k}, "[")
+                        try
+                            col_data{k} = jsondecode(char(col_data{k}));
+                        catch
+                        end
+                    end
+                end
+                col_data = try_stack_numeric(col_data);
+                col_data = try_stack_strings(col_data);
+                args{i} = try_stack_structs(col_data);
+            end
         else
-            args{i} = scidb.internal.from_python(col.to_numpy());
-            % pandas 3.0+ returns StringDtype for text columns; from_python
-            % converts these to cell arrays.  Stack into string arrays.
-            if iscell(args{i})
-                args{i} = try_stack_strings(args{i});
+            scidb.Log.debug('convert_dataframe: column %d - default branch, calling to_numpy()', i);
+            try
+                py_arr = col.to_numpy();
+                scidb.Log.debug('convert_dataframe: column %d - to_numpy() succeeded, calling from_python', i);
+                args{i} = scidb.internal.from_python(py_arr);
+                scidb.Log.debug('convert_dataframe: column %d - from_python succeeded', i);
+                % pandas 3.0+ returns StringDtype for text columns; from_python
+                % converts these to cell arrays.  Stack into string arrays.
+                if iscell(args{i})
+                    args{i} = try_stack_strings(args{i});
+                end
+            catch convert_err
+                scidb.Log.err('convert_dataframe: column %d conversion failed: %s', i, convert_err.message);
+                rethrow(convert_err);
             end
         end
         % Ensure column vector — but only when the number of elements

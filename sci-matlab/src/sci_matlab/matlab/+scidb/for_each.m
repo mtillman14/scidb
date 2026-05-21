@@ -105,12 +105,16 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     end
 
     % --- Resolve empty arrays from database ---
+    % Skip database resolution when PathInput is present - the filesystem
+    % discovery will populate metadata values instead. This prevents the
+    % database's existing metadata from incorrectly filtering filesystem
+    % discoveries when different path templates are used.
     needs_resolve = false(1, numel(meta_keys));
     for i = 1:numel(meta_values)
         needs_resolve(i) = isempty(meta_values{i});
     end
     resolve_db = [];
-    if any(needs_resolve)
+    if any(needs_resolve) && ~has_pathinput(inputs)
         if isempty(opts.db)
             resolve_db = py.scidb.database.get_database();
         else
@@ -130,6 +134,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             end
             meta_values{i} = mat_vals;
         end
+    elseif any(needs_resolve) && has_pathinput(inputs)
+        scidb.Log.info('PathInput detected: skipping database resolution, using filesystem discovery');
     end
 
     % --- PathInput discovery: filesystem is the source of truth for which
@@ -750,10 +756,25 @@ function result = convert_input(var_spec, py_db, where_nv, db_nv)
         end
 
         % Batch-wrap all results
-        results = scidb.BaseVariable.wrap_py_vars_batch(bulk);
+        scidb.Log.debug('convert_input: wrapping %d Python results to MATLAB BaseVariable...', n_results);
+        try
+            results = scidb.BaseVariable.wrap_py_vars_batch(bulk);
+            scidb.Log.debug('convert_input: wrap_py_vars_batch succeeded, got %d results', numel(results));
+        catch wrap_err
+            scidb.Log.err('convert_input: wrap_py_vars_batch failed: %s', wrap_err.message);
+            rethrow(wrap_err);
+        end
 
         % Convert BaseVariable array into a MATLAB table with metadata + data cols
-        result = lineage_results_to_table(results, var_inst);
+        scidb.Log.debug('convert_input: converting BaseVariable array to table...');
+        try
+            result = lineage_results_to_table(results, var_inst);
+            scidb.Log.debug('convert_input: lineage_results_to_table succeeded, table size %dx%d', ...
+                height(result), width(result));
+        catch tbl_err
+            scidb.Log.err('convert_input: lineage_results_to_table failed: %s', tbl_err.message);
+            rethrow(tbl_err);
+        end
 
         % Handle column selection if specified
         if ~isempty(var_inst.selected_columns)

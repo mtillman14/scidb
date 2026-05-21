@@ -589,6 +589,75 @@ def wrap_batch_bridge(py_vars_list):
             if all(list(d.columns) == first_cols for d in data):
                 row_counts = [len(d) for d in data]
                 concat_df = pd.concat(data, ignore_index=True)
+
+                # Optimize object-dtype columns containing numpy arrays
+                # For variable-length arrays, flatten all data into a single array
+                # and send size/offset info separately. This avoids N boundary
+                # crossings in MATLAB (one per cell) by doing bulk transfer.
+                from scidb.log import Log
+                optimized_cols = []
+                flattened_data = {}
+                json_columns = []
+                object_cols = [col for col in concat_df.columns if concat_df[col].dtype == object]
+                Log.debug(f'wrap_batch_bridge: found {len(object_cols)} object-dtype columns to check')
+
+                for col_name in concat_df.columns:
+                    col = concat_df[col_name]
+                    if col.dtype == object and len(col) > 0:
+                        # Check if first non-null value is a numpy array
+                        first_val = None
+                        for val in col:
+                            if val is not None:
+                                first_val = val
+                                break
+
+                        if first_val is not None:
+                            first_val_type = type(first_val).__name__
+                            Log.debug(f'wrap_batch_bridge: column "{col_name}" first value type: {first_val_type}')
+
+                            if isinstance(first_val, dict):
+                                # JSON/dict columns - serialize to JSON strings for fast transfer
+                                # MATLAB will parse these back to structs automatically
+                                Log.debug(f'wrap_batch_bridge: column "{col_name}" contains dicts, serializing to JSON...')
+                                import json
+                                concat_df[col_name] = [json.dumps(val) if isinstance(val, dict) else val for val in col]
+                                json_columns.append(col_name)
+                                optimized_cols.append(col_name + ' (JSON)')
+                                Log.debug(f'wrap_batch_bridge: column "{col_name}" serialized to JSON strings')
+                            elif isinstance(first_val, np.ndarray):
+                                # Flatten array column: concatenate all arrays and store sizes
+                                # This allows MATLAB to convert the entire column in 2 operations
+                                # (one for flat data, one for sizes) instead of N operations
+                                Log.debug(f'wrap_batch_bridge: flattening column "{col_name}"...')
+                                arrays = [arr if isinstance(arr, np.ndarray) else np.array(arr) for arr in col]
+
+                                # Get array sizes and flatten
+                                sizes = np.array([len(arr) for arr in arrays], dtype=np.int32)
+                                flat_data = np.concatenate(arrays) if len(arrays) > 0 else np.array([])
+
+                                # Store flattened representation
+                                flattened_data[col_name] = {
+                                    'flat': flat_data,
+                                    'sizes': sizes,
+                                    'dtype': str(first_val.dtype)
+                                }
+
+                                # Mark column for reconstruction in MATLAB
+                                concat_df[col_name] = ['__flattened__'] * len(col)
+
+                                optimized_cols.append(col_name)
+                                Log.debug(f'wrap_batch_bridge: column "{col_name}" flattened: '
+                                         f'{len(flat_data)} total elements in {len(sizes)} arrays')
+
+                if optimized_cols:
+                    Log.info(f'wrap_batch_bridge: optimized {len(optimized_cols)} array columns for MATLAB transfer: {optimized_cols[:5]}')
+                    if flattened_data:
+                        result['flattened_arrays'] = flattened_data
+                    if json_columns:
+                        result['json_columns'] = json_columns
+                else:
+                    Log.debug('wrap_batch_bridge: no array columns found to optimize')
+
                 result['concat_df'] = concat_df
                 result['concat_df_row_counts'] = np.array(row_counts, dtype=np.int64)
 

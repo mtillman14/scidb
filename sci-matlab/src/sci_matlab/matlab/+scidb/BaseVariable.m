@@ -757,7 +757,9 @@ classdef BaseVariable < dynamicprops
             has_scalar_data = logical( ...
                 py.operator.contains(bulk, 'scalar_data'));
             if has_scalar_data
-                all_scalar_data = double(py.numpy.ascontiguousarray(bulk{'scalar_data'}));
+                % Use from_python to properly convert scalar array
+                all_scalar_data = scidb.internal.from_python(bulk{'scalar_data'});
+                scidb.Log.debug('wrap_py_vars_batch: loaded %d scalar values', numel(all_scalar_data));
             end
 
             % --- Optimization B2: DataFrame batch transfer ---
@@ -767,10 +769,88 @@ classdef BaseVariable < dynamicprops
             has_concat_df = logical( ...
                 py.operator.contains(bulk, 'concat_df'));
             if has_concat_df
+                scidb.Log.debug('wrap_py_vars_batch: using concat_df fast path...');
                 concat_table = scidb.internal.from_python(bulk{'concat_df'});
-                row_counts = double(py.numpy.ascontiguousarray(bulk{'concat_df_row_counts'}));
+                % Use from_python to properly convert row counts
+                row_counts = scidb.internal.from_python(bulk{'concat_df_row_counts'});
                 % Build cumulative row offsets for slicing
                 cum_rows = cumsum([0; row_counts(:)]);
+                scidb.Log.debug('wrap_py_vars_batch: concat_df has %d rows, split into %d tables', ...
+                    height(concat_table), numel(row_counts));
+
+                % Reconstruct flattened array columns if present
+                has_flattened = logical(py.operator.contains(bulk, 'flattened_arrays'));
+                if has_flattened
+                    scidb.Log.debug('wrap_py_vars_batch: reconstructing flattened array columns...');
+                    flat_dict = bulk{'flattened_arrays'};
+                    flat_keys = cell(py.list(flat_dict.keys()));
+
+                    for k = 1:numel(flat_keys)
+                        col_name = string(flat_keys{k});
+                        flat_info = flat_dict{flat_keys{k}};
+
+                        % Convert flattened data and sizes
+                        flat_data = scidb.internal.from_python(flat_info{'flat'});
+                        sizes = scidb.internal.from_python(flat_info{'sizes'});
+
+                        scidb.Log.debug('wrap_py_vars_batch: reconstructing column "%s": %d elements, %d arrays', ...
+                            col_name, numel(flat_data), numel(sizes));
+
+                        % Reconstruct variable-length arrays using cumulative offsets
+                        offsets = [0; cumsum(sizes(:))];
+                        reconstructed = cell(numel(sizes), 1);
+                        for r = 1:numel(sizes)
+                            start_idx = offsets(r) + 1;
+                            end_idx = offsets(r+1);
+                            reconstructed{r} = flat_data(start_idx:end_idx);
+                        end
+
+                        % Replace placeholder column with reconstructed data
+                        concat_table.(col_name) = reconstructed;
+                        scidb.Log.debug('wrap_py_vars_batch: column "%s" reconstructed successfully', col_name);
+                    end
+
+                    scidb.Log.info('wrap_py_vars_batch: reconstructed %d flattened array columns', numel(flat_keys));
+                end
+
+                % Parse JSON string columns back to structs
+                % (JSON columns were serialized to strings in Python for fast transfer)
+                has_json_cols = logical(py.operator.contains(bulk, 'json_columns'));
+                if has_json_cols
+                    json_col_list = bulk{'json_columns'};
+                    % Convert Python list to MATLAB cell array
+                    if isa(json_col_list, 'py.list')
+                        json_cols = cell(json_col_list);
+                    else
+                        json_cols = cell(py.list(json_col_list));
+                    end
+                    scidb.Log.debug('wrap_py_vars_batch: parsing %d JSON columns to structs...', numel(json_cols));
+
+                    for k = 1:numel(json_cols)
+                        col_name = string(json_cols{k});
+                        if ismember(col_name, concat_table.Properties.VariableNames)
+                            % Convert string/cell array of JSON to cell array of structs
+                            json_strings = concat_table.(col_name);
+                            if isstring(json_strings)
+                                json_strings = cellstr(json_strings);
+                            end
+
+                            structs = cell(size(json_strings));
+                            for r = 1:numel(json_strings)
+                                try
+                                    structs{r} = jsondecode(json_strings{r});
+                                catch
+                                    structs{r} = struct();  % Empty struct on parse failure
+                                end
+                            end
+
+                            concat_table.(col_name) = structs;
+                            scidb.Log.debug('wrap_py_vars_batch: parsed JSON column "%s" to structs', col_name);
+                        end
+                    end
+
+                    scidb.Log.info('wrap_py_vars_batch: parsed %d JSON columns to structs', numel(json_cols));
+                end
             end
 
             % --- Optimization C: Bulk-convert py_vars to cell array ---

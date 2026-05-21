@@ -1,5 +1,5 @@
 classdef Log
-%SCIDB.LOG  Minimal structured logger with levels and timestamps.
+%SCIDB.LOG  Unified logger that delegates to Python scidb.log.Log.
 %
 %   scidb.Log.set_level('DEBUG')   — show all messages
 %   scidb.Log.set_level('INFO')    — show INFO, WARN, ERROR (default)
@@ -13,11 +13,12 @@ classdef Log
 %
 %   Output format: [HH:MM:SS.FFF] [LEVEL] message
 %
-%   Writes to scidb.log next to the database file (set automatically
-%   by scidb.configure_database()). Each log call opens, appends, and
-%   closes the file so every line is flushed to disk immediately.
+%   All logging calls delegate to the Python scidb.log.Log class to ensure
+%   unified log level settings and output. Writes to scidb.log next to the
+%   database file (set automatically by scidb.configure_database()).
 %
-%   Uses setappdata(0, ...) for global state (standard MATLAB singleton pattern).
+%   The log level is cached in MATLAB's appdata for performance, but the
+%   Python logger is the source of truth.
 
     properties (Constant)
         DEBUG = 0
@@ -31,14 +32,26 @@ classdef Log
         function set_level(level)
         %SET_LEVEL  Set the global log level.
         %   Accepts a string ('DEBUG','INFO','WARN','ERROR') or numeric (0-3).
-            if ischar(level) || isstring(level)
-                level = scidb.Log.parse_level(char(upper(string(level))));
+        %   Delegates to Python logging to unify log level settings.
+            if isnumeric(level)
+                % Convert numeric to string for Python
+                level_names = {'DEBUG', 'INFO', 'WARN', 'ERROR'};
+                if level >= 0 && level <= 3
+                    level = level_names{level + 1};
+                else
+                    level = 'INFO';
+                end
             end
-            setappdata(0, 'scidb_log_level', level);
+            % Set Python log level (source of truth)
+            py.scidb.log.Log.set_level(char(level));
+            % Cache in MATLAB for fast get_level() calls
+            level_num = scidb.Log.parse_level(char(upper(string(level))));
+            setappdata(0, 'scidb_log_level', level_num);
         end
 
         function level = get_level()
         %GET_LEVEL  Get the current log level (default: INFO).
+        %   Returns cached value for performance (avoids Python bridge crossing).
             if isappdata(0, 'scidb_log_level')
                 level = getappdata(0, 'scidb_log_level');
             else
@@ -49,6 +62,9 @@ classdef Log
         function set_path(log_path)
         %SET_PATH  Set the log file path for file output.
         %   Called automatically by scidb.configure_database().
+        %   Delegates to Python logging to unify log file location.
+            py.scidb.log.Log.set_path(char(log_path));
+            % Cache in MATLAB for legacy compatibility
             setappdata(0, 'scidb_log_path', char(log_path));
         end
 
@@ -63,55 +79,44 @@ classdef Log
 
         function debug(fmt, varargin)
         %DEBUG  Log a message at DEBUG level.
+        %   Delegates to Python logging for unified output.
             if scidb.Log.get_level() <= scidb.Log.DEBUG
-                scidb.Log.emit('DEBUG', fmt, varargin{:});
+                msg = sprintf(fmt, varargin{:});
+                py.scidb.log.Log.debug(msg);
             end
         end
 
         function info(fmt, varargin)
         %INFO  Log a message at INFO level.
+        %   Delegates to Python logging for unified output.
             if scidb.Log.get_level() <= scidb.Log.INFO
-                scidb.Log.emit('INFO', fmt, varargin{:});
+                msg = sprintf(fmt, varargin{:});
+                py.scidb.log.Log.info(msg);
             end
         end
 
         function warn(fmt, varargin)
         %WARN  Log a message at WARN level.
+        %   Delegates to Python logging for unified output.
             if scidb.Log.get_level() <= scidb.Log.WARN
-                scidb.Log.emit('WARN', fmt, varargin{:});
+                msg = sprintf(fmt, varargin{:});
+                py.scidb.log.Log.warn(msg);
             end
         end
 
         function err(fmt, varargin)
         %ERR  Log a message at ERROR level.
         %   Named 'err' to avoid conflict with MATLAB's built-in 'error'.
+        %   Delegates to Python logging for unified output.
             if scidb.Log.get_level() <= scidb.Log.ERROR
-                scidb.Log.emit('ERROR', fmt, varargin{:});
+                msg = sprintf(fmt, varargin{:});
+                py.scidb.log.Log.error(msg);
             end
         end
 
     end
 
     methods (Static, Access = private)
-
-        function emit(level_str, fmt, varargin)
-        %EMIT  Format and write a log message with timestamp to the log file.
-        %   Opens, appends, and closes the file on every call so that
-        %   each line is flushed to disk immediately.
-            log_path = scidb.Log.get_path();
-            if isempty(log_path)
-                return;
-            end
-
-            ts = datestr(now, 'HH:MM:SS.FFF'); %#ok<TNOW1,DATST>
-            msg = sprintf(fmt, varargin{:});
-
-            fid = fopen(log_path, 'a');
-            if fid ~= -1
-                fprintf(fid, '[%s] [%s] %s\n', ts, level_str, msg);
-                fclose(fid);
-            end
-        end
 
         function level = parse_level(name)
         %PARSE_LEVEL  Convert a level name string to numeric value.

@@ -83,6 +83,8 @@ function py_obj = to_python(data)
             col = data.(col_names{i});
             orig_class = class(col);
             orig_size = size(col);
+            scidb.Log.debug('to_python: processing table column %d/%d "%s" (class=%s, size=[%s])', ...
+                i, numel(col_names), col_names{i}, orig_class, num2str(orig_size));
             if iscategorical(col)
                 col = string(col);
             elseif isdatetime(col)
@@ -103,16 +105,36 @@ function py_obj = to_python(data)
                     % Cell array column: try flatten+lengths fast path
                     % first to avoid per-element bridge crossings.
                     [can_flat, flat, lengths, flat_dtype] = try_flatten_cell_column(col);
+                    fast_path_ok = false;
                     if can_flat
-                        % Fast path: 3 bridge crossings instead of N*3
-                        py_flat = py.numpy.array(flat, pyargs('dtype', flat_dtype));
-                        py_lengths = py.numpy.array(lengths, pyargs('dtype', 'int64'));
-                        py_val = py.sci_matlab.bridge.split_flat_to_lists(py_flat, py_lengths);
+                        try
+                            scidb.Log.debug('to_python: trying fast path for cell column "%s" (dtype=%s, total_len=%d)', ...
+                                col_names{i}, flat_dtype, numel(flat));
+                            % Fast path: 3 bridge crossings instead of N*3
+                            py_flat = py.numpy.array(flat, pyargs('dtype', flat_dtype));
+                            py_lengths = py.numpy.array(lengths, pyargs('dtype', 'int64'));
+                            py_val = py.sci_matlab.bridge.split_flat_to_lists(py_flat, py_lengths);
+                            fast_path_ok = true;
+                            scidb.Log.debug('to_python: fast path succeeded for column "%s"', col_names{i});
+                        catch fast_err
+                            % Fast path failed (e.g., numpy bridge error) — fall back
+                            % to element-by-element conversion
+                            scidb.Log.debug('to_python: fast path failed for column "%s", falling back: %s', ...
+                                col_names{i}, fast_err.message);
+                            fast_path_ok = false;
+                        end
                     else
+                        scidb.Log.debug('to_python: cell column "%s" not flattenable, using element-by-element', ...
+                            col_names{i});
+                    end
+
+                    if ~fast_path_ok
                         % Fallback: convert element-by-element.
                         % Inner numpy arrays must become Python lists so that
                         % pandas creates an object column instead of trying to
                         % stack arrays into a 2-D ndarray.
+                        scidb.Log.debug('to_python: converting column "%s" element-by-element (%d elements)', ...
+                            col_names{i}, numel(col));
                         py_val = py.list();
                         for k = 1:numel(col)
                             elem_data = col{k};
@@ -122,14 +144,27 @@ function py_obj = to_python(data)
                             if iscell(elem_data) && iscolumn(elem_data)
                                 elem_data = elem_data';
                             end
-                            elem = scidb.internal.to_python(elem_data);
-                            if isa(elem, 'py.numpy.ndarray')
-                                % Ravel to 1-D before tolist so Nx1 vectors
-                                % produce flat lists, not nested [[v],[v],...].
-                                elem = elem.ravel().tolist();
+
+                            % Bypass numpy for simple numeric/logical arrays to avoid
+                            % libmwbuffer errors. Convert directly to Python lists.
+                            % Pandas can handle lists fine for DataFrame columns.
+                            if (isnumeric(elem_data) || islogical(elem_data)) && ~isscalar(elem_data)
+                                % Convert MATLAB array -> Python list (avoiding MATLAB numpy bridge)
+                                elem = py.list(num2cell(elem_data(:)'));
+                            else
+                                % For other types (scalars, strings, nested cells),
+                                % use the standard to_python conversion
+                                elem = scidb.internal.to_python(elem_data);
+                                if isa(elem, 'py.numpy.ndarray')
+                                    % Ravel to 1-D before tolist so Nx1 vectors
+                                    % produce flat lists, not nested [[v],[v],...].
+                                    elem = elem.ravel().tolist();
+                                end
                             end
                             py_val.append(elem);
                         end
+                        scidb.Log.debug('to_python: element-by-element conversion complete for column "%s"', ...
+                            col_names{i});
                     end
                 else
                     py_val = scidb.internal.to_python(col);
@@ -147,9 +182,11 @@ function py_obj = to_python(data)
             catch ME
                 % Report which column failed and what the element looks like
                 detail = sprintf('class=%s size=[%s]', orig_class, num2str(orig_size));
-                if iscell(col)
+                if iscell(col) && exist('k', 'var')
                     detail = sprintf('%s, cell elem %d: class=%s size=[%s]', ...
                         detail, k, class(col{k}), num2str(size(col{k})));
+                elseif iscell(col)
+                    detail = sprintf('%s, cell array with %d elements', detail, numel(col));
                 end
                 error('scidb:ColumnConvertError', ...
                     'to_python table col %d/%d "%s" failed (%s): %s', ...
