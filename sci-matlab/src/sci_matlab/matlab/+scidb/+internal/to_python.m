@@ -5,6 +5,15 @@ function py_obj = to_python(data)
 %   Arrays are converted to C-contiguous numpy ndarrays so that
 %   canonical_hash produces consistent results.
 
+    % Pass through Python objects that arrived in a MATLAB cell. The
+    % MATLAB→Python bridge can route them straight back without conversion
+    % (e.g. ``py.scilineage.core.LineageFcnResult`` cells produced when a
+    % LineageFcn-wrapped function returns multiple outputs via scifor).
+    if isa(data, 'py.object') && ~isa(data, 'py.NoneType')
+        py_obj = data;
+        return;
+    end
+
     if isstring(data) && isscalar(data)
         py_obj = char(data);
 

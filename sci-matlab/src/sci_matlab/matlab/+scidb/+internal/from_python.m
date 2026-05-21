@@ -240,16 +240,22 @@ function data = convert_dataframe(py_obj)
             scidb.Log.debug('convert_dataframe: column %d "%s" - object branch', i, string(col_key));
             % Object column (e.g. dicts/structs, array columns) -> cell array via from_python
             py_list = col.tolist();
-
-            % Diagnose what type of data we have
-            c_sample = cell(py_list);
-            if numel(c_sample) > 0
-                first_elem = c_sample{1};
-                scidb.Log.debug('convert_dataframe: column %d - first element type: %s', i, class(first_elem));
-                if isa(first_elem, 'py.numpy.ndarray')
-                    scidb.Log.debug('convert_dataframe: column %d - contains numpy arrays (NOT optimized by Python side)', i);
-                elseif isa(first_elem, 'py.list')
-                    scidb.Log.debug('convert_dataframe: column %d - contains Python lists (optimized by Python side)', i);
+            c = cell(py_list);
+            col_data = cell(numel(c), 1);
+            for k = 1:numel(c)
+                col_data{k} = scidb.internal.from_python(c{k});
+                % Parse stringified arrays (e.g. "[[false], [true], ...]")
+                % that result from nested-list storage in DuckDB.
+                % Only attempts to parse SCALAR strings — a multi-element
+                % string array (from pandas object columns holding string
+                % arrays) would break strlength's scalar contract.
+                cd = col_data{k};
+                if isstring(cd) && isscalar(cd) ...
+                        && strlength(cd) > 1 && startsWith(cd, "[")
+                    try
+                        col_data{k} = jsondecode(char(cd));
+                    catch
+                    end
                 end
             end
 
@@ -324,7 +330,16 @@ function data = convert_dataframe(py_obj)
     col_name_strs = cellfun(@string, col_names, 'UniformOutput', false);
     data = table;
     for i = 1:numel(args)
-        if size(args{i}, 1) == n_rows
+        % Special case: a 1-row DataFrame whose column carries a non-scalar
+        % vector/matrix should stay cell-wrapped — scifor's
+        % _nest_table_outputs=true convention treats each cell as one
+        % per-row payload, and downstream MATLAB code expects to brace-
+        % index back into it.  Without this guard, ``size(args{i},1) ==
+        % n_rows`` would be true (1==1) and the data would land in the
+        % table as a raw 1×N numeric column.
+        if n_rows == 1 && ~iscell(args{i}) && ~isscalar(args{i})
+            data.(col_name_strs{i}) = args(i);
+        elseif size(args{i}, 1) == n_rows
             % Per-row values: assign directly.
             % size(·,1) handles both column vectors (Nx1) and matrix columns
             % (NxM) so that e.g. a 3×3 matrix is assigned as a 3-row column
@@ -352,10 +367,14 @@ function data = try_stack_numeric(data)
         end
     end
     % from_python converts 1-D numpy arrays to Nx1 column vectors.
-    % When they represent rows of a matrix column, transpose to row vectors
-    % so that vertcat produces an n_rows×m matrix matching the MATLAB table
-    % convention (each row is a 1×m row vector).
-    if iscolumn(data{1}) && ~isscalar(data{1})
+    % When they represent rows of a matrix column (N cells, each Mx1),
+    % transpose to row vectors so vertcat produces an N×M matrix matching
+    % the MATLAB table convention (each row is a 1×M row vector).
+    % For a single cell, there's nothing to stack — preserve the value's
+    % original shape so a per-row vector payload round-trips faithfully.
+    if numel(data) == 1
+        data = data{1};
+    elseif iscolumn(data{1}) && ~isscalar(data{1})
         transposed = cellfun(@(v) v', data, 'UniformOutput', false);
         data = vertcat(transposed{:});
     else
