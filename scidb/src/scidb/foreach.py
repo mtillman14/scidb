@@ -1648,9 +1648,17 @@ def _save_results(
     combo_to_rids: "dict | None" = None,
     combo_to_rids_keys: "list | None" = None,
 ) -> None:
-    """Save results from the result table to output variable types."""
+    """Save results from the result table to output variable types using batch operations.
+
+    This function preserves all the config_keys and branch_params tracking from the
+    original implementation while using save_batch for efficiency when saving multiple rows.
+
+    The for_each save path adds config_keys and branch_params tracking on top of the
+    direct save, as documented in scidb-identity-and-data-flow.md.
+    """
     import pandas as pd
 
+    batch_start_time = time.perf_counter()
     db_kwargs = {"db": db} if db is not None else {}
 
     # Get schema keys for dynamic discriminator detection
@@ -1674,7 +1682,18 @@ def _save_results(
     else:
         direct_constants = constants_val or {}
 
-    for _, row in result_tbl.iterrows():
+    # ===========================================================================
+    # PHASE 1: Collect all (data, metadata) items for batch saving
+    # ===========================================================================
+    # Structure: {(output_idx, save_path): [(data, metadata), ...]}
+    # save_path is one of: 'normal', 'flatten', 'lineage'
+    batch_items = {}
+    lineage_items = []  # LineageFcnResult items saved sequentially (special handling)
+
+    prep_start = time.perf_counter()
+    Log.info(f"[batch_save] Preparing {len(result_tbl)} result row(s) for batch save")
+
+    for row_idx, (_, row) in enumerate(result_tbl.iterrows()):
         # 1. Collect upstream branch_params via __rid_* columns → rid_to_bp lookup
         merged_bp: dict = {}
         if combo_to_rids is not None and combo_to_rids_keys is not None:
@@ -1789,7 +1808,7 @@ def _save_results(
             if upstream:
                 save_metadata["__upstream"] = upstream
 
-        for output_obj, output_name in zip(outputs, output_names):
+        for output_idx, (output_obj, output_name) in enumerate(zip(outputs, output_names)):
             if output_name not in row.index:
                 # Flatten/distribute mode: fn returned a DataFrame whose columns are
                 # spread directly in result_tbl (scifor all_dataframes flatten mode).
@@ -1801,70 +1820,147 @@ def _save_results(
                 output_value = pd.DataFrame({c: [row[c]] for c in data_cols})
                 save_meta_for_output = {k: v for k, v in save_metadata.items()
                                         if k not in set(data_cols)}
-                try:
-                    save_t0 = time.perf_counter()
-                    rid = output_obj.save(output_value, **db_kwargs, **save_meta_for_output)
-                    save_elapsed = time.perf_counter() - save_t0
-                    meta_str = ", ".join(f"{k}={v}" for k, v in save_meta_for_output.items()
-                                         if not k.startswith("__"))
-                    data_desc = _describe_save_data(output_value)
-                    rid_short = rid[:12] if isinstance(rid, str) else str(rid)
-                    msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}) in {save_elapsed:.3f}s"
-                    print(msg)
-                    Log.info(msg)
-                except Exception as e:
-                    meta_str = ", ".join(f"{k}={v}" for k, v in save_meta_for_output.items()
-                                         if not k.startswith("__"))
-                    msg = f"[error] {meta_str}: failed to save {_output_name(output_obj)}: {e}"
-                    print(msg)
-                    Log.error(msg)
+
+                # Collect for batch save - need deep copy to avoid shared dict references
+                key = (output_idx, 'flatten')
+                if key not in batch_items:
+                    batch_items[key] = []
+                # Deep copy metadata to avoid sharing __branch_params dict across rows
+                meta_copy = dict(save_meta_for_output)
+                if "__branch_params" in meta_copy:
+                    meta_copy["__branch_params"] = dict(meta_copy["__branch_params"])
+                if "__upstream" in meta_copy and isinstance(meta_copy["__upstream"], dict):
+                    meta_copy["__upstream"] = dict(meta_copy["__upstream"])
+                batch_items[key].append((output_value, meta_copy))
                 continue
+
             output_value = row[output_name]
 
-            # Detect LineageFcnResult and delegate to scihist if present
+            # Detect LineageFcnResult and handle separately (cannot batch these)
             if HAS_LINEAGE and isinstance(output_value, LineageFcnResult):
-                try:
-                    from scihist.foreach import save_lineage_result
-                    save_t0 = time.perf_counter()
-                    # Add lineage_fixed_rids to metadata for rid_tracking
-                    lineage_metadata = dict(save_metadata)
-                    if lineage_fixed_rids:
-                        lineage_metadata["__lineage_fixed_rids"] = lineage_fixed_rids
-                    rid = save_lineage_result(output_obj, output_value, lineage_metadata, db)
-                    save_elapsed = time.perf_counter() - save_t0
-                    meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
-                                         if not k.startswith("__"))
-                    data_desc = _describe_save_data(output_value)
-                    rid_short = rid[:12] if isinstance(rid, str) else str(rid)
-                    msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}) [lineage] in {save_elapsed:.3f}s"
-                    print(msg)
-                    Log.info(msg)
-                except Exception as e:
-                    meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
-                                         if not k.startswith("__"))
-                    msg = f"[error] {meta_str}: failed to save {_output_name(output_obj)} [lineage]: {e}"
-                    print(msg)
-                    Log.error(msg)
+                lineage_metadata = dict(save_metadata)
+                # Deep copy nested dicts
+                if "__branch_params" in lineage_metadata:
+                    lineage_metadata["__branch_params"] = dict(lineage_metadata["__branch_params"])
+                if "__upstream" in lineage_metadata and isinstance(lineage_metadata["__upstream"], dict):
+                    lineage_metadata["__upstream"] = dict(lineage_metadata["__upstream"])
+                if lineage_fixed_rids:
+                    lineage_metadata["__lineage_fixed_rids"] = lineage_fixed_rids
+                lineage_items.append((output_obj, output_value, lineage_metadata, row_idx))
                 continue
 
-            # Normal save path
-            try:
-                save_t0 = time.perf_counter()
-                rid = output_obj.save(output_value, **db_kwargs, **save_metadata)
-                save_elapsed = time.perf_counter() - save_t0
-                meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
+            # Normal save path - collect for batch save - need deep copy to avoid shared dict references
+            key = (output_idx, 'normal')
+            if key not in batch_items:
+                batch_items[key] = []
+            # Deep copy metadata to avoid sharing __branch_params dict across rows
+            meta_copy = dict(save_metadata)
+            if "__branch_params" in meta_copy:
+                meta_copy["__branch_params"] = dict(meta_copy["__branch_params"])
+            if "__upstream" in meta_copy and isinstance(meta_copy["__upstream"], dict):
+                meta_copy["__upstream"] = dict(meta_copy["__upstream"])
+            batch_items[key].append((output_value, meta_copy))
+
+    prep_elapsed = time.perf_counter() - prep_start
+    Log.info(f"[batch_save] Preparation complete in {prep_elapsed:.3f}s: "
+             f"{len(batch_items)} batch group(s), {len(lineage_items)} lineage item(s)")
+
+    # ===========================================================================
+    # PHASE 2: Execute batch saves
+    # ===========================================================================
+    batch_save_start = time.perf_counter()
+    total_saved = 0
+
+    for (output_idx, save_path), items in batch_items.items():
+        output_obj = outputs[output_idx]
+
+        if len(items) == 0:
+            continue
+
+        Log.info(f"[batch_save] Saving {len(items)} record(s) for {_output_name(output_obj)} ({save_path} path)")
+
+        try:
+            save_t0 = time.perf_counter()
+
+            # Use save_batch for efficiency
+            if db is not None:
+                record_ids = db.save_batch(type(output_obj) if not isinstance(output_obj, type) else output_obj,
+                                          items,
+                                          profile=False)
+            else:
+                # Fallback: use class method if db not available
+                from .database import get_database
+                _db = get_database()
+                record_ids = _db.save_batch(type(output_obj) if not isinstance(output_obj, type) else output_obj,
+                                           items,
+                                           profile=False)
+
+            save_elapsed = time.perf_counter() - save_t0
+            total_saved += len(items)
+
+            # Log summary (first few records)
+            for i, ((data, meta), rid) in enumerate(zip(items[:3], record_ids[:3])):
+                meta_str = ", ".join(f"{k}={v}" for k, v in meta.items()
                                      if not k.startswith("__"))
-                data_desc = _describe_save_data(output_value)
+                data_desc = _describe_save_data(data)
                 rid_short = rid[:12] if isinstance(rid, str) else str(rid)
-                msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}) in {save_elapsed:.3f}s"
-                print(msg)
+                suffix = " [flatten]" if save_path == 'flatten' else ""
+                msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}){suffix}"
+                if i == 0:
+                    print(msg)  # Print first one
                 Log.info(msg)
-            except Exception as e:
-                meta_str = ", ".join(f"{k}={v}" for k, v in save_metadata.items()
+
+            if len(items) > 3:
+                Log.info(f"[save] ... and {len(items) - 3} more record(s)")
+                print(f"[save] ... and {len(items) - 3} more record(s) for {_output_name(output_obj)}")
+
+            Log.info(f"[batch_save] Completed {len(items)} save(s) for {_output_name(output_obj)} in {save_elapsed:.3f}s "
+                     f"({len(items)/save_elapsed:.1f} records/s)")
+
+        except Exception as e:
+            Log.error(f"[batch_save] Failed to save batch for {_output_name(output_obj)}: {e}")
+            # Log first few failed items
+            for data, meta in items[:3]:
+                meta_str = ", ".join(f"{k}={v}" for k, v in meta.items()
                                      if not k.startswith("__"))
                 msg = f"[error] {meta_str}: failed to save {_output_name(output_obj)}: {e}"
                 print(msg)
                 Log.error(msg)
+
+    # ===========================================================================
+    # PHASE 3: Handle lineage items sequentially (cannot be batched)
+    # ===========================================================================
+    if lineage_items:
+        Log.info(f"[batch_save] Saving {len(lineage_items)} lineage item(s) sequentially")
+        from scihist.foreach import save_lineage_result
+
+        for output_obj, output_value, lineage_metadata, row_idx in lineage_items:
+            try:
+                save_t0 = time.perf_counter()
+                rid = save_lineage_result(output_obj, output_value, lineage_metadata, db)
+                save_elapsed = time.perf_counter() - save_t0
+                total_saved += 1
+
+                meta_str = ", ".join(f"{k}={v}" for k, v in lineage_metadata.items()
+                                     if not k.startswith("__"))
+                data_desc = _describe_save_data(output_value)
+                rid_short = rid[:12] if isinstance(rid, str) else str(rid)
+                msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}) [lineage] in {save_elapsed:.3f}s"
+                print(msg)
+                Log.info(msg)
+            except Exception as e:
+                meta_str = ", ".join(f"{k}={v}" for k, v in lineage_metadata.items()
+                                     if not k.startswith("__"))
+                msg = f"[error] {meta_str}: failed to save {_output_name(output_obj)} [lineage]: {e}"
+                print(msg)
+                Log.error(msg)
+
+    # ===========================================================================
+    # Summary
+    # ===========================================================================
+    batch_total_elapsed = time.perf_counter() - batch_start_time
+    Log.info(f"[batch_save] Total: saved {total_saved} record(s) in {batch_total_elapsed:.3f}s "
+             f"({total_saved/batch_total_elapsed:.1f} records/s)")
 
 
 # ---------------------------------------------------------------------------

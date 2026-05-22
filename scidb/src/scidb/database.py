@@ -1006,9 +1006,17 @@ class DatabaseManager:
         # --- Batch schema_id resolution ---
         t1 = time.perf_counter()
         all_nested = []
+        all_branch_params = []  # Extracted before _split_metadata
         unique_schema_combos = {}  # {combo_key: schema_keys_dict}
         for data_val, flat_meta in data_items:
-            nested = self._split_metadata(flat_meta)
+            # Extract __branch_params BEFORE split (it gets its own column, not part of version_keys)
+            # This matches the behavior of individual save() at line 1785
+            branch_params_for_item = flat_meta.get("__branch_params", {})
+            all_branch_params.append(branch_params_for_item)
+
+            # Remove __branch_params from flat_meta before splitting
+            flat_meta_cleaned = {k: v for k, v in flat_meta.items() if k != "__branch_params"}
+            nested = self._split_metadata(flat_meta_cleaned)
             all_nested.append(nested)
             schema_keys = nested.get("schema", {})
             schema_level = self._infer_schema_level(schema_keys)
@@ -1088,9 +1096,13 @@ class DatabaseManager:
 
             _t = time.perf_counter()
             vk_json = json.dumps(version_keys or {}, sort_keys=True)
+            # Use pre-extracted branch_params (extracted before _split_metadata at line 1013)
+            branch_params = all_branch_params[i]
+            bp_json = json.dumps(branch_params, sort_keys=True)
             metadata_rows.append((
                 record_id, timestamp, type_name, schema_id,
                 vk_json, content_hash, None, schema_version, user_id,
+                bp_json,
             ))
             t4_meta += time.perf_counter() - _t
 
@@ -1184,13 +1196,13 @@ class DatabaseManager:
                 columns=[
                     "record_id", "timestamp", "variable_name", "schema_id",
                     "version_keys", "content_hash", "lineage_hash",
-                    "schema_version", "user_id",
+                    "schema_version", "user_id", "branch_params",
                 ],
             )
             self._duck.con.execute(
                 "INSERT INTO _record_metadata ("
                 "record_id, timestamp, variable_name, schema_id, "
-                "version_keys, content_hash, lineage_hash, schema_version, user_id"
+                "version_keys, content_hash, lineage_hash, schema_version, user_id, branch_params"
                 ") SELECT * FROM meta_df "
                 "ON CONFLICT (record_id, timestamp) DO NOTHING"
             )
