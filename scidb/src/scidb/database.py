@@ -1260,6 +1260,70 @@ class DatabaseManager:
         """Check if a BaseVariable subclass overrides to_db or from_db."""
         return "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
 
+    def _sort_by_schema_keys(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Sort DataFrame by schema keys with numeric sorting for numeric-only columns.
+
+        For each schema key:
+        - If all values are purely numeric (convertible to float), sort numerically
+        - Otherwise, sort alphabetically (lexicographically)
+
+        This ensures "1", "2", "10" sorts as 1, 2, 10 (not "1", "10", "2").
+        But "S01", "S02", "S10" or mixed "1", "S01", "10" sorts alphabetically.
+        """
+        if len(df) == 0:
+            return df
+
+        # Create temporary sort columns for each schema key
+        sort_cols = []
+        sort_ascending = []
+        temp_col_names = []
+
+        for key in self.dataset_schema_keys:
+            if key not in df.columns:
+                continue
+
+            temp_col_name = f"__sort_{key}"
+            temp_col_names.append(temp_col_name)
+
+            # Get non-null values to check if column is numeric-only
+            col = df[key]
+            non_null_mask = col.notna()
+            non_null_values = col[non_null_mask]
+
+            # Check if all non-null values are numeric (can be converted to float)
+            is_numeric = True
+            if len(non_null_values) > 0:
+                for val in non_null_values:
+                    try:
+                        float(str(val))
+                    except (ValueError, TypeError):
+                        is_numeric = False
+                        break
+
+            if is_numeric and len(non_null_values) > 0:
+                # Numeric-only: convert to float for numeric sorting
+                df[temp_col_name] = pd.to_numeric(col, errors='coerce')
+            else:
+                # Contains non-numeric: use string sorting
+                df[temp_col_name] = col.astype(str)
+
+            sort_cols.append(temp_col_name)
+            sort_ascending.append(True)
+
+        # Add timestamp as final tiebreaker (descending)
+        if 'timestamp' in df.columns:
+            sort_cols.append('timestamp')
+            sort_ascending.append(False)
+
+        # Sort by all columns
+        if sort_cols:
+            df = df.sort_values(sort_cols, ascending=sort_ascending)
+
+        # Drop temporary sort columns
+        df = df.drop(columns=temp_col_names, errors='ignore')
+
+        return df
+
     def _find_record(
         self,
         type_name: str,
@@ -1304,7 +1368,8 @@ class DatabaseManager:
                 f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
                 f"WHERE rm.record_id = ? AND rm.variable_name = ?{excluded_clause}"
             )
-            return self._duck._fetchdf(sql, [record_id, type_name])
+            df = self._duck._fetchdf(sql, [record_id, type_name])
+            return self._sort_by_schema_keys(df)
 
         # Unrecognized version_id → treat as record_id lookup
         if version_id not in ("latest", "all"):
@@ -1315,7 +1380,8 @@ class DatabaseManager:
                 f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
                 f"WHERE rm.record_id = ? AND rm.variable_name = ?{excluded_clause}"
             )
-            return self._duck._fetchdf(sql, [version_id, type_name])
+            df = self._duck._fetchdf(sql, [version_id, type_name])
+            return self._sort_by_schema_keys(df)
 
         # By metadata
         schema_keys = nested_metadata.get("schema", {}) if nested_metadata else {}
@@ -1359,8 +1425,7 @@ class DatabaseManager:
             f"FROM _record_metadata rm "
             f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
             f"WHERE {where}"
-            f") SELECT * FROM ranked WHERE rn = 1 "
-            f"ORDER BY timestamp DESC"
+            f") SELECT * FROM ranked WHERE rn = 1"
         )
         df = self._duck._fetchdf(sql, params)
         Log.debug(f"_find_record({type_name}): SQL returned {len(df)} records, version_id={version_id}")
@@ -1394,7 +1459,8 @@ class DatabaseManager:
             collapsed_count = len(df) - len(keep_indices)
             if collapsed_count > 0:
                 Log.debug(f"_find_record: collapsed {collapsed_count} provenance-only variant(s)")
-            df = df.loc[keep_indices].sort_values("timestamp", ascending=False)
+            # Apply smart sorting by schema keys (numeric or alphabetic per column)
+            df = self._sort_by_schema_keys(df.loc[keep_indices])
 
         # Filter by version keys via Python-side JSON parsing (lists → in)
         if version_keys and len(df) > 0:
@@ -1437,7 +1503,8 @@ class DatabaseManager:
                     return _match_branch_param(bp, k, v)
                 df = df[df.apply(_match_row, axis=1)]
 
-        return df
+        # Apply smart sorting by schema keys before returning
+        return self._sort_by_schema_keys(df)
 
     def _reconstruct_metadata_from_row(self, row: pd.Series) -> tuple[dict, dict]:
         """
