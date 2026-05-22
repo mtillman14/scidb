@@ -223,4 +223,138 @@ classdef TestWhereFilter < matlab.unittest.TestCase
 
     end
 
+    % =====================================================================
+    % Column filtering tests (VarType("column") == value)
+    % =====================================================================
+
+    methods (Test)
+
+        function testColumnFilterEqReturnsFilter(obj)
+        %TESTCOLUMNFILTEREQRETURNSFILTER  MyVar("col") == value returns Filter
+            filt = TabularVar("col_a") == 5.0;
+            obj.assertClass(filt, 'scidb.Filter');
+            obj.assertNotEmpty(filt.py_filter);
+
+            % Verify it's a ColumnFilter, not VariableFilter
+            py_type = string(py.type(filt.py_filter).__name__);
+            obj.assertEqual(py_type, "ColumnFilter");
+        end
+
+        function testColumnFilterNeReturnsFilter(obj)
+        %TESTCOLUMNFILTERNETURNFILTER  MyVar("col") ~= value returns Filter
+            filt = TabularVar("col_a") ~= 0;
+            obj.assertClass(filt, 'scidb.Filter');
+
+            py_type = string(py.type(filt.py_filter).__name__);
+            obj.assertEqual(py_type, "ColumnFilter");
+        end
+
+        function testColumnFilterComparisons(obj)
+        %TESTCOLUMNFILTERCOMPARISONS  All comparison operators work
+            obj.assertClass(TabularVar("col_a") < 5, 'scidb.Filter');
+            obj.assertClass(TabularVar("col_a") <= 5, 'scidb.Filter');
+            obj.assertClass(TabularVar("col_a") > 5, 'scidb.Filter');
+            obj.assertClass(TabularVar("col_a") >= 5, 'scidb.Filter');
+        end
+
+        function testColumnFilterWithLoadAll(obj)
+        %TESTCOLUMNFILTERWITHLOADALL  Column filter works in load_all
+            % Create tabular data with multiple columns
+            tbl1 = table(1.0, 2.0, "L", 'VariableNames', ["col_a", "col_b", "side"]);
+            tbl2 = table(3.0, 4.0, "R", 'VariableNames', ["col_a", "col_b", "side"]);
+            tbl3 = table(0.0, 5.0, "L", 'VariableNames', ["col_a", "col_b", "side"]);
+
+            TabularVar().save(tbl1, db=obj.db, subject=1);
+            TabularVar().save(tbl2, db=obj.db, subject=2);
+            TabularVar().save(tbl3, db=obj.db, subject=3);
+
+            TargetVar().save(100, db=obj.db, subject=1);
+            TargetVar().save(200, db=obj.db, subject=2);
+            TargetVar().save(300, db=obj.db, subject=3);
+
+            % Filter where col_a ~= 0 (should exclude subject 3)
+            results = TargetVar().load_all( ...
+                where=TabularVar("col_a") ~= 0, db=obj.db);
+
+            obj.assertEqual(numel(results), 2);
+            subjects = arrayfun(@(v) v.metadata.subject, results);
+            obj.assertEqual(sort(subjects(:)), [1; 2]);
+        end
+
+        function testColumnFilterWithStringColumn(obj)
+        %TESTCOLUMNFILTERWITHSTRINGCOLUMN  Column filter works with string columns
+            tbl1 = table(1.0, "L", 'VariableNames', ["value", "side"]);
+            tbl2 = table(2.0, "R", 'VariableNames', ["value", "side"]);
+            tbl3 = table(3.0, "L", 'VariableNames', ["value", "side"]);
+
+            TabularVar().save(tbl1, db=obj.db, subject=1);
+            TabularVar().save(tbl2, db=obj.db, subject=2);
+            TabularVar().save(tbl3, db=obj.db, subject=3);
+
+            TargetVar().save(100, db=obj.db, subject=1);
+            TargetVar().save(200, db=obj.db, subject=2);
+            TargetVar().save(300, db=obj.db, subject=3);
+
+            % Filter where side == "L" (should get subjects 1 and 3)
+            results = TargetVar().load_all( ...
+                where=TabularVar("side") == "L", db=obj.db);
+
+            obj.assertEqual(numel(results), 2);
+            subjects = arrayfun(@(v) v.metadata.subject, results);
+            obj.assertEqual(sort(subjects(:)), [1; 3]);
+        end
+
+        function testColumnFilterWithNumericComparison(obj)
+        %TESTCOLUMNFILTERWITHCOMPARISON  Column filter with <, >, etc.
+            tbl1 = table(1.5, "data", 'VariableNames', ["speed", "label"]);
+            tbl2 = table(2.5, "data", 'VariableNames', ["speed", "label"]);
+            tbl3 = table(0.5, "data", 'VariableNames', ["speed", "label"]);
+
+            TabularVar().save(tbl1, db=obj.db, subject=1);
+            TabularVar().save(tbl2, db=obj.db, subject=2);
+            TabularVar().save(tbl3, db=obj.db, subject=3);
+
+            TargetVar().save(100, db=obj.db, subject=1);
+            TargetVar().save(200, db=obj.db, subject=2);
+            TargetVar().save(300, db=obj.db, subject=3);
+
+            % Filter where speed > 1.0 (should get subjects 1 and 2)
+            results = TargetVar().load_all( ...
+                where=TabularVar("speed") > 1.0, db=obj.db);
+
+            obj.assertEqual(numel(results), 2);
+            subjects = arrayfun(@(v) v.metadata.subject, results);
+            obj.assertEqual(sort(subjects(:)), [1; 2]);
+        end
+
+        function testColumnFilterCompoundWithVariableFilter(obj)
+        %TESTCOLUMNFILTERCOMPOUND  Column filter can combine with variable filter
+            tbl1 = table(1.0, "L", 'VariableNames', ["value", "side"]);
+            tbl2 = table(2.0, "R", 'VariableNames', ["value", "side"]);
+            tbl3 = table(3.0, "L", 'VariableNames', ["value", "side"]);
+
+            TabularVar().save(tbl1, db=obj.db, subject=1);
+            TabularVar().save(tbl2, db=obj.db, subject=2);
+            TabularVar().save(tbl3, db=obj.db, subject=3);
+
+            Side().save("L", db=obj.db, subject=1);
+            Side().save("L", db=obj.db, subject=2);
+            Side().save("R", db=obj.db, subject=3);
+
+            TargetVar().save(100, db=obj.db, subject=1);
+            TargetVar().save(200, db=obj.db, subject=2);
+            TargetVar().save(300, db=obj.db, subject=3);
+
+            % Column filter AND variable filter
+            results = TargetVar().load_all( ...
+                where=(TabularVar("side") == "L") & (Side() == "L"), ...
+                db=obj.db);
+
+            % Only subject 1: TabularVar side="L" AND Side="L"
+            obj.assertEqual(numel(results), 1);
+            obj.assertEqual(results(1).metadata.subject, 1);
+        end
+
+    end
+
 end

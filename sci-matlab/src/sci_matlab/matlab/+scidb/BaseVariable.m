@@ -560,12 +560,14 @@ classdef BaseVariable < dynamicprops
         % Comparison operators (for where= filter syntax)
         % -----------------------------------------------------------------
         function filt = eq(obj, other)
-        %EQ  Create a VariableFilter: TypeClass() == value
+        %EQ  Create a filter: TypeClass() == value or TypeClass("col") == value
         %
         %   FILT = TypeClass() == value
+        %   FILT = TypeClass("column") == value
         %
         %   Returns a scidb.Filter that can be passed to load/load_all
-        %   via the 'where' key.
+        %   via the 'where' key. Creates a ColumnFilter when column
+        %   selection is active, otherwise creates a VariableFilter.
             if isa(other, 'scidb.BaseVariable')
                 filt = builtin('eq', obj, other);
                 return;
@@ -573,12 +575,21 @@ classdef BaseVariable < dynamicprops
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
             py_val = scidb.internal.to_python(other);
-            py_filter = py.scidb.filters.VariableFilter(py_class, '==', py_val);
+
+            % Check if column selection is active
+            if ~isempty(obj.selected_columns)
+                % Use ColumnFilter for column-specific filtering
+                column = char(obj.selected_columns(1));  % Use first column
+                py_filter = py.scidb.filters.ColumnFilter(py_class, column, '==', py_val);
+            else
+                % Use VariableFilter for whole-variable filtering
+                py_filter = py.scidb.filters.VariableFilter(py_class, '==', py_val);
+            end
             filt = scidb.Filter(py_filter);
         end
 
         function filt = ne(obj, other)
-        %NE  Create a VariableFilter: TypeClass() ~= value
+        %NE  Create a filter: TypeClass() ~= value or TypeClass("col") ~= value
             if isa(other, 'scidb.BaseVariable')
                 filt = builtin('ne', obj, other);
                 return;
@@ -586,43 +597,88 @@ classdef BaseVariable < dynamicprops
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
             py_val = scidb.internal.to_python(other);
-            py_filter = py.scidb.filters.VariableFilter(py_class, '!=', py_val);
+
+            % Check if column selection is active
+            if ~isempty(obj.selected_columns)
+                % Use ColumnFilter for column-specific filtering
+                column = char(obj.selected_columns(1));  % Use first column
+                py_filter = py.scidb.filters.ColumnFilter(py_class, column, '!=', py_val);
+            else
+                % Use VariableFilter for whole-variable filtering
+                py_filter = py.scidb.filters.VariableFilter(py_class, '!=', py_val);
+            end
             filt = scidb.Filter(py_filter);
         end
 
         function filt = lt(obj, other)
-        %LT  Create a VariableFilter: TypeClass() < value
+        %LT  Create a filter: TypeClass() < value or TypeClass("col") < value
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
             py_val = scidb.internal.to_python(other);
-            py_filter = py.scidb.filters.VariableFilter(py_class, '<', py_val);
+
+            % Check if column selection is active
+            if ~isempty(obj.selected_columns)
+                % Use ColumnFilter for column-specific filtering
+                column = char(obj.selected_columns(1));  % Use first column
+                py_filter = py.scidb.filters.ColumnFilter(py_class, column, '<', py_val);
+            else
+                % Use VariableFilter for whole-variable filtering
+                py_filter = py.scidb.filters.VariableFilter(py_class, '<', py_val);
+            end
             filt = scidb.Filter(py_filter);
         end
 
         function filt = le(obj, other)
-        %LE  Create a VariableFilter: TypeClass() <= value
+        %LE  Create a filter: TypeClass() <= value or TypeClass("col") <= value
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
             py_val = scidb.internal.to_python(other);
-            py_filter = py.scidb.filters.VariableFilter(py_class, '<=', py_val);
+
+            % Check if column selection is active
+            if ~isempty(obj.selected_columns)
+                % Use ColumnFilter for column-specific filtering
+                column = char(obj.selected_columns(1));  % Use first column
+                py_filter = py.scidb.filters.ColumnFilter(py_class, column, '<=', py_val);
+            else
+                % Use VariableFilter for whole-variable filtering
+                py_filter = py.scidb.filters.VariableFilter(py_class, '<=', py_val);
+            end
             filt = scidb.Filter(py_filter);
         end
 
         function filt = gt(obj, other)
-        %GT  Create a VariableFilter: TypeClass() > value
+        %GT  Create a filter: TypeClass() > value or TypeClass("col") > value
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
             py_val = scidb.internal.to_python(other);
-            py_filter = py.scidb.filters.VariableFilter(py_class, '>', py_val);
+
+            % Check if column selection is active
+            if ~isempty(obj.selected_columns)
+                % Use ColumnFilter for column-specific filtering
+                column = char(obj.selected_columns(1));  % Use first column
+                py_filter = py.scidb.filters.ColumnFilter(py_class, column, '>', py_val);
+            else
+                % Use VariableFilter for whole-variable filtering
+                py_filter = py.scidb.filters.VariableFilter(py_class, '>', py_val);
+            end
             filt = scidb.Filter(py_filter);
         end
 
         function filt = ge(obj, other)
-        %GE  Create a VariableFilter: TypeClass() >= value
+        %GE  Create a filter: TypeClass() >= value or TypeClass("col") >= value
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
             py_val = scidb.internal.to_python(other);
-            py_filter = py.scidb.filters.VariableFilter(py_class, '>=', py_val);
+
+            % Check if column selection is active
+            if ~isempty(obj.selected_columns)
+                % Use ColumnFilter for column-specific filtering
+                column = char(obj.selected_columns(1));  % Use first column
+                py_filter = py.scidb.filters.ColumnFilter(py_class, column, '>=', py_val);
+            else
+                % Use VariableFilter for whole-variable filtering
+                py_filter = py.scidb.filters.VariableFilter(py_class, '>=', py_val);
+            end
             filt = scidb.Filter(py_filter);
         end        
 

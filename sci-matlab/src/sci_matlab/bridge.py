@@ -644,11 +644,7 @@ def for_each_prepare(
     for fixed_param in state.fixed_rid_values:
         rk = f"__rid_{fixed_param}"
         rid_rename_map.setdefault(rk, _sanitize_rid_key(rk))
-    # Belt and braces: scan combos + meta_iters for any __rid_* we missed.
-    for combo in state.full_combos:
-        for k in combo:
-            if k.startswith("__rid_") and k not in rid_rename_map:
-                rid_rename_map[k] = _sanitize_rid_key(k)
+    # Check extended_metadata_iterables for any __rid_* keys (lightweight check)
     for k in state.extended_metadata_iterables:
         if k.startswith("__rid_") and k not in rid_rename_map:
             rid_rename_map[k] = _sanitize_rid_key(k)
@@ -659,12 +655,11 @@ def for_each_prepare(
         for name, val in state.loaded_inputs.items()
     }
 
-    # Full combos: rename keys
-    matlab_full_combos = []
-    for combo in state.full_combos:
-        matlab_full_combos.append({
-            rid_rename_map.get(k, k): v for k, v in combo.items()
-        })
+    # Full combos: rename keys (single pass with list comprehension)
+    matlab_full_combos = [
+        {rid_rename_map.get(k, k): v for k, v in combo.items()}
+        for combo in state.full_combos
+    ]
 
     # Extended metadata iterables: rename keys
     matlab_meta_iters = {

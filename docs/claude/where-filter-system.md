@@ -154,9 +154,23 @@ filt = ~(Side() == "L");        % NotFilter
 filt = scidb.raw_sql('"value" > 0.70');         % RawFilter
 ```
 
+**Column-specific filtering** (analogous to Python's `MyVar["col"]` syntax):
+
+```matlab
+filt = MyVar("col_a") ~= 0;     % ColumnFilter on "col_a" column
+filt = MyVar("speed") > 1.5;    % ColumnFilter on "speed" column
+filt = MyVar(["a","b"]) == 5;   % ColumnFilter on "a" (first column only)
+```
+
+When a `BaseVariable` instance is constructed with column selection (e.g., `MyVar("col_a")`), the comparison operators detect the `selected_columns` property and create a `ColumnFilter` instead of a `VariableFilter`. This matches Python's behavior where `MyVar["col_a"] == value` creates a `ColumnFilter`.
+
+**Implementation note**: Multiple column selection (`MyVar(["a","b"])`) uses only the first column for filtering, consistent with Python's `ColumnSelection` behavior.
+
 `scidb.Filter` holds a `.py_filter` property containing the Python filter object. The `&`, `|`, and `~` operators on `scidb.Filter` delegate to Python via `__and__`, `__or__`, `__invert__`.
 
-Key file: `sci-matlab/src/sci_matlab/matlab/+scidb/Filter.m`
+Key files:
+- `sci-matlab/src/sci_matlab/matlab/+scidb/Filter.m`
+- `sci-matlab/src/sci_matlab/matlab/+scidb/BaseVariable.m` (comparison operators: lines 562-627)
 
 ### where= in load() / load_all()
 
@@ -221,9 +235,42 @@ scidb.for_each(@fn, struct('x', RawSignal(), 'd', scidb.Merge(A(), B())), {Out()
 % → Runs only where RawSignal passes the Side filter; Merge loads unfiltered.
 ```
 
-### `where=` with SelectedColumn inputs (`VarName("col")`)
+### `where=` with Column Selection
 
-Column selection (`RawSignal("col_a")`) sets `selected_columns` on the BaseVariable instance. The `where=` filter is applied to the preload/load of the full table first; column narrowing happens after. The combination works correctly.
+**IMPORTANT**: Column selection has two distinct uses in MATLAB:
+
+1. **For filtering** (in `where=` parameter): Creates a `ColumnFilter` that queries a specific column
+2. **For inputs** (in `for_each` inputs): Extracts columns after loading
+
+#### Using column selection in where= filters
+
+When a column-selected variable is used in a comparison, it creates a `ColumnFilter`:
+
+```matlab
+% Creates ColumnFilter that queries "StepLengths_GR" column where value != 0
+scidb.for_each(@fn, ..., where=GAITRiteData("StepLengths_GR") ~= 0)
+```
+
+This is implemented by checking the `selected_columns` property in `BaseVariable` comparison operators (eq, ne, lt, le, gt, ge). When `selected_columns` is set, a `ColumnFilter` is created instead of a `VariableFilter`. This matches Python's behavior where `MyVar["col"] == value` creates a `ColumnFilter`.
+
+**Technical note**: The filter queries the database during the schema_id resolution phase, before any data is loaded.
+
+#### Using column selection in inputs
+
+When column selection is used for inputs (not in `where=`), it extracts columns **after** loading:
+
+```matlab
+% Loads full table first, then extracts "StepLengths_GR" column as input
+scidb.for_each(@fn, struct('x', GAITRiteData("StepLengths_GR")), ...)
+```
+
+The `where=` filter is applied to the preload/load of the full table first; column narrowing happens after. The combination works correctly:
+
+```matlab
+% Filter queries "speed" column, then extracts "force" column for input
+scidb.for_each(@fn, struct('x', GaitData("force")), {Out()}, ...
+    where=GaitData("speed") > 1.5, ...)
+```
 
 ### Summary table
 

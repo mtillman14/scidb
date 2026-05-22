@@ -718,14 +718,20 @@ def _for_each_prepare(
         if df is None or "__record_id" not in df.columns:
             continue
 
-        # Build rid→bp from this input's DataFrame
+        # Build rid→bp from this input's DataFrame (vectorized for performance)
         bp_col = "__branch_params" if "__branch_params" in df.columns else None
-        for _, row in df.iterrows():
-            rid = row["__record_id"]
-            if rid is None:
-                continue
-            bp_raw = row[bp_col] if bp_col else "{}"
-            rid_to_bp[rid] = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+        # Filter out None record_ids using vectorized operation
+        valid_mask = df["__record_id"].notna()
+        if valid_mask.any():
+            valid_rids = df.loc[valid_mask, "__record_id"]
+            if bp_col:
+                valid_bps = df.loc[valid_mask, bp_col]
+                # Use zip over columns instead of iterrows() - 10-100x faster
+                for rid, bp_raw in zip(valid_rids, valid_bps):
+                    rid_to_bp[rid] = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+            else:
+                for rid in valid_rids:
+                    rid_to_bp[rid] = {}
 
         # Rename __record_id → __rid_{param_name} so per-param tracking is unambiguous
         rid_col = f"__rid_{param_name}"
@@ -1693,7 +1699,9 @@ def _save_results(
     prep_start = time.perf_counter()
     Log.info(f"[batch_save] Preparing {len(result_tbl)} result row(s) for batch save")
 
-    for row_idx, (_, row) in enumerate(result_tbl.iterrows()):
+    # Convert DataFrame to list of dicts for 10-100x faster iteration than iterrows()
+    rows = result_tbl.to_dict('records')
+    for row_idx, row in enumerate(rows):
         # 1. Collect upstream branch_params via __rid_* columns → rid_to_bp lookup
         merged_bp: dict = {}
         if combo_to_rids is not None and combo_to_rids_keys is not None:
@@ -1716,7 +1724,7 @@ def _save_results(
         elif rid_to_bp and rid_keys:
             # Full iteration mode: existing per-row rid lookup
             for rid_col in rid_keys:
-                if rid_col not in row.index:
+                if rid_col not in row:
                     continue
                 rid = row[rid_col]
                 if rid and rid in rid_to_bp:
@@ -1741,7 +1749,7 @@ def _save_results(
                 continue
             if col in schema_keys_set:
                 continue
-            val = row[col] if col in row.index else None
+            val = row.get(col)
             if val is None:
                 continue
             if isinstance(val, float) and pd.isna(val):
@@ -1801,7 +1809,7 @@ def _save_results(
             # Full iteration mode: per-row rid lookup
             upstream = {}
             for rid_col in rid_keys:
-                if rid_col in row.index:
+                if rid_col in row:
                     rid_val = row[rid_col]
                     if rid_val is not None and not (isinstance(rid_val, float) and pd.isna(rid_val)):
                         upstream[rid_col] = rid_val
@@ -1809,7 +1817,7 @@ def _save_results(
                 save_metadata["__upstream"] = upstream
 
         for output_idx, (output_obj, output_name) in enumerate(zip(outputs, output_names)):
-            if output_name not in row.index:
+            if output_name not in row:
                 # Flatten/distribute mode: fn returned a DataFrame whose columns are
                 # spread directly in result_tbl (scifor all_dataframes flatten mode).
                 # Build a 1-row DataFrame from non-schema, non-__ data columns.

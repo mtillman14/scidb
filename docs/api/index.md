@@ -36,6 +36,12 @@ Run a function over every combination of metadata values.
 
 Key items: `for_each()`, `Fixed`, `ColumnSelection`, `Merge`, `PathInput`
 
+### [Filters (where= parameter)](filters.md)
+
+Conditional loading based on other variable values.
+
+Key items: `where=` parameter, comparison operators, compound filters (`&`, `|`, `~`), column filters, `raw_sql()`
+
 ## Language Notes
 
 All API pages show Python and MATLAB syntax side-by-side using tabs. Click the tab to switch.
@@ -52,3 +58,4 @@ All API pages show Python and MATLAB syntax side-by-side using tabs. Click the t
 | for_each inputs | `dict` | `struct` (field order = argument order) |
 | for_each outputs | `list` of classes | cell array of instances |
 | Thunk multi-output | Returns tuple | Function must return cell array |
+| Filter combination | `&` and `|` | `&` and `|` (NOT `&&` or `||`) |
