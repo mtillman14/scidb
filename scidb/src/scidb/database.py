@@ -1424,10 +1424,16 @@ class DatabaseManager:
             # One row per (variable_name, schema_id, version_keys) — latest config only
             # Strip provenance-only keys from version_keys IN SQL to avoid fetching duplicates
             # This reduces fetched rows from 14k to 7k (2x improvement!)
-            # Use json_remove to exclude __upstream, __output_num, __lineage_fixed_rids
+            # Use regexp_replace to remove __upstream, __output_num, __lineage_fixed_rids
+            # Pattern matches: ,"__key":value or "key":value, handling various JSON formats
             vk_stripped = (
-                "json_remove(rm.version_keys, '$.\"__upstream\"', "
-                "'$.\"__output_num\"', '$.\"__lineage_fixed_rids\"')"
+                "regexp_replace("
+                "regexp_replace("
+                "regexp_replace("
+                "rm.version_keys, "
+                "'[,]?\"__upstream\":[^,}]+', '', 'g'), "
+                "'[,]?\"__output_num\":[^,}]+', '', 'g'), "
+                "'[,]?\"__lineage_fixed_rids\":[^,}]+', '', 'g')"
             )
             partition = f"rm.variable_name, rm.schema_id, {vk_stripped}"
         else:
