@@ -21,7 +21,19 @@ logger = logging.getLogger(__name__)
 __all__ = ["canonical_hash", "compute_function_hash"]
 
 
-_STDLIB_DIR = os.path.realpath(os.path.dirname(os.__file__))
+# Determine stdlib directory for user-code detection.
+# In some environments (e.g., MATLAB's in-process Python), os.__file__ may not exist.
+try:
+    _STDLIB_DIR = os.path.realpath(os.path.dirname(os.__file__))
+except AttributeError:
+    # When running in environments like MATLAB's in-process Python,
+    # built-in modules don't have __file__. In this case, we can't
+    # reliably detect stdlib functions, so we skip that check.
+    _STDLIB_DIR = None
+    logger.debug(
+        "os.__file__ unavailable (e.g., MATLAB in-process Python). "
+        "Stdlib detection disabled in function hashing."
+    )
 
 
 def _is_user_defined(fn: Any) -> bool:
@@ -40,7 +52,7 @@ def _is_user_defined(fn: Any) -> bool:
         return False
 
     real = os.path.realpath(file)
-    if real.startswith(_STDLIB_DIR + os.sep):
+    if _STDLIB_DIR is not None and real.startswith(_STDLIB_DIR + os.sep):
         return False
     parts = real.split(os.sep)
     if "site-packages" in parts or "dist-packages" in parts:

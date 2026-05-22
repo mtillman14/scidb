@@ -1044,6 +1044,162 @@ def split_flat_to_lists(flat_array, lengths):
     return result
 
 
+def flatten_sequences(py_list):
+    """Flatten a list of numeric/boolean sequences into a single array with lengths.
+
+    Used by MATLAB's from_python to handle object-dtype columns containing
+    lists of varying-length arrays (numeric or boolean). Flattens all sequences
+    into one numpy array and records their lengths, enabling a SINGLE Python→MATLAB
+    bridge crossing instead of N crossings.
+
+    Parameters
+    ----------
+    py_list : list
+        List of sequences (lists, tuples, or numpy arrays) containing
+        homogeneous typed values (numeric or boolean).  Sequences may have
+        different lengths.
+
+    Returns
+    -------
+    tuple of (numpy.ndarray, numpy.ndarray) or (None, None)
+        - flat_array: Concatenated array (all sequences flattened)
+        - lengths: int64 array where lengths[i] = length of sequence i
+        Returns (None, None) if conversion failed (mixed types, non-numeric/bool, etc.)
+
+    Examples
+    --------
+    >>> flatten_sequences([[1, 2, 3], [4, 5], [6, 7, 8, 9]])
+    (array([1, 2, 3, 4, 5, 6, 7, 8, 9]), array([3, 2, 4]))
+
+    >>> flatten_sequences([[True, False], [True], [False, False, True]])
+    (array([True, False, True, False, False, True]), array([2, 1, 3]))
+    """
+    import numpy as np
+
+    if not isinstance(py_list, list) or len(py_list) == 0:
+        return None, None
+
+    try:
+        # Check if all elements are sequences and convert to arrays
+        arrays = []
+        for elem in py_list:
+            if not isinstance(elem, (list, tuple, np.ndarray)):
+                return None, None
+            arr = np.asarray(elem)
+            # Reject if not typed (object dtype = heterogeneous or non-numeric/bool)
+            if arr.dtype.kind == 'O':
+                return None, None
+            arrays.append(arr)
+
+        # Record lengths and concatenate
+        lengths = np.array([len(arr) for arr in arrays], dtype='int64')
+        flat = np.concatenate(arrays)
+
+        return flat, lengths
+
+    except Exception:
+        return None, None
+
+
+def convert_nested_dicts_arrays_to_lists(py_list):
+    """Convert all numpy arrays in nested dicts to Python lists.
+
+    Used by MATLAB's from_python to handle lists of nested dicts containing
+    numpy arrays (e.g., structs stored as JSON in DuckDB). Recursively walks
+    the structure and converts all numpy arrays to Python lists, avoiding
+    expensive numpy→MATLAB bridge crossings for each array.
+
+    Parameters
+    ----------
+    py_list : list
+        List of dicts with potentially nested structure. Leaf values should
+        be numpy arrays. Works with arbitrary nesting depth.
+
+    Returns
+    -------
+    list or None
+        Modified list where all numpy arrays have been converted to Python
+        lists. Structure and nesting are preserved. Returns None if input
+        is not a list of dicts.
+
+    Examples
+    --------
+    >>> data = [{'a': np.array([1, 2]), 'b': {'c': np.array([3, 4])}}]
+    >>> convert_nested_dicts_arrays_to_lists(data)
+    [{'a': [1, 2], 'b': {'c': [3, 4]}}]
+    """
+    import numpy as np
+
+    if not isinstance(py_list, list) or len(py_list) == 0:
+        return None
+
+    try:
+        def convert_value(val):
+            """Recursively convert a value, handling arbitrary nesting."""
+            if isinstance(val, np.ndarray):
+                # Convert numpy array to Python list
+                return val.tolist()
+            elif isinstance(val, dict):
+                # Recursively convert dict values
+                return {k: convert_value(v) for k, v in val.items()}
+            elif isinstance(val, (list, tuple)):
+                # Recursively convert list/tuple elements
+                return [convert_value(item) for item in val]
+            else:
+                # Native Python types (int, float, str, bool, None) pass through
+                return val
+
+        # Check all elements are dicts and convert them
+        result = []
+        for item in py_list:
+            if not isinstance(item, dict):
+                # Not all elements are dicts - can't use this fast path
+                return None
+            result.append(convert_value(item))
+
+        return result
+
+    except Exception:
+        return None
+
+
+def convert_nested_dicts_to_json(py_list):
+    """Convert list of nested dicts with numpy arrays to JSON string.
+
+    Combines array-to-list conversion with JSON serialization for efficient
+    transfer to MATLAB. Enables a SINGLE bridge crossing (the JSON string)
+    instead of N dict conversions.
+
+    Parameters
+    ----------
+    py_list : list
+        List of dicts with potentially nested structure containing numpy arrays.
+
+    Returns
+    -------
+    str or None
+        JSON string representation of the list, or None if conversion failed.
+
+    Examples
+    --------
+    >>> data = [{'a': np.array([1, 2]), 'b': {'c': np.array([3])}}]
+    >>> convert_nested_dicts_to_json(data)
+    '[{"a": [1, 2], "b": {"c": [3]}}]'
+    """
+    import json
+
+    # First convert all numpy arrays to Python lists
+    converted = convert_nested_dicts_arrays_to_lists(py_list)
+    if converted is None:
+        return None
+
+    try:
+        # Serialize to JSON string (single string for entire list)
+        return json.dumps(converted)
+    except Exception:
+        return None
+
+
 def check_cache(invocation: MatlabLineageFcnInvocation):
     """Check if a computation is already cached.
 

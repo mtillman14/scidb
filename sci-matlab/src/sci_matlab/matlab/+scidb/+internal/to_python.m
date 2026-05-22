@@ -111,33 +111,74 @@ function py_obj = to_python(data)
 
             try
                 if iscell(col)
-                    % Cell array column: try flatten+lengths fast path
-                    % first to avoid per-element bridge crossings.
-                    [can_flat, flat, lengths, flat_dtype] = try_flatten_cell_column(col);
-                    fast_path_ok = false;
-                    if can_flat
+                    % Cell array column: try multiple optimization strategies
+                    % in order of preference to avoid per-element bridge crossings.
+
+                    % Strategy 1: Homogeneous table concatenation
+                    % When all cells contain tables with identical schemas,
+                    % concatenate them into one table and convert once.
+                    [can_concat, concat_table] = try_concat_homogeneous_tables(col);
+                    concat_ok = false;
+                    if can_concat
                         try
-                            scidb.Log.debug('to_python: trying fast path for cell column "%s" (dtype=%s, total_len=%d)', ...
-                                col_names{i}, flat_dtype, numel(flat));
-                            % Fast path: 3 bridge crossings instead of N*3
-                            py_flat = py.numpy.array(flat, pyargs('dtype', flat_dtype));
-                            py_lengths = py.numpy.array(lengths, pyargs('dtype', 'int64'));
-                            py_val = py.sci_matlab.bridge.split_flat_to_lists(py_flat, py_lengths);
-                            fast_path_ok = true;
-                            scidb.Log.debug('to_python: fast path succeeded for column "%s"', col_names{i});
-                        catch fast_err
-                            % Fast path failed (e.g., numpy bridge error) — fall back
-                            % to element-by-element conversion
-                            scidb.Log.debug('to_python: fast path failed for column "%s", falling back: %s', ...
-                                col_names{i}, fast_err.message);
-                            fast_path_ok = false;
+                            scidb.Log.debug('to_python: trying table concat for cell column "%s" (%d rows, %d cols each)', ...
+                                col_names{i}, numel(col), width(concat_table));
+
+                            % Convert concatenated table once (single log message)
+                            py_concat_df = scidb.internal.to_python(concat_table);
+
+                            % Split into list of single-row DataFrames for pandas object column
+                            % Use to_dict('records') to avoid MATLAB Python bridge issues with iloc
+                            py_records = py_concat_df.to_dict(pyargs('orient', 'records'));
+                            py_val = py.list();
+                            n_rows = length(py_records);
+                            for row_idx = 1:n_rows
+                                % Get row dict and convert back to single-row DataFrame
+                                row_dict = py_records{row_idx};
+                                row_df = py.pandas.DataFrame(py.list({row_dict}));
+                                py_val.append(row_df);
+                            end
+
+                            concat_ok = true;
+                            scidb.Log.debug('to_python: table concat succeeded for column "%s"', col_names{i});
+                        catch concat_err
+                            scidb.Log.debug('to_python: table concat failed for column "%s", falling back: %s', ...
+                                col_names{i}, concat_err.message);
+                            concat_ok = false;
                         end
-                    else
-                        scidb.Log.debug('to_python: cell column "%s" not flattenable, using element-by-element', ...
-                            col_names{i});
                     end
 
-                    if ~fast_path_ok
+                    % Strategy 2: Numeric/logical array flattening
+                    % (original fast path for homogeneous numeric/logical vectors)
+                    fast_path_ok = false;
+                    if ~concat_ok
+                        [can_flat, flat, lengths, flat_dtype] = try_flatten_cell_column(col);
+                        if can_flat
+                            try
+                                scidb.Log.debug('to_python: trying fast path for cell column "%s" (dtype=%s, total_len=%d)', ...
+                                    col_names{i}, flat_dtype, numel(flat));
+                                % Fast path: 3 bridge crossings instead of N*3
+                                py_flat = py.numpy.array(flat, pyargs('dtype', flat_dtype));
+                                py_lengths = py.numpy.array(lengths, pyargs('dtype', 'int64'));
+                                py_val = py.sci_matlab.bridge.split_flat_to_lists(py_flat, py_lengths);
+                                fast_path_ok = true;
+                                scidb.Log.debug('to_python: fast path succeeded for column "%s"', col_names{i});
+                            catch fast_err
+                                % Fast path failed (e.g., numpy bridge error) — fall back
+                                % to element-by-element conversion
+                                scidb.Log.debug('to_python: fast path failed for column "%s", falling back: %s', ...
+                                    col_names{i}, fast_err.message);
+                                fast_path_ok = false;
+                            end
+                        else
+                            scidb.Log.debug('to_python: cell column "%s" not flattenable, using element-by-element', ...
+                                col_names{i});
+                        end
+                    end
+
+                    % Strategy 3: Element-by-element fallback
+                    % (most compatible but slowest)
+                    if ~concat_ok && ~fast_path_ok
                         % Fallback: convert element-by-element.
                         % Inner numpy arrays must become Python lists so that
                         % pandas creates an object column instead of trying to
@@ -328,4 +369,74 @@ function [can_flat, flat, lengths, flat_dtype] = try_flatten_cell_column(col)
     end
 
     can_flat = true;
+end
+
+
+function [can_concat, concat_table] = try_concat_homogeneous_tables(col)
+%TRY_CONCAT_HOMOGENEOUS_TABLES  Try to concatenate tables in a cell column.
+%
+%   For cell columns where every element is a table with identical
+%   VariableNames (same schema), concatenate all tables into one.
+%   This enables converting N 1-row tables with a single to_python call
+%   instead of N calls, reducing logging verbosity and bridge crossings.
+%
+%   Returns:
+%     can_concat    - true if concatenation succeeded
+%     concat_table  - Vertically concatenated table (all rows)
+
+    can_concat = false;
+    concat_table = [];
+
+    n = numel(col);
+    if n == 0
+        return;
+    end
+
+    % Find first non-empty element to establish the expected schema
+    expected_var_names = {};
+    first_table_idx = 0;
+    for i = 1:n
+        elem = col{i};
+        if ~isempty(elem)
+            if ~istable(elem)
+                % Non-table element found — cannot concatenate
+                return;
+            end
+            expected_var_names = elem.Properties.VariableNames;
+            first_table_idx = i;
+            break;
+        end
+    end
+
+    if first_table_idx == 0
+        % All elements are empty — nothing to concatenate
+        return;
+    end
+
+    % Verify all non-empty elements are tables with matching schemas
+    for i = 1:n
+        elem = col{i};
+        if isempty(elem)
+            % Empty cells mixed with non-empty — cannot safely concatenate
+            % (would need to handle missing rows, which complicates indexing)
+            return;
+        elseif ~istable(elem)
+            % Mixed types — cannot concatenate
+            return;
+        elseif ~isequal(elem.Properties.VariableNames, expected_var_names)
+            % Schema mismatch — cannot concatenate
+            return;
+        end
+    end
+
+    % All checks passed — attempt vertical concatenation
+    try
+        concat_table = vertcat(col{:});
+        can_concat = true;
+    catch
+        % Concatenation failed (e.g., incompatible column types despite
+        % matching names). Fall back to element-by-element conversion.
+        can_concat = false;
+        concat_table = [];
+    end
 end

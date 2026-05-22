@@ -76,6 +76,10 @@ function data = from_python(py_obj)
                 if ~isempty(c) && (isa(c{1}, 'py.int') || isa(c{1}, 'py.float'))
                     % Explicitly convert Python numeric types to MATLAB doubles
                     data = cellfun(@double, c);
+                elseif ~isempty(c) && is_python_object(c{1})
+                    % If c contains other Python objects, convert each element
+                    scidb.Log.debug('from_python: numeric array contains Python objects, converting each element');
+                    data = cellfun(@double, c, 'UniformOutput',false);
                 else
                     data = cell2mat(c);
                 end
@@ -109,7 +113,7 @@ function data = from_python(py_obj)
         data = datetime(string(py_obj.isoformat()), 'InputFormat', 'yyyy-MM-dd''T''HH:mm:ss');
 
     elseif isa(py_obj, 'py.list')
-        % Fast path: try converting the entire list to a numpy array in one
+        % Fast path 1: try converting the entire list to a numpy array in one
         % Python call.  This avoids N individual boundary crossings when the
         % list contains homogeneous numeric values (the common case for
         % DOUBLE[] columns loaded from DuckDB).
@@ -123,11 +127,107 @@ function data = from_python(py_obj)
                 return;
             end
         catch
-            % Fall through to element-by-element conversion below
+            % Fall through to more specialized paths below
         end
 
+        % Fast path 2: flatten+convert sequences (numeric or boolean)
+        % When the list contains homogeneous sequences (numeric or bool) of
+        % varying lengths, flatten all into one array, convert once (1 bridge
+        % crossing), then split back. Much faster than N individual conversions.
+        try
+            py_result = py.sci_matlab.bridge.flatten_sequences(py_obj);
+            % Python returns tuple (flat_array, lengths) - access as cell array
+            py_flat = py_result{1};
+            py_lengths = py_result{2};
+
+            if ~isa(py_flat, 'py.NoneType')
+                scidb.Log.debug('from_python: using sequences fast path (flatten+split)');
+
+                % Single bridge crossing for the flattened array
+                flat_data = scidb.internal.from_python(py_flat);
+                lengths = double(py_lengths);
+
+                % Split into cell array using lengths
+                n = numel(lengths);
+                data = cell(1, n);
+                pos = 1;
+                for i = 1:n
+                    len = lengths(i);
+                    if len > 0 
+                        data{i} = flat_data(pos:pos+len-1);
+                        pos = pos + len;
+                    else
+                        data{i} = [];
+                    end
+                end
+                return;
+            end
+        catch
+            % Fall through to more specialized paths below
+        end
+
+        % Fast path 3: nested dicts with numpy arrays (via JSON)
+        % When the list contains dicts with nested structure and numpy arrays
+        % (e.g., structs stored as JSON in DuckDB), convert to JSON string in
+        % Python, then deserialize in MATLAB. Single bridge crossing instead of
+        % N dict conversions + N×M numpy array conversions.
+        try
+            py_json = py.sci_matlab.bridge.convert_nested_dicts_to_json(py_obj);
+            if ~isa(py_json, 'py.NoneType')
+                scidb.Log.debug('from_python: using nested dicts JSON fast path');
+
+                % Single bridge crossing for the JSON string
+                json_str = char(py_json);
+
+                % Single MATLAB operation to deserialize entire structure
+                data = jsondecode(json_str);
+
+                % jsondecode returns struct array for list of dicts
+                % Convert to cell array of structs to match expected format
+                if isstruct(data) && ~isscalar(data)
+                    data = num2cell(data);
+                elseif isstruct(data) && isscalar(data)
+                    % Single element - wrap in cell
+                    data = {data};
+                end
+
+                return;
+            end
+        catch
+            % Fall through to more specialized paths below
+        end
+
+        % Fast path 4: try concatenating homogeneous DataFrames
+        % When the list contains DataFrames with identical schemas,
+        % concatenate them in Python and convert once (avoids N conversions
+        % and N×M log messages for N DataFrames with M columns each).
         c = cell(py_obj);
         n = numel(c);
+
+        [can_concat_dfs, concat_df] = try_concat_homogeneous_dataframes(c);
+        if can_concat_dfs
+            try
+                scidb.Log.debug('from_python: trying DataFrame concat for list (%d DataFrames)', n);
+
+                % Convert concatenated DataFrame once (single set of log messages)
+                concat_table = scidb.internal.from_python(concat_df);
+
+                % Split back into individual tables (one per original DataFrame)
+                data = cell(1, n);
+                for row_idx = 1:n
+                    data{row_idx} = concat_table(row_idx, :);
+                end
+
+                scidb.Log.debug('from_python: DataFrame concat succeeded');
+                return;
+            catch concat_err
+                scidb.Log.debug('from_python: DataFrame concat failed, falling back: %s', ...
+                    concat_err.message);
+                % Fall through to element-by-element conversion
+            end
+        end
+
+        % Fallback: element-by-element conversion
         data = cell(1, n);
         all_str = n > 0;
         all_numeric_scalar = n > 0;
@@ -240,28 +340,41 @@ function data = convert_dataframe(py_obj)
             scidb.Log.debug('convert_dataframe: column %d "%s" - object branch', i, string(col_key));
             % Object column (e.g. dicts/structs, array columns) -> cell array via from_python
             py_list = col.tolist();
-            c = cell(py_list);
-            col_data = cell(numel(c), 1);
-            for k = 1:numel(c)
-                col_data{k} = scidb.internal.from_python(c{k});
-                % Parse stringified arrays (e.g. "[[false], [true], ...]")
-                % that result from nested-list storage in DuckDB.
-                % Only attempts to parse SCALAR strings — a multi-element
-                % string array (from pandas object columns holding string
-                % arrays) would break strlength's scalar contract.
-                cd = col_data{k};
-                if isstring(cd) && isscalar(cd) ...
-                        && strlength(cd) > 1 && startsWith(cd, "[")
-                    try
-                        col_data{k} = jsondecode(char(cd));
-                    catch
+
+            % Try fast paths BEFORE converting to MATLAB cell array, in order of preference:
+            % 1. Homogeneous DataFrames → concatenate & convert once
+            % 2. Homogeneous numeric/logical → optimized py.list conversion
+            % 3. Element-by-element fallback
+
+            % Fast path 1: Concatenate homogeneous DataFrames
+            c = cell(py_list);  % Need cell array to check DataFrame types
+            [can_concat_dfs, concat_df] = try_concat_homogeneous_dataframes(c);
+            if can_concat_dfs
+                try
+                    scidb.Log.debug('convert_dataframe: column %d - trying DataFrame concat (%d DataFrames)', i, numel(c));
+
+                    % Convert concatenated DataFrame once (single set of log messages)
+                    concat_table = scidb.internal.from_python(concat_df);
+
+                    % Split back into cell array of individual table rows
+                    col_data = cell(numel(c), 1);
+                    for row_idx = 1:numel(c)
+                        col_data{row_idx} = concat_table(row_idx, :);
                     end
+
+                    scidb.Log.debug('convert_dataframe: column %d - DataFrame concat succeeded', i);
+                    args{i} = col_data;
+                    continue;  % Skip to next column
+                catch concat_err
+                    scidb.Log.debug('convert_dataframe: column %d - DataFrame concat failed, falling back: %s', ...
+                        i, concat_err.message);
+                    % Fall through to next fast path
                 end
             end
 
-            % Optimized path: convert the entire Python list in one call to
-            % from_python(), which uses the optimized py.list branch. This is
-            % much faster than converting to a MATLAB cell first and iterating.
+            % Fast path 2: Optimized py.list conversion for numeric/logical arrays
+            % This handles homogeneous numeric/logical data efficiently by using
+            % from_python(py_list) which can convert to numpy array in one call.
             try
                 scidb.Log.debug('convert_dataframe: column %d - attempting optimized py.list conversion...', i);
                 col_data = scidb.internal.from_python(py_list);
@@ -281,19 +394,21 @@ function data = convert_dataframe(py_obj)
                 col_data = try_stack_structs(col_data);
                 args{i} = col_data;
             catch opt_err
-                % Fallback: element-by-element conversion (for complex types)
-                scidb.Log.warn('convert_dataframe: column %d - FAILED optimized conversion, using slow fallback', i);
+                % Fast path 3: Element-by-element fallback (for complex/heterogeneous types)
+                scidb.Log.debug('convert_dataframe: column %d - optimized conversion failed, using element-by-element', i);
                 scidb.Log.debug('convert_dataframe: column %d - error was: %s', i, opt_err.message);
-                c = cell(py_list);
+
+                % c is already populated from DataFrame concat attempt above
                 col_data = cell(numel(c), 1);
-                scidb.Log.debug('convert_dataframe: column %d - converting %d elements individually (SLOW)...', i, numel(c));
+                scidb.Log.debug('convert_dataframe: column %d - converting %d elements individually...', i, numel(c));
                 for k = 1:numel(c)
                     col_data{k} = scidb.internal.from_python(c{k});
                     % Parse stringified arrays (e.g. "[[false], [true], ...]")
-                    if isstring(col_data{k}) && strlength(col_data{k}) > 1 ...
-                            && startsWith(col_data{k}, "[")
+                    cd = col_data{k};
+                    if isstring(cd) && isscalar(cd) ...
+                            && strlength(cd) > 1 && startsWith(cd, "[")
                         try
-                            col_data{k} = jsondecode(char(col_data{k}));
+                            col_data{k} = jsondecode(char(cd));
                         catch
                         end
                     end
@@ -418,5 +533,95 @@ function data = try_stack_structs(data)
     try
         data = vertcat(data{:});
     catch
+    end
+end
+
+
+function result = is_python_object(obj)
+%IS_PYTHON_OBJECT  Check if an object is a Python object (class starts with 'py.')
+    cl = class(obj);
+    result = numel(cl) >= 3 && cl(1) == 'p' && cl(2) == 'y' && cl(3) == '.';
+end
+
+
+function [can_concat, concat_df] = try_concat_homogeneous_dataframes(c)
+%TRY_CONCAT_HOMOGENEOUS_DATAFRAMES  Try to concatenate DataFrames in a list.
+%
+%   For lists where every element is a pandas DataFrame with identical
+%   columns (same schema), concatenate all DataFrames into one using
+%   pandas.concat.  This enables converting N DataFrames with a single
+%   from_python call instead of N calls, reducing logging verbosity.
+%
+%   Returns:
+%     can_concat - true if concatenation succeeded
+%     concat_df  - Concatenated pandas DataFrame (all rows)
+
+    can_concat = false;
+    concat_df = py.None;
+
+    n = numel(c);
+    if n == 0
+        return;
+    end
+
+    % Check if all elements are DataFrames
+    for i = 1:n
+        elem = c{i};
+        if isempty(elem)
+            % Empty elements not supported for this optimization
+            return;
+        end
+
+        % Check if it's a DataFrame
+        is_df = false;
+        try
+            is_df = isa(elem, 'py.pandas.core.frame.DataFrame') || ...
+                    isa(elem, 'py.pandas.DataFrame') || ...
+                    logical(py.builtins.isinstance(elem, py.pandas.DataFrame));
+        catch
+            return;
+        end
+
+        if ~is_df
+            % Not all elements are DataFrames
+            return;
+        end
+    end
+
+    % Get column names from first DataFrame
+    try
+        first_cols = c{1}.columns.tolist();
+        expected_cols_cell = cell(first_cols);
+    catch
+        return;
+    end
+
+    % Verify all DataFrames have matching column schemas
+    for i = 2:n
+        try
+            cols = c{i}.columns.tolist();
+            cols_cell = cell(cols);
+            if ~isequal(cols_cell, expected_cols_cell)
+                % Schema mismatch
+                return;
+            end
+        catch
+            return;
+        end
+    end
+
+    % All checks passed — concatenate using pandas.concat
+    try
+        % Create Python list of DataFrames
+        py_df_list = py.list(c);
+
+        % Concatenate with pandas.concat, ignoring original index
+        concat_df = py.pandas.concat(py_df_list, pyargs('ignore_index', true));
+
+        can_concat = true;
+    catch
+        % Concatenation failed (e.g., incompatible dtypes)
+        can_concat = false;
+        concat_df = py.None;
     end
 end
