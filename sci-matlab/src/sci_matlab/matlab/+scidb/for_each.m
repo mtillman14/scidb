@@ -461,7 +461,12 @@ function out = flatten_nested_table_outputs(result_tbl, output_names)
         meta_block = repmat(meta_row, inner_h, 1);
 
         % For each nested output column, fold the inner table in.
-        nested_block = table();
+        % OPTIMIZATION: Collect all columns first, then build table in one
+        % operation to avoid repeated table growth overhead.
+        nested_col_names = {};
+        nested_col_data = {};
+        nested_name_set = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+
         for nc = 1:numel(nested_cols)
             nc_name = char(nested_cols(nc));
             cell_val = result_tbl.(nc_name){r};
@@ -474,19 +479,33 @@ function out = flatten_nested_table_outputs(result_tbl, output_names)
                         % the inner value (it's the per-row data the user
                         % chose to include in their output table).
                         meta_block.(icn) = cell_val.(icn);
-                    elseif ismember(icn, nested_block.Properties.VariableNames)
+                    elseif isKey(nested_name_set, icn)
                         % Disambiguate name collisions across nested
                         % outputs by prefixing with the output name.
-                        nested_block.(sprintf('%s_%s', nc_name, icn)) = cell_val.(icn);
+                        prefixed_name = sprintf('%s_%s', nc_name, icn);
+                        nested_col_names{end+1} = prefixed_name; %#ok<AGROW>
+                        nested_col_data{end+1} = cell_val.(icn); %#ok<AGROW>
+                        nested_name_set(prefixed_name) = true;
                     else
-                        nested_block.(icn) = cell_val.(icn);
+                        nested_col_names{end+1} = icn; %#ok<AGROW>
+                        nested_col_data{end+1} = cell_val.(icn); %#ok<AGROW>
+                        nested_name_set(icn) = true;
                     end
                 end
             else
                 % Non-table cell — wrap in a cell column of inner_h
                 % copies so widths line up.
-                nested_block.(nc_name) = repmat({cell_val}, inner_h, 1);
+                nested_col_names{end+1} = nc_name; %#ok<AGROW>
+                nested_col_data{end+1} = repmat({cell_val}, inner_h, 1); %#ok<AGROW>
+                nested_name_set(nc_name) = true;
             end
+        end
+
+        % Build nested_block in one operation (fast!)
+        if isempty(nested_col_names)
+            nested_block = table();
+        else
+            nested_block = table(nested_col_data{:}, 'VariableNames', nested_col_names);
         end
 
         pieces{end+1} = [meta_block, nested_block]; %#ok<AGROW>

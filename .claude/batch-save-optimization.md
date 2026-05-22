@@ -57,13 +57,27 @@ Refactored `_save_results()` to use batch saving while **preserving all config_k
 - Both Python and MATLAB paths benefit (both use `_save_results`)
 
 ## Testing Checklist
-- [ ] Run existing `scidb` tests: `pytest scidb/tests/`
-- [ ] Test distribute mode with large result sets (1000+ rows)
-- [ ] Verify branch_params propagation in multi-step pipelines
-- [ ] Test with lineage-tracked results
-- [ ] Test flatten/distribute mode DataFrame outputs
-- [ ] Verify MATLAB integration still works
+- [x] Run existing `scidb` tests: `pytest scidb/tests/`
+- [x] Test distribute mode with large result sets (1000+ rows)
+- [x] Verify branch_params propagation in multi-step pipelines
+- [x] Test with lineage-tracked results
+- [x] Test flatten/distribute mode DataFrame outputs
+- [x] Verify MATLAB integration still works
 - [ ] Benchmark actual speedup on GAITRite use case
+
+## Regression Tests
+Added comprehensive regression tests in `scidb/tests/test_batch_save_regression.py`:
+- ✅ `test_python_for_each_uses_batch_save` - Verifies Python path uses batch save
+- ✅ `test_matlab_bridge_uses_batch_save` - Verifies MATLAB path uses batch save
+- ✅ `test_batch_save_preserves_branch_params` - Ensures branch_params are preserved
+- ✅ `test_batch_save_with_upstream_variants` - Tests with multiple upstream variants
+- ✅ `test_small_batches_still_work` - Ensures even 1-record batches work
+- ✅ `test_batch_save_is_faster_than_sequential` - Performance monitoring
+
+Run regression tests:
+```bash
+pytest scidb/tests/test_batch_save_regression.py -v -s
+```
 
 ## Files Modified
 - `scidb/src/scidb/foreach.py` - `_save_results()` function (lines 1639-1868)
