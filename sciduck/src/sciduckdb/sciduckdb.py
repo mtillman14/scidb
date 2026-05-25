@@ -433,6 +433,76 @@ def _dataframe_to_storage_rows(df: pd.DataFrame, dtype_meta: dict) -> list:
     return rows
 
 
+def _bulk_df_to_storage_rows(
+    df_list: list, record_ids: list, dtype_meta: dict
+) -> list:
+    """Bulk convert N DataFrames to (record_id, ...storage_values) rows.
+
+    Equivalent to calling _dataframe_to_storage_rows N times and assembling
+    (record_id, ...) tuples, but processes each column as a whole to avoid
+    O(N×C) per-cell pandas iloc overhead.
+
+    Falls back to the per-row path when DataFrame schemas differ.
+    """
+    if not df_list:
+        return []
+
+    col_metas = dtype_meta["columns"]
+    first_cols = list(df_list[0].columns)
+
+    # Fall back to per-row path if schemas differ (shouldn't happen in normal use).
+    if not all(list(df.columns) == first_cols for df in df_list):
+        rows: list = []
+        for rid, df in zip(record_ids, df_list):
+            for storage_row in _dataframe_to_storage_rows(df, dtype_meta):
+                rows.append((rid,) + tuple(storage_row))
+        return rows
+
+    # Build flat record_id list: one entry per storage row (multi-row records
+    # contribute len(df) entries, typical 1-row records contribute 1).
+    expanded_rids = []
+    for rid, df in zip(record_ids, df_list):
+        expanded_rids.extend([rid] * len(df))
+
+    # Concat once so column operations don't cross DataFrame boundaries.
+    big_df = pd.concat(df_list, ignore_index=True)
+
+    # Build per-column storage arrays using column-level operations.
+    col_arrays: dict = {}
+    for col, col_meta in col_metas.items():
+        ptype = col_meta.get("python_type", "")
+        raw = big_df[col]
+
+        if ptype == "ndarray":
+            vals = raw.to_numpy()
+            col_arrays[col] = [
+                v.tolist() if isinstance(v, np.ndarray)
+                else (v if isinstance(v, list) else [v])
+                for v in vals
+            ]
+        elif ptype in ("dict", "json_fallback"):
+            col_arrays[col] = [json.dumps(_convert_for_json(v)) for v in raw.to_numpy()]
+        elif ptype == "list":
+            if col_meta.get("contains_ndarray"):
+                col_arrays[col] = [
+                    [e.tolist() if isinstance(e, np.ndarray) else e for e in v]
+                    for v in raw.to_numpy()
+                ]
+            else:
+                col_arrays[col] = raw.tolist()
+        else:
+            # Scalar types (float, int, str, bool …): tolist() converts numpy
+            # scalars to Python builtins, which is what DuckDB expects.
+            col_arrays[col] = raw.tolist()
+
+    cols_in_order = list(col_metas.keys())
+    n = len(big_df)
+    return [
+        (expanded_rids[i],) + tuple(col_arrays[col][i] for col in cols_in_order)
+        for i in range(n)
+    ]
+
+
 def _value_to_storage_row(value: Any, dtype_meta: dict) -> list:
     """Convert a data value to a list of storage-ready column values.
 

@@ -83,6 +83,7 @@ from sciduckdb import (
     _infer_duckdb_type, _python_to_storage, _storage_to_python,
     _storage_to_python_column,
     _infer_data_columns, _value_to_storage_row, _dataframe_to_storage_rows,
+    _bulk_df_to_storage_rows,
     _flatten_dict, _unflatten_dict,
 )
 
@@ -1052,6 +1053,12 @@ class DatabaseManager:
         t4_storage = 0.0
         t4_meta = 0.0
 
+        # Accumulate DataFrames for bulk storage-row conversion after the loop.
+        # Per-row _dataframe_to_storage_rows (54 iloc calls × 7k records) was
+        # the dominant cost; _bulk_df_to_storage_rows processes column-by-column.
+        _df_bulk: list = []
+        _df_bulk_rids: list = []
+
         for i, (data_val, flat_meta) in enumerate(data_items):
             nested = all_nested[i]
             schema_keys = nested.get("schema", {})
@@ -1081,15 +1088,15 @@ class DatabaseManager:
             record_ids.append(record_id)
             t4_record_id += time.perf_counter() - _t
 
-            # DataFrames expand to one DuckDB row per table row.
+            # DataFrames: defer storage-row conversion to the bulk path below.
             _t = time.perf_counter()
             if _use_arrow:
                 _arrow_record_ids.append(record_id)
                 for col in data_col_types:
                     _arrow_col_arrays[col].append(data_val[col])
             elif is_dataframe:
-                for storage_row in _dataframe_to_storage_rows(data_val, dtype_meta):
-                    data_table_rows.append((record_id,) + tuple(storage_row))
+                _df_bulk.append(data_val)
+                _df_bulk_rids.append(record_id)
             else:
                 storage_values = _value_to_storage_row(data_val, dtype_meta)
                 data_table_rows.append((record_id,) + tuple(storage_values))
@@ -1106,6 +1113,12 @@ class DatabaseManager:
                 bp_json,
             ))
             t4_meta += time.perf_counter() - _t
+
+        # --- Bulk DataFrame → storage rows (replaces 7k per-row iloc calls) ---
+        if _df_bulk:
+            _t = time.perf_counter()
+            data_table_rows = _bulk_df_to_storage_rows(_df_bulk, _df_bulk_rids, dtype_meta)
+            t4_storage += time.perf_counter() - _t
 
         timings["4_per_row_hashing"] = time.perf_counter() - t4
         timings["4a_canonical_hash"] = t4_hash
@@ -1240,7 +1253,7 @@ class DatabaseManager:
         n_new = len(new_data_rows)
         n_total_rows = len(_arrow_record_ids) if _use_arrow else len(data_table_rows)
         Log.info(
-            f"save_batch({type_name}): {n} items ({n_new} new rows, "
+            f"[timing] save_batch({type_name}): {n} items ({n_new} new rows, "
             f"{n_total_rows} total storage rows), "
             f"{len(unique_schema_combos)} schemas, {timings['total']:.3f}s"
         )

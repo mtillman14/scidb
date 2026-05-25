@@ -1251,7 +1251,8 @@ def register_matlab_variable(type_name: str, schema_version: int = 1):
     return surrogate
 
 
-def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, common_metadata=None, db=None):
+def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
+                      common_metadata=None, db=None, row_heights=None):
     """Bridge function for MATLAB save_from_table.
 
     Accepts columnar data (one list per column) from MATLAB and assembles
@@ -1262,8 +1263,9 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
     ----------
     type_name : str
         Variable class name (e.g. "StepLength").
-    data_values : list or numpy array
-        One data value per row.
+    data_values : list, numpy array, or pandas DataFrame
+        One data value per row, or a bulk DataFrame/array when row_heights
+        is provided (Strategy A / vertcat mode from MATLAB).
     metadata_keys : list of str
         Metadata column names, same order as metadata_columns.
     metadata_columns : list of (list or numpy array)
@@ -1272,6 +1274,11 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
         Extra metadata applied to every row.
     db : DatabaseManager or None
         Optional database; uses global default when None.
+    row_heights : numpy array or None
+        When provided, data_values is a bulk structure (DataFrame or ndarray)
+        and row_heights[i] is the number of rows that belong to record i.
+        Python splits it back into N per-record slices (zero-copy views).
+        None = legacy per-row list mode (backward-compatible).
 
     Returns
     -------
@@ -1279,6 +1286,8 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
         Record IDs for each saved row.
     """
     import time as _time
+    import numpy as np
+    import pandas as pd
     from scidb.log import Log
     from scidb.variable import BaseVariable
     from scidb.database import get_database
@@ -1296,11 +1305,44 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
     common = dict(common_metadata) if common_metadata else {}
     keys = list(metadata_keys)
 
-    # Bulk-convert numpy arrays to native Python lists (one call instead of
-    # N per-element .item() calls).  Plain Python lists pass through unchanged.
-    if hasattr(data_values, 'tolist'):
+    # Determine how to build data_list from data_values.
+    t_split = 0.0
+    bulk_mode = 'list'
+
+    heights_arr = None
+    if row_heights is not None and not isinstance(row_heights, type(None)):
+        heights_arr = np.asarray(row_heights, dtype=int).ravel()
+
+    if heights_arr is not None and isinstance(data_values, pd.DataFrame):
+        # Strategy A result: bulk DataFrame → split into N per-record DataFrames.
+        # reset_index(drop=True) normalises the index to 0..height-1 on every
+        # slice so canonical_hash produces the same result as the per-row path
+        # (which always received a freshly constructed DataFrame with index [0]).
+        offsets = np.concatenate([[0], np.cumsum(heights_arr)])
+        _t = _time.perf_counter()
+        data_list = [
+            data_values.iloc[int(offsets[i]):int(offsets[i + 1])].reset_index(drop=True)
+            for i in range(len(heights_arr))
+        ]
+        t_split = _time.perf_counter() - _t
+        bulk_mode = 'vertcat_df'
+    elif heights_arr is not None and isinstance(data_values, np.ndarray):
+        # Strategy A result: bulk ndarray → split into N row-slice views.
+        offsets = np.concatenate([[0], np.cumsum(heights_arr)])
+        _t = _time.perf_counter()
+        data_list = [
+            data_values[int(offsets[i]):int(offsets[i + 1])]
+            for i in range(len(heights_arr))
+        ]
+        t_split = _time.perf_counter() - _t
+        bulk_mode = 'vertcat_arr'
+    elif hasattr(data_values, 'tolist'):
+        # Numpy array (isnumeric fast path or Strategy B flatten result).
         data_list = data_values.tolist()
+        bulk_mode = 'numpy_list'
     else:
+        # Plain Python list (Strategy B split_flat_to_lists, Strategy C, or
+        # string/cellstr paths).
         data_list = [v.item() if hasattr(v, 'item') else v for v in data_values]
 
     meta_lists = []
@@ -1323,13 +1365,13 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns, c
         data_items.append((data_list[i], meta))
 
     t_convert = _time.perf_counter()
-    Log.debug(f"save_batch_bridge({type_name}): {n} items, "
-              f"data_items construction {t_convert - t_start:.3f}s")
+    Log.debug(f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
+              f"split={t_split:.3f}s, assembly={t_convert - t_start - t_split:.3f}s")
 
     result = "\n".join(_db.save_batch(cls, data_items))
 
-    Log.info(f"save_batch_bridge({type_name}): {n} items, "
-             f"total {_time.perf_counter() - t_start:.3f}s")
+    Log.info(f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
+             f"split={t_split:.3f}s, total={_time.perf_counter() - t_start:.3f}s")
     return result
 
 

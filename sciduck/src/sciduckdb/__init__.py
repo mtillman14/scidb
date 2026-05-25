@@ -10,6 +10,7 @@ from .sciduckdb import (
     _infer_data_columns,
     _value_to_storage_row,
     _dataframe_to_storage_rows,
+    _bulk_df_to_storage_rows,
     _flatten_dict,
     _unflatten_dict,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "_infer_data_columns",
     "_value_to_storage_row",
     "_dataframe_to_storage_rows",
+    "_bulk_df_to_storage_rows",
     "_flatten_dict",
     "_unflatten_dict",
 ]

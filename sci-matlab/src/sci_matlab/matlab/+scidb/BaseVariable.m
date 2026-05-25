@@ -203,6 +203,7 @@ classdef BaseVariable < dynamicprops
             if isdatetime(data_col)
                 data_col = string(data_col, 'yyyy-MM-dd''T''HH:mm:ss.SSS');
             end
+            py_heights = py.None;  % overridden to a heights array by Strategy A
             if isnumeric(data_col)
                 py_data = py.numpy.array(data_col(:)');
             elseif isstring(data_col)
@@ -211,11 +212,51 @@ classdef BaseVariable < dynamicprops
             elseif iscellstr(data_col) %#ok<ISCLSTR>
                 py_data = py.list(data_col(:)');
             else
-                % Generic fallback: convert each element individually
-                py_data = py.list();
-                for i = 1:height(tbl)
-                    py_data.append(scidb.internal.to_python(data_col{i}));
+                t_conv = tic;
+                bulk_mode = 'per_row';
+
+                % Strategy A: vertcat — bulk-concatenate all records into one
+                % MATLAB structure, then cross the bridge once.  Works for
+                % cell of tables, cell of equal-length arrays, cell of structs.
+                if iscell(data_col)
+                    try
+                        concat_data = vertcat(data_col{:});
+                        heights_vec = int64(cellfun(@(x) size(x, 1), data_col(:)', 'UniformOutput', true));
+                        py_data = scidb.internal.to_python(concat_data);
+                        py_heights = py.numpy.array(heights_vec, pyargs('dtype', 'int64'));
+                        bulk_mode = 'vertcat';
+                    catch
+                    end
                 end
+
+                % Strategy B: flatten — cell of variable-length numeric/logical
+                % vectors.  try_flatten_cell_column already lives in to_python.m.
+                if strcmp(bulk_mode, 'per_row') && iscell(data_col)
+                    [can_flat, flat, lengths, flat_dtype] = ...
+                        scidb.internal.try_flatten_cell_column(data_col);
+                    if can_flat
+                        py_flat    = py.numpy.array(flat,    pyargs('dtype', flat_dtype));
+                        py_lengths = py.numpy.array(lengths, pyargs('dtype', 'int64'));
+                        py_data    = py.sci_matlab.bridge.split_flat_to_lists(py_flat, py_lengths);
+                        bulk_mode  = 'flatten';
+                    end
+                end
+
+                % Strategy C: per-row fallback for heterogeneous / non-
+                % concatenable data.
+                if strcmp(bulk_mode, 'per_row')
+                    py_data = py.list();
+                    for i = 1:height(tbl)
+                        if iscell(data_col)
+                            py_data.append(scidb.internal.to_python(data_col{i}));
+                        else
+                            py_data.append(scidb.internal.to_python(data_col(i)));
+                        end
+                    end
+                end
+
+                scidb.Log.info('[timing] save_from_table(%s): data_convert=%.3fs, mode=%s, n=%d', ...
+                    type_name, toc(t_conv), bulk_mode, height(tbl));
             end
 
             % --- Convert metadata columns (numpy for numeric) ---
@@ -262,9 +303,10 @@ classdef BaseVariable < dynamicprops
             end
 
             % --- Call Python bridge ---
+            % py_heights is py.None except when Strategy A (vertcat) was used.
             py_result = py.sci_matlab.bridge.save_batch_bridge( ...
                 type_name, py_data, py_meta_keys, py_meta_cols, ...
-                py_common, py_db);
+                py_common, py_db, py_heights);
 
             % --- Convert result to MATLAB string array ---
             record_ids = splitlines(string(py_result));
