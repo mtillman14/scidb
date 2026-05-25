@@ -479,26 +479,32 @@ class BaseVariable(metaclass=VariableMeta):
         _db = db or get_database()
 
         if not as_df:
-            # Return generator via helper to avoid making this function a generator
+            # Return generator via helper to avoid making this function a generator.
+            # When as_df=False, returns the iterator that constructs one BaseVariable
+            # per record — useful when you need .content_hash, .lineage_hash, or
+            # subclass-specific instance behaviour.  Pay per-record construction cost.
+            # Rule of thumb: if you're going to put the results in a DataFrame anyway,
+            # prefer as_df=True.
             return cls._load_all_generator(_db, metadata, version_id=version_id, where=where)
         else:
-            # Collect into DataFrame
-            results = list(_db.load_all(cls, metadata, version_id=version_id, where=where))
-
-            if not results:
+            # Delegate to the shared bulk-fetch engine.  When as_df=True, internally
+            # calls db.load_all_as_df (bulk path) which avoids per-record instance
+            # construction and uses vectorised type restoration.
+            df = _db.load_all_as_df(
+                cls, metadata,
+                layout="packed",
+                include_rid=include_record_id,
+                version_id=version_id,
+                where=where,
+            )
+            if df.empty:
                 raise NotFoundError(
                     f"No {cls.__name__} found matching metadata: {metadata}"
                 )
-
-            rows = []
-            for var in results:
-                row = dict(var.metadata) if var.metadata else {}
-                row["data"] = var.data
-                if include_record_id:
-                    row["record_id"] = var.record_id
-                rows.append(row)
-
-            return pd.DataFrame(rows)
+            # Rename internal __record_id → record_id for user-facing output.
+            if include_record_id and "__record_id" in df.columns:
+                df = df.rename(columns={"__record_id": "record_id"})
+            return df
 
     @classmethod
     def _load_all_generator(cls, db, metadata: dict, version_id: str = "all", where=None):

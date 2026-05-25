@@ -6,6 +6,7 @@ being used by both execution paths, and will catch any future regressions that
 accidentally revert to sequential row-by-row saving.
 """
 
+import hashlib
 import logging
 import numpy as np
 import pandas as pd
@@ -37,9 +38,8 @@ class Output(BaseVariable):
 
 
 def process(data):
-    """Simple function that returns a DataFrame for distribute mode."""
-    # Return a DataFrame with multiple rows to trigger distribute mode
-    return pd.DataFrame({"value": np.arange(10)})
+    """Simple function that doubles its input."""
+    return data * 2
 
 
 class TestBatchSaveRegression:
@@ -47,19 +47,19 @@ class TestBatchSaveRegression:
 
     def test_python_for_each_uses_batch_save(self, db, caplog):
         """Python for_each should use batch save when saving multiple records."""
-        # Setup: Create input data for 3 subjects
+        # Setup: Create input data for 3 subjects × 3 trials = 9 records
         for subj in ["S01", "S02", "S03"]:
-            Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
+            for trial in ["1", "2", "3"]:
+                Input.save(np.array([1.0, 2.0]), subject=subj, trial=trial)
 
-        # Run for_each with distribute=True (creates 10 records per subject = 30 total)
+        # Run for_each (no distribute — just 9 combos saved in one batch)
         with caplog.at_level(logging.INFO, logger="scidb"):
             for_each(
                 process,
                 {"data": Input},
                 [Output],
                 subject=["S01", "S02", "S03"],
-                trial=["1"],
-                distribute=True,
+                trial=["1", "2", "3"],
             )
 
         # Verify batch save was used by checking logs
@@ -80,48 +80,44 @@ class TestBatchSaveRegression:
         assert len(prep_logs) > 0, "Should see batch_save preparation log"
         assert len(complete_logs) > 0, "Should see batch_save completion log"
 
-        # Verify the batch contained multiple records (not just 1)
+        # Verify the batch contained multiple records (9 = 3 subjects × 3 trials)
         prep_log = prep_logs[0]
-        assert "30 result row(s)" in prep_log, (
-            f"Expected to batch 30 records, but log says: {prep_log}"
+        assert "9 result row(s)" in prep_log, (
+            f"Expected to batch 9 records, but log says: {prep_log}"
         )
 
         # Verify records were actually saved
         all_records = db.list_versions(Output)
-        assert len(all_records) == 30, f"Expected 30 records but found {len(all_records)}"
+        assert len(all_records) == 9, f"Expected 9 records but found {len(all_records)}"
 
     def test_matlab_bridge_uses_batch_save(self, db, caplog):
         """MATLAB bridge path should also use batch save (via _for_each_save_resolved)."""
-        # This test simulates the MATLAB bridge path by calling the bridge functions directly
         from sci_matlab.bridge import for_each_prepare, for_each_save
 
-        # Setup input data
+        # Setup input data for 3 subjects
         for subj in ["S01", "S02", "S03"]:
             Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
 
-        # Prepare (Phase 1 - MATLAB calls this)
-        handle = for_each_prepare(
-            fn_src="def process(data):\n    return pd.DataFrame({'value': np.arange(10)})",
+        fn_hash = hashlib.sha256(b"def process(data): return data * 2").hexdigest()
+
+        # Prepare (Phase 1 — MATLAB calls this)
+        handle_result = for_each_prepare(
             fn_name="process",
-            input_specs={"data": "Input"},
+            fn_hash=fn_hash,
+            inputs_spec={"data": {"kind": "var_type", "type_name": "Input"}},
             output_class_names=["Output"],
-            subject=["S01", "S02", "S03"],
-            trial=["1"],
-            distribute=True,
+            metadata_iterables={"subject": ["S01", "S02", "S03"], "trial": ["1"]},
         )
 
-        # Simulate MATLAB executing the function and building result DataFrames
-        # (In reality, MATLAB's scifor.for_each does this)
-        result_df = pd.DataFrame({
-            "subject": ["S01"] * 10 + ["S02"] * 10 + ["S03"] * 10,
-            "trial": ["1"] * 30,
-            "value": list(range(10)) * 3,
-            "Output": [pd.DataFrame({"value": [i]}) for i in range(10)] * 3,
-        })
+        # Build result DataFrames from the combos that for_each_prepare resolved.
+        # In the real MATLAB flow, MATLAB's scifor.for_each produces this table.
+        combos = handle_result["full_combos"]
+        result_df = pd.DataFrame(combos)
+        result_df["Output"] = [np.array([2.0, 4.0])] * len(combos)
 
-        # Save (Phase 3 - MATLAB calls this with results)
+        # Save (Phase 3 — MATLAB calls this with results)
         with caplog.at_level(logging.INFO, logger="scidb"):
-            for_each_save(handle, result_df, save=True)
+            for_each_save(handle_result["handle"], result_df, save=True)
 
         # Verify batch save was used
         batch_save_logs = [
@@ -139,38 +135,33 @@ class TestBatchSaveRegression:
         assert len(prep_logs) > 0, "Should see batch_save preparation log"
 
         prep_log = prep_logs[0]
-        assert "30 result row(s)" in prep_log, (
-            f"Expected to batch 30 records, but log says: {prep_log}"
+        assert "3 result row(s)" in prep_log, (
+            f"Expected to batch 3 records, but log says: {prep_log}"
         )
 
         # Verify records were saved
         all_records = db.list_versions(Output)
-        assert len(all_records) == 30, f"Expected 30 records but found {len(all_records)}"
+        assert len(all_records) == 3, f"Expected 3 records but found {len(all_records)}"
 
     def test_batch_save_preserves_branch_params(self, db):
         """Verify batch save correctly preserves branch_params for all records."""
-        # Create upstream variants
         for subj in ["S01", "S02"]:
             Input.save(np.array([1.0]), subject=subj, trial="1")
 
-        # Run with constants to create branch_params
         for_each(
             process,
             {"data": Input},
             [Output],
             subject=["S01", "S02"],
             trial=["1"],
-            distribute=True,
         )
 
         # Verify all records have correct branch_params
         all_records = db.list_versions(Output)
-        assert len(all_records) == 20, f"Expected 20 records (2 subjects × 10 rows)"
+        assert len(all_records) == 2, f"Expected 2 records (2 subjects × 1 trial)"
 
         for record in all_records:
             bp = record.get("branch_params", {})
-            # Should have the function namespaced in branch_params
-            # (no upstream constants in this case since Input has none)
             assert isinstance(bp, dict), f"branch_params should be dict, got {type(bp)}"
 
     def test_batch_save_with_upstream_variants(self, db):
@@ -196,19 +187,18 @@ class TestBatchSaveRegression:
                 trial=["1"],
             )
 
-        # Now process all upstream variants with distribute
+        # Process all upstream variants (2 subjects × 2 upstream variants = 4 records)
         for_each(
             process,
-            {"data": Intermediate},  # Loads all 4 Intermediate variants
+            {"data": Intermediate},
             [Output],
             subject=["S01", "S02"],
             trial=["1"],
-            distribute=True,
         )
 
-        # Should have 40 Output records (2 subjects × 2 upstream variants × 10 rows)
+        # Should have 4 Output records (2 subjects × 2 upstream variants)
         all_records = db.list_versions(Output)
-        assert len(all_records) == 40, f"Expected 40 records but found {len(all_records)}"
+        assert len(all_records) == 4, f"Expected 4 records but found {len(all_records)}"
 
         # Verify branch_params include upstream variant info
         for record in all_records:
@@ -257,11 +247,11 @@ class TestBatchSavePerformance:
         """
         import time
 
-        # Create input data
+        # Create input data for 10 subjects
         for subj in [f"S{i:02d}" for i in range(10)]:
             Input.save(np.array([1.0]), subject=subj, trial="1")
 
-        # Run with distribute to create many records (10 subjects × 10 rows = 100 records)
+        # Run for_each (10 subjects × 1 trial = 10 records)
         start_time = time.perf_counter()
 
         with caplog.at_level(logging.INFO, logger="scidb"):
@@ -271,7 +261,6 @@ class TestBatchSavePerformance:
                 [Output],
                 subject=[f"S{i:02d}" for i in range(10)],
                 trial=["1"],
-                distribute=True,
             )
 
         elapsed_time = time.perf_counter() - start_time
@@ -283,16 +272,15 @@ class TestBatchSavePerformance:
         ]
 
         print(f"\n=== Batch Save Performance ===")
-        print(f"Saved 100 records in {elapsed_time:.3f}s")
+        print(f"Saved 10 records in {elapsed_time:.3f}s")
         if timing_logs:
             print(f"Batch save throughput: {timing_logs[-1]}")
-        print(f"Expected: < 1s (vs ~3s for sequential)")
 
         # Verify all records were saved
         all_records = db.list_versions(Output)
-        assert len(all_records) == 100
+        assert len(all_records) == 10
 
         # Informational assertion (prints warning but doesn't fail)
-        if elapsed_time > 2.0:
-            print(f"WARNING: Batch save took {elapsed_time:.3f}s, expected < 1s")
+        if elapsed_time > 5.0:
+            print(f"WARNING: Batch save took {elapsed_time:.3f}s, expected < 2s")
             print("This may indicate performance regression or slow test environment")

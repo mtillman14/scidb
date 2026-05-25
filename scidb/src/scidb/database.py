@@ -81,6 +81,7 @@ def _from_schema_str(value):
 from sciduckdb import (
     SciDuck,
     _infer_duckdb_type, _python_to_storage, _storage_to_python,
+    _storage_to_python_column,
     _infer_data_columns, _value_to_storage_row, _dataframe_to_storage_rows,
     _flatten_dict, _unflatten_dict,
 )
@@ -1404,28 +1405,25 @@ class DatabaseManager:
                 conditions.append(f's."{key}" = ?')
                 params.append(_schema_str(value))
 
-        # Push simple branch_params filters to SQL (10-100x faster than Python filtering)
-        # Complex suffix matching still happens in Python as fallback
+        # branch_params_filter is handled entirely in Python (lines below).
+        # We do NOT push it to SQL because:
+        # 1. Keys stored in version_keys (direct user saves) would be incorrectly
+        #    excluded by a branch_params SQL filter before the Python fallback runs.
+        # 2. Suffix matching (e.g. "low_hz" → "bandpass.low_hz") cannot be expressed
+        #    in SQL without fetching all records anyway.
+        # The Python _match_row already checks version_keys first, then branch_params.
         sql_branch_params_filter = None
-        if branch_params_filter:
-            sql_branch_params_filter = {}
-            for key, value in branch_params_filter.items():
-                # Only push simple string/numeric filters to SQL (no suffix matching yet)
-                if isinstance(value, (str, int, float, bool)):
-                    sql_branch_params_filter[key] = value
-                    # Use DuckDB's json_extract_string for filtering
-                    # This filters at the database level instead of fetching all records
-                    conditions.append(f"json_extract_string(rm.branch_params, '$.{key}') = ?")
-                    params.append(str(value))
 
         where = " AND ".join(conditions)
 
         if version_id == "latest":
-            # One row per (variable_name, schema_id, version_keys) — latest config only
-            # Strip provenance-only keys from version_keys IN SQL to avoid fetching duplicates
-            # This reduces fetched rows from 14k to 7k (2x improvement!)
-            # Use regexp_replace to remove __upstream, __output_num, __lineage_fixed_rids
-            # Pattern matches: ,"__key":value or "key":value, handling various JSON formats
+            # One row per (variable_name, schema_id, version_keys_stripped, branch_params) — latest only.
+            # Strip __upstream/__output_num/__lineage_fixed_rids from version_keys to collapse
+            # provenance-only variants while keeping distinct branch_params variants separate.
+            # branch_params must stay in the partition to prevent merging records that differ
+            # only by upstream pipeline parameters (e.g. two Intermediate records from
+            # smooth(Filtered(low_hz=20)) vs smooth(Filtered(low_hz=30))).
+            # Use regexp_replace to strip provenance-only keys from the JSON string.
             vk_stripped = (
                 "regexp_replace("
                 "regexp_replace("
@@ -1435,7 +1433,7 @@ class DatabaseManager:
                 "'[,]?\"__output_num\":[^,}]+', '', 'g'), "
                 "'[,]?\"__lineage_fixed_rids\":[^,}]+', '', 'g')"
             )
-            partition = f"rm.variable_name, rm.schema_id, {vk_stripped}"
+            partition = f"rm.variable_name, rm.schema_id, {vk_stripped}, rm.branch_params"
         else:
             # "all": one row per distinct record_id — deduplicates re-runs of identical
             # data while still returning multiple distinct data records at the same
@@ -1454,13 +1452,18 @@ class DatabaseManager:
             f"WHERE {where}"
             f") SELECT * FROM ranked WHERE rn = 1"
         )
+        _t_sql = time.perf_counter()
         df = self._duck._fetchdf(sql, params)
+        t_sql = time.perf_counter() - _t_sql
         Log.debug(f"_find_record({type_name}): SQL returned {len(df)} records, version_id={version_id}")
 
         # Collapse provenance-only variants when using version_id="latest".
         # Records differing only in __upstream, __output_num, or __lineage_fixed_rids
         # are temporal updates to the same pipeline step, not distinct variants.
+        t_collapse = 0.0
+        rows_before_collapse = len(df)
         if version_id == "latest" and len(df) > 0:
+            _t_collapse = time.perf_counter()
             from collections import defaultdict
             groups = defaultdict(list)
             # Optimized: use itertuples() instead of iterrows() (10x faster)
@@ -1489,10 +1492,13 @@ class DatabaseManager:
                 Log.debug(f"_find_record: collapsed {collapsed_count} provenance-only variant(s)")
             # Apply smart sorting by schema keys (numeric or alphabetic per column)
             df = self._sort_by_schema_keys(df.loc[keep_indices])
+            t_collapse = time.perf_counter() - _t_collapse
 
         # Filter by version keys via Python-side JSON parsing (lists → in)
         # Optimized: parse JSON once per row instead of once per key per row
+        t_vk_filter = 0.0
         if version_keys and len(df) > 0:
+            _t_vk = time.perf_counter()
             # Parse all version_keys JSON once (vectorized)
             df['_vk_parsed'] = df["version_keys"].apply(
                 lambda vk: json.loads(vk) if vk is not None and isinstance(vk, str) else {}
@@ -1505,19 +1511,17 @@ class DatabaseManager:
                 df = df[mask]
             # Clean up temporary column
             df = df.drop(columns=['_vk_parsed'])
+            t_vk_filter = time.perf_counter() - _t_vk
 
         Log.debug(f"_find_record({type_name}): {len(df)} record(s) matched (before branch_params filter)")
 
         # Filter by branch_params_filter via Python-side matching.
-        # Keys are checked against version_keys first (direct saves store
-        # non-schema kwargs there), then fall back to branch_params suffix
-        # matching (for_each saves store pipeline params there).
-        # Skip keys already filtered in SQL for performance.
+        # Checks version_keys first (direct saves store non-schema kwargs there),
+        # then falls back to branch_params suffix matching (for_each pipeline params).
+        t_bp_filter = 0.0
         if branch_params_filter and len(df) > 0:
+            _t_bp = time.perf_counter()
             for key, value in branch_params_filter.items():
-                # Skip if already filtered in SQL
-                if sql_branch_params_filter and key in sql_branch_params_filter:
-                    continue
                 def _match_row(row, k=key, v=value):
                     bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
                     # Check branch_params ambiguity BEFORE version_keys shortcut:
@@ -1535,9 +1539,22 @@ class DatabaseManager:
                         return vk[k] == v
                     return _match_branch_param(bp, k, v)
                 df = df[df.apply(_match_row, axis=1)]
+            t_bp_filter = time.perf_counter() - _t_bp
 
         # Apply smart sorting by schema keys before returning
-        return self._sort_by_schema_keys(df)
+        _t_sort = time.perf_counter()
+        result = self._sort_by_schema_keys(df)
+        t_sort = time.perf_counter() - _t_sort
+
+        total = t_sql + t_collapse + t_vk_filter + t_bp_filter + t_sort
+        Log.info(
+            f"[timing] _find_record({type_name}, version_id={version_id!r}): "
+            f"total={total:.3f}s, sql={t_sql:.3f}s ({rows_before_collapse} rows), "
+            f"collapse={t_collapse:.3f}s, vk_filter={t_vk_filter:.3f}s, "
+            f"bp_filter={t_bp_filter:.3f}s, sort={t_sort:.3f}s, "
+            f"returned={len(result)} rows"
+        )
+        return result
 
     def _reconstruct_metadata_from_row(self, row: pd.Series) -> tuple[dict, dict]:
         """
@@ -2184,6 +2201,464 @@ class DatabaseManager:
         Log.info(f"load({type_name}): found record_id={str(rid)[:12]}")
         return self._load_by_record_row(variable_class, row, loc=loc, iloc=iloc)
 
+    # -------------------------------------------------------------------------
+    # Bulk DataFrame loading engine
+    # -------------------------------------------------------------------------
+
+    def _load_as_df_via_iterator(
+        self,
+        variable_class: Type[BaseVariable],
+        metadata: dict,
+        *,
+        layout: str,
+        include_rid: bool,
+        include_bp: bool,
+        stringify_schema: bool,
+        version_id: str,
+        where,
+        branch_params_filter: dict | None,
+    ) -> pd.DataFrame:
+        """Slow fallback: load via instance iterator, then assemble DataFrame.
+
+        Mirrors the output shape of the fast path but uses ``db.load_all()`` so
+        it is always correct regardless of dtype or subclass customisation.
+        """
+        schema_keys_set = set(self.dataset_schema_keys)
+        view_name = (
+            variable_class.view_name()
+            if hasattr(variable_class, "view_name")
+            else variable_class.__name__
+        )
+
+        loaded = list(
+            self.load_all(
+                variable_class, metadata,
+                version_id=version_id, where=where,
+                branch_params_filter=branch_params_filter,
+            )
+        )
+
+        if not loaded:
+            return pd.DataFrame()
+
+        def _process_meta(var, *, spread: bool) -> dict:
+            meta = dict(var.metadata) if var.metadata else {}
+            if spread:
+                # Drop __* keys and const-param keys (same as _stringify_meta).
+                const_val = meta.get("__constants", {})
+                if isinstance(const_val, str):
+                    try:
+                        const_val = json.loads(const_val)
+                    except Exception:
+                        const_val = {}
+                const_keys = set(const_val.keys()) if const_val else set()
+                result = {}
+                for k, v in meta.items():
+                    if k.startswith("__") or k in const_keys:
+                        continue
+                    result[k] = str(v) if (k in schema_keys_set and stringify_schema and v is not None) else v
+                return result
+            else:
+                # Packed: include all metadata (current BaseVariable.load_all behaviour).
+                return meta
+
+        is_spread = (layout == "spread")
+        first = loaded[0]
+
+        if hasattr(first, "data") and isinstance(first.data, pd.DataFrame):
+            # DataFrame-mode variable
+            if layout == "spread":
+                all_data: list = []
+                all_meta_rows: list = []
+                for var in loaded:
+                    data_df = var.data
+                    meta = _process_meta(var, spread=True)
+                    if include_rid:
+                        meta["__record_id"] = var.record_id
+                    if include_bp:
+                        meta["__branch_params"] = json.dumps(var.branch_params or {})
+                    nr = len(data_df)
+                    for _ in range(nr):
+                        all_meta_rows.append(meta)
+                    all_data.append(data_df.reset_index(drop=True))
+                if not all_meta_rows:
+                    return pd.DataFrame()
+                combined_meta = pd.DataFrame(all_meta_rows)
+                combined_data = pd.concat(all_data, ignore_index=True)
+                return pd.concat(
+                    [combined_meta.reset_index(drop=True),
+                     combined_data.reset_index(drop=True)],
+                    axis=1,
+                )
+            else:  # packed
+                rows = []
+                for var in loaded:
+                    row = _process_meta(var, spread=False)
+                    row["data"] = var.data
+                    if include_rid:
+                        row["__record_id"] = var.record_id
+                    if include_bp:
+                        row["__branch_params"] = json.dumps(var.branch_params or {})
+                    rows.append(row)
+                return pd.DataFrame(rows)
+        else:
+            # Scalar / array / dict mode
+            col_name = "data" if layout == "packed" else view_name
+            rows = []
+            for var in loaded:
+                row = _process_meta(var, spread=is_spread)
+                row[col_name] = var.data if hasattr(var, "data") else var
+                if include_rid:
+                    row["__record_id"] = var.record_id if hasattr(var, "record_id") else None
+                if include_bp:
+                    row["__branch_params"] = json.dumps(
+                        var.branch_params if hasattr(var, "branch_params") else {}
+                    )
+                rows.append(row)
+            return pd.DataFrame(rows)
+
+    def _assemble_df_from_records_and_data(
+        self,
+        records: pd.DataFrame,
+        data_df: pd.DataFrame,
+        dtype_meta: dict,
+        variable_class: Type[BaseVariable],
+        *,
+        layout: str,
+        include_rid: bool,
+        include_bp: bool,
+        stringify_schema: bool,
+    ) -> pd.DataFrame:
+        """Assemble the output DataFrame from bulk-fetched records and data.
+
+        Fast path — no per-record Python loops, no BaseVariable construction.
+        Called only when all dispatch checks pass (native dtype, no subclass overrides).
+        """
+        mode = dtype_meta.get("mode", "single_column")
+        columns_meta = dtype_meta.get("columns", {})
+        data_cols = list(columns_meta.keys())
+        schema_keys = self.dataset_schema_keys
+        view_name = (
+            variable_class.view_name()
+            if hasattr(variable_class, "view_name")
+            else variable_class.__name__
+        )
+
+        # -- Apply vectorized type restoration to data columns --
+        for col, col_meta in columns_meta.items():
+            if col in data_df.columns:
+                data_df[col] = _storage_to_python_column(data_df[col], col_meta)
+
+        # -- Build metadata DataFrame --
+        meta_dict: dict = {}
+
+        # Always include record_id temporarily for joining; rename/drop at end.
+        meta_dict["__record_id"] = records["record_id"].values
+
+        # Schema columns
+        for key in schema_keys:
+            if key in records.columns:
+                col_series = records[key]
+                if stringify_schema:
+                    # Values come back as strings from DuckDB VARCHAR columns
+                    meta_dict[key] = col_series.values
+                else:
+                    meta_dict[key] = col_series.apply(
+                        lambda v: _from_schema_str(v)
+                        if v is not None and not (isinstance(v, float) and pd.isna(v))
+                        else None
+                    ).values
+
+        # Version keys: parse once per row, then expand into individual columns.
+        vk_series = records["version_keys"].apply(
+            lambda vk: json.loads(vk) if isinstance(vk, str) and vk else {}
+        )
+
+        # Collect which version-key column names to expose in the output.
+        all_vk_col_names: dict[str, list] = {}  # name -> [value_or_None per row]
+        const_keys_per_row: list[set] = []
+        for vk in vk_series:
+            ck_val = vk.get("__constants", {})
+            if isinstance(ck_val, str):
+                try:
+                    ck_val = json.loads(ck_val)
+                except Exception:
+                    ck_val = {}
+            const_keys = set(ck_val.keys()) if ck_val else set()
+            const_keys_per_row.append(const_keys)
+
+            for k in vk:
+                if layout == "spread":
+                    # Mirror _stringify_meta: drop __ keys and constant param names
+                    if not k.startswith("__") and k not in const_keys:
+                        if k not in all_vk_col_names:
+                            all_vk_col_names[k] = [None] * len(records)
+                else:
+                    # Packed: expose all version_keys (current BaseVariable behaviour)
+                    if k not in all_vk_col_names:
+                        all_vk_col_names[k] = [None] * len(records)
+
+        for i, (vk, ck) in enumerate(zip(vk_series, const_keys_per_row)):
+            for col_name in all_vk_col_names:
+                if layout == "spread":
+                    if not col_name.startswith("__") and col_name not in ck:
+                        all_vk_col_names[col_name][i] = vk.get(col_name)
+                else:
+                    all_vk_col_names[col_name][i] = vk.get(col_name)
+
+        meta_dict.update(all_vk_col_names)
+
+        # Branch params column
+        if include_bp:
+            meta_dict["__branch_params"] = records["branch_params"].fillna("{}").values
+
+        meta_df = pd.DataFrame(meta_dict)
+
+        # -- Assemble by storage mode --
+        if mode == "dataframe":
+            df_columns = dtype_meta.get("df_columns", data_cols)
+
+            if layout == "spread":
+                # LEFT JOIN meta to data on record_id — handles both 1-row and
+                # multi-row records.  For 1-row records (the DummyMixed hot path)
+                # this is a direct 1:1 merge with no groupby.
+                result = meta_df.merge(
+                    data_df,
+                    left_on="__record_id",
+                    right_on="record_id",
+                    how="left",
+                )
+                result = result.drop(columns=["record_id"], errors="ignore")
+                if not include_rid:
+                    result = result.drop(columns=["__record_id"], errors="ignore")
+                return result.reset_index(drop=True)
+            else:  # packed
+                # Group data by record_id and build a nested DataFrame per record.
+                grouped = data_df.groupby("record_id", sort=False)
+                packed_map: dict = {}
+                for rid, group in grouped:
+                    g = group.drop(columns=["record_id"], errors="ignore").reset_index(drop=True)
+                    cols_present = [c for c in df_columns if c in g.columns]
+                    packed_map[rid] = g[cols_present] if cols_present else g
+                meta_df["data"] = meta_df["__record_id"].map(packed_map)
+                if not include_rid:
+                    meta_df = meta_df.drop(columns=["__record_id"], errors="ignore")
+                return meta_df.reset_index(drop=True)
+
+        elif mode == "single_column":
+            # data_df: [record_id, value_col] — one row per record.
+            col_name = data_cols[0] if data_cols else None
+            if col_name is None:
+                if not include_rid:
+                    meta_df = meta_df.drop(columns=["__record_id"], errors="ignore")
+                return meta_df.reset_index(drop=True)
+
+            out_col = "data" if layout == "packed" else view_name
+            data_renamed = data_df[["record_id", col_name]].rename(
+                columns={"record_id": "__record_id", col_name: out_col}
+            )
+            result = meta_df.merge(data_renamed, on="__record_id", how="left")
+            if not include_rid:
+                result = result.drop(columns=["__record_id"], errors="ignore")
+            return result.reset_index(drop=True)
+
+        elif mode == "multi_column":
+            # data_df: [record_id, col1, col2, …] — one row per record.
+            if layout == "packed":
+                data_only = data_df.drop(columns=["record_id"], errors="ignore")
+                data_dicts = data_only.to_dict("records")
+                data_map = dict(zip(data_df["record_id"], data_dicts))
+                meta_df["data"] = meta_df["__record_id"].map(data_map)
+                if not include_rid:
+                    meta_df = meta_df.drop(columns=["__record_id"], errors="ignore")
+                return meta_df.reset_index(drop=True)
+            else:  # spread
+                data_renamed = data_df.rename(columns={"record_id": "__record_id"})
+                result = meta_df.merge(data_renamed, on="__record_id", how="left")
+                if not include_rid:
+                    result = result.drop(columns=["__record_id"], errors="ignore")
+                return result.reset_index(drop=True)
+
+        else:
+            # Unknown mode — return just metadata.
+            if not include_rid:
+                meta_df = meta_df.drop(columns=["__record_id"], errors="ignore")
+            return meta_df.reset_index(drop=True)
+
+    def load_all_as_df(
+        self,
+        variable_class: Type[BaseVariable],
+        metadata: dict | None = None,
+        *,
+        layout: str = "packed",
+        include_rid: bool = False,
+        include_bp: bool = False,
+        stringify_schema: bool = False,
+        version_id: str = "latest",
+        where=None,
+        branch_params_filter: dict | None = None,
+    ) -> pd.DataFrame:
+        """Bulk load all records of a variable type into a DataFrame.
+
+        Shared engine for two callers:
+
+        * ``BaseVariable.load_all(as_df=True)`` — ``layout="packed"``, one row per
+          record, data stored in a ``"data"`` column.
+        * ``foreach._convert_inputs`` — ``layout="spread"``, DataFrame-mode variables
+          produce one output row per inner-table row; data columns are spread across
+          top-level columns rather than nested.
+
+        Fast path
+        ---------
+        Fetches records and data in bulk SQL queries and assembles the output with
+        vectorised pandas operations.  Applies when all of the following hold:
+
+        * ``variable_class.__init__`` is not overridden (standard construction).
+        * ``variable_class`` does not override ``from_db`` (no custom deserialisation).
+        * ``dtype_meta`` does not have ``"custom": True`` (native storage only).
+        * ``dtype_meta`` does not have ``"nested": True`` (flat multi-column only).
+
+        Fall-back
+        ---------
+        Any violated condition routes to ``_load_as_df_via_iterator``, which uses the
+        ``db.load_all()`` iterator and assembles row-by-row.  Output shape is identical.
+
+        Parameters
+        ----------
+        variable_class :
+            BaseVariable subclass to load.
+        metadata :
+            Optional flat metadata dict for filtering (default: load all records).
+        layout :
+            ``"packed"`` — one output row per record; ``"spread"`` — data columns
+            spread, multiple rows per record for DataFrame-mode variables.
+        include_rid :
+            Add ``"__record_id"`` column to the output.
+        include_bp :
+            Add ``"__branch_params"`` (JSON string) column to the output.
+        stringify_schema :
+            Keep schema key values as strings (foreach uses this; notebook users
+            generally do not).
+        version_id :
+            ``"latest"`` or ``"all"`` — passed to ``_find_record``.
+        where :
+            Optional Filter for restricting records.
+        branch_params_filter :
+            Optional branch_params key/value filter dict.
+
+        Returns
+        -------
+        pd.DataFrame
+            Empty DataFrame when no matching records exist.
+        """
+        metadata = metadata or {}
+        type_name = variable_class.__name__
+        table_name = type_name + "_data"
+
+        # Look up dtype metadata — needed for dispatch and deserialisation.
+        dtype_rows = self._duck._fetchall(
+            "SELECT dtype FROM _variables WHERE variable_name = ?",
+            [type_name],
+        )
+        if not dtype_rows:
+            return pd.DataFrame()
+        dtype_meta = json.loads(dtype_rows[0][0])
+
+        # -- Dispatch: fast path or iterator fallback? --
+        # Class-introspection bailouts
+        if variable_class.__init__ is not BaseVariable.__init__:
+            return self._load_as_df_via_iterator(
+                variable_class, metadata, layout=layout, include_rid=include_rid,
+                include_bp=include_bp, stringify_schema=stringify_schema,
+                version_id=version_id, where=where,
+                branch_params_filter=branch_params_filter,
+            )
+        if self._has_custom_serialization(variable_class):
+            return self._load_as_df_via_iterator(
+                variable_class, metadata, layout=layout, include_rid=include_rid,
+                include_bp=include_bp, stringify_schema=stringify_schema,
+                version_id=version_id, where=where,
+                branch_params_filter=branch_params_filter,
+            )
+        # Storage-mode bailouts
+        if dtype_meta.get("custom"):
+            return self._load_as_df_via_iterator(
+                variable_class, metadata, layout=layout, include_rid=include_rid,
+                include_bp=include_bp, stringify_schema=stringify_schema,
+                version_id=version_id, where=where,
+                branch_params_filter=branch_params_filter,
+            )
+        if dtype_meta.get("nested"):
+            return self._load_as_df_via_iterator(
+                variable_class, metadata, layout=layout, include_rid=include_rid,
+                include_bp=include_bp, stringify_schema=stringify_schema,
+                version_id=version_id, where=where,
+                branch_params_filter=branch_params_filter,
+            )
+
+        # -- Fast path --
+        t0 = time.perf_counter()
+        if where is not None:
+            try:
+                records = self._load_with_where(
+                    variable_class, metadata, table_name, where,
+                    version_id=version_id,
+                )
+            except Exception:
+                return pd.DataFrame()
+        else:
+            nested_metadata = self._split_metadata(metadata)
+            records = self._find_record(
+                type_name, nested_metadata=nested_metadata,
+                version_id=version_id,
+                branch_params_filter=branch_params_filter,
+            )
+
+        if len(records) == 0:
+            return pd.DataFrame()
+
+        # Bulk-fetch data rows in chunks to avoid very long IN clauses.
+        all_record_ids = records["record_id"].tolist()
+        data_cols = list(dtype_meta.get("columns", {}).keys())
+        if not data_cols:
+            return pd.DataFrame()
+
+        data_select = ", ".join(f'"{c}"' for c in data_cols)
+        chunk_size = 500
+        chunks: list = []
+        t_sql = 0.0
+        for start in range(0, len(all_record_ids), chunk_size):
+            chunk = all_record_ids[start : start + chunk_size]
+            placeholders = ", ".join(["?"] * len(chunk))
+            sql = (
+                f'SELECT record_id, {data_select} FROM "{table_name}" '
+                f"WHERE record_id IN ({placeholders})"
+            )
+            _t = time.perf_counter()
+            chunk_df = self._duck._fetchdf(sql, chunk)
+            t_sql += time.perf_counter() - _t
+            if not chunk_df.empty:
+                chunks.append(chunk_df)
+
+        if not chunks:
+            return pd.DataFrame()
+
+        data_df = (
+            pd.concat(chunks, ignore_index=True) if len(chunks) > 1 else chunks[0].copy()
+        )
+
+        result = self._assemble_df_from_records_and_data(
+            records, data_df, dtype_meta, variable_class,
+            layout=layout, include_rid=include_rid, include_bp=include_bp,
+            stringify_schema=stringify_schema,
+        )
+        t_total = time.perf_counter() - t0
+        Log.info(
+            f"[timing] load_all_as_df({type_name}): {len(records)} records, "
+            f"layout={layout!r}, sql={t_sql:.3f}s, total={t_total:.3f}s"
+        )
+        return result
+
     def load_all(
         self,
         variable_class: Type[BaseVariable],
@@ -2212,8 +2687,10 @@ class DatabaseManager:
         type_name = variable_class.__name__
         user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
         Log.info(f"load_all({type_name}): metadata={user_summary}")
+        _t_load_all_total = time.perf_counter()
         table_name = self._ensure_registered(variable_class, auto_register=True)
 
+        _t_find = time.perf_counter()
         if where is not None:
             # where= specified: first try version_keys filtering (__where)
             try:
@@ -2239,12 +2716,14 @@ class DatabaseManager:
             if len(records) == 0:
                 Log.info(f"load_all({type_name}): no records found")
                 return
+        t_find = time.perf_counter() - _t_find
 
         Log.info(f"load_all({type_name}): found {len(records)} record(s)")
 
         # --- Bulk loading path ---
 
         # 1. Get dtype from _variables (one row per variable)
+        _t_dtype = time.perf_counter()
         dtype_rows = self._duck._fetchall(
             "SELECT dtype FROM _variables WHERE variable_name = ?",
             [variable_class.__name__],
@@ -2253,6 +2732,7 @@ class DatabaseManager:
             return
         dtype_meta = json.loads(dtype_rows[0][0])
         is_custom = dtype_meta.get("custom", False)
+        t_dtype = time.perf_counter() - _t_dtype
 
         # 2. Collect all unique record_ids to fetch
         all_record_ids = records["record_id"].tolist()
@@ -2263,6 +2743,9 @@ class DatabaseManager:
         data_lookup: dict[str, Any] = {}  # record_id -> deserialized value
 
         chunk_size = 500
+        t_chunk_sql = 0.0
+        t_chunk_deserialize = 0.0
+        _t_chunks_total = time.perf_counter()
         for start in range(0, len(all_record_ids), chunk_size):
             chunk = all_record_ids[start:start + chunk_size]
             placeholders = ", ".join(["?"] * len(chunk))
@@ -2270,9 +2753,12 @@ class DatabaseManager:
             if is_custom:
                 # Custom (columnar) path: fetch all rows for this chunk
                 sql = f'SELECT * FROM "{table_name}" WHERE record_id IN ({placeholders})'
+                _t = time.perf_counter()
                 chunk_df = self._duck._fetchdf(sql, chunk)
+                t_chunk_sql += time.perf_counter() - _t
 
                 if len(chunk_df) > 0:
+                    _t = time.perf_counter()
                     grouped = chunk_df.groupby("record_id", sort=False)
                     for rid, sub_df in grouped:
                         sub_df = sub_df.drop(
@@ -2281,6 +2767,7 @@ class DatabaseManager:
                         data_lookup[rid] = self._deserialize_custom_subdf(
                             variable_class, sub_df, dtype_meta,
                         )
+                    t_chunk_deserialize += time.perf_counter() - _t
             else:
                 # Native path
                 data_cols = list(dtype_meta.get("columns", {}).keys())
@@ -2289,9 +2776,12 @@ class DatabaseManager:
                     f'SELECT record_id, {data_select} FROM "{table_name}" '
                     f'WHERE record_id IN ({placeholders})'
                 )
+                _t = time.perf_counter()
                 chunk_df = self._duck._fetchdf(sql, chunk)
+                t_chunk_sql += time.perf_counter() - _t
 
                 if len(chunk_df) > 0:
+                    _t = time.perf_counter()
                     mode = dtype_meta.get("mode", "single_column")
                     columns_meta = dtype_meta.get("columns", {})
 
@@ -2331,13 +2821,31 @@ class DatabaseManager:
                             col_names = list(columns_meta.keys())
                             for i, rid in enumerate(chunk_df["record_id"].tolist()):
                                 data_lookup[rid] = {c: restored[c].iloc[i] for c in col_names}
+                    t_chunk_deserialize += time.perf_counter() - _t
 
-        # 4. Construct instances using itertuples + inline metadata
+        t_chunks_total = time.perf_counter() - _t_chunks_total
+        n_chunks = (len(all_record_ids) + chunk_size - 1) // chunk_size
+        _mode_str = 'custom' if is_custom else dtype_meta.get('mode', 'single_column')
+        Log.info(
+            f"[timing] load_all({type_name}): pre-yield setup: "
+            f"find={t_find:.3f}s, dtype_lookup={t_dtype:.3f}s, "
+            f"chunks_total={t_chunks_total:.3f}s "
+            f"(sql={t_chunk_sql:.3f}s, deserialize={t_chunk_deserialize:.3f}s, "
+            f"n_chunks={n_chunks}, mode={_mode_str})"
+        )
+
+        # 4. Construct instances using itertuples + inline metadata.
+        # This is a generator: per-yield body cost is measured cumulatively
+        # and emitted in a TOTAL summary after the last yield.
         schema_keys = self.dataset_schema_keys
+        n_yielded = 0
+        t_yield_body = 0.0
         for row in records.itertuples(index=False):
+            _t_body = time.perf_counter()
             record_id = row.record_id
 
             if record_id not in data_lookup:
+                t_yield_body += time.perf_counter() - _t_body
                 continue
 
             data_value = data_lookup[record_id]
@@ -2363,7 +2871,18 @@ class DatabaseManager:
             bp_raw = getattr(row, "branch_params", None)
             instance.branch_params = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
 
+            n_yielded += 1
+            t_yield_body += time.perf_counter() - _t_body
             yield instance
+
+        t_total = time.perf_counter() - _t_load_all_total
+        _caller_overhead = t_total - t_find - t_chunks_total - t_yield_body - t_dtype
+        Log.info(
+            f"[timing] load_all({type_name}): TOTAL={t_total:.3f}s "
+            f"(find={t_find:.3f}s, chunks={t_chunks_total:.3f}s, "
+            f"yield_body={t_yield_body:.3f}s for {n_yielded} records, "
+            f"caller_overhead~={_caller_overhead:.3f}s)"
+        )
 
     def list_versions(
         self,

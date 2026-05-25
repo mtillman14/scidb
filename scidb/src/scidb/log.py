@@ -20,8 +20,16 @@ configure_database()). Each log call opens, appends, and closes the file
 so every line is flushed to disk immediately.
 """
 
+import logging as _py_logging
 import threading
 from datetime import datetime
+
+_PY_LEVEL_MAP = {
+    "DEBUG": _py_logging.DEBUG,
+    "INFO": _py_logging.INFO,
+    "WARN": _py_logging.WARNING,
+    "ERROR": _py_logging.ERROR,
+}
 
 
 class Log:
@@ -92,6 +100,10 @@ class Log:
     @classmethod
     def _emit(cls, level_str: str, msg: str) -> None:
         """Format and write a log message with timestamp to the log file."""
+        # Always forward to Python's logging so pytest caplog can capture messages.
+        _py_logging.getLogger("scidb").log(
+            _PY_LEVEL_MAP.get(level_str, _py_logging.INFO), msg
+        )
         if cls._path is None:
             return
         now = datetime.now()

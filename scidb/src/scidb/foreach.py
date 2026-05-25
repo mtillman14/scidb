@@ -565,8 +565,8 @@ def _for_each_prepare(
         Log.info(f"[scidb] schema keys propagated: {db.dataset_schema_keys}")
 
     # Step 5: Stringify metadata_iterables values for schema keys.
-    # _load_var_type_all stringifies schema columns in loaded DataFrames (DB returns
-    # typed values like np.int64); combo metadata must match to filter correctly.
+    # load_all_as_df (spread layout) stringifies schema columns in loaded DataFrames
+    # (DB returns typed values like np.int64); combo metadata must match to filter correctly.
     Log.info("[scidb] Step 5: stringifying metadata iterable values for schema keys")
     _resolved_db_for_str = db
     if _resolved_db_for_str is None:
@@ -1331,7 +1331,7 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
             if "__branch_params" in inner_loaded.columns:
                 inner_loaded = inner_loaded.drop(columns=["__branch_params"])
         # Stringify fixed_metadata schema keys to match the stringified
-        # DataFrame columns produced by _load_var_type_all.
+        # DataFrame columns produced by load_all_as_df (spread layout).
         fixed_meta = dict(var_spec.fixed_metadata)
         _sk = _get_schema_keys(db)
         if _sk:
@@ -1345,7 +1345,7 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
     # ColumnSelection: load inner var_type if possible, else per-combo
     if isinstance(var_spec, ColumnSelection):
         if hasattr(var_spec.var_type, 'load_all'):
-            loaded_df = _load_var_type_all(var_spec.var_type, db, where)
+            loaded_df = _load_var_type_as_spread(var_spec.var_type, db, where)
             return _scifor.ColumnSelection(loaded_df, var_spec.columns)
         return PerComboLoader(var_spec)
 
@@ -1356,7 +1356,7 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
     # Variable type (class with .load()): bulk load or per-combo
     if isinstance(var_spec, type) or hasattr(var_spec, 'load'):
         if hasattr(var_spec, 'load_all'):
-            return _load_var_type_all(var_spec, db, where)
+            return _load_var_type_as_spread(var_spec, db, where)
         return PerComboLoader(var_spec)
 
     # Unknown — return as-is
@@ -1431,50 +1431,71 @@ def _get_loadable_class_from_spec(spec: Any) -> Any:
     return None
 
 
-def _load_var_type_all(
+def _load_var_type_as_spread(
     var_type: Any,
     db: Any | None,
     where: Any | None,
 ) -> "pd.DataFrame":
-    """Bulk load all records for a variable type into a DataFrame with metadata columns."""
+    """Bulk load all records for a variable type into a spread DataFrame.
+
+    Routes to ``db.load_all_as_df`` (the fast bulk engine) when a database is
+    available.  Falls back to the iterator-based slow path for types that the
+    fast engine cannot handle (custom serialisation, subclass overrides, etc.).
+
+    The returned DataFrame has ``__record_id`` and ``__branch_params`` columns
+    plus one column per schema/version key and per data column (spread layout).
+    """
     import pandas as pd
 
+    _vt_name = getattr(var_type, '__name__', type(var_type).__name__)
+    _t0 = time.perf_counter()
+
+    # Resolve the database instance.
+    resolved_db = db
+    if resolved_db is None:
+        try:
+            from scidb.database import get_database
+            resolved_db = get_database()
+        except Exception:
+            pass
+
+    if resolved_db is not None and hasattr(resolved_db, 'load_all_as_df'):
+        # Fast path: bulk engine with spread layout.
+        where_kw = {"where": where} if where is not None else {}
+        result = resolved_db.load_all_as_df(
+            var_type,
+            layout="spread",
+            include_rid=True,
+            include_bp=True,
+            stringify_schema=True,
+            version_id="latest",
+            **where_kw,
+        )
+        Log.info(
+            f"[timing] _load_var_type_as_spread({_vt_name}): "
+            f"{len(result)} rows x {len(result.columns) if not result.empty else 0} cols "
+            f"in {time.perf_counter() - _t0:.3f}s (fast path)"
+        )
+        return result
+
+    # Slow fallback: use iterator (no database or database lacks load_all_as_df).
     db_kwargs = {"db": db} if db is not None else {}
     where_kwargs = {"where": where} if where is not None else {}
 
-    # Use load_all (not load) to avoid AmbiguousVersionError when multiple
-    # variants exist at the same schema location — we want ALL variants here.
     loaded = list(var_type.load_all(version_id="latest", **db_kwargs, **where_kwargs))
 
     if not loaded:
         return pd.DataFrame()
 
-    # Determine schema keys to stringify — scifor compares schema cols as strings
-    # (metadata_iterables values come from the user as strings, e.g. session="1"),
-    # but the database may return typed values (e.g. session=np.int64(1)).
     _schema_keys: set = set()
-    _resolved_db = db
-    if _resolved_db is None:
-        try:
-            from scidb.database import get_database
-            _resolved_db = get_database()
-        except Exception:
-            pass
-    if _resolved_db is not None and hasattr(_resolved_db, 'dataset_schema_keys'):
-        _schema_keys = set(_resolved_db.dataset_schema_keys)
+    if resolved_db is not None and hasattr(resolved_db, 'dataset_schema_keys'):
+        _schema_keys = set(resolved_db.dataset_schema_keys)
 
     def _stringify_meta(meta: dict) -> dict:
-        """Convert schema key values to strings and drop __ version keys.
-
-        Also drops keys that came from constants (stored in __constants) so
-        that constants stored in version_keys don't pollute the input DataFrame
-        and confuse scifor's data-column detection.
-        """
         const_keys: set = set()
         constants_val = meta.get("__constants")
         if constants_val:
             try:
-                # Handle both dict (new format) and JSON string (old format)
                 if isinstance(constants_val, dict):
                     const_keys = set(constants_val.keys())
                 else:
@@ -1485,13 +1506,10 @@ def _load_var_type_all(
                 for k, v in meta.items()
                 if not k.startswith("__") and k not in const_keys}
 
-    # Check if data is DataFrames
     first = loaded[0]
     all_have_data = all(hasattr(v, 'data') for v in loaded)
 
     if all_have_data and isinstance(first.data, pd.DataFrame):
-        # DataFrame data: build table with metadata cols + data cols
-        # Optimized: build all data at once instead of 1 DF per record (10-100x faster)
         all_data = []
         all_meta_rows = []
         for var in loaded:
@@ -1500,20 +1518,18 @@ def _load_var_type_all(
             meta["__record_id"] = getattr(var, 'record_id', None)
             meta["__branch_params"] = json.dumps(getattr(var, 'branch_params', None) or {})
             nr = len(data_df)
-            # Instead of creating a DataFrame, just replicate the dict
             for _ in range(nr):
                 all_meta_rows.append(meta)
             all_data.append(data_df.reset_index(drop=True))
 
-        # Build metadata and data DataFrames in one shot
         if all_meta_rows:
             combined_meta_df = pd.DataFrame(all_meta_rows)
             combined_data_df = pd.concat(all_data, ignore_index=True)
-            return pd.concat([combined_meta_df.reset_index(drop=True),
-                            combined_data_df.reset_index(drop=True)], axis=1)
-        return pd.DataFrame()
+            result = pd.concat([combined_meta_df.reset_index(drop=True),
+                                combined_data_df.reset_index(drop=True)], axis=1)
+        else:
+            result = pd.DataFrame()
     elif all_have_data:
-        # Scalar/other data: build table with metadata cols + view_name/class_name col
         view_name = var_type.view_name() if hasattr(var_type, 'view_name') else getattr(var_type, '__name__', type(var_type).__name__)
         rows = []
         for var in loaded:
@@ -1522,14 +1538,19 @@ def _load_var_type_all(
             row["__record_id"] = getattr(var, 'record_id', None)
             row["__branch_params"] = json.dumps(getattr(var, 'branch_params', None) or {})
             rows.append(row)
-        return pd.DataFrame(rows)
+        result = pd.DataFrame(rows)
     else:
-        # Raw results without .data attribute — just wrap
-        rows = []
         var_name = getattr(var_type, '__name__', type(var_type).__name__)
+        rows = []
         for var in loaded:
             rows.append({var_name: var, "__record_id": getattr(var, 'record_id', None), "__branch_params": "{}"})
-        return pd.DataFrame(rows)
+        result = pd.DataFrame(rows)
+
+    Log.info(
+        f"[timing] _load_var_type_as_spread({_vt_name}): "
+        f"{len(result)} rows (slow fallback) in {time.perf_counter() - _t0:.3f}s"
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

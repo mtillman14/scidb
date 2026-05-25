@@ -286,6 +286,29 @@ def _storage_to_python(value: Any, meta: dict) -> Any:
     return value
 
 
+def _storage_to_python_column(series: "pd.Series", meta: dict) -> "pd.Series":
+    """Vectorized column-level dispatch of _storage_to_python.
+
+    Applied once per column in bulk loads instead of once per cell (N records ×
+    M columns calls vs N×M calls for the per-element path).  Pass-through types
+    (float, int, bool, str) are returned unchanged — DuckDB already emits the
+    right pandas dtype for those.  Complex types use pd.Series.apply, which is
+    still faster than an explicit Python for-loop.
+    """
+    ptype = meta.get("python_type", "")
+
+    # Scalar types: DuckDB already returns the right pandas dtype — no-op.
+    if ptype in ("float", "int", "bool", "str", ""):
+        return series
+
+    # JSON blob types: decode string once per cell, but at column granularity.
+    if ptype in ("dict", "json_fallback"):
+        return series.apply(lambda v: json.loads(v) if isinstance(v, str) else v)
+
+    # All remaining types (ndarray, ndarray_json, list, …): delegate per-element.
+    return series.apply(lambda v: _storage_to_python(v, meta))
+
+
 def _flatten_dict(d, _prefix=()):
     """Flatten a nested dict into {dot.separated.key: leaf_value} pairs.
     Returns (flat_dict, path_map) where path_map maps each dot-key
