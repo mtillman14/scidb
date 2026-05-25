@@ -288,6 +288,7 @@ def for_each(
         _ordered_combos = state.full_combos
         _call_idx = [0]
         _orig_fn = fn
+        _loaded_inputs_ref = state.loaded_inputs
 
         # Get function parameters to check which metadata keys it accepts.
         # For scihist functions, the wrapper stores the original function's
@@ -321,7 +322,9 @@ def for_each(
 
             # Reconstruct BaseVariable objects for LineageFcn
             if getattr(_orig_fn, '__lineage_wrapper__', False):
-                resolved = _reconstruct_variable_inputs(resolved, current_combo, inputs)
+                resolved = _reconstruct_variable_inputs(
+                    resolved, current_combo, inputs, _loaded_inputs_ref
+                )
 
             if _inject_combo_metadata and _fn_params is not None:
                 # Only inject metadata keys that the function signature accepts
@@ -1047,6 +1050,7 @@ def _reconstruct_variable_inputs(
     resolved: dict,
     current_combo: dict,
     inputs: dict,
+    loaded_inputs: "dict | None" = None,
 ) -> dict:
     """Reconstruct BaseVariable objects for variable inputs.
 
@@ -1057,6 +1061,10 @@ def _reconstruct_variable_inputs(
         resolved: Dict of param_name → raw_data from scifor
         current_combo: Combo dict with __rid_* → record_id + schema keys
         inputs: Original inputs dict with param_name → variable_class or Fixed()
+        loaded_inputs: The spread DataFrames from _for_each_prepare (state.loaded_inputs).
+            Used to restore dict structure for multi-column (dict-of-arrays) variables:
+            scifor's _extract_data strips the dict wrapper when there is exactly one data
+            column, so we re-read the row from the spread DataFrame directly.
 
     Returns:
         Dict with BaseVariable objects for variable inputs, raw data for others
@@ -1099,6 +1107,38 @@ def _reconstruct_variable_inputs(
             else:
                 # Fallback: pass through as-is
                 data_value = raw_value
+        elif loaded_inputs is not None and not isinstance(raw_value, dict):
+            # Check whether the original variable stored a dict (multi-column mode).
+            # scifor's _extract_data strips the dict wrapper when there is a single
+            # data column (e.g. {"vals": array} → just array).  Detect this by
+            # comparing the spread DataFrame's data column name(s) against the
+            # variable's view_name: single-column variables rename their column to
+            # view_name, so if any data column differs from view_name the original
+            # data was a dict.
+            df_input = loaded_inputs.get(param_name)
+            if isinstance(df_input, pd.DataFrame):
+                rid_col = f"__rid_{param_name}"
+                # Columns that are NOT data: internal __ columns + schema/combo keys
+                schema_keys_in_combo = {k for k in current_combo if not k.startswith("__")}
+                data_cols = [
+                    c for c in df_input.columns
+                    if not c.startswith("__") and c not in schema_keys_in_combo
+                ]
+                view_name = (
+                    variable_class.view_name()
+                    if hasattr(variable_class, "view_name")
+                    else variable_class.__name__
+                )
+                # Multi-column dict: data columns differ from the view_name
+                is_dict_type = len(data_cols) > 1 or (
+                    len(data_cols) == 1 and data_cols[0] != view_name
+                )
+                if is_dict_type and rid_col in df_input.columns:
+                    rid_val = str(current_combo[rid_col])
+                    mask = df_input[rid_col].astype(str) == rid_val
+                    if mask.any():
+                        row = df_input[mask].iloc[0]
+                        data_value = {col: row[col] for col in data_cols}
 
         # Reconstruct BaseVariable
         var = variable_class(data_value)
@@ -1927,12 +1967,13 @@ def _save_results(
                                           items,
                                           profile=False)
             else:
-                # Fallback: use class method if db not available
                 from .database import get_database
                 _db = get_database()
-                record_ids = _db.save_batch(type(output_obj) if not isinstance(output_obj, type) else output_obj,
-                                           items,
-                                           profile=False)
+                record_ids = _db.save_batch(
+                    type(output_obj) if not isinstance(output_obj, type) else output_obj,
+                    items,
+                    profile=False,
+                )
 
             save_elapsed = time.perf_counter() - save_t0
             total_saved += len(items)

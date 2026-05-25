@@ -10,6 +10,32 @@ import pandas as pd
 from scidb import for_each, Fixed, ColumnSelection, Merge
 
 
+def _make_simple_mock_db():
+    """Minimal mock DB for tests that only need save_batch to work.
+
+    Uses empty dataset_schema_keys so schema values are not coerced to strings,
+    keeping assertions like ``meta["subject"] == 42`` valid.
+    """
+
+    class _SimpleMockDB:
+        dataset_schema_keys = []
+
+        def distinct_schema_values(self, key):
+            return []
+
+        def distinct_schema_combinations(self, keys):
+            return []
+
+        def save_batch(self, variable_class, data_items, profile=False):
+            ids = []
+            for data, meta in data_items:
+                variable_class.save(data, **meta)
+                ids.append(f"mock-id-{len(ids)}")
+            return ids
+
+    return _SimpleMockDB()
+
+
 class MockVariable:
     """Mock variable type for testing."""
 
@@ -110,6 +136,7 @@ class TestForEachBasic:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1],
         )
 
@@ -127,6 +154,7 @@ class TestForEachBasic:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1, 2],
             session=["A", "B"],
         )
@@ -144,6 +172,7 @@ class TestForEachBasic:
             process,
             inputs={"a": MockVariableA, "b": MockVariableB},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1],
         )
 
@@ -159,6 +188,7 @@ class TestForEachBasic:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockVariableA, MockVariableB],
+            db=_make_simple_mock_db(),
             subject=[1],
         )
 
@@ -283,6 +313,7 @@ class TestForEachErrorHandling:
             sometimes_fails,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1, 2, 3],
         )
 
@@ -303,6 +334,7 @@ class TestForEachOutput:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1],
         )
 
@@ -319,6 +351,7 @@ class TestForEachOutput:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[42],
             session=["XYZ"],
         )
@@ -344,6 +377,7 @@ class TestForEachWithConstants:
             process,
             inputs={"x": MockVariableA, "smoothing": 0.2},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1],
         )
 
@@ -360,6 +394,7 @@ class TestForEachWithConstants:
             process,
             inputs={"x": MockVariableA, "smoothing": 0.2},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1],
         )
 
@@ -381,6 +416,7 @@ class TestForEachWithConstants:
             process,
             inputs={"a": MockVariableA, "b": MockVariableB, "threshold": 10},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1, 2],
         )
 
@@ -407,6 +443,7 @@ class TestForEachWithConstants:
                 "method": "bandpass",
             },
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1],
         )
 
@@ -473,6 +510,7 @@ class TestForEachWithConstants:
                 "threshold": 5.0,
             },
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1],
             session=["A"],
         )
@@ -505,6 +543,13 @@ class TestForEachAllLevels:
                 from itertools import product as _product
                 lists = [self._values[k] for k in keys]
                 return [tuple(str(v) for v in combo) for combo in _product(*lists)]
+
+            def save_batch(self, variable_class, data_items, profile=False):
+                ids = []
+                for data, meta in data_items:
+                    variable_class.save(data, **meta)
+                    ids.append(f"mock-id-{len(ids)}")
+                return ids
 
         return MockDB(schema_values)
 
@@ -648,6 +693,13 @@ class TestForEachDistribute:
                 if schema_values and key in schema_values:
                     return schema_values[key]
                 return []
+
+            def save_batch(self, variable_class, data_items, profile=False):
+                ids = []
+                for data, meta in data_items:
+                    variable_class.save(data, **meta)
+                    ids.append(f"mock-id-{len(ids)}")
+                return ids
 
         return MockDB()
 
@@ -1035,6 +1087,27 @@ class TestForEachDistribute:
 class TestForEachConfigKeys:
     """Tests that for_each() config is captured in saved metadata as version keys."""
 
+    def _make_mock_db(self):
+        """Minimal mock DB: records saves, no real persistence needed."""
+
+        class MockDB:
+            dataset_schema_keys = []
+
+            def distinct_schema_values(self, key):
+                return []
+
+            def distinct_schema_combinations(self, keys):
+                return []
+
+            def save_batch(self, variable_class, data_items, profile=False):
+                ids = []
+                for data, meta in data_items:
+                    variable_class.save(data, **meta)
+                    ids.append(f"mock-id-{len(ids)}")
+                return ids
+
+        return MockDB()
+
     def test_fn_name_in_metadata(self):
         """__fn should be set to the function name in saved metadata."""
 
@@ -1045,6 +1118,7 @@ class TestForEachConfigKeys:
             my_process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=self._make_mock_db(),
             subject=[1],
         )
 
@@ -1061,6 +1135,7 @@ class TestForEachConfigKeys:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=self._make_mock_db(),
             subject=[1],
         )
 
@@ -1078,6 +1153,7 @@ class TestForEachConfigKeys:
             process,
             inputs={"x": MockVariableA, "smoothing": 0.2},
             outputs=[MockOutput],
+            db=self._make_mock_db(),
             subject=[1],
         )
 
@@ -1096,6 +1172,7 @@ class TestForEachConfigKeys:
             process,
             inputs={"baseline": Fixed(MockVariableA, session="BL"), "current": MockVariableB},
             outputs=[MockOutput],
+            db=self._make_mock_db(),
             subject=[1],
             session=["A"],
         )
@@ -1116,6 +1193,7 @@ class TestForEachConfigKeys:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=self._make_mock_db(),
             subject=[1],
         )
 
@@ -1131,11 +1209,12 @@ class TestForEachConfigKeys:
         def fn_b(x):
             return "b"
 
-        for_each(fn_a, inputs={"x": MockVariableA}, outputs=[MockOutput], subject=[1])
+        db = self._make_mock_db()
+        for_each(fn_a, inputs={"x": MockVariableA}, outputs=[MockOutput], db=db, subject=[1])
         meta_a = MockOutput.saved_data[0]["metadata"]["__fn"]
 
         MockOutput.reset()
-        for_each(fn_b, inputs={"x": MockVariableA}, outputs=[MockOutput], subject=[1])
+        for_each(fn_b, inputs={"x": MockVariableA}, outputs=[MockOutput], db=db, subject=[1])
         meta_b = MockOutput.saved_data[0]["metadata"]["__fn"]
 
         assert meta_a == "fn_a"
@@ -1152,6 +1231,7 @@ class TestForEachConfigKeys:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=self._make_mock_db(),
             subject=[42],
             trial=[7],
         )
@@ -1182,6 +1262,13 @@ class TestForEachSchemaFiltering:
                 if combo_key in self._combos:
                     return self._combos[combo_key]
                 return []
+
+            def save_batch(self, variable_class, data_items, profile=False):
+                ids = []
+                for data, meta in data_items:
+                    variable_class.save(data, **meta)
+                    ids.append(f"mock-id-{len(ids)}")
+                return ids
 
         return MockDB(schema_values, schema_combinations, schema_keys)
 
@@ -1697,6 +1784,7 @@ class TestForEachReturnValue:
             process,
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
+            db=_make_simple_mock_db(),
             subject=[1, 2],
         )
 
