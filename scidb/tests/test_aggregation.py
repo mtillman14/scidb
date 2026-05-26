@@ -257,3 +257,62 @@ class TestAggregationSave:
         assert result is not None
         assert len(result) == 1
         assert result["Aggregated"].iloc[0] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# 6. Aggregation drops all-null schema columns below the iterated level
+# ---------------------------------------------------------------------------
+
+class TestAggregationDropsEmptySchemaColumns:
+    """When a variable is stored at a higher schema level than the dataset's
+    full schema, lower-level schema columns come back all-NULL in the loaded
+    DataFrame.  In aggregation mode those un-iterated, all-NULL columns
+    should be dropped from what the user function receives (and from what
+    the MATLAB bridge has to convert).
+    """
+
+    @pytest.fixture
+    def deep_db(self, tmp_path):
+        """Schema with a 'cycle' key below subject/session that variables
+        won't populate."""
+        _scifor.set_schema([])
+        db = configure_database(
+            tmp_path / "test_drop_empty.duckdb",
+            ["subject", "session", "cycle"],
+        )
+        yield db
+        _scifor.set_schema([])
+        db.close()
+
+    def test_unpopulated_lower_schema_column_dropped(self, deep_db):
+        """RawSignal saved without 'cycle' → cycle column dropped in aggregation."""
+        RawSignal.save(1.0, subject="S01", session="1")
+        RawSignal.save(2.0, subject="S01", session="2")
+        RawSignal.save(3.0, subject="S02", session="1")
+
+        for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
+                 subject=["S01", "S02"], save=False)
+
+        # The function should have received a DataFrame whose columns do
+        # NOT include the all-null 'cycle' key.
+        assert _last_call["type"] == "dataframe", (
+            "expected DataFrame (multi-row aggregation), got "
+            f"{_last_call.get('type')}"
+        )
+        assert "cycle" not in _last_call["columns"], (
+            f"expected 'cycle' column dropped but found in {_last_call['columns']}"
+        )
+
+    def test_populated_lower_schema_column_kept(self, deep_db):
+        """When the lower-level schema column has any non-null value, keep it."""
+        RawSignal.save(1.0, subject="S01", session="1", cycle="A")
+        RawSignal.save(2.0, subject="S01", session="2", cycle="B")
+
+        for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
+                 subject=["S01"], save=False)
+
+        assert _last_call["type"] == "dataframe"
+        assert "cycle" in _last_call["columns"], (
+            "cycle has real values so the column must be preserved; got "
+            f"{_last_call['columns']}"
+        )

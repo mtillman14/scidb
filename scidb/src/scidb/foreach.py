@@ -838,11 +838,43 @@ def _for_each_prepare(
         # Aggregation mode: skip rid expansion.  Strip __rid_* columns from
         # loaded DataFrames so the user's function doesn't see internal
         # tracking columns, and pass base_combos straight through.
+        #
+        # Also drop schema columns BELOW the lowest iterated level when
+        # they are entirely NULL.  Loaded DataFrames carry one column per
+        # dataset_schema_key; for a variable stored at a higher schema
+        # level, columns for finer-grained keys come back all-NULL.  In
+        # aggregation mode those un-iterated schema keys carry no per-row
+        # meaning — leaving them in clutters the user-facing table and,
+        # on the MATLAB bridge, surfaces as an empty cell column the
+        # caller has to special-case.
+        iterated_indices = [
+            i for i, k in enumerate(current_schema_keys)
+            if k in _iterated_schema_keys
+        ]
+        if iterated_indices:
+            below_iterated_keys = set(
+                current_schema_keys[max(iterated_indices) + 1:]
+            )
+        else:
+            # No schema keys iterated — every schema key is "below"
+            # (this is the no-iteration case; aggregate across everything).
+            below_iterated_keys = set(current_schema_keys)
         for param_name, data in list(loaded_inputs.items()):
             if isinstance(data, pd.DataFrame):
                 rid_cols_in_df = [c for c in data.columns if c.startswith("__rid_")]
-                if rid_cols_in_df:
-                    loaded_inputs[param_name] = data.drop(columns=rid_cols_in_df)
+                empty_schema_cols = [
+                    c for c in data.columns
+                    if c in below_iterated_keys and data[c].isna().all()
+                ]
+                drop_cols = rid_cols_in_df + empty_schema_cols
+                if drop_cols:
+                    loaded_inputs[param_name] = data.drop(columns=drop_cols)
+                if empty_schema_cols:
+                    Log.info(
+                        f"[scidb] aggregation: dropped all-null schema "
+                        f"column(s) {empty_schema_cols} from loaded input "
+                        f"'{param_name}' (below iterated schema level)"
+                    )
 
         # Don't expand combos — aggregation keeps multiple records per combo
         full_combos = list(base_combos)
