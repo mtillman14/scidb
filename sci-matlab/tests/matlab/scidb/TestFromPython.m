@@ -121,5 +121,31 @@ classdef TestFromPython < matlab.unittest.TestCase
             testCase.verifyEqual(result.b, "hello");
         end
 
+        % --- DataFrame: all-None object column preserves row count ---
+        % Regression: scidb.for_each in aggregation mode (iterating fewer
+        % schema keys than the full schema) loads inputs whose un-iterated
+        % schema columns are entirely NULL.  In pandas these come back as
+        % an object-dtype column of Nones.  Before the fix, the MATLAB
+        % conversion collapsed N empties into a single [] via vertcat,
+        % producing a table assignment of width 1 to a height-N table and
+        % raising "number of rows must match the height of the table".
+        function test_dataframe_all_none_object_column_keeps_row_count(testCase)
+            n_rows = 5;
+            py_df = py.pandas.DataFrame(py.dict(pyargs( ...
+                'subject', py.list({'s1','s1','s1','s1','s1'}), ...
+                'cycle',   py.list({py.None, py.None, py.None, py.None, py.None}) ...
+            )));
+            result = scidb.internal.from_python(py_df);
+            testCase.verifyTrue(istable(result), ...
+                'expected a MATLAB table back from a pandas DataFrame');
+            testCase.verifyEqual(height(result), n_rows, ...
+                'all-None column must not collapse the table height');
+            testCase.verifyTrue(ismember('cycle', string(result.Properties.VariableNames)), ...
+                'cycle column should be present in the converted table');
+            cycle_col = result.cycle;
+            testCase.verifyEqual(size(cycle_col, 1), n_rows, ...
+                'cycle column must carry one entry per row');
+        end
+
     end
 end

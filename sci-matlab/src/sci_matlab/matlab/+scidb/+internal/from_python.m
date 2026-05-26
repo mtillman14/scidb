@@ -527,6 +527,14 @@ function data = try_stack_numeric(data)
             return;
         end
     end
+    % When every element is an empty matrix (e.g. all-None object column
+    % from a DataFrame), vertcat would collapse N empties into a single
+    % [], losing the per-row count.  Keep the cell so convert_dataframe
+    % assigns one empty per row instead of one empty for the whole column
+    % (which would cause a row-count mismatch on table assembly).
+    if numel(data) > 1 && any(ref_sz == 0)
+        return;
+    end
     % from_python converts 1-D numpy arrays to Nx1 column vectors.
     % When they represent rows of a matrix column (N cells, each Mx1),
     % transpose to row vectors so vertcat produces an N×M matrix matching
