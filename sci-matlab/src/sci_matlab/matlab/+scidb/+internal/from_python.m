@@ -20,6 +20,13 @@ function data = from_python(py_obj)
             data = py_obj;
             return;
         end
+        % The bridge converts Python str to MATLAB char when extracting from
+        % cell(py.list(...)). Convert to string so lists of strings round-trip
+        % as string arrays, not cell arrays of ASCII code vectors.
+        if ischar(py_obj)
+            data = string(py_obj);
+            return;
+        end
     end
 
     if isa(py_obj, 'py.NoneType')
@@ -35,7 +42,7 @@ function data = from_python(py_obj)
         scidb.Log.debug('from_python: numpy array dtype=%s, shape=[%s], ndim=%d', ...
             string(char(py.str(py_c.dtype))), strjoin(string(arr_shape), ' '), arr_ndim);
 
-        % Convert to Python list to avoid libmwbuffer errors
+        % Convert to Python list to avoid libmwbuffer errors.
         try
             py_list = py_c.tolist();
             scidb.Log.debug('from_python: tolist() succeeded, converting to MATLAB...');
@@ -77,17 +84,20 @@ function data = from_python(py_obj)
                     % Explicitly convert Python numeric types to MATLAB doubles
                     data = cellfun(@double, c);
                 elseif ~isempty(c) && is_python_object(c{1})
-                    % If c contains other Python objects, convert each element
-                    scidb.Log.debug('from_python: numeric array contains Python objects, converting each element');
-                    data = cellfun(@double, c, 'UniformOutput',false);
+                    % 2-D+ array: inner elements are Python row-lists.
+                    % Recursively convert each row, then stack into a matrix.
+                    scidb.Log.debug('from_python: numeric array contains Python row-lists, converting recursively');
+                    data = cell(1, numel(c));
+                    for idx_inner = 1:numel(c)
+                        data{idx_inner} = scidb.internal.from_python(c{idx_inner});
+                    end
+                    data = try_stack_numeric(data);
                 else
                     data = cell2mat(c);
                 end
             end
         end
 
-        % 1-D numpy arrays: force to Nx1 column vectors to match the
-        % columnar convention of DuckDB storage.  2-D arrays keep their shape.
         if dtype_kind ~= "O" && int64(py_c.ndim) == 1 && ~isempty(data)
             data = data(:);
         end
@@ -117,10 +127,15 @@ function data = from_python(py_obj)
         % Python call.  This avoids N individual boundary crossings when the
         % list contains homogeneous numeric values (the common case for
         % DOUBLE[] columns loaded from DuckDB).
+        % Exclude Unicode ('U') dtype: numpy creates a 'U' array for lists of
+        % strings, but converting it back via tolist() gives py.str proxies
+        % that the numeric branch misroutes through the 2D-array path,
+        % producing a cell instead of a string array. Let the fallback handle
+        % string lists correctly.
         try
             py_arr = py.numpy.asarray(py_obj);
             dtype_kind = string(py_arr.dtype.kind);
-            if dtype_kind ~= "O"
+            if dtype_kind ~= "O" && dtype_kind ~= "U"
                 % Successfully converted to a typed numpy array — use the
                 % ndarray path which handles bool/numeric in bulk.
                 data = scidb.internal.from_python(py_arr);
@@ -153,7 +168,7 @@ function data = from_python(py_obj)
                 pos = 1;
                 for i = 1:n
                     len = lengths(i);
-                    if len > 0 
+                    if len > 0
                         data{i} = flat_data(pos:pos+len-1);
                         pos = pos + len;
                     else
@@ -209,13 +224,23 @@ function data = from_python(py_obj)
             try
                 scidb.Log.debug('from_python: trying DataFrame concat for list (%d DataFrames)', n);
 
+                % Record original row counts before concatenation so we can
+                % split back correctly even when sub-DataFrames have >1 row.
+                row_counts = zeros(1, n, 'int64');
+                for ri_tmp = 1:n
+                    row_counts(ri_tmp) = int64(double(py.builtins.len(c{ri_tmp})));
+                end
+
                 % Convert concatenated DataFrame once (single set of log messages)
                 concat_table = scidb.internal.from_python(concat_df);
 
-                % Split back into individual tables (one per original DataFrame)
+                % Split back into individual tables using row counts.
                 data = cell(1, n);
+                pos = 1;
                 for row_idx = 1:n
-                    data{row_idx} = concat_table(row_idx, :);
+                    rc = row_counts(row_idx);
+                    data{row_idx} = concat_table(pos:pos+rc-1, :);
+                    pos = pos + rc;
                 end
 
                 scidb.Log.debug('from_python: DataFrame concat succeeded');
@@ -353,13 +378,24 @@ function data = convert_dataframe(py_obj)
                 try
                     scidb.Log.debug('convert_dataframe: column %d - trying DataFrame concat (%d DataFrames)', i, numel(c));
 
+                    % Record original row counts before concatenation so we can
+                    % split back correctly even when sub-DataFrames have >1 row.
+                    nc_tmp = numel(c);
+                    row_counts_tmp = zeros(1, nc_tmp, 'int64');
+                    for ri_tmp = 1:nc_tmp
+                        row_counts_tmp(ri_tmp) = int64(double(py.builtins.len(c{ri_tmp})));
+                    end
+
                     % Convert concatenated DataFrame once (single set of log messages)
                     concat_table = scidb.internal.from_python(concat_df);
 
-                    % Split back into cell array of individual table rows
-                    col_data = cell(numel(c), 1);
-                    for row_idx = 1:numel(c)
-                        col_data{row_idx} = concat_table(row_idx, :);
+                    % Split back into cell array using row counts.
+                    col_data = cell(nc_tmp, 1);
+                    pos = 1;
+                    for row_idx = 1:nc_tmp
+                        rc = row_counts_tmp(row_idx);
+                        col_data{row_idx} = concat_table(pos:pos+rc-1, :);
+                        pos = pos + rc;
                     end
 
                     scidb.Log.debug('convert_dataframe: column %d - DataFrame concat succeeded', i);
@@ -380,8 +416,18 @@ function data = convert_dataframe(py_obj)
                 col_data = scidb.internal.from_python(py_list);
                 scidb.Log.debug('convert_dataframe: column %d - SUCCESS: used optimized py.list conversion', i);
 
-                % Ensure we have a cell array (from_python might return a matrix
-                % for homogeneous data)
+                if ~iscell(col_data) && size(col_data, 1) == n_rows
+                    % from_python already produced the right shape (e.g., an
+                    % N×M matrix for a column of equal-length row vectors).
+                    % num2cell would flatten it into individual scalars, and
+                    % try_stack_numeric would re-vertcat those into an (N*M)×1
+                    % vector — 3× too many rows when M=3.  Assign directly.
+                    if isvector(col_data)
+                        col_data = col_data(:);
+                    end
+                    args{i} = col_data;
+                    continue;
+                end
                 if ~iscell(col_data)
                     col_data = num2cell(col_data);
                 end
@@ -489,6 +535,9 @@ function data = try_stack_numeric(data)
     % original shape so a per-row vector payload round-trips faithfully.
     if numel(data) == 1
         data = data{1};
+        if isnumeric(data) && isvector(data)
+            data = data(:);
+        end
     elseif iscolumn(data{1}) && ~isscalar(data{1})
         transposed = cellfun(@(v) v', data, 'UniformOutput', false);
         data = vertcat(transposed{:});

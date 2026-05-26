@@ -236,7 +236,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             obj.assertNotEmpty(filt.py_filter);
 
             % Verify it's a ColumnFilter, not VariableFilter
-            py_type = string(py.type(filt.py_filter).__name__);
+            py_type = string(py.getattr(py.type(filt.py_filter), '__name__'));
             obj.assertEqual(py_type, "ColumnFilter");
         end
 
@@ -245,7 +245,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             filt = TabularVar("col_a") ~= 0;
             obj.assertClass(filt, 'scidb.Filter');
 
-            py_type = string(py.type(filt.py_filter).__name__);
+            py_type = string(py.getattr(py.type(filt.py_filter), '__name__'));
             obj.assertEqual(py_type, "ColumnFilter");
         end
 

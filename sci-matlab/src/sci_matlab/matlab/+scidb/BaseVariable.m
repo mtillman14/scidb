@@ -721,6 +721,7 @@ classdef BaseVariable < dynamicprops
         %   tracking works if it's passed to another LineageFcn or re-saved.
         % Usage: v = scidb.BaseVariable.wrap_py_var(py_var)
             matlab_data = scidb.internal.from_python(py_var.data);
+            matlab_data = scidb.internal.try_stack_numeric(matlab_data);
             v = scidb.BaseVariable();
             v.data = matlab_data;
             v.py_obj = py_var;
@@ -847,7 +848,14 @@ classdef BaseVariable < dynamicprops
                             reconstructed{r} = flat_data(start_idx:end_idx);
                         end
 
-                        % Replace placeholder column with reconstructed data
+                        % Replace placeholder column with reconstructed data.
+                        % For multi-row columns, stack same-size column vectors
+                        % into a matrix (restores NxM matrix columns saved as
+                        % per-row DOUBLE[] arrays).  Single-element stays as
+                        % cell to preserve the per-row payload convention.
+                        if numel(reconstructed) > 1
+                            reconstructed = scidb.internal.try_stack_numeric(reconstructed);
+                        end
                         concat_table.(col_name) = reconstructed;
                         scidb.Log.debug('wrap_py_vars_batch: column "%s" reconstructed successfully', col_name);
                     end
@@ -918,6 +926,7 @@ classdef BaseVariable < dynamicprops
                     py_data = py.sci_matlab.bridge.get_batch_data_item( ...
                         batch_id, int64(i-1));
                     matlab_data = scidb.internal.from_python(py_data);
+                    matlab_data = scidb.internal.try_stack_numeric(matlab_data);
                 end
 
                 v = scidb.BaseVariable();

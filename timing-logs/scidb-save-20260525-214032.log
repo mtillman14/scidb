@@ -1,0 +1,33 @@
+[21:40:32.379] [INFO] configure_database: path=/private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tp8f7056b8_19ef_4513_b24d_38a4a086de03/test.duckdb, schema_keys=['subject', 'session', 'speed', 'trial']
+[21:40:32.381] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: /private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tp8f7056b8_19ef_4513_b24d_38a4a086de03/test.duckdb
+[21:40:32.409] [INFO] [timing] save_from_table(TableVar): data_convert=0.016s, mode=vertcat, n=20
+[21:40:32.412] [DEBUG] [timing] save_batch_bridge(TableVar): n=20, mode=vertcat_df, split=0.000s, assembly=0.000s
+[21:40:32.412] [INFO] save_batch(TableVar): 20 items, mode=dataframe, data: DataFrame 3x2 cols=['x', 'y'], DuckDB columns: [x: DOUBLE, y: DOUBLE]
+[21:40:32.428] [INFO] [timing] save_batch(TableVar): 20 items (60 new rows, 60 total storage rows), 20 schemas, 0.016s
+[21:40:32.428] [DEBUG]   save_batch 1_setup                        0.007s
+[21:40:32.428] [DEBUG]   save_batch 2_split_metadata               0.000s
+[21:40:32.428] [DEBUG]   save_batch 3_schema_resolution            0.001s
+[21:40:32.428] [DEBUG]   save_batch 4_per_row_hashing              0.001s
+[21:40:32.428] [DEBUG]   save_batch 4a_canonical_hash              0.000s
+[21:40:32.428] [DEBUG]   save_batch 4b_record_id                   0.000s
+[21:40:32.428] [DEBUG]   save_batch 4c_storage_row                 0.000s
+[21:40:32.428] [DEBUG]   save_batch 4d_meta_row                    0.000s
+[21:40:32.428] [DEBUG]   save_batch 5_dedup_check                  0.001s
+[21:40:32.428] [DEBUG]   save_batch 6a_data_df_create              0.000s
+[21:40:32.428] [DEBUG]   save_batch 6b_data_insert                 0.001s
+[21:40:32.429] [DEBUG]   save_batch 6c_meta_insert                 0.003s
+[21:40:32.429] [DEBUG]   save_batch 6d_variables_upsert            0.001s
+[21:40:32.429] [DEBUG]   save_batch 6e_commit                      0.000s
+[21:40:32.429] [DEBUG]   save_batch 6_batch_inserts                0.006s
+[21:40:32.429] [DEBUG]   save_batch total                          0.016s
+[21:40:32.429] [INFO] [timing] save_batch_bridge(TableVar): n=20, mode=vertcat_df, split=0.000s, total=0.017s
+[21:40:32.432] [INFO] load_all(TableVar): metadata={'subject': 1, 'session': 1, 'speed': 1, 'trial': 1}
+[21:40:32.434] [DEBUG] _find_record(TableVar): SQL returned 1 records, version_id=latest
+[21:40:32.435] [DEBUG] _find_record: record 3f5506cf567557d5: version_keys = {}
+[21:40:32.436] [DEBUG] _find_record(TableVar): 1 record(s) matched (before branch_params filter)
+[21:40:32.437] [INFO] [timing] _find_record(TableVar, version_id='latest'): total=0.005s, sql=0.002s (1 rows), collapse=0.002s, vk_filter=0.000s, bp_filter=0.000s, sort=0.001s, returned=1 rows
+[21:40:32.438] [INFO] load_all(TableVar): found 1 record(s)
+[21:40:32.439] [INFO] [timing] load_all(TableVar): pre-yield setup: find=0.005s, dtype_lookup=0.000s, chunks_total=0.001s (sql=0.000s, deserialize=0.000s, n_chunks=1, mode=dataframe)
+[21:40:32.439] [INFO] [timing] load_all(TableVar): TOTAL=0.007s (find=0.005s, chunks=0.001s, yield_body=0.000s for 1 records, caller_overhead~=0.001s)
+[21:40:32.439] [DEBUG] wrap_batch_bridge: found 0 object-dtype columns to check
+[21:40:32.439] [DEBUG] wrap_batch_bridge: no array columns found to optimize

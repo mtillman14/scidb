@@ -1039,6 +1039,45 @@ def split_flat_to_lists(flat_array, lengths):
     return result
 
 
+def split_df_to_dataframes(df, row_counts):
+    """Split a concatenated DataFrame into a list of sub-DataFrames by row counts.
+
+    Used by MATLAB's to_python Strategy 1 (homogeneous table concat) to
+    efficiently convert a cell column whose elements are multi-row tables.
+    MATLAB concatenates all K tables into one DataFrame (KM rows total),
+    sends it across the bridge once, then calls this function to slice it
+    back into K DataFrames each with the original number of rows.
+
+    This avoids the per-element bridge cost of Strategy 3 (K separate
+    to_python calls) while correctly handling tables with any row count —
+    unlike the old to_dict('records') approach which always produced
+    single-row DataFrames.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Concatenated DataFrame (KM rows).
+    row_counts : numpy.ndarray or list of int
+        Integer array where ``row_counts[i]`` is the row count of the
+        i-th original sub-DataFrame.
+
+    Returns
+    -------
+    list of pandas.DataFrame
+        One DataFrame per entry in *row_counts*, sliced from *df* in order.
+    """
+    import numpy as np
+
+    counts = np.asarray(row_counts).ravel().tolist()
+    result = []
+    pos = 0
+    for n in counts:
+        n = int(n)
+        result.append(df.iloc[pos:pos + n].reset_index(drop=True))
+        pos += n
+    return result
+
+
 def flatten_sequences(py_list):
     """Flatten a list of numeric/boolean sequences into a single array with lengths.
 

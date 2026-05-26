@@ -36,17 +36,14 @@ classdef TestAsTable < matlab.unittest.TestCase
 
     methods (Test)
 
-        function test_load_default_returns_table(testCase)
-            %% load() with multiple matches returns a table by default
+        function test_load_default_returns_var_array(testCase)
+            %% load() with multiple matches returns a BaseVariable array by default
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'B');
 
-            tbl = RawSignal().load('subject', 1);
-            testCase.verifyTrue(istable(tbl));
-            testCase.verifyEqual(height(tbl), 2);
-            testCase.verifyTrue(ismember('subject', tbl.Properties.VariableNames));
-            testCase.verifyTrue(ismember('session', tbl.Properties.VariableNames));
-            testCase.verifyTrue(ismember('RawSignal', tbl.Properties.VariableNames));
+            result = RawSignal().load('subject', 1);
+            testCase.verifyClass(result, 'scidb.BaseVariable');
+            testCase.verifyEqual(numel(result), 2);
         end
 
         function test_load_as_table_multi_result(testCase)
@@ -349,12 +346,12 @@ classdef TestAsTable < matlab.unittest.TestCase
         % -----------------------------------------------------------------
 
         function test_load_categorical_returns_table(testCase)
-            %% load(categorical=true) should return a table (not error)
+            %% load(as_table=true, categorical=true) should return a table
             ScalarVar().save(10, 'subject', 1, 'session', 'A');
             ScalarVar().save(20, 'subject', 1, 'session', 'B');
             ScalarVar().save(30, 'subject', 2, 'session', 'A');
 
-            tbl = ScalarVar().load('categorical', true);
+            tbl = ScalarVar().load('as_table', true, 'categorical', true);
             testCase.verifyTrue(istable(tbl));
             testCase.verifyEqual(height(tbl), 3);
         end
@@ -365,7 +362,7 @@ classdef TestAsTable < matlab.unittest.TestCase
             ScalarVar().save(20, 'subject', 1, 'session', 'B');
             ScalarVar().save(30, 'subject', 2, 'session', 'A');
 
-            tbl = ScalarVar().load('categorical', true);
+            tbl = ScalarVar().load('as_table', true, 'categorical', true);
             testCase.verifyTrue(iscategorical(tbl.subject), ...
                 'subject column should be categorical');
             testCase.verifyTrue(iscategorical(tbl.session), ...
@@ -377,7 +374,7 @@ classdef TestAsTable < matlab.unittest.TestCase
             ScalarVar().save(10, 'subject', 1, 'session', 'A');
             ScalarVar().save(20, 'subject', 1, 'session', 'B');
 
-            tbl = ScalarVar().load('categorical', true, 'subject', 1);
+            tbl = ScalarVar().load('as_table', true, 'categorical', true, 'subject', 1);
             testCase.verifyTrue(isnumeric(tbl.ScalarVar), ...
                 'Data column should remain numeric, not categorical');
         end
@@ -387,7 +384,7 @@ classdef TestAsTable < matlab.unittest.TestCase
             ScalarVar().save(10, 'subject', 1, 'session', 'A');
             ScalarVar().save(20, 'subject', 1, 'session', 'B');
 
-            tbl = ScalarVar().load('subject', 1);
+            tbl = ScalarVar().load('as_table', true, 'subject', 1);
             testCase.verifyFalse(iscategorical(tbl.session), ...
                 'Default load should not produce categorical columns');
         end
@@ -398,7 +395,7 @@ classdef TestAsTable < matlab.unittest.TestCase
             ScalarVar().save(20, 'subject', 1, 'session', 'B');
             ScalarVar().save(30, 'subject', 2, 'session', 'A');
 
-            tbl = ScalarVar().load('categorical', true, 'subject', 1);
+            tbl = ScalarVar().load('as_table', true, 'categorical', true, 'subject', 1);
             testCase.verifyTrue(istable(tbl));
             testCase.verifyEqual(height(tbl), 2);
             testCase.verifyTrue(iscategorical(tbl.session));
@@ -410,7 +407,7 @@ classdef TestAsTable < matlab.unittest.TestCase
             ScalarVar().save(20, 'subject', 1, 'session', 'B');
             ScalarVar().save(30, 'subject', 1, 'session', 'C');
 
-            tbl = ScalarVar().load('categorical', true, 'subject', 1);
+            tbl = ScalarVar().load('as_table', true, 'categorical', true, 'subject', 1);
             cats = categories(tbl.session);
             testCase.verifyEqual(numel(cats), 3);
         end

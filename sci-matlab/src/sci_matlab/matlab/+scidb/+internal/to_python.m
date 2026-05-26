@@ -121,23 +121,23 @@ function py_obj = to_python(data)
                     concat_ok = false;
                     if can_concat
                         try
-                            scidb.Log.debug('to_python: trying table concat for cell column "%s" (%d rows, %d cols each)', ...
-                                col_names{i}, numel(col), width(concat_table));
+                            % Track original row count per cell element so we
+                            % can split the concatenated DataFrame back into
+                            % one sub-DataFrame per combo (handles both 1-row
+                            % and multi-row inner tables correctly).
+                            row_counts_vec = int64(cellfun(@height, col(:)'));
+                            py_row_counts = py.numpy.array(row_counts_vec, ...
+                                pyargs('dtype', 'int64'));
 
-                            % Convert concatenated table once (single log message)
+                            scidb.Log.debug('to_python: trying table concat for cell column "%s" (%d elems, %d total rows, %d cols each)', ...
+                                col_names{i}, numel(col), sum(row_counts_vec), width(concat_table));
+
+                            % Convert concatenated table once, then split
+                            % Python-side by row counts (avoids iloc bridge
+                            % issues and is more efficient than N calls).
                             py_concat_df = scidb.internal.to_python(concat_table);
-
-                            % Split into list of single-row DataFrames for pandas object column
-                            % Use to_dict('records') to avoid MATLAB Python bridge issues with iloc
-                            py_records = py_concat_df.to_dict(pyargs('orient', 'records'));
-                            py_val = py.list();
-                            n_rows = length(py_records);
-                            for row_idx = 1:n_rows
-                                % Get row dict and convert back to single-row DataFrame
-                                row_dict = py_records{row_idx};
-                                row_df = py.pandas.DataFrame(py.list({row_dict}));
-                                py_val.append(row_df);
-                            end
+                            py_val = py.sci_matlab.bridge.split_df_to_dataframes( ...
+                                py_concat_df, py_row_counts);
 
                             concat_ok = true;
                             scidb.Log.debug('to_python: table concat succeeded for column "%s"', col_names{i});
