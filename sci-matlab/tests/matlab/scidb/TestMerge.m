@@ -197,8 +197,7 @@ classdef TestMerge < matlab.unittest.TestCase
 
             % Just verify it doesn't error — dry run should print merge info
             % and not attempt any loads
-            results = MergedResult().load_all();
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() MergedResult().load(), 'scidb:NotFoundError');
         end
 
         % --- Multi-record merge (join by schema keys) ---
@@ -277,8 +276,7 @@ classdef TestMerge < matlab.unittest.TestCase
                 'subject', 1, 'session', "A");
 
             % Should skip — no output saved
-            results = MergedResult().load_all();
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() MergedResult().load(), 'scidb:NotFoundError');
         end
     end
 end

@@ -255,7 +255,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             testCase.verifyEqual(specific.data, [1 2 3]', 'AbsTol', 1e-10);
 
             %% load_all returns all 3
-            all_results = RawSignal().load_all('subject', 1, 'session', 'A');
+            all_results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             testCase.verifyEqual(numel(all_results), 3);
         end
 

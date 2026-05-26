@@ -197,8 +197,7 @@ classdef TestForEachReturnValue < matlab.unittest.TestCase
             testCase.verifyEqual(height(result), 2);
 
             % Nothing should have been saved to the database
-            all_saved = ProcessedSignal().load_all();
-            testCase.verifyEmpty(all_saved);
+            testCase.verifyError(@() ProcessedSignal().load(), 'scidb:NotFoundError');
         end
 
         function test_flatten_mode_table_outputs(testCase)
@@ -246,7 +245,7 @@ classdef TestForEachReturnValue < matlab.unittest.TestCase
             testCase.verifyEqual(height(result), 3);
 
             % All 3 outputs should be in the database
-            all_saved = ProcessedSignal().load_all();
+            all_saved = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_saved), 3);
         end
 

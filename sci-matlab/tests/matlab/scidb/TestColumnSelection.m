@@ -236,8 +236,7 @@ classdef TestColumnSelection < matlab.unittest.TestCase
                 'subject', 1, ...
                 'session', "A");
 
-            results = ProcessedSignal().load_all('subject', 1, 'session', 'A');
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load('subject', 1, 'session', 'A'), 'scidb:NotFoundError');
         end
 
         function test_only_requested_column_reaches_function(testCase)

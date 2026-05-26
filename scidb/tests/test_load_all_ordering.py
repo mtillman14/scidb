@@ -45,7 +45,7 @@ class TestLoadAllOrdering:
         TestData.save(np.array([6.0]), subject="S02", trial="T01")
 
         # Load all data
-        results = list(TestData.load_all())
+        results = TestData.load(version="all")
 
         # Extract schema keys in the order they were loaded (convert to strings)
         loaded_order = [(str(v.metadata["subject"]), str(v.metadata["trial"])) for v in results]
@@ -83,7 +83,7 @@ class TestLoadAllOrdering:
         )
 
         # Load all data
-        results = list(TestData.load_all())
+        results = TestData.load(version="all")
 
         # Verify schema key ordering (convert to strings)
         loaded_subjects = [str(v.metadata["subject"]) for v in results]
@@ -104,7 +104,7 @@ class TestLoadAllOrdering:
         TestData.save(np.array([3.0]), subject="100", trial="1")
         TestData.save(np.array([4.0]), subject="20", trial="1")
 
-        results = list(TestData.load_all())
+        results = TestData.load(version="all")
         # Convert to strings for comparison (schema keys may be returned as native types)
         loaded_subjects = [str(v.metadata["subject"]) for v in results]
 
@@ -125,7 +125,7 @@ class TestLoadAllOrdering:
         TestData.save(np.array([4.0]), subject="20", trial="1")
         TestData.save(np.array([5.0]), subject="100", trial="1")
 
-        results = list(TestData.load_all())
+        results = TestData.load(version="all")
         # Convert to strings for comparison (schema keys may be returned as native types)
         loaded_subjects = [str(v.metadata["subject"]) for v in results]
 
@@ -145,7 +145,7 @@ class TestLoadAllOrdering:
                 TestData.save(np.array([1.0]), subject=subj, trial=trial)
 
         # Load with filter (only S01 and S03)
-        results = list(TestData.load_all(subject=["S01", "S03"]))
+        results = TestData.load(version="all", subject=["S01", "S03"])
 
         # Should still be ordered by schema keys (convert to strings)
         loaded_order = [(str(v.metadata["subject"]), str(v.metadata["trial"])) for v in results]
@@ -182,7 +182,7 @@ class TestLoadAllOrdering:
         MultiLevelData.save(np.array([5.0]), subject="S01", session="B", trial="T01")
 
         # Load and verify ordering (convert to strings)
-        results = list(MultiLevelData.load_all())
+        results = MultiLevelData.load(version="all")
         loaded_order = [
             (str(v.metadata["subject"]), str(v.metadata["session"]), str(v.metadata["trial"]))
             for v in results

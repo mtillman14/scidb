@@ -9,10 +9,10 @@ classdef Filter
 %       ~(Side() == "L")                     % NotFilter
 %       scidb.raw_sql('"value" > 0.70')      % RawFilter
 %
-%   Filters are passed to load() or load_all() via the 'where' key:
+%   Filters are passed to load() via the 'where' key:
 %
 %       StepLength().load(where=Side() == "L", subject=1)
-%       StepLength().load_all(where=(Side() == "L") & (Speed() > 1.2))
+%       StepLength().load(where=(Side() == "L") & (Speed() > 1.2))
 
     properties
         py_filter   % Python Filter object (scidb.filters.Filter subclass)

@@ -343,34 +343,30 @@ class TestCustomVariableType:
 
 
 class TestPartialSchemaKeyLoad:
-    """Test that load() returns a list when partial schema keys match multiple rows."""
+    """Test load() return type: single object for one match, list for multiple."""
 
     def test_load_returns_list_for_partial_keys(self, db, scalar_class):
-        """Saving at trial level, then loading by subject only should return a list."""
+        """Loading by subject only (3 trials saved) returns a list of 3."""
         scalar_class.save(10, subject=1, trial=1)
         scalar_class.save(20, subject=1, trial=2)
         scalar_class.save(30, subject=1, trial=3)
 
         result = scalar_class.load(subject=1)
-        assert isinstance(result, list)
         assert len(result) == 3
-        # Results are ordered by created_at DESC (newest first)
         assert {v.data for v in result} == {10, 20, 30}
 
-    def test_load_returns_single_when_one_match(self, db, scalar_class):
-        """If only one row matches, load() should return a single variable."""
+    def test_load_single_match_returns_single_object(self, db, scalar_class):
+        """If only one row matches, load() returns a single BaseVariable."""
         scalar_class.save(42, subject=1, trial=1)
 
         loaded = scalar_class.load(subject=1, trial=1)
-        assert not isinstance(loaded, list)
         assert loaded.data == 42
 
-    def test_load_returns_single_for_subject_level_save(self, db, scalar_class):
-        """Saving at subject level, loading by subject should return single."""
+    def test_load_subject_level_save_returns_single_object(self, db, scalar_class):
+        """Saving at subject level, loading by subject returns a single BaseVariable."""
         scalar_class.save(99, subject=1)
 
         loaded = scalar_class.load(subject=1)
-        assert not isinstance(loaded, list)
         assert loaded.data == 99
 
     def test_load_partial_key_not_found_raises(self, db, scalar_class):
@@ -378,12 +374,11 @@ class TestPartialSchemaKeyLoad:
         with pytest.raises(NotFoundError):
             scalar_class.load(subject=999)
 
-    def test_load_by_version_always_returns_single(self, db, scalar_class):
-        """Loading by version/record_id should always return single."""
+    def test_load_by_version_returns_single_object(self, db, scalar_class):
+        """Loading by version/record_id returns a single BaseVariable."""
         record_id = scalar_class.save(42, subject=1, trial=1)
 
         loaded = scalar_class.load(version=record_id)
-        assert not isinstance(loaded, list)
         assert loaded.data == 42
 
 
@@ -482,68 +477,67 @@ class TestVariableViews:
 
 
 class TestBatchLoadingAPI:
-    """Test the batch loading API with version_id and list-valued keys."""
+    """Test the batch loading API with version= and list-valued keys."""
 
-    # --- version_id parameter ---
+    # --- version= parameter ---
 
-    def test_load_all_default_returns_all_versions(self, db, scalar_class):
-        """load_all() with default version_id='all' returns every version."""
+    def test_load_version_all_returns_all_versions(self, db, scalar_class):
+        """load(version='all') returns every stored version."""
         scalar_class.save(100, subject=1, trial=1)
         scalar_class.save(200, subject=1, trial=1)
         scalar_class.save(300, subject=1, trial=1)
 
-        results = list(scalar_class.load_all(subject=1, trial=1))
+        results = scalar_class.load(version="all", subject=1, trial=1)
         assert len(results) == 3
         assert {r.data for r in results} == {100, 200, 300}
 
-    def test_load_all_version_id_latest(self, db, scalar_class):
-        """load_all(version_id='latest') returns only latest per parameter set."""
+    def test_load_version_latest_returns_one(self, db, scalar_class):
+        """load(version='latest') returns the single latest record directly."""
         scalar_class.save(100, subject=1, trial=1)
         scalar_class.save(200, subject=1, trial=1)
         scalar_class.save(300, subject=1, trial=1)
 
-        results = list(scalar_class.load_all(subject=1, trial=1, version_id="latest"))
-        assert len(results) == 1
-        assert results[0].data == 300
+        result = scalar_class.load(version="latest", subject=1, trial=1)
+        assert result.data == 300
 
     # --- List-valued schema keys ---
 
-    def test_load_all_list_schema_key(self, db, scalar_class):
-        """load_all(subject=[1, 2]) matches subject 1 OR 2."""
+    def test_load_list_schema_key(self, db, scalar_class):
+        """load(subject=[1, 2]) matches subject 1 OR 2."""
         scalar_class.save(10, subject=1, trial=1)
         scalar_class.save(20, subject=2, trial=1)
         scalar_class.save(30, subject=3, trial=1)
 
-        results = list(scalar_class.load_all(subject=[1, 2], trial=1))
+        results = scalar_class.load(version="all", subject=[1, 2], trial=1)
         assert len(results) == 2
         assert {r.data for r in results} == {10, 20}
 
-    def test_load_all_multiple_list_schema_keys(self, db, scalar_class):
-        """load_all(subject=[1, 2], trial=[1, 2]) returns cartesian product."""
+    def test_load_multiple_list_schema_keys(self, db, scalar_class):
+        """load(subject=[1, 2], trial=[1, 2]) returns cartesian product."""
         for s in [1, 2, 3]:
             for t in [1, 2, 3]:
                 scalar_class.save(s * 10 + t, subject=s, trial=t)
 
-        results = list(scalar_class.load_all(subject=[1, 2], trial=[1, 2]))
+        results = scalar_class.load(version="all", subject=[1, 2], trial=[1, 2])
         assert len(results) == 4
         assert {r.data for r in results} == {11, 12, 21, 22}
 
     # --- List-valued version keys ---
 
-    def test_load_all_list_version_key(self, db, scalar_class):
-        """load_all(algorithm=['v1', 'v2']) matches version key in list."""
+    def test_load_list_version_key(self, db, scalar_class):
+        """load(algorithm=['v1', 'v2']) matches version key in list."""
         scalar_class.save(10, subject=1, trial=1, algorithm="v1")
         scalar_class.save(20, subject=1, trial=1, algorithm="v2")
         scalar_class.save(30, subject=1, trial=1, algorithm="v3")
 
-        results = list(scalar_class.load_all(subject=1, trial=1, algorithm=["v1", "v2"]))
+        results = scalar_class.load(version="all", subject=1, trial=1, algorithm=["v1", "v2"])
         assert len(results) == 2
         assert {r.data for r in results} == {10, 20}
 
-    # --- Cartesian product: list schema × list version × version_id ---
+    # --- Cartesian product: list schema × list version × version ---
 
     def test_cartesian_product(self, db, scalar_class):
-        """Full cartesian product: list schema keys × list version keys × version_id."""
+        """Full cartesian product: list schema keys × list version keys × version='all'."""
         # Save data: 2 subjects × 2 algorithms × 2 versions each
         for s in [1, 2]:
             for algo in ["v1", "v2"]:
@@ -551,29 +545,29 @@ class TestBatchLoadingAPI:
                 scalar_class.save(s * 100 + hash(algo) % 10 + 1, subject=s, trial=1, algorithm=algo)
 
         # Query all versions for subjects [1,2] with algorithms ["v1","v2"]
-        results = list(scalar_class.load_all(
-            subject=[1, 2], trial=1, algorithm=["v1", "v2"], version_id="all"
-        ))
+        results = scalar_class.load(
+            version="all", subject=[1, 2], trial=1, algorithm=["v1", "v2"]
+        )
         # 2 subjects × 2 algorithms × 2 versions = 8
         assert len(results) == 8
 
     def test_cartesian_product_with_latest(self, db, scalar_class):
-        """Cartesian product with version_id='latest' returns one per param set."""
+        """Cartesian product with version='latest' returns one per param set."""
         for s in [1, 2]:
             for algo in ["v1", "v2"]:
                 scalar_class.save(s * 100, subject=s, trial=1, algorithm=algo)
                 scalar_class.save(s * 200, subject=s, trial=1, algorithm=algo)
 
-        results = list(scalar_class.load_all(
-            subject=[1, 2], trial=1, algorithm=["v1", "v2"], version_id="latest"
-        ))
+        results = scalar_class.load(
+            version="latest", subject=[1, 2], trial=1, algorithm=["v1", "v2"]
+        )
         # 2 subjects × 2 algorithms × 1 (latest) = 4
         assert len(results) == 4
 
-    # --- load() treats lists as scalar literals ---
+    # --- load() with plain metadata ---
 
-    def test_load_treats_list_as_literal(self, db):
-        """load(threshold=[0.3, 0.5]) should match the literal list value."""
+    def test_load_returns_single_for_plain_metadata(self, db):
+        """load(subject=1, trial=1) returns a single BaseVariable when one record matches."""
         class ListParam(BaseVariable):
             schema_version = 1
 
@@ -582,77 +576,77 @@ class TestBatchLoadingAPI:
         loaded = ListParam.load(subject=1, trial=1)
         assert loaded.data == [0.3, 0.5]
 
-    # --- load_all with as_df=True ---
+    # --- load with as_df=True ---
 
-    def test_load_all_as_df_with_version_id(self, db, scalar_class):
-        """load_all(as_df=True, version_id='latest') returns DataFrame."""
+    def test_load_as_df_with_version_latest(self, db, scalar_class):
+        """load(as_df=True, version='latest') returns DataFrame with latest record."""
         scalar_class.save(100, subject=1, trial=1)
         scalar_class.save(200, subject=1, trial=1)
 
-        df = scalar_class.load_all(subject=1, trial=1, as_df=True, version_id="latest")
+        df = scalar_class.load(as_df=True, version="latest", subject=1, trial=1)
         assert len(df) == 1
         assert df.iloc[0]["data"] == 200
 
 
-class TestLoadAsTable:
-    """Test load(as_table=True) returning a DataFrame."""
+class TestLoadAsDataFrame:
+    """Test load(as_df=True) returning a DataFrame."""
 
-    def test_load_as_table_multi_result(self, db, scalar_class):
-        """load(as_table=True) with multiple matches returns DataFrame."""
+    def test_load_as_df_multi_result(self, db, scalar_class):
+        """load(as_df=True) with multiple matches returns DataFrame."""
         scalar_class.save(10, subject=1, trial=1)
         scalar_class.save(20, subject=1, trial=2)
         scalar_class.save(30, subject=1, trial=3)
 
-        df = scalar_class.load(as_table=True, subject=1)
+        df = scalar_class.load(as_df=True, subject=1)
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 3
         # Check columns: schema keys + data column
         assert "subject" in df.columns
         assert "trial" in df.columns
-        assert "ScalarValue" in df.columns
+        assert "data" in df.columns
         # Check data values
-        assert set(df["ScalarValue"].tolist()) == {10, 20, 30}
+        assert set(df["data"].tolist()) == {10, 20, 30}
 
-    def test_load_as_table_single_result(self, db, scalar_class):
-        """load(as_table=True) with single match returns BaseVariable, not DataFrame."""
+    def test_load_as_df_single_result(self, db, scalar_class):
+        """load(as_df=True) with single match returns 1-row DataFrame."""
         scalar_class.save(42, subject=1, trial=1)
 
-        result = scalar_class.load(as_table=True, subject=1, trial=1)
-        assert not isinstance(result, pd.DataFrame)
-        assert result.data == 42
+        df = scalar_class.load(as_df=True, subject=1, trial=1)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 1
+        assert df.iloc[0]["data"] == 42
 
-    def test_load_as_table_with_version_keys(self, db, scalar_class):
-        """load(as_table=True) includes parameter/version key columns."""
+    def test_load_as_df_with_version_keys(self, db, scalar_class):
+        """load(as_df=True) includes version key columns."""
         scalar_class.save(10, subject=1, trial=1, smoothing=0.2)
         scalar_class.save(20, subject=1, trial=2, smoothing=0.2)
 
-        df = scalar_class.load(as_table=True, subject=1, smoothing=0.2)
+        df = scalar_class.load(as_df=True, subject=1, smoothing=0.2)
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 2
         assert "smoothing" in df.columns
 
-    def test_load_as_table_array_data(self, db, array_class):
-        """load(as_table=True) with array data stores arrays in data column."""
+    def test_load_as_df_array_data(self, db, array_class):
+        """load(as_df=True) with array data stores arrays in data column."""
         array_class.save(np.array([1.0, 2.0]), subject=1, trial=1)
         array_class.save(np.array([3.0, 4.0]), subject=1, trial=2)
 
-        df = array_class.load(as_table=True, subject=1)
+        df = array_class.load(as_df=True, subject=1)
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 2
-        assert "ArrayValue" in df.columns
+        assert "data" in df.columns
         # Each entry should be an array
-        for val in df["ArrayValue"]:
+        for val in df["data"]:
             assert isinstance(val, np.ndarray)
 
-    def test_load_as_table_false_returns_list(self, db, scalar_class):
-        """load(as_table=False) with multiple matches returns list (default behavior)."""
+    def test_load_default_returns_list_for_multiple(self, db, scalar_class):
+        """load() with default as_df=False and multiple matches returns a list."""
         scalar_class.save(10, subject=1, trial=1)
         scalar_class.save(20, subject=1, trial=2)
 
-        result = scalar_class.load(as_table=False, subject=1)
+        result = scalar_class.load(subject=1)
         assert isinstance(result, list)
         assert len(result) == 2
-
 
 
 class TestLineageFcnPipelineMetadata:
@@ -799,5 +793,7 @@ class TestSaveBatchSingleColumn:
         record_ids = db.save_batch(scalar_class, data_items)
         assert len(record_ids) == 2
 
-        assert scalar_class.load(subject=1, trial=1).data == 10.0
-        assert scalar_class.load(subject=1, trial=2).data == 20.0
+        s1 = scalar_class.load(subject=1, trial=1)
+        assert s1.data == 10.0
+        s2 = scalar_class.load(subject=1, trial=2)
+        assert s2.data == 20.0

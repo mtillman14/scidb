@@ -1,7 +1,7 @@
 """Base class for database-storable variables."""
 
 import itertools
-from typing import Any, Self
+from typing import Any
 
 import pandas as pd
 
@@ -11,7 +11,7 @@ class VariableMeta(type):
 
     This allows expressions like ``Side == "L"`` (at the class level, not
     instance level) to produce ``VariableFilter`` objects for use in the
-    ``where=`` parameter of ``load()`` and ``load_all()``.
+    ``where=`` parameter of ``load()``.
 
     Class-to-class equality (e.g. ``Side == Side``) is preserved so that
     class identity checks still work. Hashing is also preserved so that
@@ -279,103 +279,115 @@ class BaseVariable(metaclass=VariableMeta):
     @classmethod
     def load(
         cls,
+        as_df: bool = False,
+        include_record_id: bool = False,
         version: str = "latest",
-        loc: Any | None = None,
-        iloc: Any | None = None,
-        as_table: bool = False,
         where=None,
         db=None,
         **metadata,
-    ) -> "Self | list[Self] | pd.DataFrame":
+    ) -> "BaseVariable | list[BaseVariable] | pd.DataFrame":
         """
         Load variable(s) from the database.
 
-        Returns a single variable when exactly one record matches, or a list
-        of variables when multiple records match. This allows partial schema
-        key queries to naturally return all matching rows.
-
-        When as_table=True and multiple results match, returns a pandas
-        DataFrame with schema key columns, version key columns,
-        and a data column named after the variable's class name.
+        Returns a single ``BaseVariable`` when exactly one record matches, a
+        ``list`` when multiple records match, or a ``pd.DataFrame`` when
+        ``as_df=True``. Raises ``NotFoundError`` when nothing matches.
 
         Args:
-            version: "latest" for most recent, or specific record_id
-            loc: Optional label-based index selection (like pandas df.loc[]).
-                Supports single values, lists, ranges, or slices.
-            iloc: Optional integer position-based index selection (like pandas df.iloc[]).
-                Supports single values, lists, ranges, or slices.
-            as_table: If True, return a pd.DataFrame when multiple results
-                match instead of a list of variables. Single results still
-                return a single variable instance. Default is False.
+            as_df: If True, return a DataFrame instead of BaseVariable/list.
+                   The DataFrame has columns for each metadata key plus 'data'.
+            include_record_id: If True and as_df=True, include record_id column.
+            version: Which version(s) to return:
+                - "latest" (default): latest version per schema/version-key combination
+                - "all": every stored version
+                - any other string: specific record_id (single-record fast path)
+            where: Optional VariableFilter for additional filtering.
             db: Optional DatabaseManager instance to use instead of the global
                 database. Allows one-shot operations against a specific database
                 without changing the global default.
-            **metadata: Addressing metadata to match
+            **metadata: Addressing metadata to match (partial matching supported).
+                List values are interpreted as "match any" (OR semantics).
 
         Returns:
-            A single variable if one record matches, or
-            a list of variables (or DataFrame if as_table=True) if multiple
-            records match.
+            Single BaseVariable when exactly one record matches,
+            list of BaseVariable when multiple records match, or
+            pandas DataFrame if as_df=True.
 
         Raises:
             NotFoundError: If no matching data found
+            AmbiguousVersionError: If version="latest" and multiple branch-param
+                variants exist at the same schema location
             NotRegisteredError: If this variable type is not registered
             DatabaseNotConfiguredError: If no database is available
-            ValueError: If both loc and iloc are provided
 
         Example:
-            # Load single record (all schema keys provided)
-            var = StepLength.load(subject=1, device="left")
+            # Single result — returned directly
+            var = StepLength.load(subject=1, session="A")
+            print(var.data)
 
-            # Load multiple records (partial schema keys)
+            # Multiple results — returned as list
             vars = StepLength.load(subject=1)
+            for v in vars:
+                print(v.data)
 
             # Load as DataFrame
-            df = StepLength.load(as_table=True, subject=1)
+            df = StepLength.load(as_df=True, subject=1)
 
-            # Load with indexing
-            var = StepLength.load(subject=1, device="left", loc=5)
-
-            # Load from a specific database
-            var = StepLength.load(db=aim2_db, subject=1, device="left")
+            # Load every stored version
+            versions = StepLength.load(version="all", subject=1, session="A")
         """
         from .database import get_database
-
-        if loc is not None and iloc is not None:
-            raise ValueError("Cannot specify both 'loc' and 'iloc'. Use one or the other.")
+        from .exceptions import AmbiguousVersionError, NotFoundError
 
         _db = db or get_database()
 
-        # Loading by specific version/record_id → always single variable
-        if version != "latest" and version is not None:
-            return _db.load(cls, metadata, version=version, loc=loc, iloc=iloc)
+        # Specific record_id fast path
+        if version not in ("latest", "all"):
+            var = _db.load(cls, metadata, version=version)
+            if as_df:
+                row = dict(var.metadata) if var.metadata else {}
+                if include_record_id:
+                    row["record_id"] = var.record_id
+                row["data"] = var.data
+                return pd.DataFrame([row])
+            return var
 
-        # Separate schema metadata from branch_params_filter
-        schema_keys_set = set(_db.dataset_schema_keys)
-        schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
-        branch_params_filter = {k: v for k, v in metadata.items()
-                                 if k not in schema_keys_set} or None
+        if as_df:
+            df = _db.load_all_as_df(
+                cls, metadata,
+                layout="packed",
+                include_rid=include_record_id,
+                version_id=version,
+                where=where,
+            )
+            if df.empty:
+                raise NotFoundError(
+                    f"No {cls.__name__} found matching metadata: {metadata}"
+                )
+            if include_record_id and "__record_id" in df.columns:
+                df = df.rename(columns={"__record_id": "record_id"})
+            return df
 
-        # Query all matching records (latest version per parameter set)
-        from .exceptions import AmbiguousVersionError, NotFoundError
-
-        results = list(_db.load_all(
-            cls, schema_metadata, version_id="latest", where=where,
-            branch_params_filter=branch_params_filter,
-        ))
+        # Generator path: "latest" or "all"
+        if version == "latest":
+            schema_keys_set = set(_db.dataset_schema_keys)
+            schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
+            branch_params_filter = {k: v for k, v in metadata.items()
+                                    if k not in schema_keys_set} or None
+            results = list(_db.load_all(
+                cls, schema_metadata, version_id="latest", where=where,
+                branch_params_filter=branch_params_filter,
+            ))
+        else:  # version == "all"
+            results = list(_db.load_all(cls, metadata, version_id="all", where=where))
 
         if not results:
             raise NotFoundError(
                 f"No {cls.__name__} found matching metadata: {metadata}"
             )
-        elif len(results) == 1:
-            # Single match → return variable directly (with loc/iloc support)
-            if loc is not None or iloc is not None:
-                return _db.load(cls, {}, version=results[0].record_id,
-                                loc=loc, iloc=iloc)
-            return results[0]
-        else:
-            # Multiple results: check if at the same schema location
+
+        if version == "latest" and len(results) > 1:
+            schema_keys_set = set(_db.dataset_schema_keys)
             first_schema = {k: v for k, v in (results[0].metadata or {}).items()
                             if k in schema_keys_set}
             same_schema = all(
@@ -395,121 +407,8 @@ class BaseVariable(metaclass=VariableMeta):
                     lines.append(f"  {bp_str or '(no branch params)'}  "
                                  f"(record_id: {r.record_id!r})")
                 raise AmbiguousVersionError("\n".join(lines))
-            else:
-                # Different schema locations → return list (existing behavior)
-                if as_table:
-                    return cls._results_to_dataframe(results)
-                return results
 
-    @classmethod
-    def _results_to_dataframe(cls, results: list["BaseVariable"]) -> pd.DataFrame:
-        """Convert a list of loaded variables to a DataFrame.
-
-        Columns: schema key columns + version key columns +
-        data column (named after cls.view_name()).
-        """
-        rows = []
-        for var in results:
-            row = dict(var.metadata) if var.metadata else {}
-            row[cls.view_name()] = var.data
-            rows.append(row)
-        return pd.DataFrame(rows)
-
-    @classmethod
-    def load_all(
-        cls,
-        as_df: bool = False,
-        include_record_id: bool = False,
-        version_id: str = "all",
-        where=None,
-        db=None,
-        **metadata,
-    ):
-        """
-        Load all matching variables from the database.
-
-        By default returns a generator for memory-efficient iteration.
-        Use as_df=True to load all records into a pandas DataFrame.
-
-        Args:
-            as_df: If True, return a DataFrame instead of a generator.
-                   The DataFrame has columns for each metadata key plus 'data'.
-            include_record_id: If True and as_df=True, include record_id column.
-            version_id: Which versions to return:
-                - "all" (default): return every version
-                - "latest": return only the latest version per (schema, version_keys)
-            db: Optional DatabaseManager instance to use instead of the global
-                database. Allows one-shot operations against a specific database
-                without changing the global default.
-            **metadata: Addressing metadata to match (partial matching supported).
-                List values are interpreted as "match any" (OR semantics).
-
-        Returns:
-            Generator of variable instances (default), or
-            pandas DataFrame if as_df=True
-
-        Raises:
-            NotRegisteredError: If this variable type is not registered
-            DatabaseNotConfiguredError: If no database is available
-            NotFoundError: If as_df=True and no matching data found
-
-        Example:
-            # Iterate over records (memory-efficient)
-            for signal in ProcessedSignal.load_all(subject=1):
-                print(signal.metadata, signal.data.shape)
-
-            # Load all as DataFrame for analysis
-            df = ProcessedSignal.load_all(subject=1, as_df=True)
-
-            # Batch load: match any of several subjects
-            for var in ProcessedSignal.load_all(subject=[1, 2, 3]):
-                print(var.metadata)
-
-            # Control version selection
-            for var in ProcessedSignal.load_all(subject=1, version_id="latest"):
-                print(var.data)
-
-            # Load from a specific database
-            df = ProcessedSignal.load_all(db=aim2_db, subject=1, as_df=True)
-        """
-        import pandas as pd
-        from .database import get_database
-        from .exceptions import NotFoundError
-
-        _db = db or get_database()
-
-        if not as_df:
-            # Return generator via helper to avoid making this function a generator.
-            # When as_df=False, returns the iterator that constructs one BaseVariable
-            # per record — useful when you need .content_hash, .lineage_hash, or
-            # subclass-specific instance behaviour.  Pay per-record construction cost.
-            # Rule of thumb: if you're going to put the results in a DataFrame anyway,
-            # prefer as_df=True.
-            return cls._load_all_generator(_db, metadata, version_id=version_id, where=where)
-        else:
-            # Delegate to the shared bulk-fetch engine.  When as_df=True, internally
-            # calls db.load_all_as_df (bulk path) which avoids per-record instance
-            # construction and uses vectorised type restoration.
-            df = _db.load_all_as_df(
-                cls, metadata,
-                layout="packed",
-                include_rid=include_record_id,
-                version_id=version_id,
-                where=where,
-            )
-            if df.empty:
-                raise NotFoundError(
-                    f"No {cls.__name__} found matching metadata: {metadata}"
-                )
-            # Rename internal __record_id → record_id for user-facing output.
-            if include_record_id and "__record_id" in df.columns:
-                df = df.rename(columns={"__record_id": "record_id"})
-            return df
-
-    @classmethod
-    def _load_all_generator(cls, db, metadata: dict, version_id: str = "all", where=None):
-        """Helper generator for load_all() to avoid making load_all a generator."""
-        yield from db.load_all(cls, metadata, version_id=version_id, where=where)
+        return results[0] if len(results) == 1 else results
 
     @classmethod
     def list_versions(

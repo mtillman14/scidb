@@ -316,7 +316,7 @@ classdef TestTableRoundTrip < matlab.unittest.TestCase
                     distribute=true);
             end
 
-            all_results = TableVar().load_all();
+            all_results = TableVar().load('version', 'all');
             testCase.verifyEqual(numel(all_results), 3);
 
             for sess = 1:3

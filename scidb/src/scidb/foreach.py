@@ -33,7 +33,7 @@ from .merge import Merge
 # ---------------------------------------------------------------------------
 
 class PerComboLoader:
-    """Sentinel for inputs that need per-combo loading (class lacks load_all).
+    """Sentinel for inputs that need per-combo loading (class lacks bulk load support).
 
     ``spec`` can be:
     - A plain class (has .load())
@@ -50,7 +50,7 @@ class PerComboLoader:
 
 
 class PerComboLoaderMerge:
-    """Sentinel for Merge where some/all constituents lack load_all.
+    """Sentinel for Merge where some/all constituents lack bulk load support.
 
     Holds the original ``scidb.Merge`` spec; ``for_each`` wraps fn to
     resolve each constituent per-combo via cls.load(**combo_metadata).
@@ -1384,7 +1384,7 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
 
     # ColumnSelection: load inner var_type if possible, else per-combo
     if isinstance(var_spec, ColumnSelection):
-        if hasattr(var_spec.var_type, 'load_all'):
+        if hasattr(var_spec.var_type, 'load'):
             loaded_df = _load_var_type_as_spread(var_spec.var_type, db, where)
             return _scifor.ColumnSelection(loaded_df, var_spec.columns)
         return PerComboLoader(var_spec)
@@ -1395,7 +1395,7 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
 
     # Variable type (class with .load()): bulk load or per-combo
     if isinstance(var_spec, type) or hasattr(var_spec, 'load'):
-        if hasattr(var_spec, 'load_all'):
+        if hasattr(var_spec, 'load'):
             return _load_var_type_as_spread(var_spec, db, where)
         return PerComboLoader(var_spec)
 
@@ -1452,10 +1452,10 @@ def _compute_fixed_input_rids(inputs: dict, db) -> dict:
 
 
 def _merge_needs_per_combo(merge_spec: "Merge") -> bool:
-    """Return True if any Merge constituent lacks load_all."""
+    """Return True if any Merge constituent lacks load."""
     for spec in merge_spec.var_specs:
         cls = _get_loadable_class_from_spec(spec)
-        if cls is not None and not hasattr(cls, 'load_all'):
+        if cls is not None and not hasattr(cls, 'load'):
             return True
     return False
 
@@ -1522,7 +1522,7 @@ def _load_var_type_as_spread(
     db_kwargs = {"db": db} if db is not None else {}
     where_kwargs = {"where": where} if where is not None else {}
 
-    loaded = list(var_type.load_all(version_id="latest", **db_kwargs, **where_kwargs))
+    loaded = list(var_type.load(version="latest", **db_kwargs, **where_kwargs))
 
     if not loaded:
         return pd.DataFrame()

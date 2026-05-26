@@ -865,7 +865,7 @@ class TestMultiVariantExclusion:
         assert count == 6, "Should exclude 2 subjects × 3 low_hz values for session=post"
 
         # Verify only pre session remains
-        remaining = list(Filtered.load_all(db=db))
+        remaining = Filtered.load(version="all", db=db)
         assert len(remaining) == 6
         for rec in remaining:
             assert rec.metadata["session"] == "pre"
@@ -875,7 +875,7 @@ class TestMultiVariantExclusion:
         count = db.exclude_variant(Filtered, subject="S01")
         assert count == 6, "Should exclude 2 sessions × 3 low_hz values for subject=S01"
 
-        remaining = list(Filtered.load_all(db=db))
+        remaining = Filtered.load(version="all", db=db)
         assert len(remaining) == 6
         for rec in remaining:
             assert rec.metadata["subject"] == "S02"
@@ -885,7 +885,7 @@ class TestMultiVariantExclusion:
         count = db.exclude_variant(Filtered, low_hz=50)
         assert count == 4, "Should exclude 2 subjects × 2 sessions for low_hz=50"
 
-        remaining = list(Filtered.load_all(db=db))
+        remaining = Filtered.load(version="all", db=db)
         assert len(remaining) == 8  # 4 schema combos × 2 remaining low_hz values
         for rec in remaining:
             assert rec.branch_params["bandpass.low_hz"] in [20, 100]
@@ -895,7 +895,7 @@ class TestMultiVariantExclusion:
         count = db.exclude_variant(Filtered, subject="S01", session="pre", low_hz=20)
         assert count == 1, "Should exclude only the specific variant"
 
-        remaining = list(Filtered.load_all(db=db))
+        remaining = Filtered.load(version="all", db=db)
         assert len(remaining) == 11
 
     def test_include_restores_all_excluded_variants(self, db):
@@ -909,7 +909,7 @@ class TestMultiVariantExclusion:
         assert included_count == 6, "Should re-include same count that was excluded"
 
         # Verify all restored
-        remaining = list(Filtered.load_all(db=db))
+        remaining = Filtered.load(version="all", db=db)
         assert len(remaining) == 12, "All variants should be restored"
 
     def test_exclude_multiple_then_include_subset(self, db):
@@ -921,14 +921,14 @@ class TestMultiVariantExclusion:
         count = db.include_variant(Filtered, subject="S01", session="pre")
         assert count == 3
 
-        remaining = list(Filtered.load_all(db=db))
+        remaining = Filtered.load(version="all", db=db)
         # 6 S02 + 3 S01/pre = 9 total
         assert len(remaining) == 9
 
     def test_load_all_skips_excluded_variants(self, db):
         """load_all should not return excluded variants."""
         # Before exclusion: 12 total records
-        all_before = list(Filtered.load_all(db=db))
+        all_before = Filtered.load(version="all", db=db)
         assert len(all_before) == 12
 
         # Exclude all session=post variants (6 records)
@@ -936,7 +936,7 @@ class TestMultiVariantExclusion:
         assert count == 6
 
         # After exclusion: only session=pre should remain (6 records)
-        all_after = list(Filtered.load_all(db=db))
+        all_after = Filtered.load(version="all", db=db)
         assert len(all_after) == 6
 
         # Verify all remaining records are session=pre
@@ -959,7 +959,7 @@ class TestMultiVariantExclusion:
         assert count2 == 3, "3 low_hz values for (S01, pre)"
 
         # Total excluded: 5 (2 + 3)
-        remaining = list(Filtered.load_all(db=db))
+        remaining = Filtered.load(version="all", db=db)
         assert len(remaining) == 7  # 12 - 5
 
 

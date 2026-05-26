@@ -12,5 +12,6 @@ class RawSignal(BaseVariable):
     schema_version = 1
 
 RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
-raw = RawSignal.load(subject=1, session="A")
+(raw,) = RawSignal.load(subject=1, session="A")  # generator; unpack for single result
+all_versions = list(RawSignal.load(subject=1, session="A", version="all"))
 ```

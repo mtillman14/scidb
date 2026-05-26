@@ -317,21 +317,22 @@ classdef BaseVariable < dynamicprops
         % load
         % -----------------------------------------------------------------
         function result = load(obj, varargin)
-        %LOAD  Load a variable from the database.
+        %LOAD  Load variable(s) from the database.
         %
         %   RESULT = TypeClass().load(Name, Value, ...)
         %
-        %   When multiple records match, returns a MATLAB table by default
-        %   (as_table=true). When as_table=false, returns only the raw data
-        %   values (numeric array or cell array depending on data types).
-        %   When exactly one record matches, returns a single result.
+        %   Returns a single BaseVariable when exactly one record matches
+        %   (default as_table=false), a BaseVariable array when multiple
+        %   records match, or a MATLAB table when as_table=true.
         %
         %   Name-Value Arguments:
         %       Any metadata key-value pairs (e.g. subject=1, session="A")
-        %       version     - Specific record_id to load (default "latest")
-        %       as_table    - If true, return a MATLAB table when multiple
-        %                     results match. If false, return raw data
-        %                     values only. (default true)
+        %       version     - Which version(s) to load:
+        %                     "latest" (default): latest per schema/version-key
+        %                     "all"   : every stored version
+        %                     string  : specific record_id (single result)
+        %       as_table    - If true, always return a MATLAB table (even
+        %                     for a single result). Default false.
         %       categorical - If true, convert metadata columns in the
         %                     result table to categorical (default false).
         %                     Only applies when as_table=true.
@@ -339,17 +340,17 @@ classdef BaseVariable < dynamicprops
         %                     global database
         %
         %   Example:
-        %       % Load as table (default)
-        %       tbl = RawSignal().load(subject=1);
+        %       % Load single record
+        %       var = RawSignal().load(subject=1, session="A");
         %
-        %       % Load as table with categorical metadata
-        %       tbl = RawSignal().load(categorical=true, subject=1);
+        %       % Load all stored versions
+        %       vars = RawSignal().load(version="all", subject=1);
         %
-        %       % Load raw data only (no table, no metadata)
-        %       data = RawSignal().load(as_table=false, subject=1);
+        %       % Load as table
+        %       tbl = RawSignal().load(as_table=true, subject=1);
         %
         %       % Load from a specific database
-        %       tbl = RawSignal().load(db=db2, subject=1);
+        %       var = RawSignal().load(db=db2, subject=1);
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
@@ -363,99 +364,42 @@ classdef BaseVariable < dynamicprops
                 py_db = db_val;
             end
 
-            % If loading by specific version, always return single
-            if version ~= "latest"
-                py_var = py_db.load(py_class, py_metadata, version=char(version));
-                wrapped = scidb.BaseVariable.wrap_py_var(py_var);
-                result = wrapped;
-                return;
-            end
+            if version == "latest" || version == "all"
+                % Bulk path: handles both "latest" and "all"
+                if isempty(where)
+                    bulk = py.sci_matlab.bridge.load_and_extract( ...
+                        py_class, py_metadata, ...
+                        pyargs('version_id', char(version), 'db', py_db));
+                else
+                    bulk = py.sci_matlab.bridge.load_and_extract( ...
+                        py_class, py_metadata, ...
+                        pyargs('version_id', char(version), 'db', py_db, ...
+                               'where', where.py_filter));
+                end
+                n = int64(bulk{'n'});
 
-            % Query all matching records (latest version per parameter set)
-            % load_and_extract keeps generator materialization in Python
-            if isempty(where)
-                bulk = py.sci_matlab.bridge.load_and_extract( ...
-                    py_class, py_metadata, ...
-                    pyargs('version_id', 'latest', 'db', py_db));
-            else
-                bulk = py.sci_matlab.bridge.load_and_extract( ...
-                    py_class, py_metadata, ...
-                    pyargs('version_id', 'latest', 'db', py_db, ...
-                           'where', where.py_filter));
-            end
-            n = int64(bulk{'n'});
+                if n == 0
+                    error('scidb:NotFoundError', 'No %s found matching the given metadata.', type_name);
+                end
 
-            if n == 0
-                error('scidb:NotFoundError', 'No %s found matching the given metadata.', type_name);
-            else
                 results_arr = scidb.BaseVariable.wrap_py_vars_batch(bulk);
 
-                if n == 1
-                    result = results_arr(1);
-                elseif as_table
+                if as_table
                     result = multi_result_to_table(results_arr, type_name, categorical_flag);
+                elseif n == 1
+                    result = results_arr(1);
                 else
-                    % as_table=false: return array of BaseVariable wrappers
                     result = results_arr;
                 end
-            end
-
-
-        end
-
-        % -----------------------------------------------------------------
-        % load_all
-        % -----------------------------------------------------------------
-        function results = load_all(obj, varargin)
-        %LOAD_ALL  Load all variables matching the given metadata.
-        %
-        %   RESULTS = TypeClass().load_all(Name, Value, ...)
-        %
-        %   Returns an array of scidb.BaseVariable objects.
-        %
-        %   Name-Value Arguments:
-        %       version_id - Which versions to return (default "all"):
-        %           "all"    : return every version
-        %           "latest" : return only the latest version per parameter set
-        %           integer  : return only that specific version_id
-        %       db         - Optional DatabaseManager to use instead of the
-        %                    global database
-        %       Any other name-value pairs are metadata filters.
-        %       Non-scalar numeric or string arrays are treated as "match any".
-        %
-        %   Example:
-        %       all_signals = RawSignal().load_all(subject=1);
-        %       latest_only = RawSignal().load_all(subject=1, version_id="latest");
-        %       all_from_db = RawSignal().load_all(db=db2, subject=1);
-
-            type_name = class(obj);
-            py_class = scidb.internal.ensure_registered(type_name);
-
-            [metadata_args, py_version_id, as_table, db_val, where, categorical_flag] = scidb.internal.split_load_all_args(varargin{:});
-            py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
-
-            if isempty(db_val)
-                py_db = py.scidb.database.get_database();
             else
-                py_db = db_val;
-            end
-            % load_and_extract keeps generator materialization in Python
-            if isempty(where)
-                bulk = py.sci_matlab.bridge.load_and_extract( ...
-                    py_class, py_metadata, ...
-                    pyargs('version_id', py_version_id, 'db', py_db));
-            else
-                bulk = py.sci_matlab.bridge.load_and_extract( ...
-                    py_class, py_metadata, ...
-                    pyargs('version_id', py_version_id, 'db', py_db, ...
-                           'where', where.py_filter));
-            end
-            results_arr = scidb.BaseVariable.wrap_py_vars_batch(bulk);
-
-            if as_table && numel(results_arr) > 1
-                results = multi_result_to_table(results_arr, type_name, categorical_flag);
-            else
-                results = results_arr;
+                % Specific record_id fast path
+                py_var = py_db.load(py_class, py_metadata, version=char(version));
+                if as_table
+                    wrapped = scidb.BaseVariable.wrap_py_var(py_var);
+                    result = multi_result_to_table(wrapped, type_name, categorical_flag);
+                else
+                    result = scidb.BaseVariable.wrap_py_var(py_var);
+                end
             end
 
         end
@@ -607,7 +551,7 @@ classdef BaseVariable < dynamicprops
         %   FILT = TypeClass() == value
         %   FILT = TypeClass("column") == value
         %
-        %   Returns a scidb.Filter that can be passed to load/load_all
+        %   Returns a scidb.Filter that can be passed to load()
         %   via the 'where' key. Creates a ColumnFilter when column
         %   selection is active, otherwise creates a VariableFilter.
             if isa(other, 'scidb.BaseVariable')
@@ -1005,7 +949,7 @@ end
 function [metadata_args, version, as_table, db, where, categorical_flag] = split_load_args(varargin)
 %SPLIT_LOAD_ARGS  Separate 'version', 'as_table', 'db', 'where', and 'categorical' from metadata args.
     version = "latest";
-    as_table = true;
+    as_table = false;
     db = [];
     where = [];
     categorical_flag = false;

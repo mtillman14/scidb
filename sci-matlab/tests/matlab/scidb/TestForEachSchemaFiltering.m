@@ -49,7 +49,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
                 'session', []);
 
             % Only 2 of 4 possible combos should have been processed
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 2);
         end
 
@@ -65,7 +65,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
 
             % Explicit values => no filtering; 3 of 4 combos are skipped
             % (only (1,A) has data), but all 4 are attempted
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 1);
         end
 
@@ -85,7 +85,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
             % filtering is skipped so all combos are attempted.
             % (subject=1, session=A) succeeds; no others exist but all
             % are tried because PathInput bypasses filtering.
-            all_results = ScalarVar().load_all();
+            all_results = ScalarVar().load();
             testCase.verifyGreaterThanOrEqual(numel(all_results), 1);
         end
 
@@ -102,7 +102,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
                 'subject', [], ...
                 'session', []);
 
-            all_results = ScalarVar().load_all();
+            all_results = ScalarVar().load();
             testCase.verifyGreaterThanOrEqual(numel(all_results), 1);
         end
 
@@ -120,7 +120,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
 
             % Existing combos: (1,A), (2,A), (3,B). Full product would be
             % 3 subjects * 2 sessions = 6. After filtering: 3.
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 3);
         end
 
@@ -145,7 +145,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
             output = evalc( ...
                 'scidb.for_each(@double_values, struct(''x'', RawSignal()), {ProcessedSignal()}, ''subject'', [], ''session'', [])');
             testCase.verifyTrue(~contains(output, '[info] filtered'));
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 4);
         end
 
@@ -162,7 +162,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
                 'subject', [], ...
                 'session', []);
 
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 2);
         end
 
@@ -197,7 +197,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
                 'session', []);
 
             % 3 of 4 possible combos exist: (1,X), (2,Y), (1,Y)
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 3);
         end
 
@@ -246,7 +246,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
                 'session', []);
 
             % Must match the 4 files on disk — not the 6-combo product.
-            all_results = ScalarVar().load_all();
+            all_results = ScalarVar().load();
             testCase.verifyEqual(numel(all_results), 4, ...
                 'PathInput re-run invented combos that have no file on disk.');
         end
@@ -271,7 +271,7 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
                 'session', "A");
 
             % Only subjects 1 and 2 should run even though subject 3 is on disk.
-            all_results = ScalarVar().load_all();
+            all_results = ScalarVar().load();
             testCase.verifyEqual(numel(all_results), 2);
         end
 

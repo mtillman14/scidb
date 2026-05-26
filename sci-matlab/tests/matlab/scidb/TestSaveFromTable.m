@@ -96,8 +96,8 @@ classdef TestSaveFromTable < matlab.unittest.TestCase
 
             testCase.verifyEqual(ids1, ids2);
 
-            % load_all should return exactly 2 records, not 4
-            results = ScalarVar().load_all('subject', [1, 2]);
+            % load should return exactly 2 records, not 4
+            results = ScalarVar().load('subject', [1, 2], 'version', 'all');
             testCase.verifyEqual(numel(results), 2);
         end
 

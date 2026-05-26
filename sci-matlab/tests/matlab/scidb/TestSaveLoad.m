@@ -142,35 +142,36 @@ classdef TestSaveLoad < matlab.unittest.TestCase
             testCase.verifyEqual(result.data, [4 5 6]', 'AbsTol', 1e-10);
         end
 
-        % --- load_all ---
+        % --- version="all" (load all stored versions) ---
 
         function test_load_all_returns_all_matching(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
             RawSignal().save([7 8 9], 'subject', 1, 'session', 'A');
-            results = RawSignal().load_all('subject', 1, 'session', 'A');
+            results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             testCase.verifyEqual(numel(results), 3);
         end
 
         function test_load_all_each_is_thunk_output(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
-            results = RawSignal().load_all('subject', 1, 'session', 'A');
+            results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             for i = 1:numel(results)
                 testCase.verifyClass(results(i), 'scidb.BaseVariable');
             end
         end
 
-        function test_load_all_empty_returns_empty_array(testCase)
-            results = RawSignal().load_all('subject', 999, 'session', 'Z');
-            testCase.verifyEmpty(results);
+        function test_load_all_empty_raises_error(testCase)
+            testCase.verifyError( ...
+                @() RawSignal().load('subject', 999, 'session', 'Z', 'version', 'all'), ...
+                'scidb:NotFoundError');
         end
 
         function test_load_all_filtered_by_metadata(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'B');
             RawSignal().save([7 8 9], 'subject', 2, 'session', 'A');
-            results = RawSignal().load_all('subject', 1);
+            results = RawSignal().load('subject', 1, 'version', 'all');
             testCase.verifyEqual(numel(results), 2);
         end
 
@@ -182,31 +183,31 @@ classdef TestSaveLoad < matlab.unittest.TestCase
                 'scidb:NotFoundError');
         end
 
-        % --- Record properties via load_all ---
+        % --- Record properties via version="all" ---
 
         function test_loaded_record_id_populated(testCase)
             saved_id = RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            results = RawSignal().load_all('subject', 1, 'session', 'A');
+            results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             testCase.verifyEqual(char(results(1).record_id), char(saved_id));
         end
 
         function test_loaded_metadata_populated(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            results = RawSignal().load_all('subject', 1, 'session', 'A');
+            results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             testCase.verifyTrue(isfield(results(1).metadata, 'subject'));
             testCase.verifyTrue(isfield(results(1).metadata, 'session'));
         end
 
         function test_loaded_content_hash_populated(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            results = RawSignal().load_all('subject', 1, 'session', 'A');
+            results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             testCase.verifyTrue(strlength(results(1).content_hash) > 0);
         end
 
         function test_loaded_content_hash_differs_for_different_data(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'B');
-            results = RawSignal().load_all('subject', 1);
+            results = RawSignal().load('subject', 1, 'version', 'all');
             hashes = arrayfun(@(r) r.content_hash, results);
             testCase.verifyNotEqual(hashes(1), hashes(2));
         end
@@ -214,7 +215,7 @@ classdef TestSaveLoad < matlab.unittest.TestCase
         function test_raw_data_has_empty_lineage_hash(testCase)
             % Raw data (not from a LineageFcn) should have no lineage hash
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            results = RawSignal().load_all('subject', 1, 'session', 'A');
+            results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             testCase.verifyEqual(results(1).lineage_hash, string.empty);
         end
 

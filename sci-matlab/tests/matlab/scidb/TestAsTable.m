@@ -97,7 +97,7 @@ classdef TestAsTable < matlab.unittest.TestCase
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
 
-            result = RawSignal().load_all('as_table', true, 'subject', 1, 'session', 'A');
+            result = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all', 'as_table', true);
             testCase.verifyTrue(isa(result, 'table'));
             testCase.verifyEqual(height(result), 2);
         end
@@ -107,12 +107,12 @@ classdef TestAsTable < matlab.unittest.TestCase
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
 
-            result = RawSignal().load_all('as_table', false, 'subject', 1, 'session', 'A');
+            result = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all', 'as_table', false);
             testCase.verifyTrue(isa(result, 'scidb.BaseVariable'));
             testCase.verifyEqual(numel(result), 2);
 
             % test default is 'false'
-            result = RawSignal().load_all('subject', 1, 'session', 'A');
+            result = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
             testCase.verifyTrue(isa(result, 'scidb.BaseVariable'));
             testCase.verifyEqual(numel(result), 2);
         end

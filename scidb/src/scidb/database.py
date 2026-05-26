@@ -1549,6 +1549,8 @@ class DatabaseManager:
                             )
                     vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
                     if k in vk:
+                        if isinstance(v, (list, tuple)):
+                            return vk[k] in v
                         return vk[k] == v
                     return _match_branch_param(bp, k, v)
                 df = df[df.apply(_match_row, axis=1)]
@@ -2272,7 +2274,7 @@ class DatabaseManager:
                     result[k] = str(v) if (k in schema_keys_set and stringify_schema and v is not None) else v
                 return result
             else:
-                # Packed: include all metadata (current BaseVariable.load_all behaviour).
+                # Packed: include all metadata (current BaseVariable.load(as_df=True) behaviour).
                 return meta
 
         is_spread = (layout == "spread")
@@ -2515,7 +2517,7 @@ class DatabaseManager:
 
         Shared engine for two callers:
 
-        * ``BaseVariable.load_all(as_df=True)`` — ``layout="packed"``, one row per
+        * ``BaseVariable.load(as_df=True)`` — ``layout="packed"``, one row per
           record, data stored in a ``"data"`` column.
         * ``foreach._convert_inputs`` — ``layout="spread"``, DataFrame-mode variables
           produce one output row per inner-table row; data columns are spread across

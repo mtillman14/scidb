@@ -171,7 +171,7 @@ classdef TestForEachTimingInstrumentation < matlab.unittest.TestCase
             fprintf('[timing-test] scidb.for_each complete in %.2fs\n', toc(run_t0));
 
             % Verify outputs landed (one DummyOut per combo).
-            results = DummyOut().load_all();
+            results = DummyOut().load('version', 'all');
             testCase.verifyEqual(numel(results), n_records, ...
                 sprintf('expected %d DummyOut records, got %d', ...
                         n_records, numel(results)));

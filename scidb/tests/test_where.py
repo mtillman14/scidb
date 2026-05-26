@@ -1,4 +1,4 @@
-"""Integration tests for the where= filter parameter in load() and load_all().
+"""Integration tests for the where= filter parameter in load().
 
 Tests verify that:
 - Basic equality filters work end-to-end
@@ -111,14 +111,14 @@ class TestBasicEqualityFilter:
 
     def test_load_all_with_eq_filter(self, populated_db):
         """load_all with where=Side=='L' returns only left-side records."""
-        results = list(StepLength.load_all(where=Side == "L"))
+        results = StepLength.load(where=Side == "L")
         assert len(results) == 2
         for var in results:
             assert var.data in (0.65, 0.68)
 
     def test_load_all_returns_right_side(self, populated_db):
         """load_all with where=Side=='R' returns only right-side records."""
-        results = list(StepLength.load_all(where=Side == "R"))
+        results = StepLength.load(where=Side == "R")
         assert len(results) == 2
         for var in results:
             assert var.data in (0.72, 0.75)
@@ -129,9 +129,9 @@ class TestBasicEqualityFilter:
         # subject=1, Side="L" → trial=1 → StepLength=0.65
         assert result.data == pytest.approx(0.65)
 
-    def test_load_all_as_df_with_filter(self, populated_db):
-        """load_all(as_df=True) with where= filter returns filtered DataFrame."""
-        df = StepLength.load_all(as_df=True, where=Side == "L")
+    def test_load_as_df_with_filter(self, populated_db):
+        """load(as_df=True) with where= filter returns filtered DataFrame."""
+        df = StepLength.load(as_df=True, where=Side == "L")
         assert len(df) == 2
         # All returned data should be left-side step lengths
         assert sorted(df["data"].tolist()) == pytest.approx(sorted([0.65, 0.68]))
@@ -141,28 +141,28 @@ class TestBasicEqualityFilter:
         with pytest.raises(NotFoundError):
             StepLength.load(subject=1, where=Side == "X")
 
-    def test_load_all_no_matches_returns_empty(self, populated_db):
-        """load_all (generator) that matches nothing yields nothing."""
-        results = list(StepLength.load_all(where=Side == "X"))
-        assert results == []
+    def test_load_no_matches_raises_not_found(self, populated_db):
+        """load() that matches nothing raises NotFoundError."""
+        with pytest.raises(NotFoundError):
+            StepLength.load(where=Side == "X")
 
     def test_gt_filter(self, populated_db):
         """where=Speed > 1.3 filters out slow trials."""
-        results = list(StepLength.load_all(where=Speed > 1.3))
+        results = StepLength.load(where=Speed > 1.3)
         assert len(results) == 2
         for var in results:
             assert var.data in (0.72, 0.75)
 
     def test_lt_filter(self, populated_db):
         """where=Speed < 1.3 returns only slow trials."""
-        results = list(StepLength.load_all(where=Speed < 1.3))
+        results = StepLength.load(where=Speed < 1.3)
         assert len(results) == 2
         for var in results:
             assert var.data in (0.65, 0.68)
 
     def test_ne_filter(self, populated_db):
         """where=Side != 'L' is equivalent to where=Side == 'R'."""
-        results = list(StepLength.load_all(where=Side != "L"))
+        results = StepLength.load(where=Side != "L")
         assert len(results) == 2
         for var in results:
             assert var.data in (0.72, 0.75)
@@ -177,21 +177,20 @@ class TestCompoundFilter:
 
     def test_and_filter(self, populated_db):
         """(Side == 'L') & (Speed > 1.15) matches only subject=1, trial=1."""
-        results = list(StepLength.load_all(where=(Side == "L") & (Speed > 1.15)))
-        assert len(results) == 1
-        assert results[0].data == pytest.approx(0.65)
+        result = StepLength.load(where=(Side == "L") & (Speed > 1.15))
+        assert result.data == pytest.approx(0.65)
 
     def test_or_filter(self, populated_db):
         """(Side == 'L') | (Speed > 1.5) = left side OR high speed."""
         # Left side: subject=1 trial=1, subject=2 trial=1
         # Speed > 1.5: subject=2 trial=2
         # Union: 3 records
-        results = list(StepLength.load_all(where=(Side == "L") | (Speed > 1.5)))
+        results = StepLength.load(where=(Side == "L") | (Speed > 1.5))
         assert len(results) == 3
 
     def test_not_filter(self, populated_db):
         """~(Side == 'L') is equivalent to Side != 'L'."""
-        results = list(StepLength.load_all(where=~(Side == "L")))
+        results = StepLength.load(where=~(Side == "L"))
         assert len(results) == 2
         for var in results:
             assert var.data in (0.72, 0.75)
@@ -199,7 +198,7 @@ class TestCompoundFilter:
     def test_triple_and_filter(self, populated_db):
         """Three conditions AND'd together."""
         f = (Side == "L") & (Speed > 1.0) & (Speed < 1.3)
-        results = list(StepLength.load_all(where=f))
+        results = StepLength.load(where=f)
         # subject=1 trial=1: L, speed=1.2 (1.0<1.2<1.3 ✓)
         # subject=2 trial=1: L, speed=1.1 (1.0<1.1<1.3 ✓)
         assert len(results) == 2
@@ -214,14 +213,14 @@ class TestColumnFilter:
 
     def test_column_eq_filter(self, columnar_db):
         """GaitData['Side'] == 'L' filters StepLength to left-side only."""
-        results = list(StepLength.load_all(where=GaitData["Side"] == "L"))
+        results = StepLength.load(where=GaitData["Side"] == "L")
         assert len(results) == 2
         for var in results:
             assert var.data in (0.65, 0.68)
 
     def test_column_gt_filter(self, columnar_db):
         """GaitData['Speed'] > 1.3 filters to high-speed trials."""
-        results = list(StepLength.load_all(where=GaitData["Speed"] > 1.3))
+        results = StepLength.load(where=GaitData["Speed"] > 1.3)
         assert len(results) == 2
         for var in results:
             assert var.data in (0.72, 0.75)
@@ -229,18 +228,17 @@ class TestColumnFilter:
     def test_column_compound_filter(self, columnar_db):
         """Combine column filter with compound AND."""
         f = (GaitData["Side"] == "L") & (GaitData["Speed"] > 1.15)
-        results = list(StepLength.load_all(where=f))
-        assert len(results) == 1
-        assert results[0].data == pytest.approx(0.65)
+        result = StepLength.load(where=f)
+        assert result.data == pytest.approx(0.65)
 
     def test_column_isin_filter(self, columnar_db):
         """GaitData['Side'].isin(['L']) matches left-side only."""
-        results = list(StepLength.load_all(where=GaitData["Side"].isin(["L"])))
+        results = StepLength.load(where=GaitData["Side"].isin(["L"]))
         assert len(results) == 2
 
     def test_column_isin_both_sides(self, columnar_db):
         """isin with both values returns all."""
-        results = list(StepLength.load_all(where=GaitData["Side"].isin(["L", "R"])))
+        results = StepLength.load(where=GaitData["Side"].isin(["L", "R"]))
         assert len(results) == 4
 
 
@@ -254,7 +252,7 @@ class TestRawSqlFilter:
     def test_raw_sql_basic(self, populated_db):
         """raw_sql applied to the target variable (StepLength) directly."""
         # Filter StepLength by its own value column
-        results = list(StepLength.load_all(where=raw_sql('"value" > 0.70')))
+        results = StepLength.load(where=raw_sql('"value" > 0.70'))
         assert len(results) == 2
         for var in results:
             assert var.data > 0.70
@@ -262,7 +260,7 @@ class TestRawSqlFilter:
     def test_raw_sql_invalid_raises(self, populated_db):
         """Invalid SQL in raw_sql raises a ValueError."""
         with pytest.raises(ValueError, match="Invalid where= SQL"):
-            list(StepLength.load_all(where=raw_sql("INVALID SQL SYNTAX !!!@@@")))
+            StepLength.load(where=raw_sql("INVALID SQL SYNTAX !!!@@@"))
 
 
 # ===========================================================================
@@ -280,7 +278,7 @@ class TestFilterErrorCases:
             schema_version = 1
 
         with pytest.raises(ValueError, match="not registered"):
-            list(StepLength.load_all(where=UnknownVar == "X"))
+            StepLength.load(where=UnknownVar == "X")
 
     def test_filter_finer_than_target_raises(self, tmp_path):
         """Filter at finer schema level than target raises ValueError."""
@@ -310,7 +308,7 @@ class TestFilterErrorCases:
         # TrialStepLength is at trial level, SubjectHeight is at subject level
         # Using TrialStepLength as a FILTER for SubjectHeight → finer than target
         with pytest.raises(ValueError, match="finer than target"):
-            list(SubjectHeight.load_all(where=TrialStepLength == 0.65))
+            SubjectHeight.load(where=TrialStepLength == 0.65)
 
         db.close()
 
@@ -328,7 +326,7 @@ class TestFilterErrorCases:
         # Missing: subject=2, trial=1 and subject=2, trial=2
 
         with pytest.raises(ValueError, match="missing data at"):
-            list(StepLength.load_all(where=Side == "L"))
+            StepLength.load(where=Side == "L")
 
 
 # ===========================================================================
@@ -365,7 +363,7 @@ class TestCoarseFilterExpansion:
 
         # Filter: only tall subjects (height > 170) → subject=1
         # This should expand to include both trials for subject=1
-        results = list(TrialStepLength.load_all(where=SubjectHeight > 170.0))
+        results = TrialStepLength.load(where=SubjectHeight > 170.0)
         assert len(results) == 2
         for var in results:
             assert var.data in (0.65, 0.70)

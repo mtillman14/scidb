@@ -131,7 +131,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             StepLength().save(0.55, db=obj.db, subject=2);
             StepLength().save(0.60, db=obj.db, subject=3);
 
-            results = StepLength().load_all( ...
+            results = StepLength().load( ...
                 where=Side() == "L", db=obj.db);
 
             obj.assertEqual(numel(results), 2);
@@ -151,7 +151,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             StepLength().save(0.55, db=obj.db, subject="SS02");
             StepLength().save(0.60, db=obj.db, subject="SS03");
 
-            results = StepLength().load_all( ...
+            results = StepLength().load( ...
                 where=Side() == "L", db=obj.db);
 
             obj.assertEqual(numel(results), 2);
@@ -168,7 +168,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             StepLength().save(0.65, db=obj.db, subject=1);
             StepLength().save(0.55, db=obj.db, subject=2);
 
-            results = StepLength().load_all( ...
+            results = StepLength().load( ...
                 where=~(Side() == "L"), db=obj.db);
 
             obj.assertEqual(numel(results), 1);
@@ -187,7 +187,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             StepLength().save(0.55, db=obj.db, subject=2);
             StepLength().save(0.60, db=obj.db, subject=3);
 
-            results = StepLength().load_all( ...
+            results = StepLength().load( ...
                 where=(Side() == "L") & (ScalarVar() > 1.0), db=obj.db);
 
             % Only subject 1: side=L AND scalarvar > 1.0
@@ -201,7 +201,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             StepLength().save(0.45, db=obj.db, subject=2);
             StepLength().save(0.55, db=obj.db, subject=3);
 
-            results = StepLength().load_all( ...
+            results = StepLength().load( ...
                 where=scidb.raw_sql('"value" > 0.60'), db=obj.db);
 
             obj.assertEqual(numel(results), 1);
@@ -273,7 +273,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             TargetVar().save(300, db=obj.db, subject=3);
 
             % Filter where col_a ~= 0 (should exclude subject 3)
-            results = TargetVar().load_all( ...
+            results = TargetVar().load( ...
                 where=TabularVar("col_a") ~= 0, db=obj.db);
 
             obj.assertEqual(numel(results), 2);
@@ -296,7 +296,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             TargetVar().save(300, db=obj.db, subject=3);
 
             % Filter where side == "L" (should get subjects 1 and 3)
-            results = TargetVar().load_all( ...
+            results = TargetVar().load( ...
                 where=TabularVar("side") == "L", db=obj.db);
 
             obj.assertEqual(numel(results), 2);
@@ -319,7 +319,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             TargetVar().save(300, db=obj.db, subject=3);
 
             % Filter where speed > 1.0 (should get subjects 1 and 2)
-            results = TargetVar().load_all( ...
+            results = TargetVar().load( ...
                 where=TabularVar("speed") > 1.0, db=obj.db);
 
             obj.assertEqual(numel(results), 2);
@@ -346,7 +346,7 @@ classdef TestWhereFilter < matlab.unittest.TestCase
             TargetVar().save(300, db=obj.db, subject=3);
 
             % Column filter AND variable filter
-            results = TargetVar().load_all( ...
+            results = TargetVar().load( ...
                 where=(TabularVar("side") == "L") & (Side() == "L"), ...
                 db=obj.db);
 

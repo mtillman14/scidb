@@ -60,7 +60,7 @@ fprintf("Computed by: %s\n", p.function_name);
 ```
 MATLAB (user code)
    │
-   ├── scidb.BaseVariable   ← instance methods: save, load, load_all, list_versions, provenance
+   ├── scidb.BaseVariable   ← instance methods: save, load, list_versions, provenance
    ├── scidb.LineageFcn      ← wraps function handle, orchestrates cache check / execute
    │
    └── py. interface ──────────────────────────────┐
@@ -119,8 +119,9 @@ All methods are called on instances of BaseVariable subclasses:
 | Method | Description |
 |---|---|
 | `Type().save(data, name=val, ...)` | Save data with metadata |
-| `Type().load(name=val, ...)` | Load latest matching data |
-| `Type().load_all(name=val, ...)` | Load all matching data |
+| `Type().load(name=val, ...)` | Load latest matching data (single or array) |
+| `Type().load(name=val, 'version', 'all', ...)` | Load all stored versions |
+| `Type().load(name=val, 'version', id, ...)` | Load a specific record by record_id |
 | `Type().list_versions(name=val, ...)` | List all versions |
 | `Type().provenance(name=val, ...)` | Get lineage information |
 

@@ -1,12 +1,12 @@
-"""Filter classes for the where= parameter in load() and load_all().
+"""Filter classes for the where= parameter in load().
 
 Filters allow users to restrict which records are loaded based on the values
 of another variable. Example:
 
     StepLength.load(where=Side == "L", subject=1)
-    StepLength.load_all(where=(Side == "L") & (Speed > 1.2))
-    StepLength.load_all(where=MyVar["Side"] == "L")
-    StepLength.load_all(where=raw_sql('"Side" = \\'L\\''))
+    StepLength.load(where=(Side == "L") & (Speed > 1.2))
+    StepLength.load(where=MyVar["Side"] == "L")
+    StepLength.load(where=raw_sql('"Side" = \\'L\\''))
 
 Filters are resolved at query time by inspecting the filter variable's data
 table to determine which schema_ids match the condition. The resulting set of
@@ -130,7 +130,7 @@ def _resolve_variable_schema_ids(
     """Query a filter variable's data table and return matching schema_ids.
 
     Uses "latest version per parameter set" semantics — same as
-    load_all(version_id="latest").
+    load(version="latest").
 
     Args:
         db: The DatabaseManager instance.
@@ -715,7 +715,7 @@ def raw_sql(sql: str) -> RawFilter:
         sql: A SQL WHERE condition fragment (no WHERE keyword).
 
     Example:
-        StepLength.load_all(where=raw_sql('"Side" = \\'L\\''))
+        StepLength.load(where=raw_sql('"Side" = \\'L\\''))
     """
     return RawFilter(sql)
 

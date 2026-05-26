@@ -73,7 +73,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', ["A", "B"]);
 
             % Should produce 2 * 2 = 4 outputs
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 4);
         end
 
@@ -196,8 +196,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'session', "A");
 
             % Nothing should be saved
-            results = ProcessedSignal().load_all('subject', 1, 'session', 'A');
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load('subject', 1, 'session', 'A'), 'scidb:NotFoundError');
         end
 
         % --- save=false ---
@@ -212,8 +211,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'subject', 1, ...
                 'session', "A");
 
-            results = ProcessedSignal().load_all('subject', 1, 'session', 'A');
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load('subject', 1, 'session', 'A'), 'scidb:NotFoundError');
         end
 
         % --- Multiple outputs ---
@@ -268,8 +266,7 @@ classdef TestForEach < matlab.unittest.TestCase
             testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
 
             % Subject 2 should be skipped (no input data)
-            results = ProcessedSignal().load_all('subject', 2, 'session', 'A');
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load('subject', 2, 'session', 'A'), 'scidb:NotFoundError');
         end
 
         % --- Parallel mode ---
@@ -310,7 +307,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'subject', [1 2], ...
                 'session', ["A", "B"]);
 
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 4);
         end
 
@@ -343,8 +340,7 @@ classdef TestForEach < matlab.unittest.TestCase
             r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
             testCase.verifyEqual(r1.data, [2 4 6]', 'AbsTol', 1e-10);
 
-            results = ProcessedSignal().load_all('subject', 2, 'session', 'A');
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load('subject', 2, 'session', 'A'), 'scidb:NotFoundError');
         end
 
         function test_parallel_false_is_default(testCase)
@@ -451,8 +447,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'subject', 1, ...
                 'session', "A");
 
-            results = ProcessedSignal().load_all('subject', 1, 'session', 'A');
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load('subject', 1, 'session', 'A'), 'scidb:NotFoundError');
         end
 
         function test_column_selection_non_table_skips_iteration(testCase)
@@ -465,8 +460,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 'subject', 1, ...
                 'session', "A");
 
-            results = ProcessedSignal().load_all('subject', 1, 'session', 'A');
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load('subject', 1, 'session', 'A'), 'scidb:NotFoundError');
         end
 
         % --- Multiple subjects and sessions ---
@@ -631,7 +625,7 @@ classdef TestForEach < matlab.unittest.TestCase
             end
 
             % Exactly 3 session records — not 6 — should exist
-            all_results = ProcessedSignal().load_all();
+            all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 3);
 
             % Data must be correct (second run didn't corrupt anything)
@@ -656,8 +650,7 @@ classdef TestForEach < matlab.unittest.TestCase
                 dry_run=true ...
             );
 
-            results = ProcessedSignal().load_all();
-            testCase.verifyEmpty(results);
+            testCase.verifyError(@() ProcessedSignal().load(), 'scidb:NotFoundError');
         end
     end
 end

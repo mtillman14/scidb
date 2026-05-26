@@ -177,16 +177,16 @@ classdef TestDataRoundTrip < matlab.unittest.TestCase
             data = [1 2 3 4 5];
             RawSignal().save(data, 'subject', 16);
             RawSignal().save(data, 'subject', 17);
-            r1 = RawSignal().load_all('subject', 16);
-            r2 = RawSignal().load_all('subject', 17);
+            r1 = RawSignal().load('subject', 16, 'version', 'all');
+            r2 = RawSignal().load('subject', 17, 'version', 'all');
             testCase.verifyEqual(r1(1).content_hash, r2(1).content_hash);
         end
 
         function test_content_hash_changes_with_data(testCase)
             RawSignal().save([1 2 3], 'subject', 18);
             RawSignal().save([1 2 4], 'subject', 19);
-            r1 = RawSignal().load_all('subject', 18);
-            r2 = RawSignal().load_all('subject', 19);
+            r1 = RawSignal().load('subject', 18, 'version', 'all');
+            r2 = RawSignal().load('subject', 19, 'version', 'all');
             testCase.verifyNotEqual(r1(1).content_hash, r2(1).content_hash);
         end
     end
