@@ -590,13 +590,12 @@ def for_each_prepare(
     state.config_keys["__fn_hash"] = fn_hash
 
     # PathInput special case: scidb's _load_input wraps PathInput in a
-    # PerComboLoader because PathInput has no load_all (its load() is
-    # template substitution, not DB lookup). MATLAB's +scifor/for_each.m
+    # PerComboLoader because PathInput's load() is template substitution,
+    # not a DB lookup — it cannot be bulk-loaded. MATLAB's +scifor/for_each.m
     # natively handles scifor.PathInput when _resolve_pathinput=true is
     # set, so unwrap the sentinel back to the PathInput instance and let
-    # MATLAB resolve it per-combo. Other per-combo loader kinds (e.g.
-    # ColumnSelection over a no-load_all type) are not yet supported on
-    # the MATLAB path; surface a clear error so the user knows.
+    # MATLAB resolve it per-combo. Other per-combo loader kinds are not
+    # yet supported on the MATLAB path; surface a clear error so the user knows.
     from scifor.pathinput import PathInput as _SciforPathInput
     from scidb.fixed import Fixed as _ScidbFixed
     unsupported_per_combo = []
@@ -624,8 +623,9 @@ def for_each_prepare(
         raise NotImplementedError(
             f"MATLAB-driven scidb.for_each does not yet support per-combo "
             f"loaders for inputs: {unsupported_per_combo}. These arise when "
-            f"a Fixed/Merge/ColumnSelection wraps a variable type without "
-            f"load_all. Use load_all-capable types, or call from Python."
+            f"a PathInput or Fixed(PathInput) is wrapped in a ColumnSelection "
+            f"or Merge, or when a variable type cannot be bulk-loaded. "
+            f"Call from Python instead, or restructure to use bulk-loadable types."
         )
 
     # --- Sanitize __rid_* artifacts at the MATLAB boundary ---

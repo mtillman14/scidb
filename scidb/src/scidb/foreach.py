@@ -1337,7 +1337,17 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
 
     # Merge: check if any constituent needs per-combo loading
     if isinstance(var_spec, Merge):
-        if _merge_needs_per_combo(var_spec):
+        _merge_db = db
+        if _merge_db is None:
+            try:
+                from scidb.database import get_database
+                _merge_db = get_database()
+            except Exception:
+                pass
+        if _merge_needs_per_combo(var_spec) or _merge_db is None:
+            # Use per-combo when a constituent lacks bulk-load support, or when
+            # there is genuinely no database — without one, the bulk loader
+            # cannot filter each constituent by schema keys.
             return PerComboLoaderMerge(var_spec)
         # All constituents can be pre-loaded.
         # ``where=`` is intentionally NOT propagated to Merge constituents:
@@ -1348,8 +1358,24 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
         # constituent has data for). The where filter still affects the
         # surrounding for_each call via __where in version_keys.
         loaded_tables = []
+        _SCIDB_META = {"__record_id", "__branch_params", "version"}
         for sub_spec in var_spec.var_specs:
-            loaded_tables.append(_load_input(sub_spec, db, where=None))
+            loaded = _load_input(sub_spec, db, where=None)
+            # Strip scidb metadata columns that would conflict when merged column-wise.
+            # __record_id/__branch_params/version appear in every constituent but carry
+            # no per-row meaning after merge; scifor's _prepare_merge doesn't track them.
+            if isinstance(loaded, pd.DataFrame):
+                drop_cols = [c for c in loaded.columns
+                             if c in _SCIDB_META or c.startswith("__")]
+                if drop_cols:
+                    loaded = loaded.drop(columns=drop_cols)
+            elif hasattr(loaded, 'data') and isinstance(loaded.data, pd.DataFrame):
+                # _scifor.Fixed wrapping a DataFrame
+                drop_cols = [c for c in loaded.data.columns
+                             if c in _SCIDB_META or c.startswith("__")]
+                if drop_cols:
+                    loaded.data = loaded.data.drop(columns=drop_cols)
+            loaded_tables.append(loaded)
         return _scifor.Merge(*loaded_tables)
 
     # Fixed: check for Fixed(Merge(...)) error, then load inner
@@ -1393,10 +1419,23 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
     if isinstance(var_spec, PathInput):
         return PerComboLoader(var_spec)
 
-    # Variable type (class with .load()): bulk load or per-combo
+    # Variable type (class with .load()): bulk load or per-combo.
+    # Use bulk loading only when the DB provides load_all_as_df; without it
+    # the slow-path cannot build a properly-keyed spread DataFrame (it only
+    # calls load() once with version/db kwargs, not per combo metadata), so
+    # fall back to per-combo loading — same logic as Merge above.
     if isinstance(var_spec, type) or hasattr(var_spec, 'load'):
         if hasattr(var_spec, 'load'):
-            return _load_var_type_as_spread(var_spec, db, where)
+            _check_db = db
+            if _check_db is None:
+                try:
+                    from scidb.database import get_database
+                    _check_db = get_database()
+                except Exception:
+                    pass
+            if _check_db is not None and hasattr(_check_db, 'load_all_as_df'):
+                return _load_var_type_as_spread(var_spec, db, where)
+            return PerComboLoader(var_spec)
         return PerComboLoader(var_spec)
 
     # Unknown — return as-is
@@ -1522,7 +1561,8 @@ def _load_var_type_as_spread(
     db_kwargs = {"db": db} if db is not None else {}
     where_kwargs = {"where": where} if where is not None else {}
 
-    loaded = list(var_type.load(version="latest", **db_kwargs, **where_kwargs))
+    _raw = var_type.load(version="latest", **db_kwargs, **where_kwargs)
+    loaded = _raw if isinstance(_raw, list) else [_raw]
 
     if not loaded:
         return pd.DataFrame()
@@ -1571,14 +1611,26 @@ def _load_var_type_as_spread(
             result = pd.DataFrame()
     elif all_have_data:
         view_name = var_type.view_name() if hasattr(var_type, 'view_name') else getattr(var_type, '__name__', type(var_type).__name__)
-        rows = []
+        all_data = []
+        all_meta_rows = []
         for var in loaded:
-            row = _stringify_meta(dict(var.metadata) if hasattr(var, 'metadata') and var.metadata else {})
-            row[view_name] = var.data
-            row["__record_id"] = getattr(var, 'record_id', None)
-            row["__branch_params"] = json.dumps(getattr(var, 'branch_params', None) or {})
-            rows.append(row)
-        result = pd.DataFrame(rows)
+            # Use _to_dataframe so scalars/arrays/lists expand into proper rows
+            # (consistent with PerComboLoaderMerge and the DataFrame branch above)
+            part_df = _to_dataframe(var.data, view_name)
+            meta = _stringify_meta(dict(var.metadata) if hasattr(var, 'metadata') and var.metadata else {})
+            meta["__record_id"] = getattr(var, 'record_id', None)
+            meta["__branch_params"] = json.dumps(getattr(var, 'branch_params', None) or {})
+            nr = len(part_df)
+            for _ in range(nr):
+                all_meta_rows.append(dict(meta))
+            all_data.append(part_df.reset_index(drop=True))
+        if all_meta_rows:
+            combined_meta_df = pd.DataFrame(all_meta_rows)
+            combined_data_df = pd.concat(all_data, ignore_index=True)
+            result = pd.concat([combined_meta_df.reset_index(drop=True),
+                                combined_data_df.reset_index(drop=True)], axis=1)
+        else:
+            result = pd.DataFrame()
     else:
         var_name = getattr(var_type, '__name__', type(var_type).__name__)
         rows = []
