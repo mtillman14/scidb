@@ -616,7 +616,7 @@ def for_each_prepare(
                 spec.var_type, **dict(spec.fixed_metadata)
             )
             continue
-        # Anything else (e.g. ColumnSelection over a no-load_all var type)
+        # Anything else (e.g. ColumnSelection over a var type with no load support)
         # is not yet supported on the MATLAB path.
         unsupported_per_combo.append(k)
     if unsupported_per_combo:
@@ -1602,7 +1602,7 @@ def wrap_batch_bridge(py_vars_list):
 def load_and_extract(py_class, metadata_dict, version_id='latest', db=None, where=None):
     """Load all matching variables and extract fields in bulk.
 
-    Combines load_all -> list -> wrap_batch_bridge in one Python call.
+    Combines load -> list -> wrap_batch_bridge in one Python call.
     The intermediate BaseVariable list and data arrays stay in Python
     (accessed later via get_batch_item).  Only lightweight strings/JSON
     cross back to MATLAB.
@@ -1629,7 +1629,7 @@ def load_and_extract(py_class, metadata_dict, version_id='latest', db=None, wher
 
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
 
-    gen = _db.load_all(py_class, dict(metadata_dict), version_id=version_id, where=where)
+    gen = _db.load(py_class, dict(metadata_dict), version_id=version_id, where=where)
     py_vars = list(gen)  # materializes entirely in Python
     return wrap_batch_bridge(py_vars)
 

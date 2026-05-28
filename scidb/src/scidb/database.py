@@ -2151,76 +2151,6 @@ class DatabaseManager:
 
         return records
 
-    def load(
-        self,
-        variable_class: Type[BaseVariable],
-        metadata: dict,
-        version: str = "latest",
-        loc: Any = None,
-        iloc: Any = None,
-        where=None,
-    ) -> BaseVariable:
-        """
-        Load a single variable matching the given metadata.
-
-        Args:
-            variable_class: The type to load
-            metadata: Flat metadata dict
-            version: "latest" for most recent, or specific record_id
-            loc: Optional label-based index selection
-            iloc: Optional integer position-based index selection
-            where: Optional Filter for restricting which records are loaded.
-                When data was saved via for_each with a where= condition, the
-                filter is stored as a __where version key. At load time, this
-                parameter first tries to match by version key, then falls back
-                to schema-level filtering for backward compatibility.
-
-        Returns:
-            The matching variable instance
-        """
-        type_name = variable_class.__name__
-        user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
-        Log.info(f"load({type_name}): metadata={user_summary}")
-        table_name = self._ensure_registered(variable_class, auto_register=True)
-
-        try:
-            if version != "latest" and version is not None:
-                # Load by specific record_id — always include excluded for direct lookup
-                records = self._find_record(
-                    variable_class.__name__, record_id=version, include_excluded=True,
-                )
-                if len(records) == 0:
-                    raise NotFoundError(f"No data found with record_id '{version}'")
-            elif where is not None:
-                # where= specified: first try version_keys filtering (__where)
-                records = self._load_with_where(
-                    variable_class, metadata, table_name, where
-                )
-            else:
-                # Load by metadata (latest version per parameter set)
-                nested_metadata = self._split_metadata(metadata)
-                records = self._find_record(variable_class.__name__, nested_metadata=nested_metadata, version_id="latest")
-                if len(records) == 0:
-                    raise NotFoundError(
-                        f"No {variable_class.__name__} found matching metadata: {metadata}"
-                    )
-
-            # Take the first (latest) record
-            row = records.iloc[0]
-        except NotFoundError:
-            Log.warn(f"load({type_name}): not found for metadata={user_summary}")
-            raise
-        except Exception as e:
-            if "does not exist" in str(e).lower() or "not found" in str(e).lower():
-                Log.warn(f"load({type_name}): not found for metadata={user_summary}")
-                raise NotFoundError(
-                    f"No {variable_class.__name__} found matching metadata: {metadata}"
-                )
-            raise
-
-        rid = row.get("record_id", "?")
-        Log.info(f"load({type_name}): found record_id={str(rid)[:12]}")
-        return self._load_by_record_row(variable_class, row, loc=loc, iloc=iloc)
 
     # -------------------------------------------------------------------------
     # Bulk DataFrame loading engine
@@ -2241,7 +2171,7 @@ class DatabaseManager:
     ) -> pd.DataFrame:
         """Slow fallback: load via instance iterator, then assemble DataFrame.
 
-        Mirrors the output shape of the fast path but uses ``db.load_all()`` so
+        Mirrors the output shape of the fast path but uses ``db.load()`` so
         it is always correct regardless of dtype or subclass customisation.
         """
         schema_keys_set = set(self.dataset_schema_keys)
@@ -2252,7 +2182,7 @@ class DatabaseManager:
         )
 
         loaded = list(
-            self.load_all(
+            self.load(
                 variable_class, metadata,
                 version_id=version_id, where=where,
                 branch_params_filter=branch_params_filter,
@@ -2542,7 +2472,7 @@ class DatabaseManager:
         Fall-back
         ---------
         Any violated condition routes to ``_load_as_df_via_iterator``, which uses the
-        ``db.load_all()`` iterator and assembles row-by-row.  Output shape is identical.
+        ``db.load()`` iterator and assembles row-by-row.  Output shape is identical.
 
         Parameters
         ----------
@@ -2680,7 +2610,7 @@ class DatabaseManager:
         )
         return result
 
-    def load_all(
+    def load(
         self,
         variable_class: Type[BaseVariable],
         metadata: dict,
@@ -2689,7 +2619,7 @@ class DatabaseManager:
         branch_params_filter: dict | None = None,
     ):
         """
-        Load all variables matching the given metadata as a generator.
+        Load variables matching the given metadata as a generator.
 
         Args:
             variable_class: The type to load
@@ -2697,6 +2627,7 @@ class DatabaseManager:
             version_id: Which versions to return:
                 - "all" (default): return every version
                 - "latest": return only the latest version per (schema_id, version_keys)
+                - any other string: treated as a specific record_id
             where: Optional Filter for restricting which records are loaded.
                 First tries version_keys filtering (__where), then falls back
                 to schema-level filtering for backward compatibility.
@@ -2707,12 +2638,20 @@ class DatabaseManager:
         """
         type_name = variable_class.__name__
         user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
-        Log.info(f"load_all({type_name}): metadata={user_summary}")
+        Log.info(f"load({type_name}): metadata={user_summary}")
         _t_load_all_total = time.perf_counter()
         table_name = self._ensure_registered(variable_class, auto_register=True)
 
         _t_find = time.perf_counter()
-        if where is not None:
+
+        # Specific record_id: bypass normal filtering
+        if version_id not in ("all", "latest") and version_id is not None:
+            records = self._find_record(
+                variable_class.__name__, record_id=version_id, include_excluded=True,
+            )
+            if len(records) == 0:
+                raise NotFoundError(f"No data found with record_id '{version_id}'")
+        elif where is not None:
             # where= specified: first try version_keys filtering (__where)
             try:
                 records = self._load_with_where(
@@ -2720,7 +2659,7 @@ class DatabaseManager:
                     version_id=version_id,
                 )
             except NotFoundError:
-                Log.info(f"load_all({type_name}): no records found")
+                Log.info(f"load({type_name}): no records found")
                 return
         else:
             nested_metadata = self._split_metadata(metadata)
@@ -2731,15 +2670,15 @@ class DatabaseManager:
                     branch_params_filter=branch_params_filter,
                 )
             except NotFoundError:
-                Log.info(f"load_all({type_name}): no records found")
+                Log.info(f"load({type_name}): no records found")
                 return  # No data
 
             if len(records) == 0:
-                Log.info(f"load_all({type_name}): no records found")
+                Log.info(f"load({type_name}): no records found")
                 return
         t_find = time.perf_counter() - _t_find
 
-        Log.info(f"load_all({type_name}): found {len(records)} record(s)")
+        Log.info(f"load({type_name}): found {len(records)} record(s)")
 
         # --- Bulk loading path ---
 
@@ -2848,7 +2787,7 @@ class DatabaseManager:
         n_chunks = (len(all_record_ids) + chunk_size - 1) // chunk_size
         _mode_str = 'custom' if is_custom else dtype_meta.get('mode', 'single_column')
         Log.info(
-            f"[timing] load_all({type_name}): pre-yield setup: "
+            f"[timing] load({type_name}): pre-yield setup: "
             f"find={t_find:.3f}s, dtype_lookup={t_dtype:.3f}s, "
             f"chunks_total={t_chunks_total:.3f}s "
             f"(sql={t_chunk_sql:.3f}s, deserialize={t_chunk_deserialize:.3f}s, "
@@ -2899,7 +2838,7 @@ class DatabaseManager:
         t_total = time.perf_counter() - _t_load_all_total
         _caller_overhead = t_total - t_find - t_chunks_total - t_yield_body - t_dtype
         Log.info(
-            f"[timing] load_all({type_name}): TOTAL={t_total:.3f}s "
+            f"[timing] load({type_name}): TOTAL={t_total:.3f}s "
             f"(find={t_find:.3f}s, chunks={t_chunks_total:.3f}s, "
             f"yield_body={t_yield_body:.3f}s for {n_yielded} records, "
             f"caller_overhead~={_caller_overhead:.3f}s)"
@@ -3142,7 +3081,7 @@ class DatabaseManager:
         if version:
             record_id = version
         else:
-            var = self.load(variable_class, metadata)
+            var = next(self.load(variable_class, metadata, version_id="latest"))
             record_id = var.record_id
 
         rows = self._duck._fetchall(
@@ -3914,7 +3853,7 @@ class DatabaseManager:
         **metadata,
     ) -> int:
         """Export matching variables to a CSV file."""
-        results = list(self.load_all(variable_class, metadata))
+        results = list(self.load(variable_class, metadata))
 
         if not results:
             raise NotFoundError(
@@ -3972,7 +3911,7 @@ class DatabaseManager:
 
             try:
                 # Load data from DuckDB
-                var = self.load(var_class, {}, version=record_id)
+                var = next(self.load(var_class, {}, version_id=record_id))
                 results.append(var.data)
             except (KeyError, NotFoundError):
                 # Record not found

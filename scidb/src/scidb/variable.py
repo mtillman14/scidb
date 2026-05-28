@@ -343,7 +343,7 @@ class BaseVariable(metaclass=VariableMeta):
 
         # Specific record_id fast path
         if version not in ("latest", "all"):
-            var = _db.load(cls, metadata, version=version)
+            var = next(_db.load(cls, metadata, version_id=version))
             if as_df:
                 row = dict(var.metadata) if var.metadata else {}
                 if include_record_id:
@@ -374,12 +374,12 @@ class BaseVariable(metaclass=VariableMeta):
             schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
             branch_params_filter = {k: v for k, v in metadata.items()
                                     if k not in schema_keys_set} or None
-            results = list(_db.load_all(
+            results = list(_db.load(
                 cls, schema_metadata, version_id="latest", where=where,
                 branch_params_filter=branch_params_filter,
             ))
         else:  # version == "all"
-            results = list(_db.load_all(cls, metadata, version_id="all", where=where))
+            results = list(_db.load(cls, metadata, version_id="all", where=where))
 
         if not results:
             raise NotFoundError(
@@ -553,7 +553,7 @@ class BaseVariable(metaclass=VariableMeta):
 
         _db = db or get_database()
         results = list(itertools.islice(
-            _db.load_all(cls, metadata, version_id="latest"), n
+            _db.load(cls, metadata, version_id="latest"), n
         ))
         if not results:
             return pd.DataFrame()

@@ -291,7 +291,7 @@ class TestAggregationDropsEmptySchemaColumns:
         RawSignal.save(3.0, subject="S02", session="1")
 
         for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                 subject=["S01", "S02"], save=False)
+                 subject=["S01", "S02"], save=False, as_table=True)
 
         # The function should have received a DataFrame whose columns do
         # NOT include the all-null 'cycle' key.
@@ -309,7 +309,7 @@ class TestAggregationDropsEmptySchemaColumns:
         RawSignal.save(2.0, subject="S01", session="2", cycle="B")
 
         for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                 subject=["S01"], save=False)
+                 subject=["S01"], save=False, as_table=True)
 
         assert _last_call["type"] == "dataframe"
         assert "cycle" in _last_call["columns"], (
