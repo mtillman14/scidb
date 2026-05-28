@@ -410,15 +410,15 @@ classdef BaseVariable < dynamicprops
         function tbl = head(obj, n, varargin)
         %HEAD  Peek at the first N records (latest version).
         %
-        %   TBL = TypeClass().head()          % first record
-        %   TBL = TypeClass().head(5)         % first 5 records
+        %   TBL = TypeClass().head()          % first 5 records
+        %   TBL = TypeClass().head(10)        % first 10 records
         %   TBL = TypeClass().head(3, subject=1)  % first 3 for subject 1
         %
         %   Returns a MATLAB table with schema key columns and a 'data'
         %   column.  Returns an empty table if no records exist.
         %
         %   Arguments:
-        %       n  - Number of records to return (default 1)
+        %       n  - Number of records to return (default 5)
         %
         %   Name-Value Arguments:
         %       db - Optional DatabaseManager to use instead of the global
@@ -426,7 +426,7 @@ classdef BaseVariable < dynamicprops
         %       Any other name-value pairs are metadata filters.
 
             if nargin < 2
-                n = 1;
+                n = 5;
             end
 
             type_name = class(obj);

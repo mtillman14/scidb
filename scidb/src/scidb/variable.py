@@ -527,7 +527,7 @@ class BaseVariable(metaclass=VariableMeta):
         return _db.save_batch(cls, data_items)
 
     @classmethod
-    def head(cls, n: int = 1, db=None, **metadata) -> pd.DataFrame:
+    def head(cls, n: int = 5, db=None, **metadata) -> pd.DataFrame:
         """
         Peek at the first N records of this variable (latest version).
 
@@ -535,7 +535,7 @@ class BaseVariable(metaclass=VariableMeta):
         loading everything.
 
         Args:
-            n: Number of records to return. Default is 1.
+            n: Number of records to return. Default is 5.
             db: Optional DatabaseManager instance to use instead of the
                 global database.
             **metadata: Optional metadata filters (e.g., subject=1).
@@ -545,8 +545,8 @@ class BaseVariable(metaclass=VariableMeta):
             Returns an empty DataFrame if no records exist.
 
         Example:
-            StepLength.head()       # first record
-            StepLength.head(5)      # first 5 records
+            StepLength.head()       # first 5 records
+            StepLength.head(10)     # first 10 records
             StepLength.head(3, subject=1)  # first 3 for subject 1
         """
         from .database import get_database
