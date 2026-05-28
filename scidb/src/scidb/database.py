@@ -562,6 +562,7 @@ class DatabaseManager:
         self._ensure_record_metadata_table()
         self._ensure_lineage_table()
         self._ensure_for_each_expected_table()
+        self._ensure_schema_overrides_table()
 
         self._closed = False # Track connection open/closed state
 
@@ -635,6 +636,11 @@ class DatabaseManager:
                 PRIMARY KEY (function_name, call_id, schema_id, branch_params)
             )
         """)
+
+    def _ensure_schema_overrides_table(self):
+        """Create __scidb_schema_overrides for persistent schema-level exclusions."""
+        from .exclusions import ensure_overrides_table
+        ensure_overrides_table(self)
 
     def _create_variable_view(self, variable_class: Type[BaseVariable]):
         """Create a view joining a variable table with _schema via _record_metadata."""

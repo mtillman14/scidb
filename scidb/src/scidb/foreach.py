@@ -628,6 +628,17 @@ def _for_each_prepare(
                         if tuple(_schema_str(combo[i]) for i in schema_indices) in existing_set
                     ]
 
+        # Apply schema exclusions to dry-run combos (mirrors Step 9.5)
+        if _dryrun_all_combos is not None:
+            _dry_excl_db = db or resolved_db
+            if _dry_excl_db is not None:
+                from .exclusions import filter_excluded_combos
+                _dryrun_all_combos = filter_excluded_combos(
+                    _dryrun_all_combos,
+                    _dry_excl_db.dataset_schema_keys,
+                    _dry_excl_db,
+                )
+
         scifor_kwargs = dict(metadata_iterables)
         if _dryrun_all_combos is not None:
             scifor_kwargs["_all_combos"] = _dryrun_all_combos
@@ -691,6 +702,39 @@ def _for_each_prepare(
             all_combos = filtered
     else:
         Log.info("[scidb] Step 9: skipping combo pre-filtering (no empty list resolution or PathInput detected)")
+
+    # Step 9.5: Schema exclusions — add override hash to version_keys and filter combos.
+    _exclusion_db = db or resolved_db
+    if _exclusion_db is None:
+        try:
+            from scidb.database import get_database
+            _exclusion_db = get_database()
+        except Exception:
+            _exclusion_db = None
+
+    if _exclusion_db is not None:
+        from .exclusions import get_schema_overrides_hash, filter_excluded_combos
+        _overrides_hash = get_schema_overrides_hash(_exclusion_db)
+        config_keys["__schema_overrides_hash"] = _overrides_hash
+        Log.info(f"[scidb] Step 9.5: schema overrides hash = {_overrides_hash}")
+
+        if all_combos is not None:
+            _before = len(all_combos)
+            all_combos = filter_excluded_combos(
+                all_combos,
+                _exclusion_db.dataset_schema_keys,
+                _exclusion_db,
+            )
+            _after = len(all_combos)
+            if _before != _after:
+                msg = (f"schema exclusions removed {_before - _after} combo(s) "
+                       f"(from {_before} to {_after})")
+                print(f"[info] {msg}")
+        else:
+            Log.info("[scidb] Step 9.5: all_combos is None (explicit iterables); "
+                     "exclusion filtering will be skipped at combo level")
+    else:
+        Log.info("[scidb] Step 9.5: no database available, skipping schema exclusion filtering")
 
     # Step 10: Load all inputs into DataFrames (with __record_id and __branch_params)
     Log.info(f"[scidb] Step 10: loading {len(inputs)} input(s) into DataFrames")

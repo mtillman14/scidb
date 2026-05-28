@@ -49,6 +49,7 @@ from scifor import Col, set_schema, get_schema, PathInput
 from .variable import BaseVariable
 from .filters import raw_sql
 from .constant import Constant, constant
+from .exclusions import exclude_schema, include_schema, list_exclusions
 from .discover import (
     DiscoveryResult,
     ModuleError,
@@ -97,6 +98,10 @@ __all__ = [
     "get_schema",
     # Filter utilities
     "raw_sql",
+    # Schema exclusions
+    "exclude_schema",
+    "include_schema",
+    "list_exclusions",
     # Exceptions
     "SciStackError",
     "NotRegisteredError",
