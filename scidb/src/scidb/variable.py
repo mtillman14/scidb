@@ -280,10 +280,10 @@ class BaseVariable(metaclass=VariableMeta):
     def load(
         cls,
         as_df: bool = False,
-        include_record_id: bool = False,
         version: str = "latest",
         where=None,
         db=None,
+        introspect: bool = False,
         **metadata,
     ) -> "BaseVariable | list[BaseVariable] | pd.DataFrame":
         """
@@ -296,7 +296,6 @@ class BaseVariable(metaclass=VariableMeta):
         Args:
             as_df: If True, return a DataFrame instead of BaseVariable/list.
                    The DataFrame has columns for each metadata key plus 'data'.
-            include_record_id: If True and as_df=True, include record_id column.
             version: Which version(s) to return:
                 - "latest" (default): latest version per schema/version-key combination
                 - "all": every stored version
@@ -305,6 +304,10 @@ class BaseVariable(metaclass=VariableMeta):
             db: Optional DatabaseManager instance to use instead of the global
                 database. Allows one-shot operations against a specific database
                 without changing the global default.
+            introspect: If True, attach call-context attributes to returned
+                BaseVariable instances (.where, .version_mode), or append
+                introspection columns to the right of a DataFrame result
+                (record_id, branch_params, content_hash, where, version_mode).
             **metadata: Addressing metadata to match (partial matching supported).
                 List values are interpreted as "match any" (OR semantics).
 
@@ -335,6 +338,10 @@ class BaseVariable(metaclass=VariableMeta):
 
             # Load every stored version
             versions = StepLength.load(version="all", subject=1, session="A")
+
+            # Inspect internal metadata for a loaded variable
+            var = StepLength.load(subject=1, session="A", introspect=True)
+            print(var.record_id, var.branch_params, var.where)
         """
         from .database import get_database
         from .exceptions import AmbiguousVersionError, NotFoundError
@@ -344,19 +351,26 @@ class BaseVariable(metaclass=VariableMeta):
         # Specific record_id fast path
         if version not in ("latest", "all"):
             var = next(_db.load(cls, metadata, version_id=version))
+            if introspect:
+                var.where = where
+                var.version_mode = version
             if as_df:
-                row = dict(var.metadata) if var.metadata else {}
-                if include_record_id:
-                    row["record_id"] = var.record_id
-                row["data"] = var.data
-                return pd.DataFrame([row])
+                return _build_introspect_df([var], where, version) if introspect \
+                    else _build_packed_df([var])
             return var
 
         if as_df:
+            if introspect:
+                instances = _load_instances(cls, metadata, version, where, _db)
+                if not instances:
+                    raise NotFoundError(
+                        f"No {cls.__name__} found matching metadata: {metadata}"
+                    )
+                return _build_introspect_df(instances, where, version)
             df = _db.load_all_as_df(
                 cls, metadata,
                 layout="packed",
-                include_rid=include_record_id,
+                include_rid=False,
                 version_id=version,
                 where=where,
             )
@@ -364,8 +378,6 @@ class BaseVariable(metaclass=VariableMeta):
                 raise NotFoundError(
                     f"No {cls.__name__} found matching metadata: {metadata}"
                 )
-            if include_record_id and "__record_id" in df.columns:
-                df = df.rename(columns={"__record_id": "record_id"})
             return df
 
         # Generator path: "latest" or "all"
@@ -407,6 +419,11 @@ class BaseVariable(metaclass=VariableMeta):
                     lines.append(f"  {bp_str or '(no branch params)'}  "
                                  f"(record_id: {r.record_id!r})")
                 raise AmbiguousVersionError("\n".join(lines))
+
+        if introspect:
+            for r in results:
+                r.where = where
+                r.version_mode = version
 
         return results[0] if len(results) == 1 else results
 
@@ -587,3 +604,52 @@ class BaseVariable(metaclass=VariableMeta):
         if self.record_id:
             return f"{type_name}(record_id={self.record_id[:12]}...)"
         return f"{type_name}(data={type(self.data).__name__})"
+
+
+# ---------------------------------------------------------------------------
+# load() helpers (module-level so they stay out of the class namespace)
+# ---------------------------------------------------------------------------
+
+def _load_instances(cls, metadata, version, where, _db):
+    """Return a list of BaseVariable instances for the given version/metadata."""
+    if version == "latest":
+        schema_keys_set = set(_db.dataset_schema_keys)
+        schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
+        branch_params_filter = {k: v for k, v in metadata.items()
+                                if k not in schema_keys_set} or None
+        return list(_db.load(
+            cls, schema_metadata, version_id="latest", where=where,
+            branch_params_filter=branch_params_filter,
+        ))
+    return list(_db.load(cls, metadata, version_id="all", where=where))
+
+
+def _build_packed_df(instances):
+    """Build the standard packed-layout DataFrame from a list of instances."""
+    rows = []
+    for var in instances:
+        row = dict(var.metadata) if var.metadata else {}
+        row["data"] = var.data
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _build_introspect_df(instances, where, version):
+    """Build a packed DataFrame with introspection columns appended to the right.
+
+    Column order: metadata keys → data → record_id → branch_params →
+    content_hash → where → version_mode
+    """
+    rows = []
+    for var in instances:
+        row = dict(var.metadata) if var.metadata else {}
+        row["data"] = var.data
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    df["record_id"] = [var.record_id for var in instances]
+    df["branch_params"] = [var.branch_params or {} for var in instances]
+    df["content_hash"] = [var.content_hash for var in instances]
+    df["where"] = repr(where) if where is not None else None
+    df["version_mode"] = version
+    return df

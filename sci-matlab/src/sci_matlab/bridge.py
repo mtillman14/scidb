@@ -693,6 +693,7 @@ def for_each_prepare(
         "outputs": outputs,
         "db": db,
         "rid_rename_map": rid_rename_map,
+        "where": where,
     }
 
     from scidb.log import Log as _BridgeLog
@@ -771,7 +772,7 @@ def for_each_describe_loaded_input(val):
     return {"kind": "raw", "value": val}
 
 
-def for_each_save(handle, result_dataframes, save: bool = True):
+def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool = False):
     """Bridge entry: run scidb.for_each's save phase.
 
     Parameters
@@ -788,6 +789,11 @@ def for_each_save(handle, result_dataframes, save: bool = True):
     save : bool
         If False, run the save phase with ``save=False`` (schema restore
         still happens; no records are written).
+    introspect : bool
+        If True, append introspection columns to the returned DataFrame
+        (_record_id_*, _branch_params_*, _call_id, _config_keys, _where).
+        _branch_params_* and _config_keys are JSON strings for MATLAB
+        compatibility; all other introspect columns are plain strings.
 
     Returns
     -------
@@ -857,7 +863,7 @@ def for_each_save(handle, result_dataframes, save: bool = True):
         f"columns={list(result_tbl.columns)}"
     )
 
-    return _for_each_save_resolved(
+    result_tbl = _for_each_save_resolved(
         state=state,
         result_tbl=result_tbl,
         inputs=inputs,
@@ -866,6 +872,20 @@ def for_each_save(handle, result_dataframes, save: bool = True):
         db=db if db is not None and not isinstance(db, type(None)) else None,
         lineage_fixed_rids=None,
     )
+
+    if introspect and result_tbl is not None and not result_tbl.empty:
+        import json as _json
+        from scidb.foreach import _apply_introspect
+        cached_where = cached.get("where")
+        result_tbl = _apply_introspect(result_tbl, state, cached_where)
+        # Serialize dict-valued columns to JSON strings for MATLAB compatibility.
+        for col in list(result_tbl.columns):
+            if col.startswith("_branch_params_"):
+                result_tbl[col] = result_tbl[col].apply(
+                    lambda x: _json.dumps(x) if isinstance(x, dict) else str(x)
+                )
+
+    return result_tbl
 
 
 def pathinput_project_root() -> str:
@@ -1487,6 +1507,7 @@ def wrap_batch_bridge(py_vars_list):
     content_hashes = []
     lineage_hashes = []
     meta_dicts = []
+    branch_params_list = []
     data = []
 
     for v in py_vars:
@@ -1496,6 +1517,7 @@ def wrap_batch_bridge(py_vars_list):
         lineage_hashes.append(lh if lh is not None else '')
         meta = v.metadata
         meta_dicts.append(dict(meta) if meta is not None else {})
+        branch_params_list.append(json.dumps(v.branch_params or {}))
         data.append(v.data)
 
     # Cache data for non-scalar fallback access
@@ -1509,6 +1531,7 @@ def wrap_batch_bridge(py_vars_list):
         'content_hashes': '\n'.join(content_hashes),
         'lineage_hashes': '\n'.join(lineage_hashes),
         'json_meta': json.dumps(meta_dicts),
+        'json_branch_params': '\n'.join(branch_params_list),
     }
 
     # Scalar fast path: pack all data into a single numpy array

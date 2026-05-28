@@ -318,7 +318,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % --- Call #2: Python save ---
     save_t0 = tic;
     py_result_df = py.sci_matlab.bridge.for_each_save( ...
-        handle, py_result_dfs, pyargs('save', logical(do_save)));
+        handle, py_result_dfs, pyargs('save', logical(do_save), ...
+                                      'introspect', logical(opts.introspect)));
     scidb.Log.info('for_each_save returned in %.3fs', toc(save_t0));
 
     % --- Convert returned DataFrame to MATLAB table ---
@@ -376,6 +377,45 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
             catch
                 % Best-effort coercion only; leave column as-is on failure.
             end
+        end
+    end
+
+    % --- Parse introspect dict columns from JSON strings to structs ---
+    % Python's for_each_save serializes _branch_params_* as JSON strings for
+    % MATLAB compatibility. Convert them back to structs here.
+    if opts.introspect && ~isempty(result_tbl) && istable(result_tbl)
+        col_names = string(result_tbl.Properties.VariableNames);
+        bp_cols = col_names(startsWith(col_names, "_branch_params_"));
+        for ci = 1:numel(bp_cols)
+            col = char(bp_cols(ci));
+            json_col = result_tbl.(col);
+            struct_col = cell(height(result_tbl), 1);
+            for ri = 1:height(result_tbl)
+                val = json_col(ri);
+                if isstring(val) || ischar(val)
+                    try
+                        struct_col{ri} = jsondecode(char(val));
+                    catch
+                        struct_col{ri} = struct();
+                    end
+                else
+                    struct_col{ri} = struct();
+                end
+            end
+            result_tbl.(col) = struct_col;
+        end
+        % _config_keys is also a JSON string — parse to struct.
+        if ismember("_config_keys", col_names)
+            ck_col = result_tbl.("_config_keys");
+            ck_struct = cell(height(result_tbl), 1);
+            for ri = 1:height(result_tbl)
+                try
+                    ck_struct{ri} = jsondecode(char(ck_col(ri)));
+                catch
+                    ck_struct{ri} = struct();
+                end
+            end
+            result_tbl.("_config_keys") = ck_struct;
         end
     end
 
@@ -778,6 +818,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.db = [];
     opts.distribute = false;
     opts.where = [];
+    opts.introspect = false;
     opts.fn_name_override = '';
     opts.fn_hash_override = '';
 
@@ -823,6 +864,9 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2; continue;
                 case "where"
                     opts.where = varargin{i+1};
+                    i = i + 2; continue;
+                case "introspect"
+                    opts.introspect = logical(varargin{i+1});
                     i = i + 2; continue;
                 case "_fn_name"
                     opts.fn_name_override = char(varargin{i+1});

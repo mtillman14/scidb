@@ -26,6 +26,7 @@ classdef BaseVariable < dynamicprops
         data                    % MATLAB data
         record_id    string     % Unique record ID
         metadata     struct     % Metadata key-value pairs
+        branch_params struct    % Branch parameters (computational variant discriminator)
         content_hash string     % Content hash (16-char hex)
         lineage_hash string     % Lineage hash (64-char hex), empty if raw
         py_obj                  % Python BaseVariable shadow (internal)
@@ -46,6 +47,7 @@ classdef BaseVariable < dynamicprops
         %   Single column returns a numeric/cell array; multiple columns
         %   return a MATLAB subtable.
             obj.metadata = struct();
+            obj.branch_params = struct();
             obj.selected_columns = string.empty;
             if nargin >= 1
                 cols = varargin{1};
@@ -338,6 +340,11 @@ classdef BaseVariable < dynamicprops
         %                     Only applies when as_table=true.
         %       db          - Optional DatabaseManager to use instead of the
         %                     global database
+        %       introspect  - If true, attach call-context fields to each
+        %                     returned BaseVariable (.where, .version_mode),
+        %                     or append introspection columns to a table
+        %                     result (record_id, branch_params, content_hash,
+        %                     where, version_mode). Default false.
         %
         %   Example:
         %       % Load single record
@@ -349,13 +356,15 @@ classdef BaseVariable < dynamicprops
         %       % Load as table
         %       tbl = RawSignal().load(as_table=true, subject=1);
         %
-        %       % Load from a specific database
-        %       var = RawSignal().load(db=db2, subject=1);
+        %       % Inspect internal metadata
+        %       var = RawSignal().load(subject=1, session="A", introspect=true);
+        %       disp(var.record_id); disp(var.branch_params); disp(var.where);
 
             type_name = class(obj);
             py_class = scidb.internal.ensure_registered(type_name);
 
-            [metadata_args, version, as_table, db_val, where, categorical_flag] = split_load_args(varargin{:});
+            [metadata_args, version, as_table, db_val, where, categorical_flag, introspect] = ...
+                split_load_args(varargin{:});
             py_metadata = scidb.internal.metadata_to_pydict(metadata_args{:});
 
             if isempty(db_val)
@@ -386,19 +395,41 @@ classdef BaseVariable < dynamicprops
 
                 if as_table
                     result = multi_result_to_table(results_arr, type_name, categorical_flag);
-                elseif n == 1
-                    result = results_arr(1);
+                    if introspect
+                        result = append_introspect_columns(result, results_arr, where, version);
+                    end
                 else
-                    result = results_arr;
+                    if introspect
+                        for ii = 1:numel(results_arr)
+                            results_arr(ii).addprop('where');
+                            results_arr(ii).where = where;
+                            results_arr(ii).addprop('version_mode');
+                            results_arr(ii).version_mode = version;
+                        end
+                    end
+                    if n == 1
+                        result = results_arr(1);
+                    else
+                        result = results_arr;
+                    end
                 end
             else
                 % Specific record_id fast path
                 py_var = py_db.load(py_class, py_metadata, version=char(version));
+                wrapped = scidb.BaseVariable.wrap_py_var(py_var);
                 if as_table
-                    wrapped = scidb.BaseVariable.wrap_py_var(py_var);
                     result = multi_result_to_table(wrapped, type_name, categorical_flag);
+                    if introspect
+                        result = append_introspect_columns(result, wrapped, where, version);
+                    end
                 else
-                    result = scidb.BaseVariable.wrap_py_var(py_var);
+                    if introspect
+                        wrapped.addprop('where');
+                        wrapped.where = where;
+                        wrapped.addprop('version_mode');
+                        wrapped.version_mode = version;
+                    end
+                    result = wrapped;
                 end
             end
 
@@ -738,6 +769,11 @@ classdef BaseVariable < dynamicprops
                 v.metadata = scidb.internal.pydict_to_struct(py_meta);
             end
 
+            py_bp = py_var.branch_params;
+            if ~isa(py_bp, 'py.NoneType') && ~isempty(py_bp)
+                v.branch_params = scidb.internal.pydict_to_struct(py_bp);
+            end
+
         end
 
         function results = wrap_py_vars_batch(bulk)
@@ -766,6 +802,7 @@ classdef BaseVariable < dynamicprops
             record_ids     = splitlines(string(bulk{'record_ids'}));
             content_hashes = splitlines(string(bulk{'content_hashes'}));
             lineage_hashes = splitlines(string(bulk{'lineage_hashes'}));
+            branch_params_json = splitlines(string(bulk{'json_branch_params'}));
 
             % Parse all metadata at once via JSON (native C decoder, no crossings)
             json_str = char(bulk{'json_meta'});
@@ -941,6 +978,15 @@ classdef BaseVariable < dynamicprops
 
                 v.metadata = meta_cell{i};
 
+                try
+                    bp = jsondecode(branch_params_json{i});
+                    if isstruct(bp)
+                        v.branch_params = bp;
+                    end
+                catch
+                    % leave branch_params as default empty struct on parse failure
+                end
+
                 results(i) = v;
             end
 
@@ -955,13 +1001,15 @@ end
 % Local helper functions
 % =========================================================================
 
-function [metadata_args, version, as_table, db, where, categorical_flag] = split_load_args(varargin)
-%SPLIT_LOAD_ARGS  Separate 'version', 'as_table', 'db', 'where', and 'categorical' from metadata args.
+function [metadata_args, version, as_table, db, where, categorical_flag, introspect] = split_load_args(varargin)
+%SPLIT_LOAD_ARGS  Separate 'version', 'as_table', 'db', 'where', 'categorical',
+%   and 'introspect' from metadata args.
     version = "latest";
     as_table = false;
     db = [];
     where = [];
     categorical_flag = false;
+    introspect = false;
     metadata_args = {};
 
     i = 1;
@@ -983,6 +1031,9 @@ function [metadata_args, version, as_table, db, where, categorical_flag] = split
             i = i + 2;
         elseif strcmpi(key, 'categorical') && i < numel(varargin)
             categorical_flag = logical(varargin{i+1});
+            i = i + 2;
+        elseif strcmpi(key, 'introspect') && i < numel(varargin)
+            introspect = logical(varargin{i+1});
             i = i + 2;
         else
             metadata_args{end+1} = varargin{i};   %#ok<AGROW>
@@ -1015,6 +1066,28 @@ function [remaining, db] = extract_db(args)
             end
         end
     end
+end
+
+
+function tbl = append_introspect_columns(tbl, results, where, version)
+%APPEND_INTROSPECT_COLUMNS  Add record_id, branch_params, content_hash,
+%   where, and version_mode columns to the right of an existing table.
+    n = numel(results);
+    tbl.record_id    = string({results.record_id}');
+    tbl.content_hash = string({results.content_hash}');
+
+    bp_col = cell(n, 1);
+    for i = 1:n
+        bp_col{i} = results(i).branch_params;
+    end
+    tbl.branch_params = bp_col;
+
+    if isempty(where)
+        tbl.where = repmat("", n, 1);
+    else
+        tbl.where = repmat(string(char(py.builtins.repr(where.py_filter))), n, 1);
+    end
+    tbl.version_mode = repmat(version, n, 1);
 end
 
 

@@ -129,6 +129,7 @@ def for_each(
     db=None,
     distribute: bool = False,
     where=None,
+    introspect: bool = False,
     _inject_combo_metadata: bool = False,
     _pre_combo_hook: "Callable[[dict], bool] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
@@ -161,6 +162,10 @@ def for_each(
         distribute: If True, split outputs and save each piece at the schema
                     level below the deepest iterated key.
         where: Optional filter; passed to .load() calls on DB-backed inputs.
+        introspect: If True, append introspection columns to the right of the
+                    result DataFrame: _record_id_{param} and _branch_params_{param}
+                    per DB-backed input, plus _call_id, _config_keys, _where on
+                    every row. Does not affect saved outputs.
         _inject_combo_metadata: If True, inject current-combo metadata keys
                     as extra kwargs to fn (used by scihist for generates_file).
         _pre_combo_hook: Internal use only. Called with each fully-expanded
@@ -221,6 +226,7 @@ def for_each(
                 db=db,
                 distribute=distribute,
                 where=concrete_where,
+                introspect=introspect,
                 _inject_combo_metadata=_inject_combo_metadata,
                 _pre_combo_hook=_pre_combo_hook,
                 _progress_fn=_progress_fn,
@@ -368,7 +374,7 @@ def for_each(
                   f"failed={_run_summary['skipped']}, total={_run_summary['total']}")
 
     # --- Steps 18-19: schema restore + save ---
-    return _for_each_save_resolved(
+    result_tbl = _for_each_save_resolved(
         state=state,
         result_tbl=result_tbl,
         inputs=inputs,
@@ -377,6 +383,43 @@ def for_each(
         db=db,
         lineage_fixed_rids=_lineage_fixed_rids,
     )
+
+    if introspect and result_tbl is not None and not result_tbl.empty:
+        result_tbl = _apply_introspect(result_tbl, state, where)
+
+    return result_tbl
+
+
+# ---------------------------------------------------------------------------
+# Introspect helper
+# ---------------------------------------------------------------------------
+
+def _apply_introspect(result_tbl, state, where):
+    """Append introspection columns to the for_each result DataFrame.
+
+    Column order: existing non-__rid columns (schema + outputs) →
+    _record_id_* / _branch_params_* pairs (one per DB-backed input) →
+    _call_id, _config_keys, _where.
+    """
+    # Identify __rid_* columns and remove them from their current positions.
+    rid_cols = [c for c in result_tbl.columns if c.startswith("__rid_")]
+    df = result_tbl.drop(columns=rid_cols)
+
+    # Append per-input record_id + branch_params pairs in input order.
+    for rid_col in rid_cols:
+        param_name = rid_col[len("__rid_"):]
+        record_ids = result_tbl[rid_col]
+        df[f"_record_id_{param_name}"] = record_ids.values
+        df[f"_branch_params_{param_name}"] = [
+            state.rid_to_bp.get(rid, {}) for rid in record_ids
+        ]
+
+    # Append call-level columns (same value on every row).
+    df["_call_id"] = state.call_id
+    df["_config_keys"] = json.dumps(state.config_keys)
+    df["_where"] = repr(where) if where is not None else None
+
+    return df
 
 
 # ---------------------------------------------------------------------------
