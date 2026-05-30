@@ -55,6 +55,8 @@ All classes are in `src/scidb/filters.py`.
 | `VariableFilter` | `Side == "L"` (metaclass) | Filter variable's `"value"` column |
 | `ColumnFilter` | `GaitData["Side"] == "L"` (ColumnSelection) | Filter variable's named column |
 | `InFilter` | `.isin([...])` | Filter variable's column via SQL `IN` |
+| `SchemaKeyCompareFilter` | `schema_key("subject") > 2` | `_schema` table by key value |
+| `SchemaKeyInFilter` | `schema_key("session").isin(["BL","POST"])` | `_schema` table via SQL `IN` |
 | `CompoundFilter` | `f1 & f2` or `f1 \| f2` | Set intersection / union of schema_ids |
 | `NotFilter` | `~f` | Complement: all target schema_ids minus inner set |
 | `RawFilter` | `raw_sql("...")` | Raw SQL applied to the **target** variable's data table |
@@ -113,6 +115,93 @@ has data for. Ensure the filter variable covers all target locations.
 ### Level detection
 Level is inferred by inspecting `_schema` rows for each variable's schema_ids. The deepest non-null column in `dataset_schema_keys` order is the variable's level. This is the same logic used by `_infer_schema_level()` in `DatabaseManager`.
 
+## SchemaKey Filters
+
+`SchemaKey` filters restrict records by schema key values (the keys defined at `configure_database`) rather than by another variable's data. They are appropriate when the filtering criterion is inherent to the dataset structure — e.g. "only BL and POST sessions" or "only subjects 3 through 8".
+
+### Python syntax
+
+```python
+from scidb import schema_key
+
+# Set membership
+MyVar.load(where=schema_key("session").isin(["BL", "POST"]))
+
+# Equality / inequality
+MyVar.load(where=schema_key("session") == "BL")
+MyVar.load(where=schema_key("session") != "FOL")
+
+# Ordering (numeric keys stored as VARCHAR — TRY_CAST to DOUBLE is used)
+MyVar.load(where=schema_key("subject") > 2)
+MyVar.load(where=schema_key("subject") >= 3)
+MyVar.load(where=schema_key("subject") < 5)
+MyVar.load(where=schema_key("subject") <= 4)
+
+# Compound
+MyVar.load(where=(schema_key("subject") >= 2) & (schema_key("subject") <= 4))
+MyVar.load(where=(schema_key("session") == "BL") | (schema_key("session") == "POST"))
+MyVar.load(where=~schema_key("session").isin(["FOL"]))
+```
+
+### MATLAB syntax
+
+```matlab
+% Set membership (ismember overloaded on scidb.SchemaKey)
+MyVar().load(where=ismember(scidb.schema_key("session"), ["BL", "POST"]))
+
+% Equality / inequality
+MyVar().load(where=scidb.schema_key("session") == "BL")
+MyVar().load(where=scidb.schema_key("session") ~= "FOL")
+
+% Ordering (numeric keys)
+MyVar().load(where=scidb.schema_key("subject") > 2)
+MyVar().load(where=scidb.schema_key("subject") >= 3)
+MyVar().load(where=scidb.schema_key("subject") < 5)
+MyVar().load(where=scidb.schema_key("subject") <= 4)
+
+% Compound
+MyVar().load(where=(scidb.schema_key("subject") >= 2) & (scidb.schema_key("subject") <= 4))
+```
+
+### How it resolves
+
+Both `SchemaKeyCompareFilter` and `SchemaKeyInFilter` query the `_schema` table directly, then intersect with the target variable's schema_ids:
+
+```
+matching = {schema_id FROM _schema WHERE key condition}
+           ∩
+           _get_all_schema_ids_for_variable(target)
+```
+
+There is no filter-variable coverage check — schema key filters are self-contained and do not require another variable to have data at matching locations.
+
+### Numeric ordering and VARCHAR storage
+
+Schema key values are stored as `VARCHAR` in `_schema`. Lexicographic ordering would give wrong results for multi-digit integers (`"10" < "2"`). The ordering operators (`<`, `<=`, `>`, `>=`) always use `TRY_CAST(key AS DOUBLE)` so numeric ordering is correct.
+
+For equality/inequality (`==`, `!=`) the comparison is done as `VARCHAR` after converting the Python value to its stored string form (matching `_schema_str`: `1.0 → "1"`, `2 → "2"`, `"BL" → "BL"`). The `isin()` filter similarly converts values to strings before comparison.
+
+### Validation
+
+If the key name is not in `dataset_schema_keys`, both filter types raise:
+```
+ValueError: Unknown schema key: 'nonexistent'. Valid keys: ['subject', 'session']
+```
+
+This is checked at `resolve()` time (when `load()` is called), not at construction time.
+
+### Key files
+
+| File | Role |
+|------|------|
+| `scidb/src/scidb/filters.py` | `SchemaKey`, `SchemaKeyCompareFilter`, `SchemaKeyInFilter`, `schema_key()` |
+| `scidb/src/scidb/__init__.py` | Exports `schema_key` |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/SchemaKey.m` | MATLAB builder class with operator overloads and `ismember` |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/schema_key.m` | MATLAB factory function |
+| `scidb/tests/test_filters.py` | Construction tests (`TestSchemaKeyConstruction`) |
+| `scidb/tests/test_schema_key_filter.py` | DB integration tests |
+| `sci-matlab/tests/test_bridge_where.py` | Bridge tests (`TestSchemaKeyFilterBridge`) |
+
 ## RawFilter special behavior
 
 `RawFilter` (created by `raw_sql()`) applies the SQL fragment to the **target** variable's own data table (not to the filter variable). This is the only filter type that works this way. It uses a latest-version CTE over the target and injects the raw SQL into the WHERE clause. DuckDB errors propagate wrapped as `ValueError("Invalid where= SQL: ...")`.
@@ -130,13 +219,17 @@ Level is inferred by inspecting `_schema` rows for each variable's schema_ids. T
 
 | File | Role |
 |------|------|
-| `src/scidb/filters.py` | All filter classes + `raw_sql()` factory |
-| `src/scidb/variable.py` | `VariableMeta` metaclass + `where=` in `load()`, `load_all()` |
-| `src/scidb/__init__.py` | Exports `raw_sql` |
-| `src/scidb/database.py` | `where=` in `DatabaseManager.load()` and `load_all()` — calls `resolve()` and filters the records DataFrame |
+| `scidb/src/scidb/filters.py` | All filter classes + `raw_sql()` + `schema_key()` factories |
+| `scidb/src/scidb/variable.py` | `VariableMeta` metaclass + `where=` in `load()`, `load_all()` |
+| `scidb/src/scidb/__init__.py` | Exports `raw_sql`, `schema_key` |
+| `scidb/src/scidb/database.py` | `where=` in `DatabaseManager.load()` and `load_all()` — calls `resolve()` and filters the records DataFrame |
 | `scirun-lib/src/scirun/column_selection.py` | Comparison operators on `ColumnSelection` |
-| `tests/test_filters.py` | Unit tests (no DB required) |
-| `tests/test_where.py` | Integration tests with real DuckDB |
+| `scidb/tests/test_filters.py` | Unit tests (no DB required), incl. `TestSchemaKeyConstruction` |
+| `scidb/tests/test_where.py` | Integration tests for variable-based filters |
+| `scidb/tests/test_schema_key_filter.py` | Integration tests for schema key filters |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/SchemaKey.m` | MATLAB builder class |
+| `sci-matlab/src/sci_matlab/matlab/+scidb/schema_key.m` | MATLAB factory function |
+| `sci-matlab/tests/test_bridge_where.py` | Bridge tests, incl. `TestSchemaKeyFilterBridge` |
 
 ## MATLAB Implementation
 
