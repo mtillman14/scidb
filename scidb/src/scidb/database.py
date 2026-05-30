@@ -78,6 +78,31 @@ def _from_schema_str(value):
         pass
     return value
 
+
+def _where_key_from_filter(where_for_key) -> str | None:
+    """Derive the ``__where`` provenance key string for a (variable-level)
+    filter, or None when there is nothing to key on.
+
+    This is the single source of truth for how a where= filter maps to the
+    ``__where`` version key that for_each stores alongside computed records.
+    Both ``DatabaseManager._load_with_where`` (direct .load()) and the Merge
+    constituent loader in ``foreach.py`` call it so the two paths select the
+    same stored variant. ``where_for_key`` is expected to be the variable-level
+    portion only (SchemaKey filters split off by the caller).
+    """
+    from .filters import RawFilter
+
+    if isinstance(where_for_key, str):
+        return where_for_key
+    if isinstance(where_for_key, RawFilter) and hasattr(where_for_key, "_original_str"):
+        return where_for_key._original_str
+    if where_for_key is not None and hasattr(where_for_key, "to_key"):
+        return where_for_key.to_key()
+    if where_for_key is not None:
+        return str(where_for_key)
+    return None
+
+
 from sciduckdb import (
     SciDuck,
     _infer_duckdb_type, _python_to_storage, _storage_to_python,
@@ -2109,7 +2134,7 @@ class DatabaseManager:
         """
         type_name = variable_class.__name__
 
-        from .filters import Filter, RawFilter, split_schema_key_filters
+        from .filters import Filter, split_schema_key_filters
 
         # Split SchemaKey filters from variable-level filters.
         # SchemaKey filters select rows by schema column values (e.g. session IN [...])
@@ -2127,15 +2152,10 @@ class DatabaseManager:
 
         # Compute __where key from the variable-level portion only
         augmented = dict(metadata)
-        if isinstance(where_for_key, str):
-            augmented["__where"] = where_for_key
-        elif isinstance(where_for_key, RawFilter) and hasattr(where_for_key, '_original_str'):
-            augmented["__where"] = where_for_key._original_str
-        elif where_for_key is not None and hasattr(where_for_key, 'to_key'):
-            augmented["__where"] = where_for_key.to_key()
-        elif where_for_key is not None:
-            augmented["__where"] = str(where_for_key)
-        # (where_for_key is None → purely SchemaKey filter; no __where key needed)
+        _where_key = _where_key_from_filter(where_for_key)
+        if _where_key:
+            augmented["__where"] = _where_key
+        # (where_for_key is None / empty → purely SchemaKey filter; no __where key needed)
 
         # Optimization: fetch records WITHOUT __where filter first, then apply it in Python
         # This avoids fetching 14k+ records twice (once with __where, once without)
@@ -2149,12 +2169,25 @@ class DatabaseManager:
 
         # Strategy 1: match by __where version key (fast path for for_each-computed data)
         where_key = augmented.get("__where")
+        Log.debug(
+            f"[_load_with_where] {type_name}: records_all={len(records_all)}, "
+            f"where_key={where_key!r}"
+        )
         if where_key:
+            stored_keys = records_all["version_keys"].apply(
+                lambda vk: json.loads(vk or "{}").get("__where", "")
+            ).unique().tolist()
+            Log.debug(
+                f"[_load_with_where] {type_name}: Strategy 1 stored __where values: {stored_keys}"
+            )
             records = records_all[
                 records_all["version_keys"].apply(
                     lambda vk: json.loads(vk or "{}").get("__where") == where_key
                 )
             ].copy()
+            Log.debug(
+                f"[_load_with_where] {type_name}: Strategy 1 matched {len(records)} records"
+            )
             if len(records) > 0:
                 # Apply any SchemaKey filter as an additional schema-id row selector
                 if sk_filter is not None:
@@ -2166,13 +2199,24 @@ class DatabaseManager:
                     f"No {type_name} found matching metadata: {metadata} "
                     f"with the given schema key filter."
                 )
+            Log.debug(
+                f"[_load_with_where] {type_name}: Strategy 1 found no match — "
+                f"falling through to Strategy 2"
+            )
 
         # Strategy 2: fallback to schema-level filtering (backward compat)
         # Reuse records_all instead of re-fetching!
         records = records_all
         if len(records) > 0:
             allowed_schema_ids = where.resolve(self, variable_class, table_name)
+            Log.debug(
+                f"[_load_with_where] {type_name}: Strategy 2 resolved "
+                f"{len(allowed_schema_ids)} schema_ids"
+            )
             records = records[records["schema_id"].isin(allowed_schema_ids)]
+            Log.debug(
+                f"[_load_with_where] {type_name}: Strategy 2 returning {len(records)} records"
+            )
 
         if len(records) == 0:
             raise NotFoundError(
@@ -2608,7 +2652,11 @@ class DatabaseManager:
                     variable_class, metadata, table_name, where,
                     version_id=version_id,
                 )
-            except Exception:
+            except Exception as _exc:
+                Log.debug(
+                    f"[load_all_as_df] {type_name}: _load_with_where raised "
+                    f"{type(_exc).__name__}: {_exc} — returning empty DataFrame"
+                )
                 return pd.DataFrame()
         else:
             nested_metadata = self._split_metadata(metadata)

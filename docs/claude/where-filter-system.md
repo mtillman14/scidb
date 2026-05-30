@@ -276,7 +276,17 @@ The filter is forwarded to Python as `where_filter.py_filter` via the bridge. Sc
 
 ## `where=` in `scidb.for_each` (MATLAB)
 
-### How it applies — the preload path (default, `preload=true`)
+> ⚠️ **Stale below this point.** The MATLAB `preload` / `parallel` / `merge_constituents()`
+> / `load_and_extract` machinery described in the next few subsections has been
+> **removed**. MATLAB `scidb.for_each` is now a thin two-pass shell: it ships the
+> live `where_filter.py_filter` to `py.sci_matlab.bridge.for_each_prepare`, and **all**
+> input loading (including `where=` application and Merge constituent loading) happens
+> in Python's `_for_each_prepare` → `_convert_inputs` → `_load_input`. `preload=` and
+> `parallel=` are accepted but ignored (`split_options` in `+scidb/for_each.m`). The
+> behavioral summary table and the corrected Merge subsection below are current; treat
+> the `preload`/`parallel` prose as historical. See [[where-provenance-and-merge]].
+
+### How it applies — the preload path (default, `preload=true`) — *historical*
 
 For each non-Merge, non-PathInput input variable, `for_each` bulk-preloads all values for all iteration combos in a single Python call. The `where=` filter is passed to `load_and_extract`:
 
@@ -308,24 +318,29 @@ Parallel mode also uses the preload path (Phase A is serial). The `where=` filte
 
 Practical implication: if `where=Side()=="L"` is used with `Fixed(Baseline, session='BL')`, the filter checks Side at `session='BL'` (not the iteration's session). Save Side data at all sessions that any input will be queried at, or the Fixed preload may yield empty results and skip the iteration.
 
-### where= with `scidb.Merge` (IMPORTANT: filter is NOT applied)
+### where= with `scidb.Merge` (filter IS applied — propagated to constituents)
 
-`Merge` inputs are **excluded from the preload phase** and are always loaded via `merge_constituents()`, which does not pass `where_nv`. This is by design — Merge uses its own schema-key inner-join logic and cannot be filtered by an external where= predicate.
+> **History:** This used to say the filter was NOT applied to Merge. That is no
+> longer true. The old MATLAB `merge_constituents()` path was removed; MATLAB
+> `for_each` now delegates all input loading to the Python bridge, and the Python
+> Merge loader (`_load_input`) propagates `where=` to every constituent.
 
-**Consequence**: if **all** inputs to `for_each` are `Merge` objects, the `where=` parameter has no effect. The iteration runs for every combo where all Merge constituents have data, regardless of the filter.
+The `where=` filter **is** applied to each `Merge` constituent. The constituent is
+loaded exactly as a direct `.load(where=…)` would be — including selecting the
+correct variant by `__where` provenance when a variable has several variants on the
+same schema keys. Coverage is validated **once** against the Merge inner-join result
+(`_compute_merge_effective_ids`), not per constituent, so a filter gap at a row the
+join would drop does not raise a false-positive error.
 
-If at least one non-Merge input is present, that input is filtered by `where=` and the combo is skipped if it yields no data. The Merge constituents still load without filtering.
+See [[where-provenance-and-merge]] for the full mechanism (`_PreresolvedFilter`,
+`_merge_constituent_where_key`, and the two-strategy `_load_with_where`).
 
 ```matlab
-% where= is IGNORED — only input is a Merge:
+% where= IS applied to the Merge constituents:
 scidb.for_each(@fn, struct('d', scidb.Merge(A(), B())), {Out()}, ...
     'subject', [1 2], where=Side() == "L");
-% → Runs for every subject that has A and B data, Side value irrelevant.
-
-% where= IS applied — non-Merge input present:
-scidb.for_each(@fn, struct('x', RawSignal(), 'd', scidb.Merge(A(), B())), {Out()}, ...
-    'subject', [1 2], where=Side() == "L");
-% → Runs only where RawSignal passes the Side filter; Merge loads unfiltered.
+% → Each constituent is filtered by Side()=="L"; if A or B has multiple
+%   for_each-computed variants, only the one matching this where= is loaded.
 ```
 
 ### `where=` with Column Selection
@@ -373,11 +388,15 @@ scidb.for_each(@fn, struct('x', GaitData("force")), {Out()}, ...
 | `scidb.Fixed(BaseVariable)` | Yes | Preload bulk query using fixed metadata |
 | `BaseVariable("col")` | Yes | Preload bulk query, column narrowed after |
 | `scidb.PathInput` | N/A | PathInput is not a DB load |
-| `scidb.Merge(...)` | **No** | Always via `merge_constituents`, no filter |
+| `scidb.Merge(...)` | **Yes** | Propagated to each constituent; coverage validated once against the join result. See [[where-provenance-and-merge]] |
 | Constant (scalar/table) | N/A | Not loaded from DB |
 
 ## What is NOT implemented
 
 - **Version-specific filter**: The filter always uses "latest version" of the filter variable. There is no mechanism to specify a particular version of the filter variable.
 - **Cross-database filters**: The filter variable must be in the same database as the target.
-- **where= for Merge constituents**: Merge bypasses the filter path by design. There is no mechanism to filter individual Merge constituents via the top-level `where=`.
+- **SchemaKey mixed into `for_each` `where=` + provenance**: when a `for_each` `where=`
+  mixes a `SchemaKey` filter with variable filters, the saved `__where` key (full
+  filter) and the load-time key (variable portion only) diverge, so provenance
+  matching (Strategy 1) won't fire for that variant. SchemaKey is being moved out of
+  `for_each` `where=` for this reason. See [[where-provenance-and-merge]].

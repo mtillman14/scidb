@@ -87,16 +87,49 @@ class _PreresolvedFilter(Filter):
     Used in the Merge path so each constituent receives already-resolved,
     already-validated schema_ids directly — no second DB query or coverage
     check needed.
+
+    Also carries the ``__where`` provenance key derived from the merge-level
+    where= filter (``where_key``). This lets a constituent that was computed by
+    for_each (and therefore has a stored ``__where`` version key) be matched by
+    provenance in ``_load_with_where`` Strategy 1 — selecting the single variant
+    the filter describes — exactly as a direct ``.load(where=...)`` would. Without
+    it, constituents fall through to schema-id filtering (Strategy 2), which
+    cannot distinguish multiple variants that share the same schema keys.
+    Constituents with no stored ``__where`` (e.g. raw-saved data) simply miss
+    Strategy 1 and fall back to the pre-resolved ``schema_ids`` in Strategy 2.
     """
 
-    def __init__(self, schema_ids: set):
+    def __init__(self, schema_ids: set, where_key: str = ""):
         self._schema_ids = schema_ids
+        self._where_key = where_key or ""
 
     def to_key(self) -> str:
-        return ""  # never stored; outer __where version key covers the Merge call
+        # Drives augmented["__where"] in _load_with_where: empty → Strategy 1
+        # skipped (schema-id fallback only); non-empty → provenance match.
+        return self._where_key
 
     def resolve(self, db, target_variable_class, target_table_name, validate_coverage=True) -> set:
         return self._schema_ids
+
+
+def _merge_constituent_where_key(where: Any) -> str:
+    """Derive the ``__where`` provenance key for a merge-level where= filter.
+
+    Splits off any SchemaKey portion (which selects rows, not variants) and
+    keys on the variable-level portion only — mirroring exactly what
+    ``DatabaseManager._load_with_where`` does for a direct ``.load(where=...)``,
+    via the shared ``_where_key_from_filter`` helper, so Merge constituents and
+    direct loads resolve to the same stored variant.
+    """
+    from .filters import split_schema_key_filters
+    from .database import _where_key_from_filter
+
+    where_for_key = where
+    if isinstance(where, Filter):
+        sk_filter, var_filter = split_schema_key_filters(where)
+        if sk_filter is not None:
+            where_for_key = var_filter  # None when where is purely SchemaKey
+    return _where_key_from_filter(where_for_key) or ""
 
 
 # ---------------------------------------------------------------------------
@@ -1500,6 +1533,16 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
         if where is not None:
             merge_effective_ids = _compute_merge_effective_ids(_merge_db, var_spec)
             _check_merge_filter_coverage(_merge_db, where, merge_effective_ids)
+            # Provenance key for the variable-level portion of the filter, shared
+            # by every constituent.  A constituent computed by for_each with this
+            # where= stored it as its __where version key; carrying it lets the
+            # constituent loader match that single variant (Strategy 1) instead of
+            # returning every variant that happens to share the same schema keys.
+            merge_where_key = _merge_constituent_where_key(where)
+            Log.debug(
+                f"[Merge] {var_spec.__name__}: where provenance key="
+                f"{merge_where_key!r}"
+            )
 
         for sub_spec in var_spec.var_specs:
             if where is not None:
@@ -1508,7 +1551,9 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
                     _merge_db, cls, cls.table_name(),
                     validate_coverage=False,  # coverage validated once above
                 )
-                constituent_where = _PreresolvedFilter(matching_ids)
+                constituent_where = _PreresolvedFilter(
+                    matching_ids, where_key=merge_where_key
+                )
             else:
                 constituent_where = None
             loaded = _load_input(sub_spec, db, where=constituent_where)

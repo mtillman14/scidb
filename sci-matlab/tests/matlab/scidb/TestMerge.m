@@ -315,5 +315,91 @@ classdef TestMerge < matlab.unittest.TestCase
             % Should skip — no output saved
             testCase.verifyError(@() MergedResult().load(), 'scidb:NotFoundError');
         end
+
+        % --- where= selects one variant by provenance (multi-variant merge) ---
+
+        function test_merge_selects_variant_by_where_provenance(testCase)
+        %TEST_MERGE_SELECTS_VARIANT_BY_WHERE_PROVENANCE  When a variable has been
+        %   computed by for_each in MULTIPLE where= variants that share the same
+        %   schema keys, loading it through scidb.Merge with a where= must select
+        %   the single variant matching that filter's __where provenance — exactly
+        %   like a direct .load(where=...).  Previously every variant leaked
+        %   through (N rows per schema-key combo instead of 1).
+        %
+        %   Two all-pass filters (Side=="L" and StepLength>0.5 both hold at every
+        %   combo) produce two ProcessedSignal variants over the same combos,
+        %   distinguishable by value (x*2 vs x*3):
+        %       __where "Side == 'L'"     : ProcessedSignal = RawSignal * 2
+        %       __where "StepLength > 0.5": ProcessedSignal = RawSignal * 3
+            RawSignal().save(10, 'subject', 1, 'session', 'A');
+            RawSignal().save(20, 'subject', 1, 'session', 'B');
+            PareticSide().save("p",  'subject', 1, 'session', 'A');
+            PareticSide().save("np", 'subject', 1, 'session', 'B');
+            Side().save("L", 'subject', 1, 'session', 'A');
+            Side().save("L", 'subject', 1, 'session', 'B');
+            StepLength().save(0.7, 'subject', 1, 'session', 'A');
+            StepLength().save(0.7, 'subject', 1, 'session', 'B');
+
+            % Variant 1: __where "Side == 'L'", ProcessedSignal = RawSignal * 2
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, 'session', ["A" "B"], ...
+                where=Side() == "L");
+            % Variant 2: __where "StepLength > 0.5", ProcessedSignal = RawSignal * 3
+            scidb.for_each(@triple_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, 'session', ["A" "B"], ...
+                where=StepLength() > 0.5);
+
+            % Merge under Side=="L" must keep only variant 1 (x*2):
+            %   2 rows (sessions A,B), ProcessedSignal = [20,40], sum = 60.
+            % Without the provenance fix both variants leak → 4 rows, sum = 150.
+            scidb.for_each(@merge_processed_summary, ...
+                struct('data', scidb.Merge(PareticSide(), ProcessedSignal())), ...
+                {MergedResult()}, ...
+                'subject', 1, ...
+                where=Side() == "L");
+
+            r = MergedResult().load('subject', 1);
+            testCase.verifyEqual(r.data, [2; 60], 'AbsTol', 1e-10);
+        end
+
+        function test_merge_selects_other_variant_by_where(testCase)
+        %TEST_MERGE_SELECTS_OTHER_VARIANT_BY_WHERE  Same setup, loaded under the
+        %   OTHER filter (StepLength>0.5) selects variant 2 (x*3) — proving the
+        %   __where provenance, not the shared schema keys, drives selection.
+            RawSignal().save(10, 'subject', 1, 'session', 'A');
+            RawSignal().save(20, 'subject', 1, 'session', 'B');
+            PareticSide().save("p",  'subject', 1, 'session', 'A');
+            PareticSide().save("np", 'subject', 1, 'session', 'B');
+            Side().save("L", 'subject', 1, 'session', 'A');
+            Side().save("L", 'subject', 1, 'session', 'B');
+            StepLength().save(0.7, 'subject', 1, 'session', 'A');
+            StepLength().save(0.7, 'subject', 1, 'session', 'B');
+
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, 'session', ["A" "B"], ...
+                where=Side() == "L");
+            scidb.for_each(@triple_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, 'session', ["A" "B"], ...
+                where=StepLength() > 0.5);
+
+            % Merge under StepLength>0.5 must keep only variant 2 (x*3):
+            %   2 rows, ProcessedSignal = [30,60], sum = 90.
+            scidb.for_each(@merge_processed_summary, ...
+                struct('data', scidb.Merge(PareticSide(), ProcessedSignal())), ...
+                {MergedResult()}, ...
+                'subject', 1, ...
+                where=StepLength() > 0.5);
+
+            r = MergedResult().load('subject', 1);
+            testCase.verifyEqual(r.data, [2; 90], 'AbsTol', 1e-10);
+        end
     end
 end
