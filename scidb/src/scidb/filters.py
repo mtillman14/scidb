@@ -389,6 +389,15 @@ class VariableFilter(Filter):
         filter_table_name = self.variable_class.table_name()
         sql_op = _op_to_sql(self.op)
 
+        filter_level_idx, target_level_idx = _get_level_indices(
+            db, filter_table_name, target_table_name
+        )
+
+        # When loading a Merge constituent (validate_coverage=False), a filter
+        # variable finer than the constituent is not applicable — skip it.
+        if filter_level_idx > target_level_idx and not validate_coverage:
+            return _get_all_schema_ids_for_variable(db, target_table_name)
+
         # Validate schema level compatibility
         _validate_filter_schema_level(
             db, self.variable_class, target_variable_class,
@@ -403,8 +412,6 @@ class VariableFilter(Filter):
                 "Save data to it first."
             )
 
-        # Find the data column (the "value" column in native single-column mode)
-        # We'll use the "value" column as the filter column for simple variables
         condition_sql = f'"value" {sql_op} ?'
         condition_params = [self.value]
 
@@ -412,12 +419,7 @@ class VariableFilter(Filter):
             db, filter_table_name, condition_sql, condition_params
         )
 
-        # Check if we need to expand (coarser filter level)
-        filter_level_idx, target_level_idx = _get_level_indices(
-            db, filter_table_name, target_table_name
-        )
         if filter_level_idx < target_level_idx:
-            # Filter is at coarser level — expand to fine-level schema_ids
             matching_ids = _expand_coarse_to_fine_schema_ids(
                 db, matching_ids, target_table_name
             )
@@ -473,6 +475,15 @@ class ColumnFilter(Filter):
         filter_table_name = self.variable_class.table_name()
         sql_op = _op_to_sql(self.op)
 
+        filter_level_idx, target_level_idx = _get_level_indices(
+            db, filter_table_name, target_table_name
+        )
+
+        # When loading a Merge constituent (validate_coverage=False), a filter
+        # variable finer than the constituent is not applicable — skip it.
+        if filter_level_idx > target_level_idx and not validate_coverage:
+            return _get_all_schema_ids_for_variable(db, target_table_name)
+
         # Validate schema level compatibility
         _validate_filter_schema_level(
             db, self.variable_class, target_variable_class,
@@ -493,9 +504,6 @@ class ColumnFilter(Filter):
             db, filter_table_name, condition_sql, condition_params
         )
 
-        filter_level_idx, target_level_idx = _get_level_indices(
-            db, filter_table_name, target_table_name
-        )
         if filter_level_idx < target_level_idx:
             matching_ids = _expand_coarse_to_fine_schema_ids(
                 db, matching_ids, target_table_name
@@ -541,6 +549,15 @@ class InFilter(Filter):
     ) -> set[int]:
         filter_table_name = self.variable_class.table_name()
 
+        filter_level_idx, target_level_idx = _get_level_indices(
+            db, filter_table_name, target_table_name
+        )
+
+        # When loading a Merge constituent (validate_coverage=False), a filter
+        # variable finer than the constituent is not applicable — skip it.
+        if filter_level_idx > target_level_idx and not validate_coverage:
+            return _get_all_schema_ids_for_variable(db, target_table_name)
+
         _validate_filter_schema_level(
             db, self.variable_class, target_variable_class,
             filter_table_name, target_table_name,
@@ -565,9 +582,6 @@ class InFilter(Filter):
             db, filter_table_name, condition_sql, condition_params
         )
 
-        filter_level_idx, target_level_idx = _get_level_indices(
-            db, filter_table_name, target_table_name
-        )
         if filter_level_idx < target_level_idx:
             matching_ids = _expand_coarse_to_fine_schema_ids(
                 db, matching_ids, target_table_name

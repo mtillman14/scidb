@@ -334,6 +334,46 @@ def cross_level_db(tmp_path):
     db.close()
 
 
+class SessionValue(BaseVariable):
+    """Session-level variable for finer-filter-on-coarser-constituent tests."""
+    schema_version = 1
+
+
+class SessionSide(BaseVariable):
+    """Session-level filter variable — same level as SessionValue, finer than SubjectLabel."""
+    schema_version = 1
+
+
+@pytest.fixture
+def cross_level_db_with_session_filter(tmp_path):
+    """DB with [subject, session].
+
+    SubjectLabel: subject-level only.
+      subject=1 → "A",  subject=2 → "B"
+
+    SessionValue: session-level.
+      subject=1,session=BL → 10.0;  subject=1,session=POST → 20.0
+      subject=2,session=BL → 30.0;  subject=2,session=POST → 40.0
+
+    SessionSide: session-level filter variable (same level as SessionValue).
+      subject=1,session=BL → "U";  subject=1,session=POST → "A"
+      subject=2,session=BL → "U";  subject=2,session=POST → "A"
+    """
+    db = configure_database(tmp_path / "cross_session.duckdb", ["subject", "session"])
+    SubjectLabel.save("A", subject=1)
+    SubjectLabel.save("B", subject=2)
+    SessionValue.save(10.0, subject=1, session="BL")
+    SessionValue.save(20.0, subject=1, session="POST")
+    SessionValue.save(30.0, subject=2, session="BL")
+    SessionValue.save(40.0, subject=2, session="POST")
+    SessionSide.save("U", subject=1, session="BL")
+    SessionSide.save("A", subject=1, session="POST")
+    SessionSide.save("U", subject=2, session="BL")
+    SessionSide.save("A", subject=2, session="POST")
+    yield db
+    db.close()
+
+
 class TestCrossLevelMergeWithSchemaKeyFilter:
     """Regression: session-level where= must not wipe out subject-level Merge constituents.
 
@@ -391,6 +431,40 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
         for tbl in captured:
             if "session" in tbl.columns:
                 bad = set(tbl["session"].unique()) - {"POST"}
+                assert not bad, f"unexpected sessions after filter: {bad}"
+
+    def test_finer_variable_filter_skipped_for_coarser_constituent(self, cross_level_db_with_session_filter):
+        """Regression: a session-level VariableFilter must not error when applied to
+        a subject-level Merge constituent (SubjectLabel).
+
+        SessionSide (session-level) == 'U' is finer than SubjectLabel (subject-level):
+        the filter must be skipped for SubjectLabel (returning all subjects) while
+        still filtering SessionValue (session-level, same as filter) to BL only.
+        The function must be called and receive merged rows for BL sessions.
+        """
+        from scidb import for_each
+        from scidb.foreach import Merge
+
+        captured = []
+
+        def collect(inputVal):
+            captured.append(inputVal.copy())
+            return inputVal
+
+        # SessionSide == "U" is session-level; SubjectLabel is subject-level → skip for SubjectLabel
+        for_each(
+            collect,
+            inputs={"inputVal": Merge(SubjectLabel, SessionValue)},
+            outputs=[SessionValue],
+            as_table=True,
+            where=SessionSide == "U",
+            save=False,
+        )
+
+        assert captured, "function was never called — session-level filter incorrectly rejected subject-level constituent"
+        for tbl in captured:
+            if "session" in tbl.columns:
+                bad = set(tbl["session"].unique()) - {"BL"}
                 assert not bad, f"unexpected sessions after filter: {bad}"
 
 
