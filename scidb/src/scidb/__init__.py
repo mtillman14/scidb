@@ -47,7 +47,7 @@ from .foreach_config import ForEachConfig
 from scifor import Col, set_schema, get_schema, PathInput
 
 from .variable import BaseVariable
-from .filters import raw_sql
+from .filters import raw_sql, schema_key
 from .constant import Constant, constant
 from .exclusions import exclude_schema, include_schema, list_exclusions
 from .discover import (
@@ -98,6 +98,7 @@ __all__ = [
     "get_schema",
     # Filter utilities
     "raw_sql",
+    "schema_key",
     # Schema exclusions
     "exclude_schema",
     "include_schema",

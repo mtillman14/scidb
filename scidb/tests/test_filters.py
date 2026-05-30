@@ -19,6 +19,10 @@ from scidb.filters import (
     InFilter,
     RawFilter,
     raw_sql,
+    SchemaKey,
+    SchemaKeyCompareFilter,
+    SchemaKeyInFilter,
+    schema_key,
 )
 
 
@@ -254,3 +258,98 @@ class TestRawFilter:
         assert isinstance(f, CompoundFilter)
         assert isinstance(f.left, VariableFilter)
         assert isinstance(f.right, RawFilter)
+
+
+# ===========================================================================
+# SchemaKey filter construction tests (no DB required)
+# ===========================================================================
+
+class TestSchemaKeyConstruction:
+    """Tests that SchemaKey builder operators produce the correct Filter objects."""
+
+    def test_isin_returns_in_filter(self):
+        f = schema_key("session").isin(["BL", "POST"])
+        assert isinstance(f, SchemaKeyInFilter)
+        assert f.key == "session"
+        assert f.values == ["BL", "POST"]
+
+    def test_isin_numeric(self):
+        f = schema_key("subject").isin([1, 2, 3])
+        assert isinstance(f, SchemaKeyInFilter)
+        assert f.values == [1, 2, 3]
+
+    def test_eq_returns_compare_filter(self):
+        f = schema_key("session") == "BL"
+        assert isinstance(f, SchemaKeyCompareFilter)
+        assert f.key == "session"
+        assert f.op == "=="
+        assert f.value == "BL"
+
+    def test_ne_returns_compare_filter(self):
+        f = schema_key("session") != "BL"
+        assert isinstance(f, SchemaKeyCompareFilter)
+        assert f.op == "!="
+
+    def test_lt_returns_compare_filter(self):
+        f = schema_key("subject") < 3
+        assert isinstance(f, SchemaKeyCompareFilter)
+        assert f.op == "<"
+        assert f.value == 3
+
+    def test_le_returns_compare_filter(self):
+        f = schema_key("subject") <= 3
+        assert isinstance(f, SchemaKeyCompareFilter)
+        assert f.op == "<="
+
+    def test_gt_returns_compare_filter(self):
+        f = schema_key("subject") > 1
+        assert isinstance(f, SchemaKeyCompareFilter)
+        assert f.op == ">"
+
+    def test_ge_returns_compare_filter(self):
+        f = schema_key("subject") >= 1
+        assert isinstance(f, SchemaKeyCompareFilter)
+        assert f.op == ">="
+
+    def test_compare_filter_combinable_with_and(self):
+        f = (schema_key("subject") > 1) & (schema_key("subject") < 4)
+        assert isinstance(f, CompoundFilter)
+        assert f.op == "AND"
+
+    def test_compare_filter_combinable_with_or(self):
+        f = (schema_key("session") == "BL") | (schema_key("session") == "POST")
+        assert isinstance(f, CompoundFilter)
+        assert f.op == "OR"
+
+    def test_in_filter_combinable_with_not(self):
+        f = ~schema_key("session").isin(["BL"])
+        assert isinstance(f, NotFilter)
+
+    def test_schema_key_factory_returns_schema_key(self):
+        sk = schema_key("session")
+        assert isinstance(sk, SchemaKey)
+        assert sk.key == "session"
+
+    def test_repr_schema_key(self):
+        assert "session" in repr(schema_key("session"))
+
+    def test_repr_compare_filter(self):
+        f = schema_key("subject") > 2
+        assert "SchemaKeyCompareFilter" in repr(f)
+        assert "subject" in repr(f)
+
+    def test_repr_in_filter(self):
+        f = schema_key("session").isin(["BL", "POST"])
+        assert "SchemaKeyInFilter" in repr(f)
+        assert "session" in repr(f)
+
+    def test_to_key_compare_filter(self):
+        f = schema_key("session") == "BL"
+        assert f.to_key() == "schema:session == 'BL'"
+
+    def test_to_key_in_filter_sorted(self):
+        f = schema_key("session").isin(["POST", "BL"])
+        # to_key uses sorted values for stability
+        assert "BL" in f.to_key()
+        assert "POST" in f.to_key()
+        assert f.to_key().index("BL") < f.to_key().index("POST")

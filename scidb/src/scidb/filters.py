@@ -721,6 +721,194 @@ def raw_sql(sql: str) -> RawFilter:
 
 
 # ---------------------------------------------------------------------------
+# Helper: schema_key() builder and SchemaKey filters
+# ---------------------------------------------------------------------------
+
+def _to_schema_str(value) -> str:
+    """Convert a value to its VARCHAR representation as stored in _schema.
+
+    Mirrors database._schema_str: whole-number floats become integers, e.g.
+    1.0 → "1".  Used so equality / isin comparisons match the stored strings.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+class SchemaKey:
+    """Builder for schema-key-based filters.
+
+    Create via schema_key():
+        schema_key("session").isin(["BL", "POST"])
+        schema_key("subject") > 2
+        schema_key("session") == "BL"
+
+    Supports ==, !=, <, <=, >, >= and .isin().
+    The resulting filter can be combined with & / | / ~ like any other Filter.
+    """
+
+    def __init__(self, key: str):
+        self.key = key
+
+    # Defining __eq__ suppresses __hash__; mark explicitly unhashable since
+    # SchemaKey is a builder, not a value type.
+    __hash__ = None  # type: ignore[assignment]
+
+    def isin(self, values) -> "SchemaKeyInFilter":
+        """Return a filter matching records where key is in values."""
+        return SchemaKeyInFilter(self.key, list(values))
+
+    def __eq__(self, other) -> "SchemaKeyCompareFilter":  # type: ignore[override]
+        return SchemaKeyCompareFilter(self.key, "==", other)
+
+    def __ne__(self, other) -> "SchemaKeyCompareFilter":  # type: ignore[override]
+        return SchemaKeyCompareFilter(self.key, "!=", other)
+
+    def __lt__(self, other) -> "SchemaKeyCompareFilter":
+        return SchemaKeyCompareFilter(self.key, "<", other)
+
+    def __le__(self, other) -> "SchemaKeyCompareFilter":
+        return SchemaKeyCompareFilter(self.key, "<=", other)
+
+    def __gt__(self, other) -> "SchemaKeyCompareFilter":
+        return SchemaKeyCompareFilter(self.key, ">", other)
+
+    def __ge__(self, other) -> "SchemaKeyCompareFilter":
+        return SchemaKeyCompareFilter(self.key, ">=", other)
+
+    def __repr__(self) -> str:
+        return f"SchemaKey({self.key!r})"
+
+
+class SchemaKeyCompareFilter(Filter):
+    """Filter on a schema key using a comparison operator.
+
+    For ordering operators (<, <=, >, >=) the stored VARCHAR value is cast to
+    DOUBLE via TRY_CAST so that numeric ordering is correct (e.g. subject 10
+    sorts after subject 2).  For equality/inequality the value is compared as
+    the VARCHAR string it was stored as.
+
+    Args:
+        key:   Schema key name (must be in dataset_schema_keys).
+        op:    One of "==", "!=", "<", "<=", ">", ">=".
+        value: The comparison value (string or numeric).
+    """
+
+    def __init__(self, key: str, op: str, value: Any):
+        self.key = key
+        self.op = op
+        self.value = value
+
+    def __repr__(self) -> str:
+        return f"SchemaKeyCompareFilter(schema:{self.key} {self.op} {self.value!r})"
+
+    def to_key(self) -> str:
+        return f"schema:{self.key} {self.op} {self.value!r}"
+
+    def resolve(
+        self,
+        db: "DatabaseManager",
+        target_variable_class,
+        target_table_name: str,
+    ) -> set[int]:
+        schema_keys = db.dataset_schema_keys
+        if self.key not in schema_keys:
+            raise ValueError(
+                f"Unknown schema key: {self.key!r}. Valid keys: {schema_keys}"
+            )
+
+        target_ids = _get_all_schema_ids_for_variable(db, target_table_name)
+        if not target_ids:
+            return set()
+
+        sql_op = _op_to_sql(self.op)
+
+        if self.op in ("<", "<=", ">", ">="):
+            # Numeric ordering: keys are VARCHAR so cast to DOUBLE for correct ordering.
+            col_expr = f'TRY_CAST("{self.key}" AS DOUBLE)'
+            param: Any = self.value
+        else:
+            # Equality/inequality: compare as the stored VARCHAR representation.
+            col_expr = f'"{self.key}"'
+            param = _to_schema_str(self.value)
+
+        try:
+            rows = db._duck._fetchall(
+                f"SELECT schema_id FROM _schema WHERE {col_expr} {sql_op} ?",
+                [param],
+            )
+        except Exception as e:
+            raise ValueError(f"Invalid schema key filter: {e}") from e
+
+        return {int(row[0]) for row in rows} & target_ids
+
+
+class SchemaKeyInFilter(Filter):
+    """Filter on a schema key using set membership (IN).
+
+    Values are converted to their stored VARCHAR representation via
+    _to_schema_str so that e.g. isin([1, 2]) matches subject 1 and 2 even
+    though subjects are stored as "1" and "2".
+
+    Args:
+        key:    Schema key name (must be in dataset_schema_keys).
+        values: Iterable of accepted values (strings or numerics).
+    """
+
+    def __init__(self, key: str, values: list):
+        self.key = key
+        self.values = values
+
+    def __repr__(self) -> str:
+        return f"SchemaKeyInFilter(schema:{self.key} IN {self.values!r})"
+
+    def to_key(self) -> str:
+        return f"schema:{self.key} IN {sorted(_to_schema_str(v) for v in self.values)}"
+
+    def resolve(
+        self,
+        db: "DatabaseManager",
+        target_variable_class,
+        target_table_name: str,
+    ) -> set[int]:
+        schema_keys = db.dataset_schema_keys
+        if self.key not in schema_keys:
+            raise ValueError(
+                f"Unknown schema key: {self.key!r}. Valid keys: {schema_keys}"
+            )
+
+        target_ids = _get_all_schema_ids_for_variable(db, target_table_name)
+        if not target_ids or not self.values:
+            return set()
+
+        str_values = [_to_schema_str(v) for v in self.values]
+        placeholders = ", ".join(["?"] * len(str_values))
+        try:
+            rows = db._duck._fetchall(
+                f'SELECT schema_id FROM _schema WHERE "{self.key}" IN ({placeholders})',
+                str_values,
+            )
+        except Exception as e:
+            raise ValueError(f"Invalid schema key filter: {e}") from e
+
+        return {int(row[0]) for row in rows} & target_ids
+
+
+def schema_key(key: str) -> SchemaKey:
+    """Create a schema-key filter builder.
+
+    Usage:
+        schema_key("session").isin(["BL", "POST"])
+        schema_key("subject") > 2
+        schema_key("session") == "BL"
+
+    The returned SchemaKey supports ==, !=, <, <=, >, >= and .isin().
+    Results are Filter objects combinable with & / | / ~.
+    """
+    return SchemaKey(key)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers used by multiple filter types
 # ---------------------------------------------------------------------------
 

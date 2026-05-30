@@ -21,7 +21,10 @@ import pytest
 
 from sci_matlab.bridge import load_and_extract, register_matlab_variable
 from scidb.database import configure_database
-from scidb.filters import VariableFilter, RawFilter, CompoundFilter, raw_sql
+from scidb.filters import (
+    VariableFilter, RawFilter, CompoundFilter, raw_sql,
+    SchemaKeyCompareFilter, SchemaKeyInFilter, schema_key,
+)
 
 
 class TestLoadAndExtractWhere:
@@ -216,5 +219,138 @@ class TestLoadAndExtractWhere:
             import json
             meta_arr = json.loads(str(result["json_meta"]))
             assert str(meta_arr[0]["session"]) == "A"
+        finally:
+            db.close()
+
+
+class TestSchemaKeyFilterBridge:
+    """Verify SchemaKey filters work correctly via load_and_extract().
+
+    These tests exercise the Python filter objects that the MATLAB SchemaKey
+    class constructs (SchemaKeyCompareFilter, SchemaKeyInFilter).  They run
+    entirely in Python without MATLAB.
+    """
+
+    def test_isin_string_key(self, tmp_path):
+        """schema_key("session").isin([...]) returns only matching sessions."""
+        db = configure_database(
+            tmp_path / "test.duckdb",
+            ["subject", "session"],
+        )
+        try:
+            Meas = register_matlab_variable("Meas_IsinStr")
+            db.save_variable(Meas, 1.0, subject=1, session="BL")
+            db.save_variable(Meas, 2.0, subject=1, session="POST")
+            db.save_variable(Meas, 3.0, subject=1, session="FOL")
+
+            filt = schema_key("session").isin(["BL", "POST"])
+            result = load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
+            assert int(result["n"]) == 2
+        finally:
+            db.close()
+
+    def test_isin_numeric_key(self, tmp_path):
+        """schema_key("subject").isin([1, 2]) matches by numeric value."""
+        db = configure_database(
+            tmp_path / "test.duckdb",
+            ["subject"],
+        )
+        try:
+            Meas = register_matlab_variable("Meas_IsinNum")
+            for i in range(1, 5):
+                db.save_variable(Meas, float(i), subject=i)
+
+            filt = schema_key("subject").isin([1, 2])
+            result = load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
+            assert int(result["n"]) == 2
+        finally:
+            db.close()
+
+    def test_eq_string_key(self, tmp_path):
+        """schema_key("session") == "BL" returns only BL session."""
+        db = configure_database(
+            tmp_path / "test.duckdb",
+            ["subject", "session"],
+        )
+        try:
+            Meas = register_matlab_variable("Meas_EqStr")
+            db.save_variable(Meas, 1.0, subject=1, session="BL")
+            db.save_variable(Meas, 2.0, subject=1, session="POST")
+
+            filt = schema_key("session") == "BL"
+            result = load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
+            assert int(result["n"]) == 1
+
+            import json
+            meta_arr = json.loads(str(result["json_meta"]))
+            assert meta_arr[0]["session"] == "BL"
+        finally:
+            db.close()
+
+    def test_gt_numeric_key(self, tmp_path):
+        """schema_key("subject") > 2 uses numeric ordering, not lexicographic."""
+        db = configure_database(
+            tmp_path / "test.duckdb",
+            ["subject"],
+        )
+        try:
+            Meas = register_matlab_variable("Meas_Gt")
+            for i in [1, 2, 9, 10, 11]:
+                db.save_variable(Meas, float(i), subject=i)
+
+            filt = schema_key("subject") > 9
+            result = load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
+            assert int(result["n"]) == 2  # subjects 10, 11 (would be 0 lexicographically)
+        finally:
+            db.close()
+
+    def test_ge_and_le_range(self, tmp_path):
+        """(schema_key("subject") >= 2) & (schema_key("subject") <= 4) → 3 records."""
+        db = configure_database(
+            tmp_path / "test.duckdb",
+            ["subject"],
+        )
+        try:
+            Meas = register_matlab_variable("Meas_Range")
+            for i in range(1, 6):
+                db.save_variable(Meas, float(i), subject=i)
+
+            filt = (schema_key("subject") >= 2) & (schema_key("subject") <= 4)
+            result = load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
+            assert int(result["n"]) == 3
+        finally:
+            db.close()
+
+    def test_ne_string_key(self, tmp_path):
+        """schema_key("session") != "BL" excludes BL session."""
+        db = configure_database(
+            tmp_path / "test.duckdb",
+            ["subject", "session"],
+        )
+        try:
+            Meas = register_matlab_variable("Meas_Ne")
+            db.save_variable(Meas, 1.0, subject=1, session="BL")
+            db.save_variable(Meas, 2.0, subject=1, session="POST")
+            db.save_variable(Meas, 3.0, subject=1, session="FOL")
+
+            filt = schema_key("session") != "BL"
+            result = load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
+            assert int(result["n"]) == 2
+        finally:
+            db.close()
+
+    def test_unknown_key_raises(self, tmp_path):
+        """schema_key with a key not in dataset_schema_keys raises ValueError."""
+        db = configure_database(
+            tmp_path / "test.duckdb",
+            ["subject"],
+        )
+        try:
+            Meas = register_matlab_variable("Meas_BadKey")
+            db.save_variable(Meas, 1.0, subject=1)
+
+            filt = schema_key("nonexistent") == "foo"
+            with pytest.raises(ValueError, match="Unknown schema key"):
+                load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
         finally:
             db.close()
