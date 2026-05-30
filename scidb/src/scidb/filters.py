@@ -393,9 +393,8 @@ class VariableFilter(Filter):
             db, filter_table_name, target_table_name
         )
 
-        # When loading a Merge constituent (validate_coverage=False), a filter
-        # variable finer than the constituent is not applicable — skip it.
-        if filter_level_idx > target_level_idx and not validate_coverage:
+        # A filter variable finer than the target is not applicable — skip it.
+        if filter_level_idx > target_level_idx:
             return _get_all_schema_ids_for_variable(db, target_table_name)
 
         # Validate schema level compatibility
@@ -479,9 +478,8 @@ class ColumnFilter(Filter):
             db, filter_table_name, target_table_name
         )
 
-        # When loading a Merge constituent (validate_coverage=False), a filter
-        # variable finer than the constituent is not applicable — skip it.
-        if filter_level_idx > target_level_idx and not validate_coverage:
+        # A filter variable finer than the target is not applicable — skip it.
+        if filter_level_idx > target_level_idx:
             return _get_all_schema_ids_for_variable(db, target_table_name)
 
         # Validate schema level compatibility
@@ -553,9 +551,8 @@ class InFilter(Filter):
             db, filter_table_name, target_table_name
         )
 
-        # When loading a Merge constituent (validate_coverage=False), a filter
-        # variable finer than the constituent is not applicable — skip it.
-        if filter_level_idx > target_level_idx and not validate_coverage:
+        # A filter variable finer than the target is not applicable — skip it.
+        if filter_level_idx > target_level_idx:
             return _get_all_schema_ids_for_variable(db, target_table_name)
 
         _validate_filter_schema_level(

@@ -467,6 +467,23 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
                 bad = set(tbl["session"].unique()) - {"BL"}
                 assert not bad, f"unexpected sessions after filter: {bad}"
 
+    def test_finer_variable_filter_skipped_in_direct_load(self, cross_level_db_with_session_filter):
+        """Regression: a session-level VariableFilter must not raise when used in a
+        direct load() call against a subject-level variable.
+
+        Before the fix, the finer-filter skip only applied when validate_coverage=False
+        (Merge constituent loads).  A direct load raised ValueError instead of silently
+        skipping the inapplicable filter.
+        """
+        # SubjectLabel is subject-level; SessionSide is session-level (finer).
+        # The filter is not applicable — all subjects should be returned.
+        results = SubjectLabel.load(where=SessionSide == "U")
+        if not hasattr(results, "__len__"):
+            results = [results]
+        assert len(results) == 2, f"expected 2 subjects, got {len(results)}"
+        labels = {r.data for r in results}
+        assert labels == {"A", "B"}
+
 
 # ===========================================================================
 # Error handling
