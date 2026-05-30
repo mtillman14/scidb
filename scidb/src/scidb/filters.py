@@ -952,6 +952,36 @@ def schema_key(key: str) -> SchemaKey:
     return SchemaKey(key)
 
 
+def _combine_and(
+    a: "Filter | None", b: "Filter | None"
+) -> "Filter | None":
+    """Combine two nullable filters with AND; returns None when both are None."""
+    if a is not None and b is not None:
+        return CompoundFilter(a, b, "AND")
+    return a if a is not None else b
+
+
+def split_schema_key_filters(
+    filter_obj: "Filter",
+) -> "tuple[Filter | None, Filter | None]":
+    """Split a filter tree into (schema_key_part, variable_part).
+
+    Recursively extracts SchemaKeyCompareFilter / SchemaKeyInFilter nodes
+    from AND-connected compounds.  OR / NOT compounds and all other leaf
+    types are left whole in the variable part.
+
+    Returns:
+        (schema_key_filter, variable_filter) — either element may be None.
+    """
+    if isinstance(filter_obj, (SchemaKeyCompareFilter, SchemaKeyInFilter)):
+        return filter_obj, None
+    if isinstance(filter_obj, CompoundFilter) and filter_obj.op == "AND":
+        left_sk, left_var = split_schema_key_filters(filter_obj.left)
+        right_sk, right_var = split_schema_key_filters(filter_obj.right)
+        return _combine_and(left_sk, right_sk), _combine_and(left_var, right_var)
+    return None, filter_obj
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers used by multiple filter types
 # ---------------------------------------------------------------------------

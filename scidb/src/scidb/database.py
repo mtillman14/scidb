@@ -2109,19 +2109,33 @@ class DatabaseManager:
         """
         type_name = variable_class.__name__
 
-        # Strategy 1: filter by __where version key
+        from .filters import Filter, RawFilter, split_schema_key_filters
+
+        # Split SchemaKey filters from variable-level filters.
+        # SchemaKey filters select rows by schema column values (e.g. session IN [...])
+        # and act as post-selectors on already-computed data.  Variable-level filters
+        # (e.g. UAStartFoot == 'U') identify which computation variant to return via
+        # the stored __where version key.  Mixing them into the same to_key() string
+        # prevents Strategy 1 from matching records that were computed without the
+        # schema-key constraint.
+        sk_filter = None
+        where_for_key = where  # portion used to derive the __where lookup key
+        if isinstance(where, Filter):
+            sk_filter, var_filter = split_schema_key_filters(where)
+            if sk_filter is not None:
+                where_for_key = var_filter  # None when where is purely SchemaKey
+
+        # Compute __where key from the variable-level portion only
         augmented = dict(metadata)
-        # where can be a string or a Filter object
-        # For RawFilter with original string, use that for consistency with save path
-        from .filters import RawFilter
-        if isinstance(where, str):
-            augmented["__where"] = where
-        elif isinstance(where, RawFilter) and hasattr(where, '_original_str'):
-            augmented["__where"] = where._original_str
-        elif hasattr(where, 'to_key'):
-            augmented["__where"] = where.to_key()
-        else:
-            augmented["__where"] = str(where)
+        if isinstance(where_for_key, str):
+            augmented["__where"] = where_for_key
+        elif isinstance(where_for_key, RawFilter) and hasattr(where_for_key, '_original_str'):
+            augmented["__where"] = where_for_key._original_str
+        elif where_for_key is not None and hasattr(where_for_key, 'to_key'):
+            augmented["__where"] = where_for_key.to_key()
+        elif where_for_key is not None:
+            augmented["__where"] = str(where_for_key)
+        # (where_for_key is None → purely SchemaKey filter; no __where key needed)
 
         # Optimization: fetch records WITHOUT __where filter first, then apply it in Python
         # This avoids fetching 14k+ records twice (once with __where, once without)
@@ -2133,7 +2147,7 @@ class DatabaseManager:
                 f"No {type_name} found matching metadata: {metadata}"
             )
 
-        # Try filtering by __where in Python (fast dict lookup on already-loaded data)
+        # Strategy 1: match by __where version key (fast path for for_each-computed data)
         where_key = augmented.get("__where")
         if where_key:
             records = records_all[
@@ -2142,7 +2156,16 @@ class DatabaseManager:
                 )
             ].copy()
             if len(records) > 0:
-                return records
+                # Apply any SchemaKey filter as an additional schema-id row selector
+                if sk_filter is not None:
+                    allowed_ids = sk_filter.resolve(self, variable_class, table_name)
+                    records = records[records["schema_id"].isin(allowed_ids)]
+                if len(records) > 0:
+                    return records
+                raise NotFoundError(
+                    f"No {type_name} found matching metadata: {metadata} "
+                    f"with the given schema key filter."
+                )
 
         # Strategy 2: fallback to schema-level filtering (backward compat)
         # Reuse records_all instead of re-fetching!

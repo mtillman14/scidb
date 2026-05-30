@@ -481,3 +481,128 @@ class TestSchemaKeyFilterErrors:
     def test_unknown_key_isin_raises(self, session_db):
         with pytest.raises(ValueError, match="Unknown schema key"):
             Measurement.load(where=schema_key("nonexistent").isin(["BL"]))
+
+
+# ===========================================================================
+# SchemaKey combined with variable-level filter on for_each-computed output
+# ===========================================================================
+
+class ComputedOutput(BaseVariable):
+    """Output variable computed via for_each with a variable-level where= filter."""
+    schema_version = 1
+
+
+class FilterVar(BaseVariable):
+    """Fine-grained filter variable (session-level) used as where= in for_each."""
+    schema_version = 1
+
+
+@pytest.fixture
+def foreach_where_db(tmp_path):
+    """DB with [subject, session] schema.
+
+    FilterVar (session-level):
+      subject=1, session=BL  → "U"
+      subject=1, session=MID → "U"
+      subject=1, session=TX  → "A"
+      subject=2, session=BL  → "U"
+      subject=2, session=MID → "A"
+
+    ComputedOutput is saved via for_each with where=FilterVar == "U":
+      subject=1, session=BL  → 1.0  (__where = "FilterVar == 'U'")
+      subject=1, session=MID → 1.0  (__where = "FilterVar == 'U'")
+      subject=2, session=BL  → 1.0  (__where = "FilterVar == 'U'")
+    """
+    from scidb import for_each
+
+    db = configure_database(tmp_path / "foreach_where.duckdb", ["subject", "session"])
+
+    FilterVar.save("U", subject=1, session="BL")
+    FilterVar.save("U", subject=1, session="MID")
+    FilterVar.save("A", subject=1, session="TX")
+    FilterVar.save("U", subject=2, session="BL")
+    FilterVar.save("A", subject=2, session="MID")
+
+    def compute(filterVar):
+        return 1.0  # value doesn't matter; we're testing the load path
+
+    # Provide explicit iteration axes so for_each iterates per (subject, session)
+    # rather than loading everything as a single table.  The where= filter
+    # then skips combinations where FilterVar != "U" ((1,TX) and (2,MID)).
+    for_each(
+        compute,
+        inputs={"filterVar": FilterVar},
+        outputs=[ComputedOutput],
+        where=FilterVar == "U",
+        subject=[1, 2],
+        session=["BL", "MID", "TX"],
+    )
+
+    yield db
+    db.close()
+
+
+class TestSchemaKeyWithForEachWhereFilter:
+    """Regression: schema_key() filter combined with a variable-level filter must not
+    error when loading for_each-computed data.
+
+    Before the fix, adding schema_key("session").isin([...]) to a variable-level
+    filter changed the __where lookup key, defeating Strategy 1.  The fallback
+    (Strategy 2) then raised ValueError because the variable filter was finer
+    than the target.
+    """
+
+    def test_schema_key_isin_combined_with_variable_filter(self, foreach_where_db):
+        """Load with schema_key + variable filter returns only the selected sessions."""
+        results = ComputedOutput.load(
+            where=schema_key("session").isin(["BL"]) & (FilterVar == "U")
+        )
+        if not hasattr(results, '__len__'):
+            results = [results]
+        assert len(results) == 2  # subject=1,BL and subject=2,BL
+        sessions = {r.metadata["session"] for r in results}
+        assert sessions == {"BL"}
+
+    def test_schema_key_eq_combined_with_variable_filter(self, foreach_where_db):
+        """Equality SchemaKey + variable filter returns correct subset."""
+        result = ComputedOutput.load(
+            where=(schema_key("session") == "MID") & (FilterVar == "U")
+        )
+        # Single result may come back as a single BaseVariable, not a list
+        if hasattr(result, '__len__'):
+            assert len(result) == 1
+            assert result[0].metadata["session"] == "MID"
+        else:
+            assert result.metadata["session"] == "MID"
+
+    def test_variable_filter_alone_still_works(self, foreach_where_db):
+        """Baseline: variable-only filter (no SchemaKey) still returns all matching records."""
+        results = ComputedOutput.load(where=FilterVar == "U")
+        if not hasattr(results, '__len__'):
+            results = [results]
+        assert len(results) == 3  # BL×2 + MID×1
+
+    def test_schema_key_only_still_works(self, foreach_where_db):
+        """Baseline: SchemaKey-only filter still returns records regardless of __where."""
+        results = ComputedOutput.load(where=schema_key("session").isin(["BL"]))
+        if not hasattr(results, '__len__'):
+            results = [results]
+        assert len(results) == 2
+
+    def test_not_found_when_session_has_no_matching_where(self, foreach_where_db):
+        """NotFoundError when the requested session exists but not with the given where= variant."""
+        with pytest.raises(NotFoundError):
+            ComputedOutput.load(
+                where=schema_key("session").isin(["TX"]) & (FilterVar == "U")
+            )
+
+    def test_schema_key_isin_on_right_side(self, foreach_where_db):
+        """SchemaKey filter commutes: (FilterVar == 'U') & schema_key(...).isin([...])."""
+        results = ComputedOutput.load(
+            where=(FilterVar == "U") & schema_key("session").isin(["BL"])
+        )
+        if not hasattr(results, '__len__'):
+            results = [results]
+        assert len(results) == 2
+        sessions = {r.metadata["session"] for r in results}
+        assert sessions == {"BL"}
