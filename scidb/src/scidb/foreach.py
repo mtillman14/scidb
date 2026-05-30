@@ -1469,18 +1469,20 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
             # cannot filter each constituent by schema keys.
             return PerComboLoaderMerge(var_spec)
         # All constituents can be pre-loaded.
-        # ``where=`` is intentionally NOT propagated to Merge constituents:
-        # the inner-join across constituents already restricts the result
-        # set, and enforcing where-coverage on each constituent
-        # individually trips the filter-coverage validator (the filter
-        # variable rarely covers EVERY schema location that a Merge
-        # constituent has data for). The where filter still affects the
-        # surrounding for_each call via __where in version_keys.
+        # ``where=`` is propagated to Merge constituents only when it is
+        # composed exclusively of SchemaKey-based filters (SchemaKeyInFilter,
+        # SchemaKeyCompareFilter). Those filters have no coverage-validation
+        # step and query _schema directly, so they never trip the validator.
+        # VariableFilter/ColumnFilter are NOT propagated because they DO run
+        # coverage checks that fail when the filter variable doesn't cover
+        # every schema location a Merge constituent has data for.
+        # Either way, __where is still recorded in version_keys for caching.
+        merge_where = where if _is_schema_key_only_filter(where) else None
         loaded_tables = []
         _SCIDB_META = {"__record_id", "__branch_params", "version"}
         _schema_keys = set(getattr(_merge_db, 'dataset_schema_keys', []) if _merge_db is not None else [])
         for sub_spec in var_spec.var_specs:
-            loaded = _load_input(sub_spec, db, where=None)
+            loaded = _load_input(sub_spec, db, where=merge_where)
             # Strip scidb metadata columns that would conflict when merged column-wise.
             # __record_id/__branch_params/version appear in every constituent but carry
             # no per-row meaning after merge; scifor's _prepare_merge doesn't track them.
@@ -1621,6 +1623,27 @@ def _compute_fixed_input_rids(inputs: dict, db) -> dict:
             pass
 
     return fixed_rids
+
+
+def _is_schema_key_only_filter(where) -> bool:
+    """Return True if where is composed solely of SchemaKey-based filters.
+
+    SchemaKeyInFilter and SchemaKeyCompareFilter query _schema directly and
+    have no coverage-validation step, so they are safe to propagate into
+    Merge constituent loading.  VariableFilter and ColumnFilter are NOT safe
+    (their coverage checks fail when the filter variable doesn't cover every
+    schema location a constituent has data for).
+    """
+    if where is None:
+        return False
+    from .filters import SchemaKeyInFilter, SchemaKeyCompareFilter, CompoundFilter, NotFilter
+    if isinstance(where, (SchemaKeyInFilter, SchemaKeyCompareFilter)):
+        return True
+    if isinstance(where, CompoundFilter):
+        return _is_schema_key_only_filter(where.left) and _is_schema_key_only_filter(where.right)
+    if isinstance(where, NotFilter):
+        return _is_schema_key_only_filter(where.inner)
+    return False
 
 
 def _merge_needs_per_combo(merge_spec: "Merge") -> bool:
