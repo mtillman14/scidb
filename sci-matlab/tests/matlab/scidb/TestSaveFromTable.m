@@ -164,5 +164,57 @@ classdef TestSaveFromTable < matlab.unittest.TestCase
             testCase.verifyEqual(string(v.data), "hello");
         end
 
+        % --- Auto-distribute via save() ---
+
+        function test_auto_distribute_single_data_col(testCase)
+            % save() with a table whose column names include a schema key
+            % should auto-distribute: one record per row, schema key as metadata.
+            tbl = table([1;2;3], [10.0;20.0;30.0], ...
+                'VariableNames', {'subject','MyVar'});
+            ids = ScalarVar().save(tbl);
+            testCase.verifyEqual(numel(ids), 3);
+
+            v1 = ScalarVar().load('subject', 1);
+            testCase.verifyEqual(v1.data, 10.0, 'AbsTol', 1e-10);
+            v3 = ScalarVar().load('subject', 3);
+            testCase.verifyEqual(v3.data, 30.0, 'AbsTol', 1e-10);
+        end
+
+        function test_auto_distribute_multiple_data_cols(testCase)
+            % When the table has multiple non-schema-key columns, each row is
+            % saved as a 1-row sub-table.
+            tbl = table([1;2], ["A";"B"], [0.5;0.6], ...
+                'VariableNames', {'subject','session','MyVar'});
+            ids = ScalarVar().save(tbl);
+            testCase.verifyEqual(numel(ids), 2);
+
+            v = ScalarVar().load('subject', 1);
+            % data should be the sub-table of non-schema columns for that row
+            testCase.verifyTrue(istable(v.data));
+            testCase.verifyEqual(height(v.data), 1);
+        end
+
+        function test_auto_distribute_no_schema_cols_falls_through(testCase)
+            % A table with no schema-key columns should save as one record.
+            tbl = table([1;2;3], [10.0;20.0;30.0], ...
+                'VariableNames', {'a','b'});
+            id = ScalarVar().save(tbl);
+            testCase.verifyEqual(numel(id), 1);  % single record_id string
+        end
+
+        function test_auto_distribute_with_common_metadata(testCase)
+            % Extra name-value args become common metadata for all rows.
+            scidb.configure_database( ...
+                fullfile(testCase.test_dir, 'test.duckdb'), ...
+                ["subject", "session"]);
+            tbl = table([1;2], [7.0;8.0], ...
+                'VariableNames', {'subject','MyVar'});
+            ids = ScalarVar().save(tbl, 'session', 'X');
+            testCase.verifyEqual(numel(ids), 2);
+
+            v = ScalarVar().load('subject', 1, 'session', 'X');
+            testCase.verifyEqual(v.data, 7.0, 'AbsTol', 1e-10);
+        end
+
     end
 end

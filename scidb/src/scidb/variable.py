@@ -231,6 +231,11 @@ class BaseVariable(metaclass=VariableMeta):
         Args:
             data: The data to save. Can be:
                 - BaseVariable: an existing variable instance
+                - pd.DataFrame: if columns include any dataset_schema_keys, each
+                  row is saved as a separate record automatically (schema-key
+                  columns become per-row metadata, remaining columns become the
+                  data). DataFrames with no schema-key columns are saved as a
+                  single record. Returns a list[str] of record_ids in this case.
                 - Any other type: raw data (numpy array, etc.)
             index: Optional index for the DataFrame. Sets df.index after to_db()
                 is called. Useful for storing lists/arrays with semantic indexing.
@@ -238,10 +243,13 @@ class BaseVariable(metaclass=VariableMeta):
             db: Optional DatabaseManager instance to use instead of the global
                 database. Allows one-shot operations against a specific database
                 without changing the global default.
-            **metadata: Addressing metadata (e.g., subject=1, trial=1)
+            **metadata: Addressing metadata (e.g., subject=1, trial=1). When
+                auto-distributing a DataFrame, these are applied as common
+                metadata to every row.
 
         Returns:
-            str: The record_id of the saved data
+            str: The record_id of the saved data, or list[str] when
+                auto-distributing a DataFrame with schema-key columns.
 
         Raises:
             ReservedMetadataKeyError: If metadata contains reserved keys
@@ -274,6 +282,31 @@ class BaseVariable(metaclass=VariableMeta):
 
         from .database import get_database
         _db = db or get_database()
+
+        # Auto-detect DataFrame-distribute: if data is a DataFrame with columns
+        # matching the configured schema keys, dispatch to save_from_dataframe.
+        if isinstance(data, pd.DataFrame):
+            schema_keys = _db.dataset_schema_keys
+            df_cols = list(data.columns)
+            meta_cols = [c for c in schema_keys if c in df_cols]
+            if meta_cols:
+                data_cols = [c for c in df_cols if c not in schema_keys]
+                if not data_cols:
+                    raise ValueError(
+                        f"DataFrame has no data columns (all columns are schema keys: {meta_cols})."
+                    )
+                if len(data_cols) == 1:
+                    return cls.save_from_dataframe(data, data_cols[0], meta_cols, db=_db, **metadata)
+                else:
+                    # Multiple data columns: save each row's sub-DataFrame as data
+                    sub_df = data[data_cols].reset_index(drop=True)
+                    aug = data[meta_cols].copy().reset_index(drop=True)
+                    aug["__scidb_row_data__"] = [
+                        sub_df.iloc[[i]].reset_index(drop=True) for i in range(len(data))
+                    ]
+                    return cls.save_from_dataframe(aug, "__scidb_row_data__", meta_cols, db=_db, **metadata)
+            # No schema-key columns in DataFrame → fall through and save as one record.
+
         return _db.save_variable(cls, data, index=index, **metadata)
 
     @classmethod

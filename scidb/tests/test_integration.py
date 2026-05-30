@@ -824,3 +824,51 @@ class TestSaveBatchSingleColumn:
         assert s1.data == 10.0
         s2 = scalar_class.load(subject=1, trial=2)
         assert s2.data == 20.0
+
+
+class TestSaveAutoDistribute:
+    """save() auto-distributes a DataFrame whose columns include schema keys."""
+
+    def test_single_data_col(self, db, scalar_class):
+        df = pd.DataFrame({"subject": [1, 2, 3], "trial": [1, 1, 1], "value": [10.0, 20.0, 30.0]})
+        ids = scalar_class.save(df)
+        assert len(ids) == 3
+        assert scalar_class.load(subject=1, trial=1).data == 10.0
+        assert scalar_class.load(subject=3, trial=1).data == 30.0
+
+    def test_single_data_col_with_common_metadata(self, db, scalar_class):
+        # Only subject is in the DataFrame; trial comes from kwargs.
+        df = pd.DataFrame({"subject": [1, 2], "value": [7.0, 8.0]})
+        ids = scalar_class.save(df, trial=99)
+        assert len(ids) == 2
+        assert scalar_class.load(subject=1, trial=99).data == 7.0
+        assert scalar_class.load(subject=2, trial=99).data == 8.0
+
+    def test_multiple_data_cols(self, db, dataframe_class):
+        # Two non-schema columns → each row saved as a 1-row DataFrame.
+        df = pd.DataFrame({
+            "subject": [1, 2],
+            "trial":   [1, 1],
+            "a": [0.1, 0.2],
+            "b": [0.3, 0.4],
+        })
+        ids = dataframe_class.save(df)
+        assert len(ids) == 2
+        v = dataframe_class.load(subject=1, trial=1)
+        assert isinstance(v.data, pd.DataFrame)
+        assert list(v.data.columns) == ["a", "b"]
+        assert v.data["a"].iloc[0] == pytest.approx(0.1)
+
+    def test_no_schema_key_cols_falls_through(self, db, dataframe_class):
+        # DataFrame with no schema-key columns → saved as one record.
+        df = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
+        result = dataframe_class.save(df, subject=1, trial=1)
+        assert isinstance(result, str)
+        loaded = dataframe_class.load(subject=1, trial=1)
+        pd.testing.assert_frame_equal(loaded.data, df)
+
+    def test_idempotent(self, db, scalar_class):
+        df = pd.DataFrame({"subject": [1, 2], "trial": [1, 1], "value": [5.0, 6.0]})
+        ids1 = scalar_class.save(df)
+        ids2 = scalar_class.save(df)
+        assert ids1 == ids2

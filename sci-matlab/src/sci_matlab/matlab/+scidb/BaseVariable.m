@@ -96,18 +96,34 @@ classdef BaseVariable < dynamicprops
         %   RECORD_ID = TypeClass().save(DATA, Name, Value, ...)
         %
         %   DATA can be a numeric array, scalar, scidb.LineageFcnResult
-        %   (lineage is stored automatically), or scidb.BaseVariable (re-save).
+        %   (lineage is stored automatically), scidb.BaseVariable (re-save),
+        %   or a MATLAB table.
+        %
+        %   Table auto-distribute: if DATA is a table whose column names
+        %   include any configured dataset_schema_keys, save() automatically
+        %   saves one record per row.  Schema-key columns become per-row
+        %   metadata; remaining columns become the data.  If only one
+        %   non-schema column exists the scalar value is saved directly;
+        %   if multiple non-schema columns exist each row's sub-table is
+        %   saved as the data.  Returns a string array of record_ids in
+        %   this case.  Tables with no schema-key columns are saved as a
+        %   single record (existing behaviour).
         %
         %   Name-Value Arguments:
         %       db - Optional DatabaseManager to use instead of the global
         %            database (returned by scidb.configure_database).
         %       Any other name-value pairs are metadata (e.g. subject=1).
+        %       When auto-distributing a table, extra pairs become common
+        %       metadata applied to every row.
         %
         %   Example:
         %       RawSignal().save(randn(100,3), subject=1, session="A");
         %
         %       result = my_thunk(input_var, 2.5);
         %       Processed().save(result, subject=1, session="A");
+        %
+        %       % Auto-distribute a table (subject is a schema key)
+        %       SubjectGrouping().save(groupingTbl);   % 1 record per row
         %
         %       % Save to a specific database
         %       RawSignal().save(data, db=db2, subject=1);
@@ -125,6 +141,41 @@ classdef BaseVariable < dynamicprops
                 py_record_id = py.scihist.foreach.save(py_class, py_data, pyargs(py_kwargs{:}));
                 record_id = char(py_record_id);
                 return;
+            end
+
+            % Auto-detect table-distribute: if data is a table with columns
+            % matching the configured schema keys, dispatch to save_from_table.
+            if istable(data)
+                if isempty(db_val)
+                    py_db_check = py.scidb.database.get_database();
+                else
+                    py_db_check = db_val;
+                end
+                schema_keys = string(cell(py.list(py_db_check.dataset_schema_keys)));
+                tbl_cols    = string(data.Properties.VariableNames);
+                meta_cols   = intersect(schema_keys, tbl_cols, 'stable');
+                if ~isempty(meta_cols)
+                    data_cols = setdiff(tbl_cols, schema_keys, 'stable');
+                    if isempty(data_cols)
+                        error('scidb:SaveError', ...
+                            'Table has no data columns (all columns are schema keys: %s).', ...
+                            strjoin(meta_cols, ', '));
+                    elseif numel(data_cols) == 1
+                        record_id = obj.save_from_table(data, data_cols(1), meta_cols, varargin{:});
+                    else
+                        % Multiple data columns: wrap each row's sub-table as a cell
+                        sub_data  = data(:, data_cols);
+                        meta_tbl  = data(:, meta_cols);
+                        row_cells = cell(height(data), 1);
+                        for ri = 1:height(data)
+                            row_cells{ri} = sub_data(ri, :);
+                        end
+                        aug_tbl   = [meta_tbl, table(row_cells, 'VariableNames', {'scidb_row_data_'})];
+                        record_id = obj.save_from_table(aug_tbl, 'scidb_row_data_', meta_cols, varargin{:});
+                    end
+                    return;
+                end
+                % No schema-key columns in table → fall through and save as one record.
             end
 
             % Marshal data to Python for plain save
