@@ -223,6 +223,11 @@ class AuxMeasurement(BaseVariable):
     schema_version = 1
 
 
+class SubjectLabel(BaseVariable):
+    """Subject-level variable (saved without session) for cross-level Merge tests."""
+    schema_version = 1
+
+
 @pytest.fixture
 def merge_session_db(tmp_path):
     """DB with [subject, session] and data in both Measurement and AuxMeasurement.
@@ -299,6 +304,94 @@ class TestSchemaKeyFilterWithMerge:
             if "subject" in tbl.columns:
                 bad = set(str(v) for v in tbl["subject"].unique()) - {"1"}
                 assert not bad, f"unexpected subjects in Merge output: {bad}"
+
+
+# ===========================================================================
+# Cross-level Merge: subject-level variable + session-level filter
+# ===========================================================================
+
+@pytest.fixture
+def cross_level_db(tmp_path):
+    """DB with [subject, session].
+
+    SubjectLabel: saved at subject level only (no session key).
+      subject=1 → "A",  subject=2 → "B"
+
+    Measurement: saved at session level.
+      subject=1, session=BL → 1.0
+      subject=1, session=POST → 2.0
+      subject=2, session=BL → 3.0
+      subject=2, session=POST → 4.0
+    """
+    db = configure_database(tmp_path / "cross.duckdb", ["subject", "session"])
+    SubjectLabel.save("A", subject=1)
+    SubjectLabel.save("B", subject=2)
+    Measurement.save(1.0, subject=1, session="BL")
+    Measurement.save(2.0, subject=1, session="POST")
+    Measurement.save(3.0, subject=2, session="BL")
+    Measurement.save(4.0, subject=2, session="POST")
+    yield db
+    db.close()
+
+
+class TestCrossLevelMergeWithSchemaKeyFilter:
+    """Regression: session-level where= must not wipe out subject-level Merge constituents.
+
+    When one Merge constituent is stored at subject level (no session column) and
+    the where= filter references session, that constituent must be loaded in full
+    rather than returning 0 rows (which previously caused 'Cannot merge: one or
+    more constituents have no data').
+    """
+
+    def test_isin_does_not_empty_subject_level_constituent(self, cross_level_db):
+        from scidb import for_each
+        from scidb.foreach import Merge
+
+        captured = []
+
+        def collect(inputVal):
+            captured.append(inputVal.copy())
+            return inputVal
+
+        for_each(
+            collect,
+            inputs={"inputVal": Merge(SubjectLabel, Measurement)},
+            outputs=[Measurement],
+            as_table=True,
+            where=schema_key("session").isin(["BL"]),
+            save=False,
+        )
+
+        assert captured, "function was never called — subject-level constituent was incorrectly emptied"
+        for tbl in captured:
+            if "session" in tbl.columns:
+                bad = set(tbl["session"].unique()) - {"BL"}
+                assert not bad, f"unexpected sessions after filter: {bad}"
+
+    def test_compare_does_not_empty_subject_level_constituent(self, cross_level_db):
+        from scidb import for_each
+        from scidb.foreach import Merge
+
+        captured = []
+
+        def collect(inputVal):
+            captured.append(inputVal.copy())
+            return inputVal
+
+        for_each(
+            collect,
+            inputs={"inputVal": Merge(SubjectLabel, Measurement)},
+            outputs=[Measurement],
+            as_table=True,
+            where=schema_key("session") == "POST",
+            save=False,
+        )
+
+        assert captured, "function was never called"
+        for tbl in captured:
+            if "session" in tbl.columns:
+                bad = set(tbl["session"].unique()) - {"POST"}
+                assert not bad, f"unexpected sessions after filter: {bad}"
 
 
 # ===========================================================================

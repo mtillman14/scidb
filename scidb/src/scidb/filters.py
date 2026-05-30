@@ -834,6 +834,14 @@ class SchemaKeyCompareFilter(Filter):
         if not target_ids:
             return set()
 
+        # If the target variable is stored at a coarser level than the filter
+        # key (e.g. subject-level variable with a session filter), the filter
+        # is not applicable — return all target ids unfiltered.
+        filter_key_idx = schema_keys.index(self.key)
+        target_level_idx = _get_variable_level_idx(db, target_table_name)
+        if 0 <= target_level_idx < filter_key_idx:
+            return target_ids
+
         sql_op = _op_to_sql(self.op)
 
         if self.op in ("<", "<=", ">", ">="):
@@ -895,6 +903,14 @@ class SchemaKeyInFilter(Filter):
         if not target_ids or not self.values:
             return set()
 
+        # If the target variable is stored at a coarser level than the filter
+        # key (e.g. subject-level variable with a session filter), the filter
+        # is not applicable — return all target ids unfiltered.
+        filter_key_idx = schema_keys.index(self.key)
+        target_level_idx = _get_variable_level_idx(db, target_table_name)
+        if 0 <= target_level_idx < filter_key_idx:
+            return target_ids
+
         str_values = [_to_schema_str(v) for v in self.values]
         placeholders = ", ".join(["?"] * len(str_values))
         try:
@@ -926,6 +942,29 @@ def schema_key(key: str) -> SchemaKey:
 # Internal helpers used by multiple filter types
 # ---------------------------------------------------------------------------
 
+def _get_variable_level_idx(db: "DatabaseManager", table_name: str) -> int:
+    """Return the index of the deepest non-null schema key for this variable.
+
+    Returns -1 when the variable has no records or no schema columns are populated.
+    """
+    schema_keys = db.dataset_schema_keys
+    ids = _get_all_schema_ids_for_variable(db, table_name)
+    if not ids:
+        return -1
+    placeholders = ", ".join(["?"] * len(ids))
+    rows = db._duck._fetchdf(
+        f"SELECT * FROM _schema WHERE schema_id IN ({placeholders})",
+        list(ids),
+    )
+    if len(rows) == 0:
+        return -1
+    level_idx = -1
+    for i, key in enumerate(schema_keys):
+        if key in rows.columns and rows[key].notna().any():
+            level_idx = i
+    return level_idx
+
+
 def _get_level_indices(
     db: "DatabaseManager",
     filter_table_name: str,
@@ -935,29 +974,10 @@ def _get_level_indices(
 
     -1 means no keys are populated (no records or no schema columns).
     """
-    schema_keys = db.dataset_schema_keys
-
-    filter_ids = _get_all_schema_ids_for_variable(db, filter_table_name)
-    target_ids = _get_all_schema_ids_for_variable(db, target_table_name)
-
-    def get_level(schema_ids):
-        if not schema_ids:
-            return -1
-        placeholders = ", ".join(["?"] * len(schema_ids))
-        rows = db._duck._fetchdf(
-            f"SELECT * FROM _schema WHERE schema_id IN ({placeholders})",
-            list(schema_ids),
-        )
-        if len(rows) == 0:
-            return -1
-        level_idx = -1
-        for i, key in enumerate(schema_keys):
-            if key in rows.columns:
-                if rows[key].notna().any():
-                    level_idx = i
-        return level_idx
-
-    return get_level(filter_ids), get_level(target_ids)
+    return (
+        _get_variable_level_idx(db, filter_table_name),
+        _get_variable_level_idx(db, target_table_name),
+    )
 
 
 def _validate_filter_coverage(
