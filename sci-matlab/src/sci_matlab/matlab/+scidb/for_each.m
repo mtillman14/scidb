@@ -284,7 +284,11 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     %     save path routes them through scihist's lineage-aware save. ---
     py_result_dfs = py.list();
     for o = 1:n_out
-        tbl = result_tables{o};
+        if n_outputs == 0
+            scidb.Log.info('scifor output %d: Skipping storing output, 0 outputs specified', o)
+            break; % Don't store outputs if 0 outputs are specified, e.g. {}
+        end
+        tbl = result_tables{o};        
         if isempty(tbl)
             scidb.Log.warn('scifor output %d (%s): empty table; nothing to save', ...
                 o, output_names{o});

@@ -47,7 +47,7 @@ classdef SchemaKey
         %       where=ismember(scidb.schema_key("session"), ["BL", "POST"])
             if isstring(values) || ischar(values)
                 vals_cell = cellstr(string(values(:)));
-                py_values = py.list(vals_cell);
+                py_values = py.list(vals_cell');
             elseif isnumeric(values)
                 py_values = py.list(num2cell(values(:)'));
             else

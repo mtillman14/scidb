@@ -257,7 +257,11 @@ classdef BaseVariable < dynamicprops
                 data_col = string(data_col, 'yyyy-MM-dd''T''HH:mm:ss.SSS');
             end
             if iscategorical(data_col)
-                data_col = string(data_col);
+                if any(isnan(str2double(string(data_col))))
+                    data_col = string(data_col);
+                else
+                    data_col = double(data_col);
+                end
             end
             py_heights = py.None;  % overridden to a heights array by Strategy A
             if isnumeric(data_col)
