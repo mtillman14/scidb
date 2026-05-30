@@ -1344,6 +1344,14 @@ class DatabaseManager:
 
         return df
 
+    def _any_records_exist(self, type_name: str) -> bool:
+        """Return True if any records of this type have ever been saved."""
+        rows = self._duck._fetchall(
+            "SELECT 1 FROM _record_metadata WHERE variable_name = ? LIMIT 1",
+            [type_name],
+        )
+        return len(rows) > 0
+
     def _find_record(
         self,
         type_name: str,
@@ -2640,7 +2648,7 @@ class DatabaseManager:
         user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
         Log.info(f"load({type_name}): metadata={user_summary}")
         _t_load_all_total = time.perf_counter()
-        table_name = self._ensure_registered(variable_class, auto_register=True)
+        table_name = self._ensure_registered(variable_class, auto_register=False)
 
         _t_find = time.perf_counter()
 
@@ -2660,6 +2668,10 @@ class DatabaseManager:
                 )
             except NotFoundError:
                 Log.info(f"load({type_name}): no records found")
+                if not self._any_records_exist(type_name):
+                    raise NotFoundError(
+                        f"Variable type '{type_name}' is registered but has no saved records in this database."
+                    )
                 return
         else:
             nested_metadata = self._split_metadata(metadata)
@@ -2675,6 +2687,10 @@ class DatabaseManager:
 
             if len(records) == 0:
                 Log.info(f"load({type_name}): no records found")
+                if not self._any_records_exist(type_name):
+                    raise NotFoundError(
+                        f"Variable type '{type_name}' is registered but has no saved records in this database."
+                    )
                 return
         t_find = time.perf_counter() - _t_find
 

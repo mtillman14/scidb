@@ -8,6 +8,7 @@ import pytest
 from scidb import (
     BaseVariable,
     NotFoundError,
+    NotRegisteredError,
     configure_database,
 )
 
@@ -285,6 +286,32 @@ class TestErrorHandling:
         # Try to load as array - should not find it
         with pytest.raises(NotFoundError):
             array_class.load(subject=1, trial=1)
+
+    def test_load_type_never_registered_raises_not_registered(self, db):
+        """Loading a type that was never saved should raise NotRegisteredError."""
+        class NeverSavedType(BaseVariable):
+            pass
+
+        with pytest.raises(NotRegisteredError, match="not registered"):
+            NeverSavedType.load()
+
+    def test_load_type_never_registered_with_metadata_raises_not_registered(self, db):
+        """Loading a never-registered type with metadata should raise NotRegisteredError."""
+        class NeverSavedType2(BaseVariable):
+            pass
+
+        with pytest.raises(NotRegisteredError, match="not registered"):
+            NeverSavedType2.load(subject=1)
+
+    def test_load_type_registered_but_no_records_gives_descriptive_error(self, db):
+        """Loading a registered type with no records should say 'registered but has no saved records'."""
+        class RegisteredButEmpty(BaseVariable):
+            pass
+
+        db.register(RegisteredButEmpty)
+
+        with pytest.raises(NotFoundError, match="registered but has no saved records"):
+            RegisteredButEmpty.load()
 
 
 class TestCustomVariableType:
