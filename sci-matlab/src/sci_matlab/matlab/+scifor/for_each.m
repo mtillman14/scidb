@@ -749,17 +749,7 @@ function result = extract_data(tbl, schema_keys, as_table)
 
     % Drop schema key columns that are all-identical in the filtered rows
     col_names = string(tbl.Properties.VariableNames);
-    cols_to_drop = string.empty;
-    for k = 1:numel(schema_keys)
-        sk = schema_keys(k);
-        if ismember(sk, col_names)
-            col_data = tbl.(char(sk));
-            if height(tbl) <= 1 || all_identical(col_data)
-                cols_to_drop(end+1) = sk; %#ok<AGROW>
-            end
-        end
-    end
-    keep_cols = setdiff(col_names, cols_to_drop, 'stable');
+    keep_cols = setdiff(col_names, schema_keys, 'stable');
 
     if height(tbl) == 1 && numel(keep_cols) == 1
         % Extract scalar value
