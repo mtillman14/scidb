@@ -689,7 +689,17 @@ function val = build_scifor_input_from_desc(desc)
             n = int64(py.len(py_tables));
             tables_cell = cell(1, n);
             for ti = 1:n
-                tables_cell{ti} = build_scifor_input_from_desc(py_tables{ti});
+                inner = build_scifor_input_from_desc(py_tables{ti});
+                % Drop schema key columns that are entirely {0×0 double} cells.
+                % These arise when a constituent was saved at a coarser granularity
+                % (e.g. subject-level only): the spread layout fills unused schema
+                % key columns with NaN/None, which from_python converts to empty
+                % doubles.  Removing them before the merge lets filter_table_for_combo
+                % skip those dimensions naturally, giving correct broadcast semantics.
+                if istable(inner)
+                    inner = drop_all_empty_cell_columns(inner);
+                end
+                tables_cell{ti} = inner;
             end
             val = scifor.Merge(tables_cell{:});
 
@@ -709,6 +719,28 @@ function val = build_scifor_input_from_desc(desc)
         otherwise
             error('scidb:for_each:UnknownInputKind', ...
                 'Unrecognized loaded-input kind from bridge: "%s"', kind);
+    end
+end
+
+
+function tbl = drop_all_empty_cell_columns(tbl)
+%DROP_ALL_EMPTY_CELL_COLUMNS  Remove columns whose every cell is an empty numeric.
+%   Used to clean Merge constituent tables coming from the spread layout:
+%   schema key columns for dimensions the variable was never saved with arrive
+%   as cell arrays of {0×0 double} (NaN/None → [] via from_python).  Dropping
+%   them lets filter_table_for_combo skip those dimensions automatically,
+%   giving the correct broadcast semantics for coarse-level variables.
+    col_names = tbl.Properties.VariableNames;
+    drop = false(1, numel(col_names));
+    for ci = 1:numel(col_names)
+        col = tbl.(col_names{ci});
+        if iscell(col) && ~isempty(col) && ...
+                all(cellfun(@(x) isnumeric(x) && isempty(x), col))
+            drop(ci) = true;
+        end
+    end
+    if any(drop)
+        tbl = tbl(:, col_names(~drop));
     end
 end
 

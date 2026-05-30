@@ -1478,20 +1478,34 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
         # surrounding for_each call via __where in version_keys.
         loaded_tables = []
         _SCIDB_META = {"__record_id", "__branch_params", "version"}
+        _schema_keys = set(getattr(_merge_db, 'dataset_schema_keys', []) if _merge_db is not None else [])
         for sub_spec in var_spec.var_specs:
             loaded = _load_input(sub_spec, db, where=None)
             # Strip scidb metadata columns that would conflict when merged column-wise.
             # __record_id/__branch_params/version appear in every constituent but carry
             # no per-row meaning after merge; scifor's _prepare_merge doesn't track them.
+            #
+            # Also drop schema key columns that are entirely null: when a variable was
+            # saved at a coarser granularity (e.g. subject-level only), the spread layout
+            # includes ALL schema key columns but fills unused ones with NaN.  Keeping
+            # these all-null columns causes MATLAB's filter_table_for_combo to receive
+            # cell arrays of empty doubles and crash when it attempts string conversion.
+            # Dropping them lets the constituent broadcast across the missing dimension.
             if isinstance(loaded, pd.DataFrame):
                 drop_cols = [c for c in loaded.columns
                              if c in _SCIDB_META or c.startswith("__")]
+                all_null_sk = [c for c in loaded.columns
+                               if c in _schema_keys and loaded[c].isna().all()]
+                drop_cols = list(dict.fromkeys(drop_cols + all_null_sk))
                 if drop_cols:
                     loaded = loaded.drop(columns=drop_cols)
             elif hasattr(loaded, 'data') and isinstance(loaded.data, pd.DataFrame):
                 # _scifor.Fixed wrapping a DataFrame
                 drop_cols = [c for c in loaded.data.columns
                              if c in _SCIDB_META or c.startswith("__")]
+                all_null_sk = [c for c in loaded.data.columns
+                               if c in _schema_keys and loaded.data[c].isna().all()]
+                drop_cols = list(dict.fromkeys(drop_cols + all_null_sk))
                 if drop_cols:
                     loaded.data = loaded.data.drop(columns=drop_cols)
             loaded_tables.append(loaded)

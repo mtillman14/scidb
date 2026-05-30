@@ -166,6 +166,21 @@ classdef TestSaveFromTable < matlab.unittest.TestCase
 
         % --- Auto-distribute via save() ---
 
+        function test_categorical_data_column(testCase)
+            % Categorical data column must be converted to string, not fall
+            % through to the per-row path which confuses save_batch into
+            % dataframe mode (breaks the ON CONFLICT PRIMARY KEY clause).
+            tbl = table([1;2;3], categorical(["SHAM";"STIM";"ONWARD"]), ...
+                'VariableNames', {'subject','intervention'});
+            ids = ScalarVar().save_from_table(tbl, "intervention", ["subject"]);
+            testCase.verifyEqual(numel(ids), 3);
+
+            v = ScalarVar().load('subject', 1);
+            testCase.verifyEqual(string(v.data), "SHAM");
+            v = ScalarVar().load('subject', 3);
+            testCase.verifyEqual(string(v.data), "ONWARD");
+        end
+
         function test_auto_distribute_single_data_col(testCase)
             % save() with a table whose column names include a schema key
             % should auto-distribute: one record per row, schema key as metadata.

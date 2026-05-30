@@ -262,6 +262,43 @@ classdef TestMerge < matlab.unittest.TestCase
             testCase.verifyEqual(result.data, [2, 4]');
         end
 
+        % --- Cross-level merge (coarse variable + fine variable) ---
+
+        function test_merge_subject_level_with_session_level(testCase)
+            % Regression: merging a subject-level variable (no session metadata)
+            % with a session-level variable crashed with "Conversion from cell failed"
+            % because the spread layout fills unused schema key columns with NaN,
+            % which arrived in MATLAB as {0x0 double} cells that string() cannot convert.
+            %
+            % Expected: SubjectGrouping broadcasts to all sessions for each subject.
+
+            % PareticSide saved at subject-level only (no session)
+            PareticSide().save("left",  'subject', 1);
+            PareticSide().save("right", 'subject', 2);
+
+            % RawSignal saved at session-level
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            RawSignal().save([4 5 6], 'subject', 1, 'session', 'B');
+            RawSignal().save([7 8 9], 'subject', 2, 'session', 'A');
+
+            % for_each over session — Merge must broadcast PareticSide (no session)
+            % to all sessions without crashing.
+            scidb.for_each(@table_col_count, ...
+                struct('data', scidb.Merge(PareticSide(), RawSignal())), ...
+                {MergedResult()}, ...
+                'subject', [1 2], 'session', ["A", "B"], ...
+                as_table=true);
+
+            % subject=1/session=A and subject=1/session=B should both succeed
+            r1a = MergedResult().load('subject', 1, 'session', 'A');
+            r1b = MergedResult().load('subject', 1, 'session', 'B');
+            r2a = MergedResult().load('subject', 2, 'session', 'A');
+            % schema keys (subject, session) + PareticSide + RawSignal = 4
+            testCase.verifyEqual(r1a.data, 4);
+            testCase.verifyEqual(r1b.data, 4);
+            testCase.verifyEqual(r2a.data, 4);
+        end
+
         % --- Error cases ---
 
         function test_merge_skip_on_missing_data(testCase)

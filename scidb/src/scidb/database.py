@@ -2373,19 +2373,39 @@ class DatabaseManager:
 
         meta_df = pd.DataFrame(meta_dict)
 
+        # Detect and warn about orphaned records: present in _record_metadata but
+        # absent from the data table.  These arise when a save partially failed or
+        # when a record was written to _record_metadata without a corresponding data
+        # row (e.g. a buggy prior for_each run with an unexpected schema key).
+        # Using an inner join below excludes them; we surface a warning so users can
+        # investigate the root cause in their database.
+        type_name = variable_class.__name__
+        data_rids = set(data_df["record_id"].tolist()) if not data_df.empty else set()
+        meta_rids = set(meta_df["__record_id"].tolist())
+        orphaned = meta_rids - data_rids
+        if orphaned:
+            sample = sorted(orphaned)[:3]
+            Log.warn(
+                f"load_all_as_df({type_name}): {len(orphaned)} record(s) exist in "
+                f"_record_metadata but have no data in {type_name}_data — "
+                f"excluding from results. Sample IDs: {sample}"
+                f"{'...' if len(orphaned) > 3 else ''}. "
+                f"This usually means a previous save partially failed or used an "
+                f"unexpected schema key. Inspect the database for orphaned rows."
+            )
+
         # -- Assemble by storage mode --
         if mode == "dataframe":
             df_columns = dtype_meta.get("df_columns", data_cols)
 
             if layout == "spread":
-                # LEFT JOIN meta to data on record_id — handles both 1-row and
-                # multi-row records.  For 1-row records (the DummyMixed hot path)
-                # this is a direct 1:1 merge with no groupby.
+                # INNER JOIN meta to data on record_id — excludes orphaned records
+                # (those with no data rows) so they never appear as NaN-filled rows.
                 result = meta_df.merge(
                     data_df,
                     left_on="__record_id",
                     right_on="record_id",
-                    how="left",
+                    how="inner",
                 )
                 result = result.drop(columns=["record_id"], errors="ignore")
                 if not include_rid:
@@ -2416,7 +2436,8 @@ class DatabaseManager:
             data_renamed = data_df[["record_id", col_name]].rename(
                 columns={"record_id": "__record_id", col_name: out_col}
             )
-            result = meta_df.merge(data_renamed, on="__record_id", how="left")
+            # INNER JOIN: excludes orphaned records so they never produce NaN data rows.
+            result = meta_df.merge(data_renamed, on="__record_id", how="inner")
             if not include_rid:
                 result = result.drop(columns=["__record_id"], errors="ignore")
             return result.reset_index(drop=True)
@@ -2433,7 +2454,8 @@ class DatabaseManager:
                 return meta_df.reset_index(drop=True)
             else:  # spread
                 data_renamed = data_df.rename(columns={"record_id": "__record_id"})
-                result = meta_df.merge(data_renamed, on="__record_id", how="left")
+                # INNER JOIN: excludes orphaned records so they never produce NaN data rows.
+                result = meta_df.merge(data_renamed, on="__record_id", how="inner")
                 if not include_rid:
                     result = result.drop(columns=["__record_id"], errors="ignore")
                 return result.reset_index(drop=True)
