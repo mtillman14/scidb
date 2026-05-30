@@ -9,8 +9,10 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 %     - where= works in parallel=true mode
 %     - where= is applied to Fixed inputs via their pinned metadata
 %     - where= is applied when inputs use SelectedColumn syntax
-%     - where= is accepted but NOT applied to scidb.Merge inputs
-%       (Merge constituents bypass the filter path by design)
+%     - SchemaKey-based where= IS applied to scidb.Merge inputs (filters
+%       loaded rows by session/subject before iteration)
+%     - VariableFilter-based where= is NOT applied to scidb.Merge inputs
+%       (Merge constituents bypass coverage-validated filters by design)
 %     - dry_run=true with where= shows the filter note but makes no saves
 
     properties
@@ -386,16 +388,17 @@ classdef TestForEachWhere < matlab.unittest.TestCase
         end
 
         % ================================================================
-        % where= with scidb.Merge (Merge bypasses the filter path)
+        % VariableFilter where= with scidb.Merge (bypasses coverage check)
         % ================================================================
 
         function test_where_merge_only_not_filtered(testCase)
-        %TEST_WHERE_MERGE_ONLY_NOT_FILTERED  When the only input is a Merge,
-        %   where= has no effect: Merge constituents are always loaded without
-        %   the filter, so the iteration runs even if the filter would have
-        %   excluded it.
+        %TEST_WHERE_MERGE_ONLY_NOT_FILTERED  VariableFilter (Side()=="L") is NOT
+        %   propagated to Merge constituents: the coverage validator would trip
+        %   because the filter variable rarely covers every schema location a
+        %   Merge constituent has data for.  The iteration still runs.
         %   Subject 1: Side="R" (would be excluded by where=Side()=="L"),
         %   but since the only input is a Merge, the iteration still runs.
+        %   (SchemaKey-based where= IS propagated — see test_schema_key_isin below.)
             Side().save("R", 'subject', 1, 'session', 'A');
 
             tbl = table;
@@ -471,6 +474,70 @@ classdef TestForEachWhere < matlab.unittest.TestCase
             % Iteration runs: inner join yields 2 rows, 4 cols
             result = MergedResult().load('subject', 1);
             testCase.verifyEqual(result.data, [2, 4]');
+        end
+
+        % ================================================================
+        % SchemaKey where= with scidb.Merge (IS applied — no coverage check)
+        % ================================================================
+
+        function test_schema_key_isin_filters_merge_as_table(testCase)
+        %TEST_SCHEMA_KEY_ISIN_FILTERS_MERGE_AS_TABLE  ismember(scidb.SchemaKey(key),
+        %   values) IS propagated to Merge constituent loading.
+        %   Regression: before the fix, the session filter was silently dropped
+        %   for Merge inputs, so the function received rows for ALL sessions.
+        %
+        %   Setup: GaitData+PareticSide saved at sessions BL, POST, FOL.
+        %   Filter: SchemaKey("session") IN ["BL","POST"].
+        %   Expected: function receives table with 4 rows (2 sessions × 2 rows),
+        %   NOT 6 rows (which would indicate FOL was included).
+            GaitData().save(table([1;2], 'VariableNames', {'val'}), ...
+                'subject', 1, 'session', 'BL');
+            GaitData().save(table([3;4], 'VariableNames', {'val'}), ...
+                'subject', 1, 'session', 'POST');
+            GaitData().save(table([5;6], 'VariableNames', {'val'}), ...
+                'subject', 1, 'session', 'FOL');
+
+            PareticSide().save(["p";"np"], 'subject', 1, 'session', 'BL');
+            PareticSide().save(["p";"np"], 'subject', 1, 'session', 'POST');
+            PareticSide().save(["p";"np"], 'subject', 1, 'session', 'FOL');
+
+            scidb.for_each(@table_dims, ...
+                struct('data', scidb.Merge(GaitData(), PareticSide())), ...
+                {MergedResult()}, ...
+                'subject', 1, ...
+                as_table=true, ...
+                where=ismember(scidb.SchemaKey("session"), ["BL", "POST"]));
+
+            result = MergedResult().load('subject', 1);
+            % 2 sessions × 2 rows each = 4 rows; FOL excluded
+            testCase.verifyEqual(result.data(1), 4, ...
+                'Expected 4 rows (BL+POST only); FOL should have been filtered out');
+        end
+
+        function test_schema_key_compare_filters_merge_as_table(testCase)
+        %TEST_SCHEMA_KEY_COMPARE_FILTERS_MERGE_AS_TABLE  scidb.SchemaKey(key)==val
+        %   IS propagated to Merge constituent loading (numeric equality).
+        %   Setup: GaitData+PareticSide saved for subjects 1 and 2.
+        %   Filter: SchemaKey("subject") == 1.
+        %   Expected: function receives table with only subject=1 rows.
+            for subj = [1 2]
+                GaitData().save(table([subj*10; subj*20], 'VariableNames', {'val'}), ...
+                    'subject', subj, 'session', 'BL');
+                PareticSide().save(["p";"np"], 'subject', subj, 'session', 'BL');
+            end
+
+            scidb.for_each(@table_dims, ...
+                struct('data', scidb.Merge(GaitData(), PareticSide())), ...
+                {MergedResult()}, ...
+                'session', "BL", ...
+                as_table=true, ...
+                where=(scidb.SchemaKey("subject") == 1));
+
+            result = MergedResult().load('session', 'BL');
+            % subject=1 only: 1 row per session in GaitData/PareticSide
+            % but each was saved with 2-row table, so height=2
+            testCase.verifyEqual(result.data(1), 2, ...
+                'Expected 2 rows (subject=1 only); subject=2 should have been filtered out');
         end
 
         % ================================================================

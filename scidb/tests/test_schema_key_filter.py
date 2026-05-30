@@ -215,6 +215,93 @@ class TestSchemaKeyCompound:
 
 
 # ===========================================================================
+# SchemaKey filter propagation into Merge inputs in for_each
+# ===========================================================================
+
+class AuxMeasurement(BaseVariable):
+    """Second variable type for Merge tests (distinct from Measurement)."""
+    schema_version = 1
+
+
+@pytest.fixture
+def merge_session_db(tmp_path):
+    """DB with [subject, session] and data in both Measurement and AuxMeasurement.
+
+    Measurement:    subject={1,2}, session={BL, POST, FOL}
+    AuxMeasurement: subject={1,2}, session={BL, POST, FOL}
+    """
+    db = configure_database(tmp_path / "merge_test.duckdb", ["subject", "session"])
+    for subj in (1, 2):
+        for sess, val in [("BL", 10.0), ("POST", 20.0), ("FOL", 30.0)]:
+            Measurement.save(float(val + subj), subject=subj, session=sess)
+            AuxMeasurement.save(float(val + subj + 100), subject=subj, session=sess)
+    yield db
+    db.close()
+
+
+class TestSchemaKeyFilterWithMerge:
+    """Regression: where=schema_key(...).isin(...) must filter Merge input data.
+
+    Before the fix, SchemaKeyInFilter/SchemaKeyCompareFilter were silently
+    dropped when loading Merge constituents (where=None was hard-coded), so
+    the user's function received rows for all sessions regardless of the filter.
+    """
+
+    def test_isin_filters_merge_input_rows(self, merge_session_db):
+        """Merge loaded with schema_key("session").isin([...]) must exclude non-listed sessions."""
+        from scidb import for_each
+        from scidb.foreach import Merge
+
+        captured = []
+
+        def collect(inputVal):
+            captured.append(inputVal.copy())
+            return inputVal
+
+        for_each(
+            collect,
+            inputs={"inputVal": Merge(Measurement, AuxMeasurement)},
+            outputs=[Measurement],
+            as_table=True,
+            where=schema_key("session").isin(["BL", "POST"]),
+            save=False,
+        )
+
+        assert captured, "function was never called"
+        # Every row in every call must have session in {"BL", "POST"}
+        for tbl in captured:
+            if "session" in tbl.columns:
+                bad = set(tbl["session"].unique()) - {"BL", "POST"}
+                assert not bad, f"unexpected sessions in Merge output: {bad}"
+
+    def test_compare_filter_filters_merge_input_rows(self, merge_session_db):
+        """Merge loaded with schema_key("subject") == 1 must contain only subject=1 rows."""
+        from scidb import for_each
+        from scidb.foreach import Merge
+
+        captured = []
+
+        def collect(inputVal):
+            captured.append(inputVal.copy())
+            return inputVal
+
+        for_each(
+            collect,
+            inputs={"inputVal": Merge(Measurement, AuxMeasurement)},
+            outputs=[Measurement],
+            as_table=True,
+            where=schema_key("subject") == 1,
+            save=False,
+        )
+
+        assert captured, "function was never called"
+        for tbl in captured:
+            if "subject" in tbl.columns:
+                bad = set(str(v) for v in tbl["subject"].unique()) - {"1"}
+                assert not bad, f"unexpected subjects in Merge output: {bad}"
+
+
+# ===========================================================================
 # Error handling
 # ===========================================================================
 
