@@ -25,6 +25,7 @@ from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .each_of import EachOf
 from .foreach_config import ForEachConfig
+from .filters import Filter
 from .merge import Merge
 
 
@@ -78,6 +79,24 @@ class _DryRunMerge(_scifor.Merge):
     @property
     def __name__(self) -> str:  # type: ignore[override]
         return self._dry_name
+
+
+class _PreresolvedFilter(Filter):
+    """Wraps a pre-computed set of schema_ids for constituent loading.
+
+    Used in the Merge path so each constituent receives already-resolved,
+    already-validated schema_ids directly — no second DB query or coverage
+    check needed.
+    """
+
+    def __init__(self, schema_ids: set):
+        self._schema_ids = schema_ids
+
+    def to_key(self) -> str:
+        return ""  # never stored; outer __where version key covers the Merge call
+
+    def resolve(self, db, target_variable_class, target_table_name, validate_coverage=True) -> set:
+        return self._schema_ids
 
 
 # ---------------------------------------------------------------------------
@@ -1469,20 +1488,30 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
             # cannot filter each constituent by schema keys.
             return PerComboLoaderMerge(var_spec)
         # All constituents can be pre-loaded.
-        # ``where=`` is propagated to Merge constituents only when it is
-        # composed exclusively of SchemaKey-based filters (SchemaKeyInFilter,
-        # SchemaKeyCompareFilter). Those filters have no coverage-validation
-        # step and query _schema directly, so they never trip the validator.
-        # VariableFilter/ColumnFilter are NOT propagated because they DO run
-        # coverage checks that fail when the filter variable doesn't cover
-        # every schema location a Merge constituent has data for.
-        # Either way, __where is still recorded in version_keys for caching.
-        merge_where = where if _is_schema_key_only_filter(where) else None
+        # All filter types (VariableFilter, ColumnFilter, InFilter, SchemaKey, Raw)
+        # are now propagated to Merge constituents.  Coverage is validated once
+        # against the actual Merge inner-join result rather than per-constituent
+        # to avoid false-positive errors when a constituent has "extra" rows that
+        # the Merge would eliminate anyway.
         loaded_tables = []
         _SCIDB_META = {"__record_id", "__branch_params", "version"}
         _schema_keys = set(getattr(_merge_db, 'dataset_schema_keys', []) if _merge_db is not None else [])
+
+        if where is not None:
+            merge_effective_ids = _compute_merge_effective_ids(_merge_db, var_spec)
+            _check_merge_filter_coverage(_merge_db, where, merge_effective_ids)
+
         for sub_spec in var_spec.var_specs:
-            loaded = _load_input(sub_spec, db, where=merge_where)
+            if where is not None:
+                cls = _get_loadable_class_from_spec(sub_spec)
+                matching_ids = where.resolve(
+                    _merge_db, cls, cls.table_name(),
+                    validate_coverage=False,  # coverage validated once above
+                )
+                constituent_where = _PreresolvedFilter(matching_ids)
+            else:
+                constituent_where = None
+            loaded = _load_input(sub_spec, db, where=constituent_where)
             # Strip scidb metadata columns that would conflict when merged column-wise.
             # __record_id/__branch_params/version appear in every constituent but carry
             # no per-row meaning after merge; scifor's _prepare_merge doesn't track them.
@@ -1625,25 +1654,119 @@ def _compute_fixed_input_rids(inputs: dict, db) -> dict:
     return fixed_rids
 
 
-def _is_schema_key_only_filter(where) -> bool:
-    """Return True if where is composed solely of SchemaKey-based filters.
+def _get_schema_level_idx(db, schema_ids: set) -> int:
+    """Return the deepest populated schema key index for the given schema_ids, or -1."""
+    schema_keys = db.dataset_schema_keys
+    if not schema_ids:
+        return -1
+    placeholders = ", ".join(["?"] * len(schema_ids))
+    rows = db._duck._fetchdf(
+        f"SELECT * FROM _schema WHERE schema_id IN ({placeholders})",
+        list(schema_ids),
+    )
+    if len(rows) == 0:
+        return -1
+    level_idx = -1
+    for i, key in enumerate(schema_keys):
+        if key in rows.columns and rows[key].notna().any():
+            level_idx = i
+    return level_idx
 
-    SchemaKeyInFilter and SchemaKeyCompareFilter query _schema directly and
-    have no coverage-validation step, so they are safe to propagate into
-    Merge constituent loading.  VariableFilter and ColumnFilter are NOT safe
-    (their coverage checks fail when the filter variable doesn't cover every
-    schema location a constituent has data for).
+
+def _compute_merge_effective_ids(db, merge_spec: "Merge") -> set:
+    """Compute the schema_ids that the Merge inner join will produce.
+
+    For each constituent, expand coarser schema_ids to the finest level, then
+    intersect all fine-level sets.  The result is the set of schema_ids that
+    would survive the Merge inner join — used to validate filter coverage once
+    against the right target rather than per-constituent.
     """
-    if where is None:
-        return False
-    from .filters import SchemaKeyInFilter, SchemaKeyCompareFilter, CompoundFilter, NotFilter
-    if isinstance(where, (SchemaKeyInFilter, SchemaKeyCompareFilter)):
-        return True
-    if isinstance(where, CompoundFilter):
-        return _is_schema_key_only_filter(where.left) and _is_schema_key_only_filter(where.right)
-    if isinstance(where, NotFilter):
-        return _is_schema_key_only_filter(where.inner)
-    return False
+    from .filters import _get_all_schema_ids_for_variable, _expand_coarse_to_fine_schema_ids
+
+    # Collect (table_name, schema_ids) for each constituent
+    constituent_data = []
+    for sub_spec in merge_spec.var_specs:
+        cls = _get_loadable_class_from_spec(sub_spec)
+        if cls is None:
+            continue
+        table_name = cls.table_name()
+        schema_ids = _get_all_schema_ids_for_variable(db, table_name)
+        constituent_data.append((table_name, schema_ids))
+
+    if not constituent_data:
+        return set()
+
+    # Determine level index for each constituent
+    levels = [
+        (_get_schema_level_idx(db, ids), table_name, ids)
+        for table_name, ids in constituent_data
+    ]
+
+    max_level = max(lv for lv, _, _ in levels)
+    if max_level < 0:
+        return set()
+
+    # Pick the first fine-level constituent's table as expansion target
+    fine_table_name = next(tn for lv, tn, _ in levels if lv == max_level)
+
+    # Compute each constituent's contribution at the finest level
+    effective_sets = []
+    for lv, table_name, schema_ids in levels:
+        if lv == max_level:
+            effective_sets.append(schema_ids)
+        else:
+            expanded = _expand_coarse_to_fine_schema_ids(db, schema_ids, fine_table_name)
+            effective_sets.append(expanded)
+
+    # Intersection = Merge inner join result
+    result = effective_sets[0]
+    for s in effective_sets[1:]:
+        result = result & s
+    return result
+
+
+def _check_merge_filter_coverage(db, where, merge_effective_ids: set) -> None:
+    """Validate that the filter covers all schema_ids the Merge inner join will produce.
+
+    Recurses through the filter tree.  VariableFilter/ColumnFilter/InFilter are
+    validated against merge_effective_ids via _validate_filter_coverage with the
+    override parameter.  SchemaKey and Raw filters have no coverage concept and
+    are skipped.
+
+    Raises:
+        ValueError: If the filter variable is missing data for a schema_id that
+            genuinely survives the Merge inner join.
+    """
+    from .filters import (
+        VariableFilter, ColumnFilter, InFilter,
+        CompoundFilter, NotFilter,
+        _validate_filter_coverage, _get_all_schema_ids_for_variable,
+    )
+
+    if where is None or not merge_effective_ids:
+        return
+
+    if isinstance(where, (VariableFilter, ColumnFilter, InFilter)):
+        filter_table_name = where.variable_class.table_name()
+        filter_ids = _get_all_schema_ids_for_variable(db, filter_table_name)
+        filter_level_idx = _get_schema_level_idx(db, filter_ids)
+        target_level_idx = _get_schema_level_idx(db, merge_effective_ids)
+
+        _validate_filter_coverage(
+            db, where.variable_class, None,
+            filter_table_name, None,
+            filter_level_idx, target_level_idx,
+            target_schema_ids_override=merge_effective_ids,
+        )
+
+    elif isinstance(where, CompoundFilter):
+        _check_merge_filter_coverage(db, where.left, merge_effective_ids)
+        _check_merge_filter_coverage(db, where.right, merge_effective_ids)
+
+    elif isinstance(where, NotFilter):
+        _check_merge_filter_coverage(db, where.inner, merge_effective_ids)
+
+    # SchemaKeyInFilter, SchemaKeyCompareFilter, RawFilter: no coverage concept; no-op
 
 
 def _merge_needs_per_combo(merge_spec: "Merge") -> bool:

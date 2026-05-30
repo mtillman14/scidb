@@ -40,35 +40,23 @@ def _inject_orphan(db, type_name, subject, distribute=None):
 
     This simulates a record that was written to _record_metadata (e.g. by a buggy
     prior for_each run) but whose data row was never written to {type_name}_data.
+
+    Uses a dummy subject ("9999") so that schema_level is always determinable —
+    the _schema table requires schema_level NOT NULL.  The exact schema values
+    don't matter; what matters is that the injected schema_id has no data row.
     """
-    # Ensure the variable is registered
     duck = db._duck
 
-    # Get or create a schema_id for the given schema values
-    schema_vals = {"subject": str(subject) if subject is not None else None}
+    # Build schema_level and key_values for the orphan.
+    # Use a dummy subject that won't collide with real test data.
     if distribute is not None:
-        schema_vals["distribute"] = str(distribute)
+        schema_level = "distribute"
+        key_values = {"subject": "9999", "distribute": str(distribute)}
     else:
-        schema_vals["distribute"] = None
-    schema_vals["session"] = None
+        schema_level = "subject"
+        key_values = {"subject": "9999"}
 
-    # Build the schema INSERT
-    col_names = ", ".join(f'"{k}"' for k in SCHEMA)
-    col_placeholders = ", ".join(["?"] * len(SCHEMA))
-    schema_values = [schema_vals.get(k) for k in SCHEMA]
-    duck.con.execute(
-        f"INSERT OR IGNORE INTO _schema ({col_names}) VALUES ({col_placeholders})",
-        schema_values,
-    )
-    schema_id_row = duck.con.execute(
-        f"SELECT schema_id FROM _schema WHERE "
-        + " AND ".join(
-            f'"{k}" IS ?' if v is None else f'"{k}" = ?'
-            for k, v in zip(SCHEMA, schema_values)
-        ),
-        schema_values,
-    ).fetchone()
-    schema_id = schema_id_row[0]
+    schema_id = duck._get_or_create_schema_id(schema_level, key_values)
 
     # Insert a phantom record_metadata row (no corresponding data row)
     import hashlib, time

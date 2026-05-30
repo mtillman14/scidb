@@ -9,10 +9,11 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 %     - where= works in parallel=true mode
 %     - where= is applied to Fixed inputs via their pinned metadata
 %     - where= is applied when inputs use SelectedColumn syntax
-%     - SchemaKey-based where= IS applied to scidb.Merge inputs (filters
-%       loaded rows by session/subject before iteration)
-%     - VariableFilter-based where= is NOT applied to scidb.Merge inputs
-%       (Merge constituents bypass coverage-validated filters by design)
+%     - All filter types (VariableFilter, SchemaKey, Raw) ARE applied to
+%       scidb.Merge inputs (filter propagated to constituents)
+%     - Coverage is validated against the Merge result (not per-constituent),
+%       so a filter gap at a row eliminated by the Merge inner join does NOT
+%       raise an error, but a gap at a row that survives DOES raise one
 %     - dry_run=true with where= shows the filter note but makes no saves
 
     properties
@@ -392,13 +393,11 @@ classdef TestForEachWhere < matlab.unittest.TestCase
         % ================================================================
 
         function test_where_merge_only_not_filtered(testCase)
-        %TEST_WHERE_MERGE_ONLY_NOT_FILTERED  VariableFilter (Side()=="L") is NOT
-        %   propagated to Merge constituents: the coverage validator would trip
-        %   because the filter variable rarely covers every schema location a
-        %   Merge constituent has data for.  The iteration still runs.
-        %   Subject 1: Side="R" (would be excluded by where=Side()=="L"),
-        %   but since the only input is a Merge, the iteration still runs.
-        %   (SchemaKey-based where= IS propagated — see test_schema_key_isin below.)
+        %TEST_WHERE_MERGE_ONLY_NOT_FILTERED  VariableFilter (Side()=="L") IS now
+        %   applied to Merge constituents. Coverage is validated once against the
+        %   Merge inner-join result (not per-constituent), so no false-positive.
+        %   Subject 1, session A: Side="R" → filter Side()=="L" excludes this
+        %   schema location → iteration is skipped, no output saved.
             Side().save("R", 'subject', 1, 'session', 'A');
 
             tbl = table;
@@ -412,16 +411,19 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 'subject', 1, 'session', "A", ...
                 where=Side() == "L");
 
-            % The iteration runs despite Side="R" — Merge bypasses where=
-            result = MergedResult().load('subject', 1, 'session', 'A');
-            % Columns: subject, session, val, PareticSide → 4
-            testCase.verifyEqual(result.data, 4);
+            % Iteration skipped — filter applied, Side=R excluded
+            testCase.verifyError( ...
+                @() MergedResult().load('subject', 1, 'session', 'A'), ...
+                'scidb:NotFoundError');
         end
 
         function test_where_merge_with_fixed_constituent(testCase)
-        %TEST_WHERE_MERGE_WITH_FIXED_CONSTITUENT  where= is accepted alongside
-        %   a Merge with a Fixed constituent. The Merge still joins correctly
-        %   using its own schema-key logic; where= does not block it.
+        %TEST_WHERE_MERGE_WITH_FIXED_CONSTITUENT  where= IS applied to Merge
+        %   with a Fixed constituent. Coverage validated against Merge result.
+        %   The Merge effective ids are {sub=1,sess=A} (intersection: GaitData
+        %   has A+B, Fixed(PareticSide,session=A) has only A). Coverage check:
+        %   Side covers {sub=1,sess=A} → OK. Filter Side=="L": Side="R" at
+        %   sess=A → no matching rows → both iterations skipped.
             tbl_a = table;
             tbl_a.val = [1; 2; 3];
             GaitData().save(tbl_a, 'subject', 1, 'session', 'A');
@@ -432,7 +434,7 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 
             PareticSide().save(["p"; "np"; "p"], 'subject', 1, 'session', 'A');
 
-            % Side="R" would block the iteration, but all inputs are Merge
+            % Side="R" for both sessions → filter Side()=="L" excludes them
             Side().save("R", 'subject', 1, 'session', 'A');
             Side().save("R", 'subject', 1, 'session', 'B');
 
@@ -444,26 +446,29 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 'subject', 1, 'session', ["A" "B"], ...
                 where=Side() == "L");
 
-            % Both iterations run despite Side="R" — Merge bypasses where=
-            r_a = MergedResult().load('subject', 1, 'session', 'A');
-            r_b = MergedResult().load('subject', 1, 'session', 'B');
-            % Columns: subject, session, val, PareticSide → 4
-            testCase.verifyEqual(r_a.data, 4);
-            testCase.verifyEqual(r_b.data, 4);
+            % Both iterations skipped — filter applied, Side=R excluded
+            testCase.verifyError( ...
+                @() MergedResult().load('subject', 1, 'session', 'A'), ...
+                'scidb:NotFoundError');
+            testCase.verifyError( ...
+                @() MergedResult().load('subject', 1, 'session', 'B'), ...
+                'scidb:NotFoundError');
         end
 
         function test_where_merge_multi_record_join_with_filter(testCase)
         %TEST_WHERE_MERGE_MULTI_RECORD_JOIN_WITH_FILTER  Merge with multi-record
         %   join (iterating at subject level, both constituents return multiple
-        %   sessions) is unaffected by where=. The inner join by schema keys
-        %   works as normal.
+        %   sessions). where= IS applied: coverage validated against Merge result
+        %   ({sub=1,sess=A; sub=1,sess=B}). Side saved for both sessions (both
+        %   "R") satisfies coverage. Filter Side=="L" → empty → iteration skipped.
             RawSignal().save(10, 'subject', 1, 'session', 'A');
             RawSignal().save(20, 'subject', 1, 'session', 'B');
             ProcessedSignal().save(100, 'subject', 1, 'session', 'A');
             ProcessedSignal().save(200, 'subject', 1, 'session', 'B');
 
-            % Side="R" for subject 1 — would block if filter were applied
+            % Side="R" for BOTH sessions (covers all Merge-result schema_ids)
             Side().save("R", 'subject', 1, 'session', 'A');
+            Side().save("R", 'subject', 1, 'session', 'B');
 
             scidb.for_each(@table_dims, ...
                 struct('data', scidb.Merge(RawSignal(), ProcessedSignal())), ...
@@ -471,9 +476,74 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 'subject', 1, ...
                 where=Side() == "L");
 
-            % Iteration runs: inner join yields 2 rows, 4 cols
-            result = MergedResult().load('subject', 1);
-            testCase.verifyEqual(result.data, [2, 4]');
+            % Iteration skipped — filter applied, Side=R excluded
+            testCase.verifyError( ...
+                @() MergedResult().load('subject', 1), ...
+                'scidb:NotFoundError');
+        end
+
+        % ================================================================
+        % VariableFilter where= with scidb.Merge (now IS applied)
+        % ================================================================
+
+        function test_variable_filter_filters_merge_rows(testCase)
+        %TEST_VARIABLE_FILTER_FILTERS_MERGE_ROWS  VariableFilter (Side()=="L")
+        %   IS propagated to Merge constituents. Coverage validated once against
+        %   Merge result. Sessions where Side=R are excluded; Side=L are kept.
+        %   sess=A: Side=L → processed. sess=B: Side=R → skipped.
+            Side().save("L", 'subject', 1, 'session', 'A');
+            Side().save("R", 'subject', 1, 'session', 'B');
+
+            tbl = table;
+            tbl.val = [10; 20];
+            GaitData().save(tbl, 'subject', 1, 'session', 'A');
+            GaitData().save(tbl, 'subject', 1, 'session', 'B');
+            PareticSide().save(["p"; "np"], 'subject', 1, 'session', 'A');
+            PareticSide().save(["p"; "np"], 'subject', 1, 'session', 'B');
+
+            scidb.for_each(@table_col_count, ...
+                struct('data', scidb.Merge(GaitData(), PareticSide())), ...
+                {MergedResult()}, ...
+                'subject', 1, 'session', ["A" "B"], ...
+                where=Side() == "L");
+
+            % sess=A processed (Side=L)
+            r_a = MergedResult().load('subject', 1, 'session', 'A');
+            testCase.verifyEqual(r_a.data, 4);  % subject, session, val, PareticSide
+
+            % sess=B skipped (Side=R)
+            testCase.verifyError( ...
+                @() MergedResult().load('subject', 1, 'session', 'B'), ...
+                'scidb:NotFoundError');
+        end
+
+        function test_variable_filter_merge_coverage_error(testCase)
+        %TEST_VARIABLE_FILTER_MERGE_COVERAGE_ERROR  Side missing for sess=B which
+        %   IS in the Merge result → coverage error raised.
+        %   Merge effective ids = {sub=1,sess=A; sub=1,sess=B} (both constituents
+        %   have both sessions). Side only covers sess=A → missing sess=B → error.
+            Side().save("L", 'subject', 1, 'session', 'A');
+            % Side NOT saved for sess=B intentionally
+
+            tbl = table;
+            tbl.val = [10; 20];
+            GaitData().save(tbl, 'subject', 1, 'session', 'A');
+            GaitData().save(tbl, 'subject', 1, 'session', 'B');
+            PareticSide().save(["p"; "np"], 'subject', 1, 'session', 'A');
+            PareticSide().save(["p"; "np"], 'subject', 1, 'session', 'B');
+
+            % Should raise because Side is missing for sess=B which IS in Merge result
+            try
+                scidb.for_each(@table_col_count, ...
+                    struct('data', scidb.Merge(GaitData(), PareticSide())), ...
+                    {MergedResult()}, ...
+                    'subject', 1, 'session', ["A" "B"], ...
+                    where=Side() == "L");
+                testCase.verifyTrue(false, 'Expected coverage error but none was raised');
+            catch ME
+                testCase.verifyTrue(contains(ME.message, 'missing data'), ...
+                    ['Expected "missing data" in error, got: ', ME.message]);
+            end
         end
 
         % ================================================================

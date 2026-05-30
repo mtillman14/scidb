@@ -88,6 +88,7 @@ class Filter(ABC):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
         """Return the set of schema_ids that satisfy this filter.
 
@@ -97,6 +98,9 @@ class Filter(ABC):
             target_variable_class: The variable class being loaded (used for
                 schema-level validation and coverage checks).
             target_table_name: The table name of the target variable.
+            validate_coverage: If False, skip the coverage check (used when
+                loading Merge constituents, where coverage is validated once
+                against the Merge result rather than per-constituent).
 
         Returns:
             Set of integer schema_ids that pass the filter.
@@ -380,6 +384,7 @@ class VariableFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
         filter_table_name = self.variable_class.table_name()
         sql_op = _op_to_sql(self.op)
@@ -417,11 +422,11 @@ class VariableFilter(Filter):
                 db, matching_ids, target_table_name
             )
 
-        # Validate coverage: every target schema_id must have a filter value
-        _validate_filter_coverage(
-            db, self.variable_class, target_variable_class,
-            filter_table_name, target_table_name, filter_level_idx, target_level_idx
-        )
+        if validate_coverage:
+            _validate_filter_coverage(
+                db, self.variable_class, target_variable_class,
+                filter_table_name, target_table_name, filter_level_idx, target_level_idx
+            )
 
         return matching_ids
 
@@ -463,6 +468,7 @@ class ColumnFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
         filter_table_name = self.variable_class.table_name()
         sql_op = _op_to_sql(self.op)
@@ -495,10 +501,11 @@ class ColumnFilter(Filter):
                 db, matching_ids, target_table_name
             )
 
-        _validate_filter_coverage(
-            db, self.variable_class, target_variable_class,
-            filter_table_name, target_table_name, filter_level_idx, target_level_idx
-        )
+        if validate_coverage:
+            _validate_filter_coverage(
+                db, self.variable_class, target_variable_class,
+                filter_table_name, target_table_name, filter_level_idx, target_level_idx
+            )
 
         return matching_ids
 
@@ -530,6 +537,7 @@ class InFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
         filter_table_name = self.variable_class.table_name()
 
@@ -565,10 +573,11 @@ class InFilter(Filter):
                 db, matching_ids, target_table_name
             )
 
-        _validate_filter_coverage(
-            db, self.variable_class, target_variable_class,
-            filter_table_name, target_table_name, filter_level_idx, target_level_idx
-        )
+        if validate_coverage:
+            _validate_filter_coverage(
+                db, self.variable_class, target_variable_class,
+                filter_table_name, target_table_name, filter_level_idx, target_level_idx
+            )
 
         return matching_ids
 
@@ -598,9 +607,10 @@ class CompoundFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
-        left_ids = self.left.resolve(db, target_variable_class, target_table_name)
-        right_ids = self.right.resolve(db, target_variable_class, target_table_name)
+        left_ids = self.left.resolve(db, target_variable_class, target_table_name, validate_coverage)
+        right_ids = self.right.resolve(db, target_variable_class, target_table_name, validate_coverage)
 
         if self.op == "AND":
             return left_ids & right_ids
@@ -631,8 +641,9 @@ class NotFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
-        inner_ids = self.inner.resolve(db, target_variable_class, target_table_name)
+        inner_ids = self.inner.resolve(db, target_variable_class, target_table_name, validate_coverage)
         all_ids = _get_all_schema_ids_for_variable(db, target_table_name)
         return all_ids - inner_ids
 
@@ -664,6 +675,7 @@ class RawFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
         # Run the raw SQL against the target table joined with schema
         schema_keys = db.dataset_schema_keys
@@ -810,6 +822,7 @@ class SchemaKeyCompareFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
         schema_keys = db.dataset_schema_keys
         if self.key not in schema_keys:
@@ -870,6 +883,7 @@ class SchemaKeyInFilter(Filter):
         db: "DatabaseManager",
         target_variable_class,
         target_table_name: str,
+        validate_coverage: bool = True,
     ) -> set[int]:
         schema_keys = db.dataset_schema_keys
         if self.key not in schema_keys:
@@ -954,6 +968,7 @@ def _validate_filter_coverage(
     target_table_name: str,
     filter_level_idx: int,
     target_level_idx: int,
+    target_schema_ids_override: "set[int] | None" = None,
 ) -> None:
     """Validate that the filter covers all schema locations the target has data for.
 
@@ -961,14 +976,24 @@ def _validate_filter_coverage(
     When filter is at coarser level: every coarse key value that the target has
     must be present in the filter.
 
+    Args:
+        target_schema_ids_override: When provided, use this set as the coverage
+            target instead of fetching schema_ids from target_table_name. Used by
+            the Merge path to validate against Merge-result schema_ids.
+
     Raises:
         ValueError: If coverage is incomplete.
     """
-    target_ids = _get_all_schema_ids_for_variable(db, target_table_name)
+    if target_schema_ids_override is not None:
+        target_ids = target_schema_ids_override
+    else:
+        target_ids = _get_all_schema_ids_for_variable(db, target_table_name)
     if not target_ids:
         return  # Nothing to validate
 
     filter_ids = _get_all_schema_ids_for_variable(db, filter_table_name)
+
+    target_name = target_class.__name__ if target_class is not None else "the Merge result"
 
     if filter_level_idx == target_level_idx:
         # Same level — every target schema_id must be in filter
@@ -976,7 +1001,7 @@ def _validate_filter_coverage(
         if missing:
             raise ValueError(
                 f"Filter variable '{filter_class.__name__}' is missing data at "
-                f"{len(missing)} schema locations that '{target_class.__name__}' has "
+                f"{len(missing)} schema locations that {target_name} has "
                 "data for. Ensure the filter variable covers all target locations."
             )
     elif filter_level_idx < target_level_idx:
@@ -1019,6 +1044,6 @@ def _validate_filter_coverage(
         if missing_coarse:
             raise ValueError(
                 f"Filter variable '{filter_class.__name__}' is missing data at "
-                f"{len(missing_coarse)} schema locations that '{target_class.__name__}' "
+                f"{len(missing_coarse)} schema locations that {target_name} "
                 "has data for. Ensure the filter variable covers all target locations."
             )
