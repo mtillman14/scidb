@@ -881,6 +881,18 @@ function result = prepare_merge(merge_spec, metadata, schema_keys, where_filter)
     n = numel(merge_spec.tables);
     parts = cell(1, n);
 
+    % Track the constant value of every schema-key column dropped from a
+    % single-row / constant constituent.  A free (non-iterated) dimension —
+    % e.g. session when iterating at the subject level and every constituent
+    % has just one matching row (a Variant-pinned merge) — would otherwise be
+    % dropped from all constituents and never restored, because the add-back
+    % step below only knows the iterated keys in `metadata`.  Remembering the
+    % dropped value lets us restore it.  A key whose constituents disagree on
+    % the constant value is genuinely ambiguous (broadcast), so we mark it
+    % conflicting and leave it out rather than pinning an arbitrary value.
+    dropped_const = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    dropped_conflict = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+
     for i = 1:n
         spec = merge_spec.tables{i};
 
@@ -899,6 +911,21 @@ function result = prepare_merge(merge_spec, metadata, schema_keys, where_filter)
                     col_data = filtered.(char(sk));
                     if height(filtered) <= 1 || all_identical(col_data)
                         cols_to_drop(end+1) = sk; %#ok<AGROW>
+                        % Remember the constant value so a non-iterated schema
+                        % key can be restored after the merge (see add-back).
+                        ck = char(sk);
+                        if iscell(col_data)
+                            cv = col_data{1};
+                        else
+                            cv = col_data(1);
+                        end
+                        if isKey(dropped_const, ck)
+                            if ~isequaln(dropped_const(ck), cv)
+                                dropped_conflict(ck) = true;
+                            end
+                        else
+                            dropped_const(ck) = cv;
+                        end
                     end
                 end
             end
@@ -951,15 +978,25 @@ function result = prepare_merge(merge_spec, metadata, schema_keys, where_filter)
         schema_tbl = table();
         for k = 1:numel(schema_keys)
             sk = char(schema_keys(k));
-            if isfield(metadata, sk) && ~ismember(string(sk), merged_cols)
+            if ismember(string(sk), merged_cols)
+                continue;  % already present in the merged result
+            end
+            % Prefer the iterated combo value; fall back to a constant value
+            % dropped from the constituents (a free, non-iterated dimension).
+            if isfield(metadata, sk)
                 val = metadata.(sk);
-                if isnumeric(val) && isscalar(val)
-                    schema_tbl.(sk) = repmat(val, nr, 1);
-                elseif isstring(val) || ischar(val)
-                    schema_tbl.(sk) = repmat(string(val), nr, 1);
-                else
-                    schema_tbl.(sk) = repmat({val}, nr, 1);
-                end
+            elseif isKey(dropped_const, sk) && ...
+                    ~(isKey(dropped_conflict, sk) && dropped_conflict(sk))
+                val = dropped_const(sk);
+            else
+                continue;
+            end
+            if isnumeric(val) && isscalar(val)
+                schema_tbl.(sk) = repmat(val, nr, 1);
+            elseif isstring(val) || ischar(val)
+                schema_tbl.(sk) = repmat(string(val), nr, 1);
+            else
+                schema_tbl.(sk) = repmat({val}, nr, 1);
             end
         end
         result = [schema_tbl, merged];

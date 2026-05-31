@@ -1,0 +1,116 @@
+[23:10:14.671] [INFO] configure_database: path=/private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tp9a172d2b_82c0_4fdb_98bf_ad277c2683d3/test.duckdb, schema_keys=['subject', 'session', 'speed', 'trial']
+[23:10:14.673] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: /private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tp9a172d2b_82c0_4fdb_98bf_ad277c2683d3/test.duckdb
+[23:10:26.603] [INFO] [timing] save_from_table(DummyMixed): data_convert=1.888s, mode=vertcat, n=7000
+[23:10:26.775] [DEBUG] [timing] save_batch_bridge(DummyMixed): n=7000, mode=vertcat_df, split=0.167s, assembly=0.003s
+[23:10:26.776] [INFO] save_batch(DummyMixed): 7000 items, mode=dataframe, data: DataFrame 1x54 cols=['dbl_01', 'dbl_02', 'dbl_03', 'dbl_04', 'dbl_05', 'dbl_06', 'dbl_07', 'dbl_08', 'dbl_09', 'dbl_10', 'dbl_11', 'dbl_12', 'dbl_13', 'dbl_14', 'dbl_15', 'dbl_16', 'dbl_17', 'dbl_18', 'dbl_19', 'dbl_20', 'dbl_21', 'dbl_22', 'dbl_23', 'dbl_24', 'dbl_25', 'dbl_26', 'dbl_27', 'arr_01', 'arr_02', 'arr_03', 'arr_04', 'arr_05', 'arr_06', 'arr_07', 'arr_08', 'arr_09', 'arr_10', 'arr_11', 'arr_12', 'arr_13', 'arr_14', 'arr_15', 'arr_16', 'arr_17', 'arr_18', 'arr_19', 'arr_20', 'arr_21', 'arr_22', 'arr_23', 'arr_24', 'arr_25', 'json_01', 'json_02'], DuckDB columns: [dbl_01: DOUBLE, dbl_02: DOUBLE, dbl_03: DOUBLE, dbl_04: DOUBLE, dbl_05: DOUBLE, dbl_06: DOUBLE, dbl_07: DOUBLE, dbl_08: DOUBLE, dbl_09: DOUBLE, dbl_10: DOUBLE, dbl_11: DOUBLE, dbl_12: DOUBLE, dbl_13: DOUBLE, dbl_14: DOUBLE, dbl_15: DOUBLE, dbl_16: DOUBLE, dbl_17: DOUBLE, dbl_18: DOUBLE, dbl_19: DOUBLE, dbl_20: DOUBLE, dbl_21: DOUBLE, dbl_22: DOUBLE, dbl_23: DOUBLE, dbl_24: DOUBLE, dbl_25: DOUBLE, dbl_26: DOUBLE, dbl_27: DOUBLE, arr_01: DOUBLE[], arr_02: DOUBLE[], arr_03: DOUBLE[], arr_04: DOUBLE[], arr_05: DOUBLE[], arr_06: DOUBLE[], arr_07: DOUBLE[], arr_08: DOUBLE[], arr_09: DOUBLE[], arr_10: DOUBLE[], arr_11: DOUBLE[], arr_12: DOUBLE[], arr_13: DOUBLE[], arr_14: DOUBLE[], arr_15: DOUBLE[], arr_16: DOUBLE[], arr_17: DOUBLE[], arr_18: DOUBLE[], arr_19: DOUBLE[], arr_20: DOUBLE[], arr_21: DOUBLE[], arr_22: DOUBLE[], arr_23: DOUBLE[], arr_24: DOUBLE[], arr_25: DOUBLE[], json_01: JSON, json_02: JSON]
+[23:10:27.629] [INFO] [timing] save_batch(DummyMixed): 7000 items (7000 new rows, 7000 total storage rows), 7000 schemas, 0.854s
+[23:10:27.629] [DEBUG]   save_batch 1_setup                        0.008s
+[23:10:27.630] [DEBUG]   save_batch 2_split_metadata               0.016s
+[23:10:27.630] [DEBUG]   save_batch 3_schema_resolution            0.026s
+[23:10:27.630] [DEBUG]   save_batch 4_per_row_hashing              0.586s
+[23:10:27.630] [DEBUG]   save_batch 4a_canonical_hash              0.290s
+[23:10:27.630] [DEBUG]   save_batch 4b_record_id                   0.072s
+[23:10:27.630] [DEBUG]   save_batch 4c_storage_row                 0.191s
+[23:10:27.630] [DEBUG]   save_batch 4d_meta_row                    0.018s
+[23:10:27.630] [DEBUG]   save_batch 5_dedup_check                  0.050s
+[23:10:27.630] [DEBUG]   save_batch 6a_data_df_create              0.013s
+[23:10:27.630] [DEBUG]   save_batch 6b_data_insert                 0.119s
+[23:10:27.630] [DEBUG]   save_batch 6c_meta_insert                 0.012s
+[23:10:27.630] [DEBUG]   save_batch 6d_variables_upsert            0.001s
+[23:10:27.630] [DEBUG]   save_batch 6e_commit                      0.022s
+[23:10:27.630] [DEBUG]   save_batch 6_batch_inserts                0.168s
+[23:10:27.630] [DEBUG]   save_batch total                          0.854s
+[23:10:27.637] [INFO] [timing] save_batch_bridge(DummyMixed): n=7000, mode=vertcat_df, split=0.167s, total=1.032s
+[23:10:27.670] [INFO] load(DummyMixed): metadata={'subject': 1, 'session': 1, 'speed': 1, 'trial': 1}
+[23:10:27.673] [DEBUG] _find_record(DummyMixed): SQL returned 1 records, version_id=latest
+[23:10:27.674] [DEBUG] _find_record: record ed388cb294f6f09d: version_keys = {}
+[23:10:27.675] [DEBUG] _find_record(DummyMixed): 1 record(s) matched (before branch_params filter)
+[23:10:27.676] [INFO] [timing] _find_record(DummyMixed, version_id='latest'): total=0.006s, sql=0.003s (1 rows), collapse=0.002s, vk_filter=0.000s, bp_filter=0.000s, sort=0.001s, returned=1 rows
+[23:10:27.677] [INFO] load(DummyMixed): found 1 record(s)
+[23:10:27.680] [INFO] [timing] load(DummyMixed): pre-yield setup: find=0.006s, dtype_lookup=0.000s, chunks_total=0.003s (sql=0.002s, deserialize=0.001s, n_chunks=1, mode=dataframe)
+[23:10:27.680] [INFO] [timing] load(DummyMixed): TOTAL=0.010s (find=0.006s, chunks=0.003s, yield_body=0.000s for 1 records, caller_overhead~=0.001s)
+[23:10:27.681] [DEBUG] wrap_batch_bridge: found 27 object-dtype columns to check
+[23:10:27.681] [DEBUG] wrap_batch_bridge: column "arr_01" first value type: ndarray
+[23:10:27.681] [DEBUG] wrap_batch_bridge: flattening column "arr_01"...
+[23:10:27.681] [DEBUG] wrap_batch_bridge: column "arr_01" flattened: 10 total elements in 1 arrays
+[23:10:27.681] [DEBUG] wrap_batch_bridge: column "arr_02" first value type: ndarray
+[23:10:27.681] [DEBUG] wrap_batch_bridge: flattening column "arr_02"...
+[23:10:27.681] [DEBUG] wrap_batch_bridge: column "arr_02" flattened: 10 total elements in 1 arrays
+[23:10:27.681] [DEBUG] wrap_batch_bridge: column "arr_03" first value type: ndarray
+[23:10:27.681] [DEBUG] wrap_batch_bridge: flattening column "arr_03"...
+[23:10:27.681] [DEBUG] wrap_batch_bridge: column "arr_03" flattened: 10 total elements in 1 arrays
+[23:10:27.681] [DEBUG] wrap_batch_bridge: column "arr_04" first value type: ndarray
+[23:10:27.681] [DEBUG] wrap_batch_bridge: flattening column "arr_04"...
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_04" flattened: 10 total elements in 1 arrays
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_05" first value type: ndarray
+[23:10:27.682] [DEBUG] wrap_batch_bridge: flattening column "arr_05"...
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_05" flattened: 10 total elements in 1 arrays
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_06" first value type: ndarray
+[23:10:27.682] [DEBUG] wrap_batch_bridge: flattening column "arr_06"...
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_06" flattened: 10 total elements in 1 arrays
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_07" first value type: ndarray
+[23:10:27.682] [DEBUG] wrap_batch_bridge: flattening column "arr_07"...
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_07" flattened: 10 total elements in 1 arrays
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_08" first value type: ndarray
+[23:10:27.682] [DEBUG] wrap_batch_bridge: flattening column "arr_08"...
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_08" flattened: 10 total elements in 1 arrays
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_09" first value type: ndarray
+[23:10:27.682] [DEBUG] wrap_batch_bridge: flattening column "arr_09"...
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_09" flattened: 10 total elements in 1 arrays
+[23:10:27.682] [DEBUG] wrap_batch_bridge: column "arr_10" first value type: ndarray
+[23:10:27.682] [DEBUG] wrap_batch_bridge: flattening column "arr_10"...
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_10" flattened: 10 total elements in 1 arrays
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_11" first value type: ndarray
+[23:10:27.683] [DEBUG] wrap_batch_bridge: flattening column "arr_11"...
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_11" flattened: 10 total elements in 1 arrays
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_12" first value type: ndarray
+[23:10:27.683] [DEBUG] wrap_batch_bridge: flattening column "arr_12"...
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_12" flattened: 10 total elements in 1 arrays
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_13" first value type: ndarray
+[23:10:27.683] [DEBUG] wrap_batch_bridge: flattening column "arr_13"...
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_13" flattened: 10 total elements in 1 arrays
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_14" first value type: ndarray
+[23:10:27.683] [DEBUG] wrap_batch_bridge: flattening column "arr_14"...
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_14" flattened: 10 total elements in 1 arrays
+[23:10:27.683] [DEBUG] wrap_batch_bridge: column "arr_15" first value type: ndarray
+[23:10:27.683] [DEBUG] wrap_batch_bridge: flattening column "arr_15"...
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_15" flattened: 10 total elements in 1 arrays
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_16" first value type: ndarray
+[23:10:27.684] [DEBUG] wrap_batch_bridge: flattening column "arr_16"...
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_16" flattened: 10 total elements in 1 arrays
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_17" first value type: ndarray
+[23:10:27.684] [DEBUG] wrap_batch_bridge: flattening column "arr_17"...
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_17" flattened: 10 total elements in 1 arrays
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_18" first value type: ndarray
+[23:10:27.684] [DEBUG] wrap_batch_bridge: flattening column "arr_18"...
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_18" flattened: 10 total elements in 1 arrays
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_19" first value type: ndarray
+[23:10:27.684] [DEBUG] wrap_batch_bridge: flattening column "arr_19"...
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_19" flattened: 10 total elements in 1 arrays
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_20" first value type: ndarray
+[23:10:27.684] [DEBUG] wrap_batch_bridge: flattening column "arr_20"...
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_20" flattened: 10 total elements in 1 arrays
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_21" first value type: ndarray
+[23:10:27.684] [DEBUG] wrap_batch_bridge: flattening column "arr_21"...
+[23:10:27.684] [DEBUG] wrap_batch_bridge: column "arr_21" flattened: 10 total elements in 1 arrays
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_22" first value type: ndarray
+[23:10:27.685] [DEBUG] wrap_batch_bridge: flattening column "arr_22"...
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_22" flattened: 10 total elements in 1 arrays
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_23" first value type: ndarray
+[23:10:27.685] [DEBUG] wrap_batch_bridge: flattening column "arr_23"...
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_23" flattened: 10 total elements in 1 arrays
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_24" first value type: ndarray
+[23:10:27.685] [DEBUG] wrap_batch_bridge: flattening column "arr_24"...
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_24" flattened: 10 total elements in 1 arrays
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_25" first value type: ndarray
+[23:10:27.685] [DEBUG] wrap_batch_bridge: flattening column "arr_25"...
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "arr_25" flattened: 10 total elements in 1 arrays
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "json_01" first value type: dict
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "json_01" contains dicts, serializing to JSON...
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "json_01" serialized to JSON strings
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "json_02" first value type: dict
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "json_02" contains dicts, serializing to JSON...
+[23:10:27.685] [DEBUG] wrap_batch_bridge: column "json_02" serialized to JSON strings
+[23:10:27.685] [INFO] wrap_batch_bridge: optimized 27 array columns for MATLAB transfer: ['arr_01', 'arr_02', 'arr_03', 'arr_04', 'arr_05']
+[23:10:28.312] [INFO] wrap_py_vars_batch: reconstructed 25 flattened array columns
+[23:10:28.326] [INFO] wrap_py_vars_batch: parsed 2 JSON columns to structs

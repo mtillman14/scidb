@@ -890,6 +890,15 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
                 result_tbl[col] = result_tbl[col].apply(
                     lambda x: _json.dumps(x) if isinstance(x, dict) else str(x)
                 )
+        # _where is None when for_each ran without a where= filter. A Python
+        # None crosses the bridge as an unconvertible cell, so MATLAB's
+        # ``string(result.("_where")(1))`` raises MustBeConvertibleCellArray.
+        # Coerce None -> "" so the column is a uniform string the empty-filter
+        # introspect tests (and MATLAB consumers) can read directly.
+        if "_where" in result_tbl.columns:
+            result_tbl["_where"] = result_tbl["_where"].apply(
+                lambda x: "" if x is None else str(x)
+            )
 
     return result_tbl
 

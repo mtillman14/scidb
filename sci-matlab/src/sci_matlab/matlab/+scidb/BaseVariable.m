@@ -139,7 +139,7 @@ classdef BaseVariable < dynamicprops
             if isa(data, 'scidb.LineageFcnResult')
                 py_data = data.py_obj;
                 py_record_id = py.scihist.foreach.save(py_class, py_data, pyargs(py_kwargs{:}));
-                record_id = char(py_record_id);
+                record_id = string(py_record_id);
                 return;
             end
 
@@ -161,8 +161,14 @@ classdef BaseVariable < dynamicprops
                             'Table has no data columns (all columns are schema keys: %s).', ...
                             strjoin(meta_cols, ', '));
                     elseif numel(data_cols) == 1
+                        scidb.Log.info(['[save] auto-distribute %s: single-col branch, ' ...
+                            'meta=[%s], data_col=%s, rows=%d'], ...
+                            type_name, strjoin(meta_cols, ','), data_cols(1), height(data));
                         record_id = obj.save_from_table(data, data_cols(1), meta_cols, varargin{:});
                     else
+                        scidb.Log.info(['[save] auto-distribute %s: multi-col branch, ' ...
+                            'meta=[%s], data_cols=[%s], rows=%d'], ...
+                            type_name, strjoin(meta_cols, ','), strjoin(data_cols, ','), height(data));
                         % Multiple data columns: wrap each row's sub-table as a cell
                         sub_data  = data(:, data_cols);
                         meta_tbl  = data(:, meta_cols);
@@ -176,6 +182,9 @@ classdef BaseVariable < dynamicprops
                     return;
                 end
                 % No schema-key columns in table → fall through and save as one record.
+                scidb.Log.info(['[save] auto-distribute %s: fall-through branch ' ...
+                    '(no schema-key columns), cols=[%s], rows=%d'], ...
+                    type_name, strjoin(tbl_cols, ','), height(data));
             end
 
             % Marshal data to Python for plain save
@@ -191,7 +200,7 @@ classdef BaseVariable < dynamicprops
                 py_db = db_val;
             end
             py_record_id = py_db.save_variable(py_class, py_data, pyargs(py_kwargs{:}));
-            record_id = char(py_record_id);
+            record_id = string(py_record_id);
 
 
         end
@@ -431,63 +440,47 @@ classdef BaseVariable < dynamicprops
                 py_db = db_val;
             end
 
-            if version == "latest" || version == "all"
-                % Bulk path: handles both "latest" and "all"
-                if isempty(where)
-                    bulk = py.sci_matlab.bridge.load_and_extract( ...
-                        py_class, py_metadata, ...
-                        pyargs('version_id', char(version), 'db', py_db));
-                else
-                    bulk = py.sci_matlab.bridge.load_and_extract( ...
-                        py_class, py_metadata, ...
-                        pyargs('version_id', char(version), 'db', py_db, ...
-                               'where', where.py_filter));
-                end
-                n = int64(bulk{'n'});
+            % All version modes ("latest", "all", or a specific record_id)
+            % route through the bridge's load_and_extract, which drains the
+            % generator returned by DatabaseManager.load() in Python. A
+            % specific record_id resolves to a single record (n==1); passing
+            % version_id straight through lets scidb's load() dispatch on it.
+            if isempty(where)
+                bulk = py.sci_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', char(version), 'db', py_db));
+            else
+                bulk = py.sci_matlab.bridge.load_and_extract( ...
+                    py_class, py_metadata, ...
+                    pyargs('version_id', char(version), 'db', py_db, ...
+                           'where', where.py_filter));
+            end
+            n = int64(bulk{'n'});
 
-                if n == 0
-                    error('scidb:NotFoundError', 'No %s found matching the given metadata.', type_name);
-                end
+            if n == 0
+                error('scidb:NotFoundError', 'No %s found matching the given metadata.', type_name);
+            end
 
-                results_arr = scidb.BaseVariable.wrap_py_vars_batch(bulk);
+            results_arr = scidb.BaseVariable.wrap_py_vars_batch(bulk);
 
-                if as_table
-                    result = multi_result_to_table(results_arr, type_name, categorical_flag);
-                    if introspect
-                        result = append_introspect_columns(result, results_arr, where, version);
-                    end
-                else
-                    if introspect
-                        for ii = 1:numel(results_arr)
-                            results_arr(ii).addprop('where');
-                            results_arr(ii).where = where;
-                            results_arr(ii).addprop('version_mode');
-                            results_arr(ii).version_mode = version;
-                        end
-                    end
-                    if n == 1
-                        result = results_arr(1);
-                    else
-                        result = results_arr;
-                    end
+            if as_table
+                result = multi_result_to_table(results_arr, type_name, categorical_flag);
+                if introspect
+                    result = append_introspect_columns(result, results_arr, where, version);
                 end
             else
-                % Specific record_id fast path
-                py_var = py_db.load(py_class, py_metadata, version=char(version));
-                wrapped = scidb.BaseVariable.wrap_py_var(py_var);
-                if as_table
-                    result = multi_result_to_table(wrapped, type_name, categorical_flag);
-                    if introspect
-                        result = append_introspect_columns(result, wrapped, where, version);
+                if introspect
+                    for ii = 1:numel(results_arr)
+                        results_arr(ii).addprop('where');
+                        results_arr(ii).where = where;
+                        results_arr(ii).addprop('version_mode');
+                        results_arr(ii).version_mode = version;
                     end
+                end
+                if n == 1
+                    result = results_arr(1);
                 else
-                    if introspect
-                        wrapped.addprop('where');
-                        wrapped.where = where;
-                        wrapped.addprop('version_mode');
-                        wrapped.version_mode = version;
-                    end
-                    result = wrapped;
+                    result = results_arr;
                 end
             end
 

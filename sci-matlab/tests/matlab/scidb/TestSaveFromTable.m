@@ -197,16 +197,18 @@ classdef TestSaveFromTable < matlab.unittest.TestCase
 
         function test_auto_distribute_multiple_data_cols(testCase)
             % When the table has multiple non-schema-key columns, each row is
-            % saved as a 1-row sub-table.
-            tbl = table([1;2], ["A";"B"], [0.5;0.6], ...
-                'VariableNames', {'subject','session','MyVar'});
+            % saved as a 1-row sub-table. Schema keys are [subject, session],
+            % so MyVar and MyVar2 are the two non-schema data columns.
+            tbl = table([1;2], ["A";"B"], [0.5;0.6], [1.0;2.0], ...
+                'VariableNames', {'subject','session','MyVar','MyVar2'});
             ids = ScalarVar().save(tbl);
             testCase.verifyEqual(numel(ids), 2);
 
-            v = ScalarVar().load('subject', 1);
+            v = ScalarVar().load('subject', 1, 'session', 'A');
             % data should be the sub-table of non-schema columns for that row
             testCase.verifyTrue(istable(v.data));
             testCase.verifyEqual(height(v.data), 1);
+            testCase.verifyEqual(width(v.data), 2);
         end
 
         function test_auto_distribute_no_schema_cols_falls_through(testCase)
