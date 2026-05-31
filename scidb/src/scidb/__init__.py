@@ -37,6 +37,7 @@ from .exceptions import (
 # Batch execution (Layer 2 — DB-backed, no lineage)
 from .foreach import for_each
 from .fixed import Fixed
+from .variant import Variant
 from .merge import Merge
 from .column_selection import ColumnSelection
 from .colname import ColName
@@ -86,6 +87,7 @@ __all__ = [
     # Batch execution
     "for_each",
     "Fixed",
+    "Variant",
     "Merge",
     "ColumnSelection",
     "ColName",

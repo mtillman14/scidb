@@ -23,6 +23,7 @@ except ImportError:
 from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
+from .variant import Variant
 from .each_of import EachOf
 from .foreach_config import ForEachConfig
 from .filters import Filter
@@ -1380,6 +1381,10 @@ def _input_type_name(var_spec: Any) -> str:
         inner_name = _input_type_name(inner)
         fixed_str = ", ".join(f"{k}={v}" for k, v in var_spec.fixed_metadata.items())
         return f"Fixed({inner_name}, {fixed_str})"
+    if isinstance(var_spec, Variant):
+        inner_name = _input_type_name(var_spec.var_type)
+        bp_str = ", ".join(f"{k}={v}" for k, v in sorted(var_spec.branch_params.items()))
+        return f"Variant({inner_name}, {bp_str})"
     if isinstance(var_spec, ColumnSelection):
         inner_name = _input_type_name(var_spec.var_type)
         return f"ColumnSelection({inner_name}, {var_spec.columns})"
@@ -1400,6 +1405,9 @@ def _convert_inputs_for_display(inputs: dict[str, Any]) -> dict[str, Any]:
 
     result = {}
     for param_name, var_spec in inputs.items():
+        # Variant is a load-time filter; for display, unwrap to its inner spec.
+        if isinstance(var_spec, Variant):
+            var_spec = var_spec.var_type
         if isinstance(var_spec, Merge):
             # Use _DryRunMerge so scifor prints "merge {param_name}:" and class names
             result[param_name] = _DryRunMerge(var_spec)
@@ -1498,13 +1506,43 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
     return var_name
 
 
-def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
-    """Load a single input and return a scifor-compatible wrapper or sentinel."""
+def _load_input(
+    var_spec: Any,
+    db: Any | None,
+    where: Any | None,
+    branch_params_filter: dict | None = None,
+) -> Any:
+    """Load a single input and return a scifor-compatible wrapper or sentinel.
+
+    ``branch_params_filter`` is an orthogonal, load-time filter threaded through
+    the recursion exactly like ``where``.  A ``Variant`` wrapper *injects* it into
+    its subtree; the other wrappers pass it through; the leaf load applies it via
+    ``load_all_as_df(branch_params_filter=…)``.
+    """
     import pandas as pd
 
     # Already a DataFrame — pass through
     if isinstance(var_spec, pd.DataFrame):
         return var_spec
+
+    # Variant: inject/merge its branch_params into the inherited filter (error on
+    # conflicting values) and recurse into the inner spec.  Composition with the
+    # other wrappers is order-agnostic because the filter is threaded, not
+    # wrapper-aware.
+    if isinstance(var_spec, Variant):
+        merged = dict(branch_params_filter or {})
+        for k, v in var_spec.branch_params.items():
+            if k in merged and merged[k] != v:
+                raise ValueError(
+                    f"Conflicting branch_param '{k}' for Variant input: "
+                    f"{merged[k]!r} vs {v!r}."
+                )
+            merged[k] = v
+        Log.debug(
+            f"[Variant] {var_spec.__name__}: injecting branch_params_filter="
+            f"{merged}"
+        )
+        return _load_input(var_spec.var_type, db, where, branch_params_filter=merged)
 
     # Merge: check if any constituent needs per-combo loading
     if isinstance(var_spec, Merge):
@@ -1556,7 +1594,13 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
                 )
             else:
                 constituent_where = None
-            loaded = _load_input(sub_spec, db, where=constituent_where)
+            # Per-constituent Variant injects its own branch_params_filter inside
+            # this recursion; the inherited filter (normally None — Variant(Merge)
+            # is rejected at construction) is threaded for safety.
+            loaded = _load_input(
+                sub_spec, db, where=constituent_where,
+                branch_params_filter=branch_params_filter,
+            )
             # Strip scidb metadata columns that would conflict when merged column-wise.
             # __record_id/__branch_params/version appear in every constituent but carry
             # no per-row meaning after merge; scifor's _prepare_merge doesn't track them.
@@ -1595,7 +1639,10 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
                 "constituents inside the Merge instead: "
                 "Merge(Fixed(df1, ...), df2)"
             )
-        inner_loaded = _load_input(var_spec.var_type, db, where)
+        inner_loaded = _load_input(
+            var_spec.var_type, db, where,
+            branch_params_filter=branch_params_filter,
+        )
         if isinstance(inner_loaded, PerComboLoader):
             # Inner needs per-combo loading; wrap the whole Fixed spec
             return PerComboLoader(var_spec)
@@ -1620,7 +1667,10 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
     # ColumnSelection: load inner var_type if possible, else per-combo
     if isinstance(var_spec, ColumnSelection):
         if hasattr(var_spec.var_type, 'load'):
-            loaded_df = _load_var_type_as_spread(var_spec.var_type, db, where)
+            loaded_df = _load_var_type_as_spread(
+                var_spec.var_type, db, where,
+                branch_params_filter=branch_params_filter,
+            )
             return _scifor.ColumnSelection(loaded_df, var_spec.columns)
         return PerComboLoader(var_spec)
 
@@ -1643,7 +1693,10 @@ def _load_input(var_spec: Any, db: Any | None, where: Any | None) -> Any:
                 except Exception:
                     pass
             if _check_db is not None and hasattr(_check_db, 'load_all_as_df'):
-                return _load_var_type_as_spread(var_spec, db, where)
+                return _load_var_type_as_spread(
+                    var_spec, db, where,
+                    branch_params_filter=branch_params_filter,
+                )
             return PerComboLoader(var_spec)
         return PerComboLoader(var_spec)
 
@@ -1824,8 +1877,12 @@ def _merge_needs_per_combo(merge_spec: "Merge") -> bool:
 
 
 def _get_loadable_class_from_spec(spec: Any) -> Any:
-    """Extract the innermost loadable class from a spec (class, Fixed, ColumnSelection)."""
+    """Extract the innermost loadable class from a spec (class, Variant, Fixed, ColumnSelection)."""
+    if isinstance(spec, Variant):
+        spec = spec.var_type
     if isinstance(spec, Fixed):
+        spec = spec.var_type
+    if isinstance(spec, Variant):
         spec = spec.var_type
     if isinstance(spec, ColumnSelection):
         spec = spec.var_type
@@ -1838,6 +1895,7 @@ def _load_var_type_as_spread(
     var_type: Any,
     db: Any | None,
     where: Any | None,
+    branch_params_filter: dict | None = None,
 ) -> "pd.DataFrame":
     """Bulk load all records for a variable type into a spread DataFrame.
 
@@ -1865,6 +1923,15 @@ def _load_var_type_as_spread(
     if resolved_db is not None and hasattr(resolved_db, 'load_all_as_df'):
         # Fast path: bulk engine with spread layout.
         where_kw = {"where": where} if where is not None else {}
+        bp_kw = (
+            {"branch_params_filter": branch_params_filter}
+            if branch_params_filter else {}
+        )
+        if branch_params_filter:
+            Log.debug(
+                f"[Variant] _load_var_type_as_spread({_vt_name}): applying "
+                f"branch_params_filter={branch_params_filter}"
+            )
         result = resolved_db.load_all_as_df(
             var_type,
             layout="spread",
@@ -1873,6 +1940,7 @@ def _load_var_type_as_spread(
             stringify_schema=True,
             version_id="latest",
             **where_kw,
+            **bp_kw,
         )
         Log.info(
             f"[timing] _load_var_type_as_spread({_vt_name}): "
@@ -1882,10 +1950,13 @@ def _load_var_type_as_spread(
         return result
 
     # Slow fallback: use iterator (no database or database lacks load_all_as_df).
+    # BaseVariable.load derives branch_params_filter from its non-schema metadata
+    # kwargs (version="latest" path), so pass the pinned branch_params as kwargs.
     db_kwargs = {"db": db} if db is not None else {}
     where_kwargs = {"where": where} if where is not None else {}
+    bp_kwargs = dict(branch_params_filter) if branch_params_filter else {}
 
-    _raw = var_type.load(version="latest", **db_kwargs, **where_kwargs)
+    _raw = var_type.load(version="latest", **db_kwargs, **where_kwargs, **bp_kwargs)
     loaded = _raw if isinstance(_raw, list) else [_raw]
 
     if not loaded:
@@ -2431,7 +2502,7 @@ def _is_loadable(var_spec: Any) -> bool:
             return True
     except ImportError:
         pass
-    return isinstance(var_spec, (type, Fixed, ColumnSelection, Merge, PathInput)) or hasattr(var_spec, 'load')
+    return isinstance(var_spec, (type, Fixed, Variant, ColumnSelection, Merge, PathInput)) or hasattr(var_spec, 'load')
 
 
 def _get_schema_keys(db: Any | None) -> set:

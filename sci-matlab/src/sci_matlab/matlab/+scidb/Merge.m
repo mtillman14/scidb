@@ -92,6 +92,19 @@ classdef Merge
                         end
                     end
                     parts{i} = sprintf('Fixed(%s, %s)', inner_name, strjoin(fp, ', '));
+                elseif isa(spec, 'scidb.Variant')
+                    inner_name = class(spec.var_type);
+                    fields = fieldnames(spec.branch_params);
+                    fp = cell(1, numel(fields));
+                    for f = 1:numel(fields)
+                        val = spec.branch_params.(fields{f});
+                        if isnumeric(val)
+                            fp{f} = sprintf('%s=%g', fields{f}, val);
+                        else
+                            fp{f} = sprintf('%s="%s"', fields{f}, string(val));
+                        end
+                    end
+                    parts{i} = sprintf('Variant(%s, %s)', inner_name, strjoin(fp, ', '));
                 else
                     parts{i} = class(spec);
                 end

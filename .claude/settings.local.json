@@ -41,7 +41,9 @@
       "WebFetch(domain:www.mathworks.com)",
       "Bash(sort:*)",
       "Bash(git *)",
-      "Bash(awk NR>=415 && NR<=430 *)"
+      "Bash(awk NR>=415 && NR<=430 *)",
+      "Bash(sed -n '116,135p' scidb/src/scidb/database.py)",
+      "Bash(sed -n '1455,1525p' scidb/src/scidb/database.py)"
     ]
   }
 }

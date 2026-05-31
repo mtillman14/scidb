@@ -147,6 +147,7 @@ def _reconstruct_input_for_keys(spec):
         - {"kind": "var_type", "type_name": str}
         - {"kind": "column_selection", "type_name": str, "columns": list[str]}
         - {"kind": "fixed", "inner": <spec>, "fixed_metadata": dict}
+        - {"kind": "variant", "inner": <spec>, "branch_params": dict}
         - {"kind": "merge", "specs": list[<spec>]}
         - {"kind": "pathinput", "template": str, "root_folder": str}
 
@@ -170,6 +171,11 @@ def _reconstruct_input_for_keys(spec):
         inner = _reconstruct_input_for_keys(spec["inner"])
         fixed_meta = dict(spec.get("fixed_metadata", {}) or {})
         return Fixed(inner, **fixed_meta)
+    if kind == "variant":
+        from scidb.variant import Variant
+        inner = _reconstruct_input_for_keys(spec["inner"])
+        branch_params = dict(spec.get("branch_params", {}) or {})
+        return Variant(inner, **branch_params)
     if kind == "merge":
         from scidb.merge import Merge
         subs = [_reconstruct_input_for_keys(s) for s in spec["specs"]]

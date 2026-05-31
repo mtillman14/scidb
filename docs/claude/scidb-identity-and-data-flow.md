@@ -887,13 +887,15 @@ Constants appear in **both** places but serve different purposes:
 
 They are also unpacked as direct keys in `save_metadata` (e.g., `low_hz=20`) so that `_split_metadata()` routes them correctly. If the constant name matches a schema key, it goes into `schema`; otherwise into `version`.
 
-### No for_each input filtering by pipeline variant (known gap)
+### for_each input filtering by pipeline variant (resolved by `Variant`)
+
+**Resolved by `Variant`** — see [[variant-branch-param-pinning]]. `Variant(Signal, low_hz=20)` pins a for_each input to a branch_param variant by injecting a `branch_params_filter` at **load time** (before the DataFrame is built). The two reasons `Fixed` cannot do this remain true and are exactly *why* `Variant` filters at load time rather than per-combo:
 
 `Fixed` is designed for schema key overrides (`Fixed(Signal, session="BL")`), not for pipeline variant selection (`Fixed(Signal, low_hz=20)`). There are two reasons:
 
 1. **scifor's `_filter_df_for_combo()` only filters on schema keys**, ignoring non-schema columns in the effective metadata.
 2. **`_stringify_meta()` strips constant-input keys** from the loaded DataFrame columns (to prevent pollution in downstream steps), so there's nothing to filter on even if scifor checked non-schema keys.
 
-The direct load path (`FilteredSignal.load(subject=1, low_hz=20)`) does not have this limitation -- it uses `branch_params_filter` in `_find_record()`, which checks both `version_keys` and `branch_params` with suffix matching.
+The direct load path (`FilteredSignal.load(subject=1, low_hz=20)`) does not have this limitation -- it uses `branch_params_filter` in `_find_record()`, which checks both `version_keys` and `branch_params` with suffix matching. `Variant` reuses this same mechanism at the bulk-load leaf.
 
 See [Section 5b, Case 3](#case-3-for_each-input----restricting-to-a-subset-of-variants-known-gap) for full details.

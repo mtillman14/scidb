@@ -1013,3 +1013,7 @@ What happens:
     - Print: `[save] subject=1, session=A, low_hz=20, high_hz=450: FilteredEMG -> record_id=abc123... (ndarray shape=(100,)) in 0.003s`
 
 Now if a second `for_each` call runs with `low_hz=50`, new `FilteredEMG` records are created with different `record_id` values and different `branch_params` (`{"bandpass.low_hz": 50}`). Both variants coexist in the database. A downstream `for_each` loading `FilteredEMG` will see both variants and, through the rid expansion mechanism, process each one separately.
+
+## Related
+
+- [[variant-branch-param-pinning]] — `Variant(X, low_hz=20)` pins an input to a specific branch_param variant; `branch_params_filter` is threaded through `_load_input` exactly like `where=`.

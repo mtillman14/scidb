@@ -135,6 +135,44 @@ def _match_branch_param(branch_params_dict: dict, key: str, value: Any) -> bool:
     return False
 
 
+def _filter_records_by_branch_params(df, branch_params_filter: dict | None):
+    """Filter a records DataFrame by a branch_params_filter dict.
+
+    Shared by both load paths (``_find_record``'s no-``where`` fast path and the
+    ``where=`` path that routes through ``_load_with_where``) so ``where=`` and
+    branch_param pinning (``Variant``) can coexist.
+
+    For each filter key/value, a record is kept when its ``version_keys`` (checked
+    first — direct saves store non-schema kwargs there) or its ``branch_params``
+    (suffix-matched via :func:`_match_branch_param`, for for_each pipeline params)
+    match.  Raises ``AmbiguousParamError`` if a bare key matches multiple
+    namespaced branch params.
+    """
+    if not branch_params_filter or len(df) == 0:
+        return df
+    for key, value in branch_params_filter.items():
+        def _match_row(row, k=key, v=value):
+            bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
+            # Check branch_params ambiguity BEFORE the version_keys shortcut:
+            # a bare key that is ambiguous across pipeline steps must raise even
+            # if the key also happens to appear in version_keys.
+            if k not in bp:
+                suffix = f".{k}"
+                hits = [bk for bk in bp if bk.endswith(suffix)]
+                if len(hits) > 1:
+                    raise AmbiguousParamError(
+                        f"'{k}' matches multiple branch params: {hits}"
+                    )
+            vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
+            if k in vk:
+                if isinstance(v, (list, tuple)):
+                    return vk[k] in v
+                return vk[k] == v
+            return _match_branch_param(bp, k, v)
+        df = df[df.apply(_match_row, axis=1)]
+    return df
+
+
 # Global database instance (thread-local for safety)
 _local = threading.local()
 
@@ -1573,26 +1611,7 @@ class DatabaseManager:
         t_bp_filter = 0.0
         if branch_params_filter and len(df) > 0:
             _t_bp = time.perf_counter()
-            for key, value in branch_params_filter.items():
-                def _match_row(row, k=key, v=value):
-                    bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
-                    # Check branch_params ambiguity BEFORE version_keys shortcut:
-                    # if the bare key is ambiguous across multiple pipeline steps,
-                    # raise AmbiguousParamError even if the key also appears in version_keys.
-                    if k not in bp:
-                        suffix = f".{k}"
-                        hits = [bk for bk in bp if bk.endswith(suffix)]
-                        if len(hits) > 1:
-                            raise AmbiguousParamError(
-                                f"'{k}' matches multiple branch params: {hits}"
-                            )
-                    vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
-                    if k in vk:
-                        if isinstance(v, (list, tuple)):
-                            return vk[k] in v
-                        return vk[k] == v
-                    return _match_branch_param(bp, k, v)
-                df = df[df.apply(_match_row, axis=1)]
+            df = _filter_records_by_branch_params(df, branch_params_filter)
             t_bp_filter = time.perf_counter() - _t_bp
 
         # Apply smart sorting by schema keys before returning
@@ -2658,6 +2677,15 @@ class DatabaseManager:
                     f"{type(_exc).__name__}: {_exc} — returning empty DataFrame"
                 )
                 return pd.DataFrame()
+            # where= and branch_params_filter (Variant) coexist: apply the
+            # branch_params filter as a post-step on the where-matched records.
+            if branch_params_filter:
+                _n_before = len(records)
+                records = _filter_records_by_branch_params(records, branch_params_filter)
+                Log.debug(
+                    f"[load_all_as_df] {type_name}: branch_params_filter "
+                    f"{branch_params_filter} kept {len(records)}/{_n_before} records"
+                )
         else:
             nested_metadata = self._split_metadata(metadata)
             records = self._find_record(
@@ -2766,6 +2794,17 @@ class DatabaseManager:
                         f"Variable type '{type_name}' is registered but has no saved records in this database."
                     )
                 return
+            # where= and branch_params_filter (Variant) coexist: apply the
+            # branch_params filter as a post-step on the where-matched records.
+            if branch_params_filter:
+                _n_before = len(records)
+                records = _filter_records_by_branch_params(records, branch_params_filter)
+                Log.info(
+                    f"load({type_name}): branch_params_filter {branch_params_filter} "
+                    f"kept {len(records)}/{_n_before} records"
+                )
+                if len(records) == 0:
+                    return
         else:
             nested_metadata = self._split_metadata(metadata)
             try:

@@ -400,3 +400,7 @@ scidb.for_each(@fn, struct('x', GaitData("force")), {Out()}, ...
   filter) and the load-time key (variable portion only) diverge, so provenance
   matching (Strategy 1) won't fire for that variant. SchemaKey is being moved out of
   `for_each` `where=` for this reason. See [[where-provenance-and-merge]].
+
+## Related
+
+- [[variant-branch-param-pinning]] — `Variant` threads a `branch_params_filter` through `_load_input` the same way `where=` is threaded, and the two now coexist on the `load_all_as_df` fast path.

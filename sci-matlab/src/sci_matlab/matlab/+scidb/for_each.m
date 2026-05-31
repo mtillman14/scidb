@@ -21,8 +21,9 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %   Arguments:
 %       fn      - Function handle (plain; use scihist.for_each for LineageFcn wrapping)
 %       inputs  - Struct mapping parameter names to BaseVariable instances,
-%                 scidb.Fixed wrappers, scidb.Merge wrappers,
-%                 scifor.PathInput instances, or constant values.
+%                 scidb.Fixed wrappers, scidb.Variant wrappers,
+%                 scidb.Merge wrappers, scifor.PathInput instances, or
+%                 constant values.
 %       outputs - Cell array of BaseVariable instances for output types
 %
 %   Name-Value Arguments:
@@ -769,6 +770,7 @@ function tf = is_loadable(var_spec) %#ok<DEFNU>
 %IS_LOADABLE  Check if an input spec is loadable (var type, Fixed, Merge, etc.).
     tf = isa(var_spec, 'scidb.BaseVariable') ...
       || isa(var_spec, 'scidb.Fixed') ...
+      || isa(var_spec, 'scidb.Variant') ...
       || isa(var_spec, 'scifor.PathInput') ...
       || isa(var_spec, 'scidb.Merge') ...
       || istable(var_spec) ...
@@ -808,6 +810,22 @@ function spec = describe_input_for_python(val)
         spec = py.dict(pyargs('kind', 'fixed', ...
             'inner', inner_desc, ...
             'fixed_metadata', fmeta_py));
+
+    elseif isa(val, 'scidb.Variant')
+        % Variant is an orthogonal, load-time branch_params filter. Ship the
+        % inner spec plus the pinned branch_params; the Python bridge rebuilds
+        % scidb.Variant(inner, **branch_params), which injects the filter into
+        % its subtree at load time.
+        inner_desc = describe_input_for_python(val.var_type);
+        bp_py = py.dict();
+        bpnames = fieldnames(val.branch_params);
+        for i = 1:numel(bpnames)
+            bp_py{bpnames{i}} = scidb.internal.to_python( ...
+                val.branch_params.(bpnames{i}));
+        end
+        spec = py.dict(pyargs('kind', 'variant', ...
+            'inner', inner_desc, ...
+            'branch_params', bp_py));
 
     elseif isa(val, 'scidb.BaseVariable') && ~isempty(val.selected_columns)
         cols = val.selected_columns;
