@@ -623,3 +623,109 @@ class TestSchemaKeyWithForEachWhereFilter:
         assert len(results) == 2
         sessions = {r.metadata["session"] for r in results}
         assert sessions == {"BL"}
+
+
+# ===========================================================================
+# SchemaKey on a Merge input (the for_each Merge-constituent load path)
+# ===========================================================================
+
+class ComputedOutput2(BaseVariable):
+    """Second for_each-computed constituent (has a stored __where), so that BOTH
+    Merge constituents leak via Strategy 1 if the restriction is dropped — the
+    inner join cannot mask the bug the way a raw-saved constituent would."""
+    schema_version = 1
+
+
+class CollectOut(BaseVariable):
+    """Output for the end-to-end Merge + as_table regression test."""
+    schema_version = 1
+
+
+class TestSchemaKeyOnMergeConstituent:
+    """Regression: a SchemaKey filter combined with a variable-level filter must
+    still restrict rows when the input is a ``Merge`` whose constituent was itself
+    computed by ``for_each`` (so it carries a stored ``__where`` version key).
+
+    The Merge path pre-resolves the where= filter per constituent into a
+    ``_PreresolvedFilter`` whose ``resolve()`` already bakes in the SchemaKey
+    restriction.  Before the fix, ``_load_with_where`` Strategy 1 matched the
+    constituent by ``__where`` provenance and returned every schema_id sharing
+    that variant, ignoring the pre-resolved id set — so the SchemaKey filter
+    appeared to do nothing and every session leaked through.
+    """
+
+    def test_preresolved_filter_restricts_rows_in_strategy1(self, foreach_where_db):
+        """Directly exercise the bug: a _PreresolvedFilter whose where_key matches
+        the stored __where must still restrict rows to its resolved schema_ids."""
+        from scidb.foreach import _PreresolvedFilter
+
+        db = foreach_where_db
+        # ComputedOutput stored __where = (FilterVar == "U").to_key()
+        where_key = (FilterVar == "U").to_key()
+        # Resolve ComputedOutput's schema_ids restricted to session=BL.
+        bl_ids = schema_key("session").isin(["BL"]).resolve(
+            db, ComputedOutput, ComputedOutput.table_name()
+        )
+        pf = _PreresolvedFilter(bl_ids, where_key=where_key)
+
+        out = db.load_all_as_df(
+            ComputedOutput,
+            layout="spread",
+            include_rid=True,
+            stringify_schema=True,
+            version_id="latest",
+            where=pf,
+        )
+        sessions = set(out["session"].astype(str))
+        assert sessions == {"BL"}, f"Strategy 1 leaked sessions: {sessions}"
+        assert len(out) == 2  # subject=1,BL and subject=2,BL
+
+    def test_merge_input_schema_key_restricts_table(self, foreach_where_db):
+        """End-to-end: for_each with a Merge of two for_each-computed constituents
+        and as_table=True must hand the function a table containing only the
+        SchemaKey-selected sessions.
+
+        Both constituents carry the same stored __where, so both are matched by
+        Strategy 1.  If the pre-resolved schema-id restriction is dropped, both
+        leak session=MID and the inner join cannot remove it — the table would
+        wrongly contain MID.
+        """
+        from scidb import for_each, Merge
+
+        # Second computed constituent with the same __where as ComputedOutput.
+        def compute2(filterVar):
+            return 2.0
+
+        for_each(
+            compute2,
+            inputs={"filterVar": FilterVar},
+            outputs=[ComputedOutput2],
+            where=FilterVar == "U",
+            subject=[1, 2],
+            session=["BL", "MID", "TX"],
+        )
+
+        captured = {}
+
+        def collect(merged):
+            captured["df"] = merged
+            return 1.0
+
+        for_each(
+            collect,
+            inputs={"merged": Merge(ComputedOutput, ComputedOutput2)},
+            outputs=[CollectOut],
+            where=schema_key("session").isin(["BL"]) & (FilterVar == "U"),
+            as_table=True,
+            save=False,
+        )
+
+        # The merged table presented to the function carries only data columns
+        # (schema keys are consumed by the inner join), so assert on row count:
+        # after the fix both constituents restrict to {1/BL, 2/BL} -> 2 rows.
+        # Before the fix both leaked session=MID -> 3 rows.
+        df = captured["df"]
+        assert len(df) == 2, (
+            f"Merge SchemaKey filter leaked rows: got {len(df)} rows "
+            f"(expected 2 = subject 1 & 2 at session BL)\n{df}"
+        )

@@ -43,7 +43,9 @@
       "Bash(git *)",
       "Bash(awk NR>=415 && NR<=430 *)",
       "Bash(sed -n '116,135p' scidb/src/scidb/database.py)",
-      "Bash(sed -n '1455,1525p' scidb/src/scidb/database.py)"
+      "Bash(sed -n '1455,1525p' scidb/src/scidb/database.py)",
+      "Bash(awk 'NR>=2555 && NR<=2820 && \\(/where/ || /resolve/ || /schema_id/ || /def /\\)' scidb/src/scidb/database.py)",
+      "Bash(awk -F: '$1>=2900 && $1<=3100')"
     ]
   }
 }

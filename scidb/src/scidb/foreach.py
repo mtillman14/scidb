@@ -98,7 +98,18 @@ class _PreresolvedFilter(Filter):
     cannot distinguish multiple variants that share the same schema keys.
     Constituents with no stored ``__where`` (e.g. raw-saved data) simply miss
     Strategy 1 and fall back to the pre-resolved ``schema_ids`` in Strategy 2.
+
+    ``_schema_ids`` is authoritative in *both* strategies: it already encodes the
+    full where= filter (variable-level AND any SchemaKey portion).  The
+    ``_restrict_to_resolved_ids`` marker tells ``_load_with_where`` to apply it as
+    a schema-id row selector even when Strategy 1 matches by provenance — without
+    it, a constituent that *does* have a stored ``__where`` would return every
+    schema_id sharing that variant, ignoring the SchemaKey restriction.
     """
+
+    # Tells DatabaseManager._load_with_where (Strategy 1) to intersect the
+    # provenance-matched records with resolve() — see class docstring.
+    _restrict_to_resolved_ids = True
 
     def __init__(self, schema_ids: set, where_key: str = ""):
         self._schema_ids = schema_ids

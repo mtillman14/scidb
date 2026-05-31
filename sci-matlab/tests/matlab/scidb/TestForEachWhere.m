@@ -11,6 +11,9 @@ classdef TestForEachWhere < matlab.unittest.TestCase
 %     - where= is applied when inputs use SelectedColumn syntax
 %     - All filter types (VariableFilter, SchemaKey, Raw) ARE applied to
 %       scidb.Merge inputs (filter propagated to constituents)
+%     - A SchemaKey filter still restricts rows when the Merge constituents
+%       were themselves for_each-computed (carry a stored __where, so the
+%       loader matches by provenance via Strategy 1)
 %     - Coverage is validated against the Merge result (not per-constituent),
 %       so a filter gap at a row eliminated by the Merge inner join does NOT
 %       raise an error, but a gap at a row that survives DOES raise one
@@ -608,6 +611,65 @@ classdef TestForEachWhere < matlab.unittest.TestCase
             % but each was saved with 2-row table, so height=2
             testCase.verifyEqual(result.data(1), 2, ...
                 'Expected 2 rows (subject=1 only); subject=2 should have been filtered out');
+        end
+
+        % ================================================================
+        % SchemaKey where= with scidb.Merge of for_each-COMPUTED constituents
+        % (the Strategy 1 path: constituents carry a stored __where)
+        % ================================================================
+
+        function test_schema_key_isin_filters_computed_merge_constituents(testCase)
+        %TEST_SCHEMA_KEY_ISIN_FILTERS_COMPUTED_MERGE_CONSTITUENTS  SchemaKey
+        %   combined with a variable-level filter must still restrict rows when
+        %   the Merge constituents were themselves computed by for_each, and so
+        %   carry a stored __where version key.
+        %
+        %   This is the exact condition the raw-saved Merge tests above miss: a
+        %   stored __where makes _load_with_where Strategy 1 fire (match by
+        %   provenance), and before the fix Strategy 1 returned every schema_id
+        %   sharing that variant — silently dropping the SchemaKey restriction so
+        %   ALL sessions leaked through, just as the user observed.
+        %
+        %   Setup: RawSignal + Side="L" at sessions BL, POST, FOL.  Two outputs
+        %   (ProcessedSignal, DeltaSignal) are computed via for_each with
+        %   where=Side()=="L", so BOTH carry __where = "Side == 'L'".  Using two
+        %   computed constituents means the Merge inner join cannot mask a leak
+        %   in one of them (a raw-saved constituent would have restricted it).
+        %
+        %   Filter: SchemaKey("session") IN ["BL","POST"] AND Side()=="L".
+        %   Expected: merged table has 2 rows (BL, POST); FOL excluded.
+        %   Before the fix it had 3 rows (FOL leaked).
+            for sess = ["BL" "POST" "FOL"]
+                Side().save("L", 'subject', 1, 'session', sess);
+                RawSignal().save([1 2 3], 'subject', 1, 'session', sess);
+            end
+
+            % Two for_each-computed constituents, both storing __where="Side == 'L'".
+            scidb.for_each(@sum_array, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, 'session', ["BL" "POST" "FOL"], ...
+                where=Side() == "L");
+            scidb.for_each(@sum_array, ...
+                struct('x', RawSignal()), ...
+                {DeltaSignal()}, ...
+                'subject', 1, 'session', ["BL" "POST" "FOL"], ...
+                where=Side() == "L");
+
+            % Merge the two computed outputs; filter by SchemaKey AND the same
+            % variable-level filter that produced them (matches their __where).
+            scidb.for_each(@table_dims, ...
+                struct('data', scidb.Merge(ProcessedSignal(), DeltaSignal())), ...
+                {MergedResult()}, ...
+                'subject', 1, ...
+                as_table=true, ...
+                where=ismember(scidb.SchemaKey("session"), ["BL", "POST"]) & (Side() == "L"));
+
+            result = MergedResult().load('subject', 1);
+            % table_dims returns [height, width]; height = number of sessions.
+            testCase.verifyEqual(result.data(1), 2, ...
+                ['Expected 2 rows (BL+POST); a value of 3 means FOL leaked ' ...
+                 'because the SchemaKey filter was dropped on computed Merge constituents']);
         end
 
         % ================================================================

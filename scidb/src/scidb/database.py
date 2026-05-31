@@ -2208,10 +2208,30 @@ class DatabaseManager:
                 f"[_load_with_where] {type_name}: Strategy 1 matched {len(records)} records"
             )
             if len(records) > 0:
-                # Apply any SchemaKey filter as an additional schema-id row selector
+                # Apply a schema-id row selector on top of the provenance match:
+                #  - a structural SchemaKey filter (direct .load(where=schema_key(...) & ...)),
+                #    or
+                #  - a pre-resolved id set: a Merge constituent receives a
+                #    _PreresolvedFilter whose resolve() already encodes the full
+                #    filter (variable-level AND SchemaKey).  It is not a structural
+                #    SchemaKey node, so split_schema_key_filters() leaves sk_filter
+                #    None; the _restrict_to_resolved_ids marker tells us to apply
+                #    resolve() here instead.  Without this, a constituent matched by
+                #    __where provenance would return every schema_id sharing that
+                #    variant, ignoring the SchemaKey restriction.
+                allowed_ids = None
                 if sk_filter is not None:
                     allowed_ids = sk_filter.resolve(self, variable_class, table_name)
+                elif getattr(where, "_restrict_to_resolved_ids", False):
+                    allowed_ids = where.resolve(self, variable_class, table_name)
+                if allowed_ids is not None:
+                    _before = len(records)
                     records = records[records["schema_id"].isin(allowed_ids)]
+                    Log.debug(
+                        f"[_load_with_where] {type_name}: Strategy 1 schema-id "
+                        f"restriction {_before} -> {len(records)} records "
+                        f"({len(allowed_ids)} allowed schema_ids)"
+                    )
                 if len(records) > 0:
                     return records
                 raise NotFoundError(
