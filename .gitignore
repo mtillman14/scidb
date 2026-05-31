@@ -5,3 +5,6 @@ others_projects/sciforge
 scistack-gui/extension/node_modules/
 scistack-gui/frontend/node_modules/__pycache__/ 
 *.pyc 
+__pycache__/ 
+*.pyc 
+*.pyo 
