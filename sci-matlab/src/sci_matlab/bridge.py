@@ -1655,11 +1655,23 @@ def load_and_extract(py_class, metadata_dict, version_id='latest', db=None, wher
         Same format as wrap_batch_bridge (with batch_id, no data/py_vars).
     """
     from scidb.database import get_database
+    from scidb.exceptions import NotFoundError
 
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
 
-    gen = _db.load(py_class, dict(metadata_dict), version_id=version_id, where=where)
-    py_vars = list(gen)  # materializes entirely in Python
+    # scidb's load() raises NotFoundError when nothing matches. The MATLAB
+    # caller (+scidb/BaseVariable.m) detects the no-match case via the n==0
+    # sentinel in the returned dict and raises a clean ``scidb:NotFoundError``
+    # itself. If the Python exception is allowed to cross the bridge it surfaces
+    # in MATLAB as the opaque, generic ``MATLAB:Python:PyException`` instead,
+    # breaking the documented error contract (and every verifyError test that
+    # expects ``scidb:NotFoundError``). Convert it back to the empty-result
+    # sentinel so MATLAB's n==0 branch fires.
+    try:
+        gen = _db.load(py_class, dict(metadata_dict), version_id=version_id, where=where)
+        py_vars = list(gen)  # materializes entirely in Python
+    except NotFoundError:
+        py_vars = []
     return wrap_batch_bridge(py_vars)
 
 

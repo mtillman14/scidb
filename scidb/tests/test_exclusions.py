@@ -256,6 +256,41 @@ class TestSchemaOverridesHash:
 
 
 # ===========================================================================
+# Backends without a DuckDB layer (no _duck) — exclusions degrade gracefully
+# ===========================================================================
+
+class _NoDuckDB:
+    """Database double that doesn't expose a DuckDB backend.
+
+    Mirrors backends (remote/net) and the lightweight test doubles used by
+    scihist's for_each tests, which implement the public Database surface but
+    have no ``_duck``.  Regression guard for the AttributeError that crashed
+    for_each Step 9.5 when it reached straight into ``db._duck``.
+    """
+
+    dataset_schema_keys = ["subject", "trial"]
+
+
+class TestExclusionsWithoutDuckBackend:
+    def test_overrides_hash_returns_empty_payload_hash(self):
+        import hashlib
+        import json
+        # Same value an empty overrides table would produce, not a crash.
+        empty_payload_hash = hashlib.sha256(
+            json.dumps([], sort_keys=True).encode()
+        ).hexdigest()[:16]
+        assert get_schema_overrides_hash(_NoDuckDB()) == empty_payload_hash
+
+    def test_overrides_hash_is_stable_without_backend(self):
+        assert get_schema_overrides_hash(_NoDuckDB()) == get_schema_overrides_hash(_NoDuckDB())
+
+    def test_filter_returns_combos_unchanged_without_backend(self):
+        combos = [{"subject": "1", "trial": "1"}, {"subject": "1", "trial": "2"}]
+        result = filter_excluded_combos(combos, ["subject", "trial"], _NoDuckDB())
+        assert result == combos
+
+
+# ===========================================================================
 # Integration with for_each
 # ===========================================================================
 

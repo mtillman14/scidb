@@ -151,14 +151,23 @@ def get_schema_overrides_hash(db: "DatabaseManager") -> str:
     ``for_each`` results.
 
     Returns the hash of an empty payload if the table is empty.
+
+    Backends without a DuckDB layer (no ``_duck`` — e.g. remote/net backends
+    or test doubles) cannot store overrides, so they are treated as having
+    none: the empty-payload hash is returned rather than crashing.  This keeps
+    ``for_each`` backend-agnostic (see ``_for_each_prepare`` Step 9.5).
     """
-    schema_keys = db.dataset_schema_keys
-    key_cols = ", ".join(f'"{k}"' for k in schema_keys)
-    rows = db._duck._fetchall(
-        f"SELECT {key_cols}, status, reason, changed_at "
-        f"FROM {_TABLE} "
-        f"ORDER BY changed_at, {key_cols}, CAST(status AS INTEGER)"
-    )
+    duck = _overrides_backend(db)
+    if duck is None:
+        rows = []
+    else:
+        schema_keys = db.dataset_schema_keys
+        key_cols = ", ".join(f'"{k}"' for k in schema_keys)
+        rows = duck._fetchall(
+            f"SELECT {key_cols}, status, reason, changed_at "
+            f"FROM {_TABLE} "
+            f"ORDER BY changed_at, {key_cols}, CAST(status AS INTEGER)"
+        )
     payload = json.dumps(
         [[str(v) if v is not None else None for v in row] for row in rows],
         sort_keys=True,
@@ -193,12 +202,18 @@ def filter_excluded_combos(
         schema_keys_order: Ordered list of all schema keys from the DB.
         db: DatabaseManager.
 
+    Backends without a DuckDB layer (no ``_duck``) cannot store overrides, so
+    the combos are returned unchanged.
+
     Returns:
         Filtered list with excluded combos removed.
     """
     # Load all override rows once
+    duck = _overrides_backend(db)
+    if duck is None:
+        return combos
     key_cols_sql = ", ".join(f'"{k}"' for k in schema_keys_order)
-    rows = db._duck._fetchall(
+    rows = duck._fetchall(
         f"SELECT {key_cols_sql}, status, changed_at FROM {_TABLE} "
         f"ORDER BY changed_at DESC"
     )
@@ -295,6 +310,26 @@ def _get_db(db: "DatabaseManager | None") -> "DatabaseManager":
         return db
     from .database import get_database
     return get_database()
+
+
+def _overrides_backend(db: "DatabaseManager"):
+    """Return the DuckDB backend if this db can store schema overrides, else None.
+
+    Schema exclusions live in the DuckDB table ``__scidb_schema_overrides``,
+    which only the DuckDB-backed ``Database`` (with a ``_duck`` attribute)
+    provides.  Remote/net backends and test doubles have no such table, so
+    callers degrade to the "no overrides" default instead of raising
+    ``AttributeError``.  A real ``Database`` always creates the table at init,
+    so a missing backend never masks a genuine setup bug.
+    """
+    duck = getattr(db, "_duck", None)
+    if duck is None:
+        from .log import Log
+        Log.debug(
+            f"[scidb] schema overrides unavailable: {type(db).__name__} has no "
+            f"_duck backend; treating as no exclusions"
+        )
+    return duck
 
 
 def _validate_keys(db: "DatabaseManager", keys: dict) -> None:

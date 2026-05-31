@@ -280,8 +280,14 @@ class TestFilterErrorCases:
         with pytest.raises(ValueError, match="not registered"):
             StepLength.load(where=UnknownVar == "X")
 
-    def test_filter_finer_than_target_raises(self, tmp_path):
-        """Filter at finer schema level than target raises ValueError."""
+    def test_filter_finer_than_target_is_skipped(self, tmp_path):
+        """A filter finer than the target is not applicable, so it is skipped.
+
+        Previously this raised ValueError("finer than target"). The filter
+        resolver now treats a finer-than-target filter as inapplicable and
+        skips it (returning all target schema_ids) rather than erroring, so the
+        load behaves as if no where= had been supplied.
+        """
         from scidb import configure_database
         db = configure_database(
             tmp_path / "test.duckdb",
@@ -304,11 +310,15 @@ class TestFilterErrorCases:
         TrialStepLength.save(0.65, subject=1, trial=1)
         TrialStepLength.save(0.72, subject=1, trial=2)
 
-        # Filter at trial level (finer), target at subject level (coarser) → error
-        # TrialStepLength is at trial level, SubjectHeight is at subject level
-        # Using TrialStepLength as a FILTER for SubjectHeight → finer than target
-        with pytest.raises(ValueError, match="finer than target"):
-            SubjectHeight.load(where=TrialStepLength == 0.65)
+        # Filter at trial level (finer) than target at subject level (coarser):
+        # inapplicable, so it is skipped and every target record is returned.
+        results = SubjectHeight.load(where=TrialStepLength == 0.65)
+        assert sorted(v.data for v in results) == pytest.approx([170.0, 175.0])
+
+        # With enough metadata to pin a single record, the skipped filter
+        # leaves the normal lookup untouched.
+        single = SubjectHeight.load(subject=1, where=TrialStepLength == 0.65)
+        assert single.data == pytest.approx(170.0)
 
         db.close()
 
