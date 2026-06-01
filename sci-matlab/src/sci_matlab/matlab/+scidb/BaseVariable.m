@@ -575,6 +575,7 @@ classdef BaseVariable < dynamicprops
             py_class = scidb.internal.ensure_registered(type_name);
 
             scidb.internal.validate_csv_filename(filename);
+            scidb.internal.reject_csv_spec_args(type_name, varargin);
 
             [metadata_args, version, where, db_val] = ...
                 scidb.internal.split_csv_args(varargin{:});

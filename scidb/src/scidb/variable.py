@@ -615,7 +615,7 @@ class BaseVariable(metaclass=VariableMeta):
         return pd.DataFrame(rows)
 
     @classmethod
-    def to_csv(cls, filename: str, **kwargs) -> None:
+    def to_csv(cls, filename: str, *args, **kwargs) -> None:
         """
         Export this variable to a CSV file in flat table format.
 
@@ -662,7 +662,7 @@ class BaseVariable(metaclass=VariableMeta):
         """
         from .csv_export import export_csv
 
-        export_csv(cls, filename, **kwargs)
+        export_csv(cls, filename, *args, **kwargs)
 
     def __repr__(self) -> str:
         """Return a string representation of this variable."""

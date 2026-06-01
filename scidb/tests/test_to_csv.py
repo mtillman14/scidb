@@ -113,6 +113,17 @@ def test_no_match_raises_not_found(db, tmp_path):
         ScalarValue.to_csv(str(tmp_path / "none.csv"), subject=999)
 
 
+def test_extra_variable_arg_points_to_merge(db, tmp_path):
+    """Passing another variable as a positional arg errors, suggesting Merge."""
+    ScalarValue.save(1.0, subject=1, trial=1)
+
+    class _Other(BaseVariable):
+        schema_version = 1
+
+    with pytest.raises(ValueError, match="Merge"):
+        ScalarValue.to_csv(str(tmp_path / "x.csv"), _Other)
+
+
 # --- Variant (branch-param) support --------------------------------------
 
 class _RawScalar(BaseVariable):

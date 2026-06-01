@@ -39,7 +39,7 @@ class Merge:
                 raise TypeError("Cannot nest Merge inside another Merge.")
         self.var_specs = var_specs
 
-    def to_csv(self, filename: str, **kwargs) -> None:
+    def to_csv(self, filename: str, *args, **kwargs) -> None:
         """Export the merged variables to a CSV file in flat table format.
 
         Each constituent is loaded independently and inner-joined on its shared
@@ -55,7 +55,7 @@ class Merge:
         """
         from .csv_export import export_csv
 
-        export_csv(self, filename, **kwargs)
+        export_csv(self, filename, *args, **kwargs)
 
     def to_key(self) -> str:
         """Return a canonical string for use as a version key."""

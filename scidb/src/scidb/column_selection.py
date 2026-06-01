@@ -42,7 +42,7 @@ class ColumnSelection:
         """Load from the underlying var_type, then apply column selection."""
         return self.var_type.load(**metadata)
 
-    def to_csv(self, filename: str, **kwargs) -> None:
+    def to_csv(self, filename: str, *args, **kwargs) -> None:
         """Export the selected column(s) to a CSV file in flat table format.
 
         Writes one row per schema_id with the selected columns as value
@@ -56,7 +56,7 @@ class ColumnSelection:
         """
         from scidb.csv_export import export_csv
 
-        export_csv(self, filename, **kwargs)
+        export_csv(self, filename, *args, **kwargs)
 
     # --- Comparison operators that produce ColumnFilter objects ---
 

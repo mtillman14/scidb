@@ -160,6 +160,14 @@ classdef TestToCsv < matlab.unittest.TestCase
         % Merge
         % -----------------------------------------------------------------
 
+        function test_extra_variable_arg_points_to_merge(testCase)
+            %% Passing another variable as an arg errors (use Merge instead)
+            ScalarVar().save(10, 'subject', 1, 'session', 'A');
+            out = fullfile(testCase.test_dir, 'x.csv');
+            testCase.verifyError(@() ScalarVar().to_csv(out, Side()), ...
+                'scidb:ToCsvError');
+        end
+
         function test_merge_of_scalars_writes_wide_table(testCase)
             %% Merge joins scalar variables column-wise on shared schema keys
             ScalarVar().save(0.65, 'subject', 1, 'session', 'A');

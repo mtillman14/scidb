@@ -34,6 +34,49 @@ def is_scalar_value(value) -> bool:
     return isinstance(value, (bool, numbers.Number, str, bytes))
 
 
+def _is_spec(obj) -> bool:
+    """True if ``obj`` is a variable spec (class, instance, or wrapper)."""
+    from .column_selection import ColumnSelection
+    from .fixed import Fixed
+    from .merge import Merge
+    from .variable import BaseVariable
+    from .variant import Variant
+
+    if isinstance(obj, (Merge, ColumnSelection, Fixed, Variant, BaseVariable)):
+        return True
+    return isinstance(obj, type) and issubclass(obj, BaseVariable)
+
+
+def _spec_name(obj) -> str:
+    return getattr(obj, "__name__", None) or type(obj).__name__
+
+
+def _reject_extra_args(receiver, args) -> None:
+    """Raise a clear error for any positional arg passed after ``filename``.
+
+    ``to_csv`` exports the thing it is called on; it does not absorb other
+    variables. A variable spec here almost always means the caller wanted a
+    join — point them at ``Merge(...).to_csv(...)``.
+    """
+    if not args:
+        return
+    specs = [a for a in args if _is_spec(a)]
+    if specs:
+        raise ValueError(
+            f"to_csv() exports a single variable (or one Merge/ColumnSelection), "
+            f"not {_spec_name(receiver)} plus extra variables. To export several "
+            f"variables together, build the Merge explicitly and call to_csv on it: "
+            f"Merge({_spec_name(receiver)}, {_spec_name(specs[0])}).to_csv(...). "
+            f"Everything after 'filename' must be keyword metadata "
+            f"(e.g. subject=1, where=..., version='all')."
+        )
+    raise TypeError(
+        f"to_csv() takes no positional arguments after 'filename', but got "
+        f"{len(args)} more. Pass metadata as keywords, e.g. "
+        f"to_csv('out.csv', subject=1)."
+    )
+
+
 def _resolve_constituent(spec):
     """Normalize a spec into ``(var_type, columns_or_None, extra_kwargs)``.
 
@@ -196,13 +239,16 @@ def build_flat_table(spec, *, where, version, db, metadata):
     return result[ordered_schema + data_cols]
 
 
-def export_csv(spec, filename, **kwargs):
+def export_csv(spec, filename, *args, **kwargs):
     """Validate, build, and write the flat CSV for ``spec``.
 
     ``kwargs`` mirror ``load()``: ``where=``, ``version=``, ``db=``, and schema /
-    branch-param metadata. ``as_df`` / ``introspect`` are ignored.
+    branch-param metadata. ``as_df`` / ``introspect`` are ignored. Positional
+    args after ``filename`` are rejected (see :func:`_reject_extra_args`).
     """
     from .log import Log
+
+    _reject_extra_args(spec, args)
 
     if not isinstance(filename, str) or not filename.endswith(".csv"):
         raise ValueError(

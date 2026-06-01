@@ -93,6 +93,7 @@ classdef Merge
         %       scidb.Merge(StepLength(), Speed()).to_csv("gait.csv", subject=1);
 
             scidb.internal.validate_csv_filename(filename);
+            scidb.internal.reject_csv_spec_args('Merge', varargin);
 
             [metadata_args, version, where, db_val] = ...
                 scidb.internal.split_csv_args(varargin{:});
