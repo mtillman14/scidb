@@ -309,15 +309,33 @@ def for_each(
     else:
         Log.info("[scidb] Step 1: no EachOf expansion needed")
 
+    # --- Step 1.5: Resolve for_columns (iterate-mode ColumnSelection) inputs ---
+    # Expand columns=None -> all data columns and validate the shared column
+    # axis BEFORE version keys are built (Step 8) and before dry-run display,
+    # so caching reflects the concrete column set.
+    inputs = _resolve_for_columns(inputs, db)
+    _has_for_columns = any(
+        _iterate_column_selection(s) is not None for s in inputs.values()
+    )
+
     # Wrap lineage functions to unpack tuple returns when needed.
     # Skip if already wrapped (scihist.for_each pre-wraps before delegating here).
     if HAS_LINEAGE and not getattr(fn, '__lineage_wrapper__', False):
-        try:
-            from scilineage import make_tuple_unpacking_wrapper
-            fn = make_tuple_unpacking_wrapper(fn)
-            Log.info("[scidb] wrapped function in tuple unpacking wrapper for lineage support")
-        except ImportError:
-            pass  # scilineage not available
+        if _has_for_columns:
+            # for_columns reassembles per-column results into one wide output;
+            # per-column lineage objects cannot live in that DataFrame, so
+            # collapse LineageFcnResult returns to raw values (combined-call
+            # lineage — upstream provenance is still recorded at save time from
+            # the input record_ids).
+            fn = _make_raw_value_wrapper(fn)
+            Log.info("[scidb] wrapped function in raw-value wrapper for for_columns")
+        else:
+            try:
+                from scilineage import make_tuple_unpacking_wrapper
+                fn = make_tuple_unpacking_wrapper(fn)
+                Log.info("[scidb] wrapped function in tuple unpacking wrapper for lineage support")
+            except ImportError:
+                pass  # scilineage not available
 
     fn_name = getattr(fn, "__name__", repr(fn))
     Log.info(f"===== for_each({fn_name}) start =====")
@@ -1423,8 +1441,15 @@ def _convert_inputs_for_display(inputs: dict[str, Any]) -> dict[str, Any]:
             # Use _DryRunMerge so scifor prints "merge {param_name}:" and class names
             result[param_name] = _DryRunMerge(var_spec)
         elif isinstance(var_spec, ColumnSelection):
-            dummy = pd.DataFrame(columns=var_spec.columns)
-            result[param_name] = _scifor.ColumnSelection(dummy, var_spec.columns)
+            dummy = pd.DataFrame(columns=var_spec.columns or [])
+            result[param_name] = _scifor.ColumnSelection(
+                dummy, var_spec.columns, iterate=var_spec.iterate
+            )
+        elif isinstance(var_spec, Fixed) and isinstance(var_spec.var_type, ColumnSelection):
+            inner = var_spec.var_type
+            dummy = pd.DataFrame(columns=inner.columns or [])
+            dummy_cs = _scifor.ColumnSelection(dummy, inner.columns, iterate=inner.iterate)
+            result[param_name] = _scifor.Fixed(dummy_cs, **var_spec.fixed_metadata)
         elif isinstance(var_spec, Fixed) and not isinstance(var_spec.var_type, Merge):
             dummy = pd.DataFrame()
             result[param_name] = _scifor.Fixed(dummy, **var_spec.fixed_metadata)
@@ -1682,7 +1707,9 @@ def _load_input(
                 var_spec.var_type, db, where,
                 branch_params_filter=branch_params_filter,
             )
-            return _scifor.ColumnSelection(loaded_df, var_spec.columns)
+            return _scifor.ColumnSelection(
+                loaded_df, var_spec.columns, iterate=var_spec.iterate
+            )
         return PerComboLoader(var_spec)
 
     # PathInput: needs per-combo resolution via load(**combo); wrap in PerComboLoader
@@ -1900,6 +1927,133 @@ def _get_loadable_class_from_spec(spec: Any) -> Any:
     if isinstance(spec, type) or hasattr(spec, 'load'):
         return spec
     return None
+
+
+def _make_raw_value_wrapper(fn: Any) -> Any:
+    """Wrap fn so LineageFcnResult returns collapse to their raw value.
+
+    Used for for_columns iteration: per-column results are reassembled into one
+    wide DataFrame, which cannot hold per-column lineage objects. Upstream
+    provenance for the combined output is still recorded at save time from the
+    input record_ids.
+    """
+    try:
+        from scilineage.lineage import get_raw_value
+        from scilineage.core import LineageFcnResult
+    except Exception:
+        get_raw_value = None
+        LineageFcnResult = ()
+
+    def wrapped(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        if get_raw_value is not None and isinstance(result, LineageFcnResult):
+            return get_raw_value(result)
+        return result
+
+    wrapped.__name__ = getattr(fn, "__name__", "for_columns_fn")
+    return wrapped
+
+
+def _iterate_column_selection(spec: Any) -> "ColumnSelection | None":
+    """Return the iterate-mode ColumnSelection inside a spec (bare or Fixed), else None."""
+    if isinstance(spec, ColumnSelection) and spec.iterate:
+        return spec
+    if isinstance(spec, Fixed) and isinstance(spec.var_type, ColumnSelection) \
+            and spec.var_type.iterate:
+        return spec.var_type
+    return None
+
+
+def _resolve_all_columns(var_type: Any, db: Any | None) -> list[str]:
+    """Resolve ``for_columns()`` (all columns) to the variable's data column names.
+
+    Loads the variable's stored table and returns its columns minus schema keys
+    and internal ``__*`` columns. Used so that ``columns=None`` becomes a
+    concrete list before version keys are computed.
+    """
+    import pandas as pd
+
+    loaded = _load_var_type_as_spread(var_type, db, None)
+    var_name = getattr(var_type, "__name__", repr(var_type))
+    if not isinstance(loaded, pd.DataFrame):
+        raise ValueError(
+            f"for_columns(): could not load '{var_name}' to resolve its columns "
+            f"(no DataFrame returned). Pass an explicit column list instead."
+        )
+    schema_keys = _get_schema_keys(db)
+    cols = [
+        c for c in loaded.columns
+        if c not in schema_keys and not str(c).startswith("__")
+    ]
+    if not cols:
+        raise ValueError(
+            f"for_columns(): no data columns found for '{var_name}' "
+            f"(columns were {list(loaded.columns)})."
+        )
+    return cols
+
+
+def _resolve_for_columns(inputs: dict, db: Any | None) -> dict:
+    """Resolve iterate-mode ColumnSelection inputs (``for_columns``).
+
+    Expands ``columns=None`` to all data columns and validates that every
+    iterate input shares the same column set (zipped by name). Returns a new
+    inputs dict with concrete ColumnSelections; raises ValueError on mismatch.
+    Inputs without any iterate selection are returned unchanged.
+    """
+    iterate_params = {
+        name: cs for name, spec in inputs.items()
+        if (cs := _iterate_column_selection(spec)) is not None
+    }
+    if not iterate_params:
+        return inputs
+
+    Log.info(
+        f"[scidb] Step 1.5: resolving for_columns iteration for input(s) "
+        f"{list(iterate_params)}"
+    )
+
+    resolved_db = db
+    if resolved_db is None:
+        try:
+            from scidb.database import get_database
+            resolved_db = get_database()
+        except Exception:
+            resolved_db = None
+
+    resolved_cols: dict[str, list[str]] = {}
+    for name, cs in iterate_params.items():
+        if cs.columns is None:
+            cols = _resolve_all_columns(cs.var_type, resolved_db)
+            Log.info(
+                f"[scidb] for_columns: resolved '{name}' to all {len(cols)} "
+                f"column(s): {cols}"
+            )
+        else:
+            cols = list(cs.columns)
+        resolved_cols[name] = cols
+
+    # Zip-by-name: every iterate input must cover the same column set.
+    ref_name = next(iter(resolved_cols))
+    ref_set = set(resolved_cols[ref_name])
+    for name, cols in resolved_cols.items():
+        if set(cols) != ref_set:
+            raise ValueError(
+                f"for_columns inputs must iterate over the same columns "
+                f"(zipped by name). '{ref_name}' resolves to "
+                f"{sorted(ref_set)} but '{name}' resolves to {sorted(cols)}."
+            )
+
+    # Rebuild inputs with concrete, iterate-mode ColumnSelections.
+    new_inputs = dict(inputs)
+    for name, cs in iterate_params.items():
+        new_cs = ColumnSelection(cs.var_type, resolved_cols[name], iterate=True)
+        spec = inputs[name]
+        if isinstance(spec, Fixed):
+            new_inputs[name] = Fixed(new_cs, **spec.fixed_metadata)
+        else:
+            new_inputs[name] = new_cs
+    return new_inputs
 
 
 def _load_var_type_as_spread(

@@ -130,6 +130,49 @@ class BaseVariable(metaclass=VariableMeta):
         )
 
     @classmethod
+    def for_columns(cls, columns: list[str] | None = None) -> "ColumnSelection":
+        """
+        Iterate a for_each() function over each column of this table variable.
+
+        Unlike ``MyVar[[...]]`` (which passes the columns to the function as one
+        argument), ``MyVar.for_columns([...])`` runs the function once per
+        column and reassembles the per-column results into a single output
+        variable whose data, per schema combo, is a one-row table with the same
+        column names as the source.
+
+        When multiple inputs use ``for_columns`` (e.g. a ``Fixed`` baseline and
+        a value), they are zipped by column name and must share the same column
+        set.
+
+        Args:
+            columns: Column names to iterate over. ``None`` (the default, via
+                ``MyVar.for_columns()``) iterates over all data columns,
+                resolved at for_each time.
+
+        Returns:
+            A ``ColumnSelection`` in iterate mode.
+
+        Example:
+            for_each(
+                mean_change_from_reference,
+                inputs={
+                    "baseline": Fixed(GaitData.for_columns(), session="BL"),
+                    "value":    GaitData.for_columns(),
+                },
+                outputs=[DeltaGaitData],
+                subject=[], session=[],
+            )
+        """
+        from scidb.column_selection import ColumnSelection
+
+        if columns is not None:
+            if isinstance(columns, str):
+                columns = [columns]
+            else:
+                columns = list(columns)
+        return ColumnSelection(cls, columns, iterate=True)
+
+    @classmethod
     def get_subclass_by_name(cls, name: str) -> type["BaseVariable"] | None:
         """Look up a subclass by its name from the global registry."""
         return cls._all_subclasses.get(name)

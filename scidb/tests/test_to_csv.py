@@ -212,6 +212,24 @@ def test_merge_of_scalars_writes_wide_table(db, tmp_path):
     assert row["_Speed"] == pytest.approx(1.2)
 
 
+def test_merge_with_where_filter(db, tmp_path):
+    """where= is forwarded to every Merge constituent's load()."""
+    ScalarValue.save(0.65, subject=1, trial=1)
+    ScalarValue.save(0.72, subject=1, trial=2)
+    _Speed.save(1.2, subject=1, trial=1)
+    _Speed.save(1.5, subject=1, trial=2)
+    _Side.save("L", subject=1, trial=1)
+    _Side.save("R", subject=1, trial=2)
+
+    out = tmp_path / "merged_filtered.csv"
+    Merge(ScalarValue, _Speed).to_csv(str(out), where=_Side == "L")
+
+    df = _read(out)
+    assert set(df.columns) == {"subject", "trial", "ScalarValue", "_Speed"}
+    assert len(df) == 1
+    assert df.iloc[0]["trial"] == 1
+
+
 def test_merge_broadcasts_coarser_level(db, tmp_path):
     """A subject-level constituent broadcasts across a trial-level one."""
     ScalarValue.save(99.0, subject=1)            # subject-level covariate

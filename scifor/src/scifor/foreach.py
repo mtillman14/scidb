@@ -153,6 +153,41 @@ def for_each(
         else:
             _log_fn("[scifor] Step 6: as_table=False, all data inputs will have schema columns stripped")
 
+    # Step 6.5: Detect iterate-mode ColumnSelection inputs (for_columns).
+    # These fan out column-wise: fn runs once per column and the per-column
+    # results are reassembled into one wide row per combo. All iterate inputs
+    # share a single column axis (zipped by name).
+    iterate_params = [
+        name for name, spec in data_inputs.items()
+        if getattr(_unwrap_column_selection(spec), "iterate", False)
+    ]
+    iterate_columns: list[str] | None = None
+    if iterate_params:
+        col_sets = {
+            name: list(_unwrap_column_selection(data_inputs[name]).columns)
+            for name in iterate_params
+        }
+        iterate_columns = col_sets[iterate_params[0]]
+        for name in iterate_params[1:]:
+            if set(col_sets[name]) != set(iterate_columns):
+                raise ValueError(
+                    f"for_columns inputs must iterate over the same columns "
+                    f"(zipped by name). '{iterate_params[0]}' has "
+                    f"{iterate_columns} but '{name}' has {col_sets[name]}."
+                )
+        if n_outputs != 1:
+            raise ValueError(
+                f"for_columns supports exactly one output; got {n_outputs} "
+                f"({resolved_output_names})."
+            )
+        if distribute_key is not None:
+            raise ValueError("for_columns cannot be combined with distribute=True.")
+        if _log_fn:
+            _log_fn(
+                f"[scifor] Step 6.5: column iteration over {len(iterate_columns)} "
+                f"column(s) {iterate_columns} for input(s) {iterate_params}"
+            )
+
     # Step 7: Build combo list
     if _all_combos is not None:
         all_combos = _all_combos
@@ -274,10 +309,17 @@ def for_each(
 
         # Filter/prepare inputs for this combo
         filtered_inputs = {}
+        iterate_dfs: dict[str, Any] = {}
         filter_failed = False
 
         for param_name, var_spec in data_inputs.items():
             try:
+                if param_name in iterate_params:
+                    # Keep the full per-combo DataFrame; slice per column below.
+                    iterate_dfs[param_name] = _prepare_iterate_df(
+                        var_spec, metadata, schema_keys, where
+                    )
+                    continue
                 wants_table = param_name in as_table_set
                 filtered_inputs[param_name] = _prepare_input(
                     var_spec, metadata, schema_keys, wants_table, where
@@ -311,9 +353,30 @@ def for_each(
                 })
             continue
 
+        # Column drift is a hard error (not a per-combo skip): the iterate
+        # column set is fixed up front, so a combo missing one of those
+        # columns means the stored data is inconsistent and must be surfaced.
+        if iterate_params:
+            for name in iterate_params:
+                missing = [c for c in iterate_columns if c not in iterate_dfs[name].columns]
+                if missing:
+                    raise ValueError(
+                        f"for_columns column drift: column(s) {missing} missing from "
+                        f"input '{name}' for combo {metadata_str}. The iterate column "
+                        f"set {iterate_columns} must be present in every combo."
+                    )
+
         # Call the function
-        all_param_names = list(filtered_inputs.keys()) + list(constant_inputs.keys())
-        msg = f"[run] {metadata_str}: {fn_name}({', '.join(all_param_names)})"
+        all_param_names = (
+            list(filtered_inputs.keys())
+            + list(iterate_params)
+            + list(constant_inputs.keys())
+        )
+        if iterate_params:
+            msg = (f"[run] {metadata_str}: {fn_name} x {len(iterate_columns)} column(s) "
+                   f"({', '.join(all_param_names)})")
+        else:
+            msg = f"[run] {metadata_str}: {fn_name}({', '.join(all_param_names)})"
         print(msg)
         if _log_fn is not None:
             _log_fn(msg)
@@ -323,7 +386,12 @@ def for_each(
 
         try:
             fn_t0 = time.perf_counter()
-            result = _call_fn(fn, filtered_inputs, n_outputs)
+            if iterate_params:
+                result = (_run_column_iteration(
+                    fn, filtered_inputs, iterate_dfs, iterate_columns,
+                ),)
+            else:
+                result = _call_fn(fn, filtered_inputs, n_outputs)
             fn_elapsed = time.perf_counter() - fn_t0
             done_msg = f"[done] {metadata_str}: {fn_name} completed in {fn_elapsed:.3f}s"
             print(done_msg)
@@ -413,6 +481,30 @@ def for_each(
 def _call_fn(fn, kwargs, n_outputs):
     """Call fn with the right number of output captures."""
     return fn(**kwargs)
+
+
+def _run_column_iteration(fn, base_kwargs, iterate_dfs, iterate_columns):
+    """Run fn once per column and reassemble into a single 1xN-wide DataFrame.
+
+    For each column, every iterate input is sliced to that column (as a
+    single-column array, matching single-column ColumnSelection semantics) and
+    passed to fn; non-iterate inputs/constants in ``base_kwargs`` pass through
+    unchanged. The per-column scalar results become the columns of a one-row
+    DataFrame whose column order mirrors ``iterate_columns``.
+    """
+    import pandas as pd
+
+    col_results = {}
+    for col in iterate_columns:
+        call_kwargs = dict(base_kwargs)
+        for name, df in iterate_dfs.items():
+            call_kwargs[name] = df[col].values
+        res = fn(**call_kwargs)
+        if isinstance(res, tuple):
+            # for_columns has a single output; take the first element.
+            res = res[0]
+        col_results[col] = res
+    return pd.DataFrame({col: [col_results[col]] for col in iterate_columns})
 
 
 def _describe_result(val) -> str:
@@ -623,6 +715,29 @@ def _resolve_data_spec(
         df = var_spec
 
     return df, effective_metadata, column_selection
+
+
+def _unwrap_column_selection(var_spec: Any) -> Any:
+    """Return the ColumnSelection inside a spec (bare or Fixed-wrapped), else the spec."""
+    if isinstance(var_spec, Fixed) and isinstance(var_spec.data, ColumnSelection):
+        return var_spec.data
+    return var_spec
+
+
+def _prepare_iterate_df(
+    var_spec: Any, metadata: dict, schema_keys: list[str], where=None
+) -> "pd.DataFrame":
+    """Prepare the per-combo DataFrame for an iterate-mode ColumnSelection.
+
+    Returns the combo-filtered DataFrame retaining the iterate columns so the
+    caller can slice one column at a time. Unlike ``_prepare_input`` it does
+    not collapse to a single column.
+    """
+    df, effective_metadata, _column_selection = _resolve_data_spec(var_spec, metadata)
+    if not _is_per_combo_df(df, schema_keys):
+        return df
+    filtered = _filter_df_for_combo(df, effective_metadata, schema_keys)
+    return _apply_where_filter(filtered, where)
 
 
 def _apply_column_selection(df: "pd.DataFrame", columns: list[str]) -> Any:
