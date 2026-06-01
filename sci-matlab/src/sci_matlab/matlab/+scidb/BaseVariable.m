@@ -31,6 +31,7 @@ classdef BaseVariable < dynamicprops
         lineage_hash string     % Lineage hash (64-char hex), empty if raw
         py_obj                  % Python BaseVariable shadow (internal)
         selected_columns string % Column names to extract on load (empty = all columns)
+        iterate logical = false % for_columns: iterate per-column and reassemble
     end
 
     methods
@@ -49,10 +50,38 @@ classdef BaseVariable < dynamicprops
             obj.metadata = struct();
             obj.branch_params = struct();
             obj.selected_columns = string.empty;
+            obj.iterate = false;
             if nargin >= 1
                 cols = varargin{1};
                 obj.selected_columns = string(cols);
             end
+        end
+
+        % -----------------------------------------------------------------
+        % for_columns
+        % -----------------------------------------------------------------
+        function obj = for_columns(obj, cols)
+        %FOR_COLUMNS  Iterate a for_each function over each column and reassemble.
+        %
+        %   OBJ = TypeClass().for_columns()          % all data columns
+        %   OBJ = TypeClass().for_columns("col")     % one column
+        %   OBJ = TypeClass().for_columns(["a","b"]) % a subset
+        %
+        %   When used as a scidb.for_each() input, the function runs once per
+        %   column (each column passed as a single-column argument) and the
+        %   per-column scalar results are reassembled into ONE output variable
+        %   whose data, per schema combo, is a one-row table (1xN) with the
+        %   same column names as the source. ``for_columns()`` with no argument
+        %   means "all data columns", resolved at for_each time.
+        %
+        %   Multiple for_columns inputs in one call are zipped by column name
+        %   and must resolve to the same column set.
+            if nargin >= 2 && ~isempty(cols)
+                obj.selected_columns = string(cols);
+            else
+                obj.selected_columns = string.empty;
+            end
+            obj.iterate = true;
         end
 
         % -----------------------------------------------------------------

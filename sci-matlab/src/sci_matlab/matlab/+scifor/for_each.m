@@ -237,6 +237,47 @@ function varargout = for_each(fn, inputs, varargin)
         as_table_set = as_table_raw;
     end
 
+    % --- Step 6.5: Detect iterate-mode ColumnSelection inputs (for_columns) ---
+    %   These fan out column-wise: fn runs once per column and the per-column
+    %   results are reassembled into one wide row per combo. All iterate
+    %   inputs share a single column axis (zipped by name).
+    iterate_pos = false(1, n_inputs);
+    for p = 1:n_inputs
+        if data_idx(p)
+            cs = unwrap_column_selection(inputs.(input_names{p}));
+            if ~isempty(cs) && cs.iterate
+                iterate_pos(p) = true;
+            end
+        end
+    end
+    has_iterate = any(iterate_pos);
+    iterate_columns = string.empty;
+    if has_iterate
+        first_set = true;
+        for p = find(iterate_pos)
+            cs = unwrap_column_selection(inputs.(input_names{p}));
+            cols = string(cs.columns);
+            if first_set
+                iterate_columns = cols;
+                first_set = false;
+            elseif ~isequal(sort(cols), sort(iterate_columns))
+                error('scifor:for_each', ...
+                    ['for_columns inputs must iterate over the same columns ' ...
+                     '(zipped by name). ''%s'' has [%s] but ''%s'' has [%s].'], ...
+                    input_names{find(iterate_pos, 1)}, strjoin(iterate_columns, ', '), ...
+                    input_names{p}, strjoin(cols, ', '));
+            end
+        end
+        if n_outputs ~= 1
+            error('scifor:for_each', ...
+                'for_columns supports exactly one output; got %d.', n_outputs);
+        end
+        if strlength(distribute_key) > 0
+            error('scifor:for_each', ...
+                'for_columns cannot be combined with distribute=true.');
+        end
+    end
+
     % --- Build combo list ---
     if ~isempty(opts.all_combos)
         combos = opts.all_combos;
@@ -385,6 +426,7 @@ function varargout = for_each(fn, inputs, varargin)
 
         % --- Filter/prepare inputs for this combo ---
         loaded = cell(1, n_inputs);
+        iterate_tables = cell(1, n_inputs);  % per-combo tables for iterate inputs
         filter_failed = false;
 
         for p = 1:n_inputs
@@ -422,6 +464,30 @@ function varargout = for_each(fn, inputs, varargin)
             end
 
             var_spec = inputs.(input_names{p});
+
+            if iterate_pos(p)
+                % Keep the full per-combo table; slice per column below.
+                try
+                    iterate_tables{p} = prepare_iterate_table( ...
+                        var_spec, metadata, effective_keys, where_filter);
+                catch err
+                    if strcmp(err.identifier, 'scifor:NoData')
+                        skip_msg = sprintf('[skip] %s: no data for %s', ...
+                            metadata_str, input_names{p});
+                    else
+                        skip_msg = sprintf('[skip] %s: failed to filter %s: %s', ...
+                            metadata_str, input_names{p}, err.message);
+                    end
+                    fprintf('%s\n', skip_msg);
+                    if ~isempty(opts.log_fn)
+                        opts.log_fn(skip_msg);
+                    end
+                    filter_failed = true;
+                    break;
+                end
+                continue;
+            end
+
             wants_table = ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set);
 
             try
@@ -448,16 +514,46 @@ function varargout = for_each(fn, inputs, varargin)
             continue;
         end
 
+        % --- Column drift is a hard error (not a per-combo skip): the
+        %     iterate column set is fixed up front, so a combo missing one of
+        %     those columns means the stored data is inconsistent. ---
+        if has_iterate
+            for p = find(iterate_pos)
+                t = iterate_tables{p};
+                missing = setdiff(iterate_columns, ...
+                    string(t.Properties.VariableNames), 'stable');
+                if ~isempty(missing)
+                    error('scifor:for_each', ...
+                        ['for_columns column drift: column(s) [%s] missing from ' ...
+                         'input ''%s'' for combo %s. The iterate column set [%s] ' ...
+                         'must be present in every combo.'], ...
+                        strjoin(missing, ', '), input_names{p}, metadata_str, ...
+                        strjoin(iterate_columns, ', '));
+                end
+            end
+        end
+
         % --- Call the function ---
-        run_msg = sprintf('[run] %s: %s(%s)', metadata_str, fn_name, ...
-            strjoin(string(input_names'), ', '));
+        if has_iterate
+            run_msg = sprintf('[run] %s: %s x %d column(s) (%s)', metadata_str, ...
+                fn_name, numel(iterate_columns), ...
+                strjoin(string(input_names'), ', '));
+        else
+            run_msg = sprintf('[run] %s: %s(%s)', metadata_str, fn_name, ...
+                strjoin(string(input_names'), ', '));
+        end
         fprintf('%s\n', run_msg);
         if ~isempty(opts.log_fn)
             opts.log_fn(run_msg);
         end
 
         try
-            if n_outputs == 0
+            if has_iterate
+                % for_columns: run fn once per column and reassemble into a
+                % single 1xN-wide table (one output, validated at Step 6.5).
+                result = {run_column_iteration(fn, loaded, iterate_pos, ...
+                    iterate_tables, iterate_columns)};
+            elseif n_outputs == 0
                 % Zero-output function (e.g. plotting side-effects only)
                 fn(loaded{:});
                 result = {};
@@ -691,6 +787,83 @@ function result = prepare_input(var_spec, metadata, schema_keys, as_table, where
 
     % Extract data (drop schema cols, extract scalar if 1 row + 1 data col)
     result = extract_data(filtered, schema_keys, as_table);
+end
+
+
+function cs = unwrap_column_selection(var_spec)
+%UNWRAP_COLUMN_SELECTION  Return the scifor.ColumnSelection inside a spec
+%   (bare or Fixed-wrapped), or [] if the spec is not a ColumnSelection.
+    if isa(var_spec, 'scifor.ColumnSelection')
+        cs = var_spec;
+    elseif isa(var_spec, 'scifor.Fixed') && isa(var_spec.data, 'scifor.ColumnSelection')
+        cs = var_spec.data;
+    else
+        cs = [];
+    end
+end
+
+
+function result = prepare_iterate_table(var_spec, metadata, schema_keys, where_filter)
+%PREPARE_ITERATE_TABLE  Prepare the per-combo table for an iterate-mode
+%   ColumnSelection (for_columns). Returns the combo-filtered table retaining
+%   all iterate columns so the caller can slice one column at a time. Unlike
+%   prepare_input it does not collapse to a single column.
+    [tbl, effective_meta, ~] = resolve_data_spec(var_spec, metadata);
+
+    if ~is_per_combo_table(tbl, schema_keys)
+        % Constant table — pass unchanged every iteration
+        result = tbl;
+        return;
+    end
+
+    filtered = filter_table_for_combo(tbl, effective_meta, schema_keys);
+
+    if ~isempty(where_filter)
+        filtered = apply_where_filter(filtered, where_filter);
+    end
+
+    if height(filtered) == 0
+        error('scifor:NoData', 'No data for this combo after filtering.');
+    end
+
+    result = filtered;
+end
+
+
+function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_tables, iterate_columns)
+%RUN_COLUMN_ITERATION  Run fn once per column and reassemble into a single
+%   1xN-wide table. For each column, every iterate input is sliced to that
+%   column's values (matching single-column ColumnSelection semantics) and
+%   passed positionally; non-iterate inputs/constants in BASE_ARGS pass
+%   through unchanged. The per-column scalar results become the columns of a
+%   one-row table whose column order mirrors ITERATE_COLUMNS.
+    n = numel(iterate_columns);
+    col_results = cell(1, n);
+    iter_positions = find(iterate_pos);
+    for ci = 1:n
+        col = char(iterate_columns(ci));
+        call_args = base_args;
+        for pi = 1:numel(iter_positions)
+            p = iter_positions(pi);
+            t = iterate_tables{p};
+            vals = t.(col);
+            if iscell(vals) && isscalar(vals)
+                vals = vals{1};
+            end
+            call_args{p} = vals;
+        end
+        res = fn(call_args{:});
+        % for_columns uses combined-call lineage: per-column LineageFcnResult
+        % objects cannot live in the reassembled wide table, so collapse them
+        % to their raw value (parity with Python's _make_raw_value_wrapper).
+        % Upstream provenance is still recorded at save time from input rids.
+        if isa(res, 'scidb.LineageFcnResult')
+            res = res.data;
+        end
+        col_results{ci} = res;
+    end
+    result_tbl = cell2table(col_results, ...
+        'VariableNames', cellstr(iterate_columns(:)'));
 end
 
 

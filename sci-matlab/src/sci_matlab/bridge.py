@@ -162,9 +162,12 @@ def _reconstruct_input_for_keys(spec):
         return get_surrogate_class(spec["type_name"])
     if kind == "column_selection":
         from scidb.column_selection import ColumnSelection
+        cols = spec["columns"]
+        cols = list(cols) if cols is not None else None
         return ColumnSelection(
             get_surrogate_class(spec["type_name"]),
-            list(spec["columns"]),
+            cols,
+            iterate=bool(spec.get("iterate", False)),
         )
     if kind == "fixed":
         from scidb.fixed import Fixed
@@ -488,6 +491,7 @@ def for_each_prepare(
         PerComboLoader,
         PerComboLoaderMerge,
         _for_each_prepare,
+        _resolve_for_columns,
     )
 
     # Reconstruct Python wrappers from the kind-tagged spec
@@ -495,6 +499,15 @@ def for_each_prepare(
         name: _reconstruct_input_for_keys(spec)
         for name, spec in dict(inputs_spec).items()
     }
+
+    # Normalize db to None or a live DatabaseManager (MATLAB may pass py.None).
+    resolved_db = db if db is not None and not isinstance(db, type(None)) else None
+
+    # Step 1.5: Resolve for_columns (iterate-mode ColumnSelection) inputs.
+    # The Python-only path does this in scidb.for_each before _for_each_prepare;
+    # the MATLAB path calls _for_each_prepare directly, so resolve here so the
+    # concrete column set drives version keys and the per-column MATLAB loop.
+    inputs = _resolve_for_columns(inputs, resolved_db)
 
     # Resolve output class names → surrogate classes
     outputs = [get_surrogate_class(str(n)) for n in list(output_class_names)]
@@ -757,6 +770,7 @@ def for_each_describe_loaded_input(val):
             "kind": "column_selection",
             "inner": for_each_describe_loaded_input(val.data),
             "columns": list(val.columns),
+            "iterate": bool(getattr(val, "iterate", False)),
         }
     if isinstance(val, _SciforMerge):
         return {

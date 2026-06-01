@@ -73,9 +73,27 @@ assembled `1 × N` row — the existing save path does the rest. No bespoke merg
 | scidb | `scidb/column_selection.py` | `iterate` flag, `columns=None`, `to_key`/`__hash__`/`__name__` |
 | scidb | `scidb/variable.py` | `BaseVariable.for_columns()` classmethod |
 | scidb | `scidb/foreach.py` | Step 1.5 `_resolve_for_columns` (None→all columns + zip-by-name validation, **before** version keys); pass `iterate` through `_load_input`; `_make_raw_value_wrapper` (lineage); dry-run display |
+| sci-matlab | `+scifor/ColumnSelection.m` | `iterate` property (3rd ctor arg) |
+| sci-matlab | `+scifor/for_each.m` | Step 6.5 detect iterate inputs + shared column set; `unwrap_column_selection`, `prepare_iterate_table`, `run_column_iteration` (loop fn per column → 1×N table, collapse per-column `scidb.LineageFcnResult` to `.data`); hard drift error |
+| sci-matlab | `+scidb/BaseVariable.m` | `iterate` property + `for_columns(cols)` method |
+| sci-matlab | `+scidb/for_each.m` | `describe_input_for_python` ships `iterate` + `columns=None` for all-columns; `build_scifor_input_from_desc` / `coerce_meta_columns` carry `iterate` |
+| sci-matlab | `bridge.py` | `_reconstruct_input_for_keys` + `for_each_describe_loaded_input` carry `iterate`/None columns; `for_each_prepare` runs `_resolve_for_columns` (the MATLAB path calls `_for_each_prepare` directly, so resolution must happen in the bridge) |
 
 Resolution happens at **Step 1.5** (top of `for_each`) so the concrete column
 set is reflected in version keys (Step 8) and dry-run display (Step 7).
+
+### MATLAB path specifics
+
+MATLAB runs the per-column loop in `+scifor/for_each.m` itself (Python's
+sentinel is never called). The bridge's `for_each_prepare` therefore calls
+`_resolve_for_columns` **before** `_for_each_prepare` so the resolved column
+set drives version keys, exactly mirroring where the Python-only path resolves
+it inside `scidb.for_each`. Each per-combo 1×N table is collected in scifor's
+**nested** mode (`_nest_table_outputs=true`) and saved through the same path a
+table-returning function uses (e.g. `double_table_values`), so the wide table
+spreads into one output variable's data. Lineage parity: `run_column_iteration`
+collapses a per-column `scidb.LineageFcnResult` to its `.data` (the MATLAB
+analogue of `_make_raw_value_wrapper`). Tests: `tests/matlab/scidb/TestForColumns.m`.
 
 ## Lineage
 
@@ -118,9 +136,10 @@ combo (no variant ambiguity), and an identical re-run still hits cache.
   *different* column set fails at save (DuckDB binder error). Use a distinct output
   variable per column set, or keep the set stable. (Changing the *function* over the
   same columns is fine — same physical schema, new version key.)
-- **MATLAB parity is not yet implemented.** The MATLAB path runs its own
-  `+scifor/for_each.m` loop and a `for_each_prepare` bridge, so parity requires
-  porting `_run_column_iteration` + the Step 1.5 resolution there. See task list.
-- **scihist + for_columns** (function pre-wrapped as a lineage wrapper) is not
-  specially handled in v1.
+- **MATLAB parity is implemented** (see the implementation map + "MATLAB path
+  specifics" above). Verify in MATLAB by running `tests/matlab/scidb/TestForColumns.m`.
+- **scihist + for_columns**: on the MATLAB path, a `scidb.LineageFcn` returns a
+  per-column `LineageFcnResult` which `run_column_iteration` collapses to its
+  raw `.data` value (combined-call lineage, parity with Python). Per-column
+  function-hash lineage is intentionally not recorded.
 ```

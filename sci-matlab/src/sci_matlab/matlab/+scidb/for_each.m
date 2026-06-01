@@ -596,7 +596,7 @@ function val = coerce_meta_columns(val, meta_original_classes)
         else
             new_data = val.data;
         end
-        val = scifor.ColumnSelection(new_data, val.columns);
+        val = scifor.ColumnSelection(new_data, val.columns, val.iterate);
         return;
     end
     if isa(val, 'scifor.Merge')
@@ -687,7 +687,11 @@ function val = build_scifor_input_from_desc(desc)
             inner_val = build_scifor_input_from_desc(desc{'inner'});
             cols_py = cell(py.list(desc{'columns'}));
             cols = cellfun(@char, cols_py, 'UniformOutput', false);
-            val = scifor.ColumnSelection(inner_val, cols);
+            iter_flag = false;
+            if py.bool(desc.__contains__('iterate'))
+                iter_flag = logical(desc{'iterate'});
+            end
+            val = scifor.ColumnSelection(inner_val, cols, iter_flag);
 
         case 'merge'
             py_tables = desc{'tables'};
@@ -827,12 +831,22 @@ function spec = describe_input_for_python(val)
             'inner', inner_desc, ...
             'branch_params', bp_py));
 
-    elseif isa(val, 'scidb.BaseVariable') && ~isempty(val.selected_columns)
-        cols = val.selected_columns;
+    elseif isa(val, 'scidb.BaseVariable') && ...
+            (~isempty(val.selected_columns) || (isprop(val, 'iterate') && val.iterate))
         scidb.internal.ensure_registered(class(val));
+        is_iter = isprop(val, 'iterate') && val.iterate;
+        % An iterate (for_columns) selection may have no explicit columns,
+        % meaning "all data columns" — ship None so Python resolves them.
+        if isempty(val.selected_columns)
+            cols_py = py.None;
+        else
+            cols = val.selected_columns;
+            cols_py = py.list(cellstr(cols(:)'));
+        end
         spec = py.dict(pyargs('kind', 'column_selection', ...
             'type_name', class(val), ...
-            'columns', py.list(cellstr(cols(:)'))));
+            'columns', cols_py, ...
+            'iterate', logical(is_iter)));
 
     elseif isa(val, 'scidb.BaseVariable')
         scidb.internal.ensure_registered(class(val));
