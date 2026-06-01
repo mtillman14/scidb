@@ -42,6 +42,22 @@ class ColumnSelection:
         """Load from the underlying var_type, then apply column selection."""
         return self.var_type.load(**metadata)
 
+    def to_csv(self, filename: str, **kwargs) -> None:
+        """Export the selected column(s) to a CSV file in flat table format.
+
+        Writes one row per schema_id with the selected columns as value
+        columns. The underlying variable must be a single-row table per
+        schema_id. ``filename`` must end with ``.csv``. ``kwargs`` mirror
+        ``load()`` (``where=``, ``version=``, ``db=``, metadata).
+
+        Example:
+            GaitData["Speed"].to_csv("speed.csv", subject=1)
+            GaitData[["Speed", "Cadence"]].to_csv("gait.csv", subject=1)
+        """
+        from scidb.csv_export import export_csv
+
+        export_csv(self, filename, **kwargs)
+
     # --- Comparison operators that produce ColumnFilter objects ---
 
     def __eq__(self, other):

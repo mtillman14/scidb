@@ -39,6 +39,24 @@ class Merge:
                 raise TypeError("Cannot nest Merge inside another Merge.")
         self.var_specs = var_specs
 
+    def to_csv(self, filename: str, **kwargs) -> None:
+        """Export the merged variables to a CSV file in flat table format.
+
+        Each constituent is loaded independently and inner-joined on its shared
+        schema keys, producing one row per schema_id with one value column per
+        constituent (scalar variables) or per table column. Every constituent
+        must reduce to one row per schema_id. ``filename`` must end with
+        ``.csv``. ``kwargs`` mirror ``load()`` (``where=``, ``version=``,
+        ``db=``, metadata).
+
+        Example:
+            # subject,trial,StepLength,Speed
+            Merge(StepLength, Speed).to_csv("gait.csv", subject=[1, 2])
+        """
+        from .csv_export import export_csv
+
+        export_csv(self, filename, **kwargs)
+
     def to_key(self) -> str:
         """Return a canonical string for use as a version key."""
         parts = []

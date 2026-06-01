@@ -531,6 +531,74 @@ classdef BaseVariable < dynamicprops
         end
 
         % -----------------------------------------------------------------
+        % to_csv
+        % -----------------------------------------------------------------
+        function to_csv(obj, filename, varargin)
+        %TO_CSV  Export this variable to a CSV file in flat table format.
+        %
+        %   TypeClass().to_csv(FILENAME, Name, Value, ...)
+        %
+        %   Loads every record matching the metadata filters and writes one
+        %   row per unique schema_id: one column per schema key (e.g.
+        %   subject, trial) plus a single value column named after this
+        %   variable type.  A trial-level variable produces one row per
+        %   subject/trial combination; a subject-level variable produces one
+        %   row per subject (no trial column).
+        %
+        %   Only SCALAR variables are supported (one value per schema_id).
+        %   If any record holds a vector (DOUBLE[]/DOUBLE[][]), a multi-row
+        %   table, or any other non-scalar value, an error is raised.
+        %
+        %   Arguments:
+        %       FILENAME - Required output path.  Must end with '.csv' or an
+        %                  error is raised.
+        %
+        %   A single-row table variable exports one column per table column;
+        %   the constraint is one row per schema_id, not one column. Column
+        %   selection is honored: GaitData("Speed").to_csv(...) exports only
+        %   the selected column(s).
+        %
+        %   Name-Value Arguments (forwarded to load(), so every load()
+        %   option is supported):
+        %       version - "latest" (default), "all", or a specific record_id.
+        %       where   - A scidb.Filter (e.g. Side() == "L").
+        %       db      - Optional DatabaseManager instead of the global one.
+        %       Any other name-value pairs are metadata filters (schema keys),
+        %       or branch-param keys for scidb.Variant selection.
+        %
+        %   Example:
+        %       StepLength().to_csv("step_lengths.csv", subject=1);
+        %       StepLength().to_csv("clean.csv", where=Side() == "L", low_hz=20);
+        %       GaitData("Speed").to_csv("speed.csv", subject=1);
+
+            type_name = class(obj);
+            py_class = scidb.internal.ensure_registered(type_name);
+
+            scidb.internal.validate_csv_filename(filename);
+
+            [metadata_args, version, where, db_val] = ...
+                scidb.internal.split_csv_args(varargin{:});
+            py_kwargs = scidb.internal.build_csv_kwargs( ...
+                metadata_args, version, where, db_val);
+
+            % Column selection (e.g. GaitData("Speed")) maps onto the Python
+            % ColumnSelection wrapper, which has its own to_csv. With no
+            % selection we call the classmethod on the class directly.
+            if isempty(obj.selected_columns)
+                py_spec = py_class;
+            else
+                cols = cellstr(obj.selected_columns(:)');
+                py_spec = py.scidb.column_selection.ColumnSelection( ...
+                    py_class, py.list(cols));
+            end
+
+            scidb.Log.info('[to_csv] %s -> %s (version=%s)', ...
+                type_name, string(filename), version);
+
+            py_spec.to_csv(char(filename), pyargs(py_kwargs{:}));
+        end
+
+        % -----------------------------------------------------------------
         % list_versions
         % -----------------------------------------------------------------
         function versions = list_versions(obj, varargin)

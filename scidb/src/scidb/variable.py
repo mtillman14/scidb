@@ -614,22 +614,55 @@ class BaseVariable(metaclass=VariableMeta):
             rows.append(row)
         return pd.DataFrame(rows)
 
-    def to_csv(self, path: str) -> None:
+    @classmethod
+    def to_csv(cls, filename: str, **kwargs) -> None:
         """
-        Export this variable's data to a CSV file.
+        Export this variable to a CSV file in flat table format.
 
-        Exports the DataFrame representation (from to_db()) to CSV format
-        for viewing in external tools.
+        Loads every record matching ``kwargs`` and writes one row per unique
+        schema_id: one column per schema key (e.g. ``subject``, ``trial``)
+        plus a single value column named after this variable class. A
+        trial-level variable produces one row per subject/trial combination;
+        a subject-level variable produces one row per subject (no ``trial``
+        column).
+
+        The constraint is **one row per schema_id**: a record's data may have
+        multiple *columns* (a single-row table writes one column per table
+        column), but not multiple *rows*. A record holding a multi-row table,
+        or a bare vector (``DOUBLE[]`` / ``DOUBLE[][]``), raises ``ValueError``.
+
+        ``ColumnSelection`` (``MyVar["col"].to_csv(...)``) and ``Merge``
+        (``Merge(A, B).to_csv(...)``) are also exportable — see their own
+        ``to_csv`` methods.
 
         Args:
-            path: Output file path (will be overwritten if exists)
+            filename: Required output path. Must end with ``.csv`` or a
+                ``ValueError`` is raised.
+            **kwargs: Forwarded verbatim to ``load()``, so every ``load()``
+                option is supported:
+                - ``where=`` for ``scidb`` Filter objects (``ColumnFilter`` /
+                  ``VariableFilter``, composed with ``&`` / ``|`` / ``~``),
+                - branch-param keyword args for ``Variant`` selection (non-schema
+                  keys are routed to the loader's ``branch_params_filter``),
+                - ``version=``, ``db=``, and schema-key metadata filters.
+                ``as_df`` and ``introspect`` are ignored — ``to_csv`` controls
+                its own output shape.
+
+        Raises:
+            ValueError: If ``filename`` does not end with ``.csv``, or if any
+                matched record holds non-scalar data.
+            NotFoundError: If no records match (propagated from ``load()``).
 
         Example:
-            var = TimeSeries.load(subject=1)
-            var.to_csv("subject1_data.csv")
+            # All trials for subject 1 -> subject,trial,StepLength columns
+            StepLength.to_csv("step_lengths.csv", subject=1)
+
+            # With a value filter and a pinned variant
+            StepLength.to_csv("clean.csv", where=StepLength != 0, low_hz=20)
         """
-        df = self.to_db()
-        df.to_csv(path, index=False)
+        from .csv_export import export_csv
+
+        export_csv(cls, filename, **kwargs)
 
     def __repr__(self) -> str:
         """Return a string representation of this variable."""

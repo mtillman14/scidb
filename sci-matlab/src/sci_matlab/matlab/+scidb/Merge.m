@@ -73,6 +73,46 @@ classdef Merge
             obj.var_specs = varargin;
         end
 
+        function to_csv(obj, filename, varargin)
+        %TO_CSV  Export the merged variables to a CSV file in flat table format.
+        %
+        %   scidb.Merge(VarA(), VarB(), ...).to_csv(FILENAME, Name, Value, ...)
+        %
+        %   Each constituent is loaded independently and inner-joined on its
+        %   shared schema keys, producing one row per schema_id with one value
+        %   column per scalar constituent (or per table column). Every
+        %   constituent must reduce to one row per schema_id; multi-row tables
+        %   and bare vectors raise an error.
+        %
+        %   FILENAME must end with '.csv'. Name-Value args (version, where, db,
+        %   metadata, branch-params) are forwarded to load() exactly as for
+        %   BaseVariable.to_csv.
+        %
+        %   Example:
+        %       % subject,trial,StepLength,Speed
+        %       scidb.Merge(StepLength(), Speed()).to_csv("gait.csv", subject=1);
+
+            scidb.internal.validate_csv_filename(filename);
+
+            [metadata_args, version, where, db_val] = ...
+                scidb.internal.split_csv_args(varargin{:});
+            py_kwargs = scidb.internal.build_csv_kwargs( ...
+                metadata_args, version, where, db_val);
+
+            % Translate each MATLAB constituent to its Python spec object and
+            % build the Python Merge, which owns the load/join/validate/write.
+            py_specs = cell(1, numel(obj.var_specs));
+            for i = 1:numel(obj.var_specs)
+                py_specs{i} = constituent_to_py(obj.var_specs{i});
+            end
+            py_merge = py.scidb.merge.Merge(py_specs{:});
+
+            scidb.Log.info('[to_csv] Merge(%d) -> %s (version=%s)', ...
+                numel(obj.var_specs), string(filename), version);
+
+            py_merge.to_csv(char(filename), pyargs(py_kwargs{:}));
+        end
+
         function disp(obj)
         %DISP  Display the Merge wrapper.
             parts = cell(1, numel(obj.var_specs));
@@ -112,4 +152,56 @@ classdef Merge
             fprintf('  scidb.Merge(%s)\n', strjoin(parts, ', '));
         end
     end
+end
+
+
+% =========================================================================
+% Local helpers
+% =========================================================================
+
+function py_obj = constituent_to_py(spec)
+%CONSTITUENT_TO_PY  Translate a MATLAB Merge constituent to its Python object.
+%   Handles BaseVariable instances (with optional column selection),
+%   scidb.Fixed, and scidb.Variant wrappers (recursively).
+
+    if isa(spec, 'scidb.Fixed')
+        inner = constituent_to_py(spec.var_type);
+        kv = struct_to_pykwargs(spec.fixed_metadata);
+        py_obj = py.scidb.fixed.Fixed(inner, pyargs(kv{:}));
+
+    elseif isa(spec, 'scidb.Variant')
+        inner = constituent_to_py(spec.var_type);
+        kv = struct_to_pykwargs(spec.branch_params);
+        py_obj = py.scidb.variant.Variant(inner, pyargs(kv{:}));
+
+    elseif isa(spec, 'scidb.BaseVariable')
+        py_class = scidb.internal.ensure_registered(class(spec));
+        if isempty(spec.selected_columns)
+            py_obj = py_class;
+        else
+            cols = cellstr(spec.selected_columns(:)');
+            py_obj = py.scidb.column_selection.ColumnSelection( ...
+                py_class, py.list(cols));
+        end
+
+    else
+        error('scidb:Merge:UnknownConstituent', ...
+            'Cannot export Merge constituent of class "%s" to CSV.', class(spec));
+    end
+end
+
+
+function kv = struct_to_pykwargs(s)
+%STRUCT_TO_PYKWARGS  Flatten a struct to a Python-ready name-value cell.
+    if isempty(s) || isempty(fieldnames(s))
+        kv = {};
+        return;
+    end
+    fnames = fieldnames(s);
+    nv = cell(1, 2 * numel(fnames));
+    for i = 1:numel(fnames)
+        nv{2*i - 1} = fnames{i};
+        nv{2*i} = s.(fnames{i});
+    end
+    kv = scidb.internal.metadata_to_pykwargs(nv{:});
 end
