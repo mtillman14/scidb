@@ -130,7 +130,7 @@ class BaseVariable(metaclass=VariableMeta):
         )
 
     @classmethod
-    def for_columns(cls, columns: list[str] | None = None) -> "ColumnSelection":
+    def for_columns(cls, columns: "list[str] | None" = []) -> "ColumnSelection":
         """
         Iterate a for_each() function over each column of this table variable.
 
@@ -145,9 +145,11 @@ class BaseVariable(metaclass=VariableMeta):
         set.
 
         Args:
-            columns: Column names to iterate over. ``None`` (the default, via
-                ``MyVar.for_columns()``) iterates over all data columns,
-                resolved at for_each time.
+            columns: Column names to iterate over. An empty list ``[]`` (the
+                default, via ``MyVar.for_columns()``) iterates over all data
+                columns, resolved at for_each time — mirroring how an empty
+                iteration list (``subject=[]``) means "all values from the
+                data". ``None`` is accepted as an alias for ``[]``.
 
         Returns:
             A ``ColumnSelection`` in iterate mode.
@@ -165,11 +167,9 @@ class BaseVariable(metaclass=VariableMeta):
         """
         from scidb.column_selection import ColumnSelection
 
-        if columns is not None:
-            if isinstance(columns, str):
-                columns = [columns]
-            else:
-                columns = list(columns)
+        if isinstance(columns, str):
+            columns = [columns]
+        # ColumnSelection normalizes the empty/None all-columns sentinel.
         return ColumnSelection(cls, columns, iterate=True)
 
     @classmethod

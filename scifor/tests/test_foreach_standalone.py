@@ -500,6 +500,330 @@ def test_as_table_false_with_column_selection_returns_array():
 
 
 # ---------------------------------------------------------------------------
+# iterate=True (for_columns) + as_table
+# ---------------------------------------------------------------------------
+
+def test_iterate_default_passes_bare_arrays():
+    """iterate=True without as_table feeds each column as a bare numpy array."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(v):
+        received.append(v)
+        return float(np.max(v))
+
+    result = for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True)},
+        subject=[1, 2],
+    )
+    # Each per-column call gets a bare numpy array
+    for r in received:
+        assert isinstance(r, np.ndarray), f"Expected ndarray, got {type(r)}"
+    # Reassembled 1xN per combo: max of a/b per subject
+    assert list(result["a"]) == [2.0, 4.0]
+    assert list(result["b"]) == [20.0, 40.0]
+
+
+def test_iterate_as_table_passes_dataframe_with_schema_cols():
+    """iterate=True + as_table feeds a DataFrame with all schema cols + the one current column."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+        "noise": [0.1, 0.2, 0.3, 0.4],
+    })
+    received = []
+
+    def fn(v):
+        received.append(v)
+        # v is a DataFrame; the single non-schema column is the current one
+        data_col = [c for c in v.columns if c != "subject"][0]
+        return float(v[data_col].max())
+
+    result = for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True)},
+        as_table=True,
+        subject=[1, 2],
+    )
+    # Each per-column call gets a DataFrame
+    for r in received:
+        assert isinstance(r, pd.DataFrame), f"Expected DataFrame, got {type(r)}"
+        # schema column present
+        assert "subject" in r.columns
+        # exactly one non-schema column (the current iterated column)
+        non_schema = [c for c in r.columns if c != "subject"]
+        assert len(non_schema) == 1
+        assert non_schema[0] in ("a", "b")
+        # non-selected data columns dropped
+        assert "noise" not in r.columns
+    # Reassembled output matches the bare-array case
+    assert list(result["a"]) == [2.0, 4.0]
+    assert list(result["b"]) == [20.0, 40.0]
+
+
+def test_iterate_as_table_enables_argmax_label_lookup():
+    """With a label column declared as a schema key, as_table iterate can map argmax to that label."""
+    # intervention is a schema key but is NOT iterated (only subject is)
+    set_schema(["subject", "intervention"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 1, 2, 2, 2],
+        "intervention": [1, 2, 3, 1, 2, 3],
+        "StepLength": [0.5, 0.9, 0.2, 0.1, 0.4, 0.8],
+        "Cadence": [10.0, 5.0, 8.0, 7.0, 9.0, 3.0],
+    })
+    received_cols = []
+
+    def best_intervention(v):
+        data_col = [c for c in v.columns if c not in ("subject", "intervention")][0]
+        received_cols.append(data_col)
+        return v.loc[v[data_col].idxmax(), "intervention"]
+
+    result = for_each(
+        best_intervention,
+        inputs={"v": ColumnSelection(df, ["StepLength", "Cadence"], iterate=True)},
+        as_table=True,
+        subject=[1, 2],
+    )
+    # subject 1: StepLength best at intervention 2; Cadence best at intervention 1
+    # subject 2: StepLength best at intervention 3; Cadence best at intervention 2
+    assert list(result["StepLength"]) == [2, 3]
+    assert list(result["Cadence"]) == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# iterate=True (for_columns) multi-output-per-column reassembly
+# ---------------------------------------------------------------------------
+
+def test_iterate_dict_return_expands_to_suffixed_columns():
+    """A dict return per column expands to <col>__<key> columns."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+
+    def stats(v):
+        return {"min": float(np.min(v)), "max": float(np.max(v))}
+
+    result = for_each(
+        stats,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True)},
+        subject=[1, 2],
+    )
+    # Column order: a's keys, then b's keys
+    assert list(result.columns) == ["subject", "a__min", "a__max", "b__min", "b__max"]
+    # subject 1: a=[1,2], b=[10,20]; subject 2: a=[3,4], b=[30,40]
+    assert list(result["a__min"]) == [1.0, 3.0]
+    assert list(result["a__max"]) == [2.0, 4.0]
+    assert list(result["b__min"]) == [10.0, 30.0]
+    assert list(result["b__max"]) == [20.0, 40.0]
+
+
+def test_iterate_varying_output_counts_per_column():
+    """Different source columns may return different numbers/names of outputs."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+
+    def stats(v):
+        # 'a' gets just max; 'b' gets max + min — keyed off magnitude
+        if np.max(v) < 5:
+            return {"max": float(np.max(v))}
+        return {"max": float(np.max(v)), "min": float(np.min(v))}
+
+    result = for_each(
+        stats,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True)},
+        subject=[1, 2],
+    )
+    # a -> one column; b -> two columns
+    assert list(result.columns) == ["subject", "a__max", "b__max", "b__min"]
+    assert list(result["a__max"]) == [2.0, 4.0]
+    assert list(result["b__max"]) == [20.0, 40.0]
+    assert list(result["b__min"]) == [10.0, 30.0]
+
+
+def test_iterate_series_return_expands_like_dict():
+    """A pandas Series return expands by index label."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 1, 2, 2], "a": [1.0, 2.0, 3.0, 4.0]})
+
+    def stats(v):
+        return pd.Series({"sum": float(np.sum(v)), "n": float(len(v))})
+
+    result = for_each(
+        stats,
+        inputs={"v": ColumnSelection(df, ["a"], iterate=True)},
+        subject=[1, 2],
+    )
+    assert list(result.columns) == ["subject", "a__sum", "a__n"]
+    assert list(result["a__sum"]) == [3.0, 7.0]
+    assert list(result["a__n"]) == [2.0, 2.0]
+
+
+def test_iterate_scalar_return_still_unsuffixed():
+    """Back-compat: a scalar return keeps the source column name (no suffix)."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "a": [5.0, 6.0], "b": [7.0, 8.0]})
+
+    result = for_each(
+        lambda v: float(np.max(v)),
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True)},
+        subject=[1, 2],
+    )
+    assert list(result.columns) == ["subject", "a", "b"]
+    assert list(result["a"]) == [5.0, 6.0]
+
+
+def test_iterate_multi_output_with_as_table_value_and_label():
+    """The motivating case: per column, return both the max value and the
+    identity of the best label (a non-iterated schema key)."""
+    set_schema(["subject", "intervention"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 1, 2, 2, 2],
+        "intervention": [1, 2, 3, 1, 2, 3],
+        "StepLength": [0.5, 0.9, 0.2, 0.1, 0.4, 0.8],
+        "Cadence": [10.0, 5.0, 8.0, 7.0, 9.0, 3.0],
+    })
+
+    def best(v):
+        col = [c for c in v.columns if c not in ("subject", "intervention")][0]
+        idx = v[col].idxmax()
+        return {"value": float(v.loc[idx, col]), "best": int(v.loc[idx, "intervention"])}
+
+    result = for_each(
+        best,
+        inputs={"v": ColumnSelection(df, ["StepLength", "Cadence"], iterate=True)},
+        as_table=True,
+        subject=[1, 2],
+    )
+    assert list(result["StepLength__value"]) == [0.9, 0.8]
+    assert list(result["StepLength__best"]) == [2, 3]
+    assert list(result["Cadence__value"]) == [10.0, 9.0]
+    assert list(result["Cadence__best"]) == [1, 2]
+
+
+def test_iterate_duplicate_output_column_raises():
+    """Colliding produced output names raise a clear error.
+
+    Column 'a' returning key 'b' -> 'a__b'; column 'a__b' returning a scalar
+    -> 'a__b'. The two collide.
+    """
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 1], "a": [1.0, 2.0], "a__b": [3.0, 4.0]})
+
+    def stats(v):
+        col = [c for c in v.columns if c != "subject"][0]
+        if col == "a":
+            return {"b": float(np.max(v["a"]))}   # -> "a__b"
+        return float(np.max(v["a__b"]))           # scalar -> "a__b" (collision)
+
+    with pytest.raises(ValueError, match="duplicate output column"):
+        for_each(
+            stats,
+            inputs={"v": ColumnSelection(df, ["a", "a__b"], iterate=True)},
+            as_table=True,
+            subject=[1],
+        )
+
+
+def test_iterate_multirow_dataframe_return_raises():
+    """A multi-row DataFrame return is rejected (must collapse to one row)."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 1], "a": [1.0, 2.0]})
+
+    def bad(v):
+        return pd.DataFrame({"x": [1.0, 2.0]})
+
+    with pytest.raises(ValueError, match="row DataFrame"):
+        for_each(
+            bad,
+            inputs={"v": ColumnSelection(df, ["a"], iterate=True)},
+            subject=[1],
+        )
+
+
+# ---------------------------------------------------------------------------
+# iterate=True (for_columns) all-columns resolution (empty [] = all)
+# ---------------------------------------------------------------------------
+
+def test_iterate_all_columns_resolves_from_dataframe():
+    """for_columns with no/empty columns iterates over all non-schema columns."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    result = for_each(
+        lambda v: float(np.max(v)),
+        inputs={"v": ColumnSelection(df, iterate=True)},  # no columns -> all
+        subject=[1, 2],
+    )
+    # Schema key 'subject' excluded; iterates a, b
+    assert list(result.columns) == ["subject", "a", "b"]
+    assert list(result["a"]) == [2.0, 4.0]
+    assert list(result["b"]) == [20.0, 40.0]
+
+
+def test_iterate_empty_list_equivalent_to_all():
+    """An explicit empty list [] is identical to the no-arg all-columns case."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "a": [5.0, 6.0], "b": [7.0, 8.0]})
+    result = for_each(
+        lambda v: float(np.max(v)),
+        inputs={"v": ColumnSelection(df, [], iterate=True)},
+        subject=[1, 2],
+    )
+    assert list(result.columns) == ["subject", "a", "b"]
+
+
+def test_iterate_none_alias_for_all():
+    """None is accepted as a backward-compatible alias for the [] sentinel."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "a": [5.0, 6.0]})
+    result = for_each(
+        lambda v: float(np.max(v)),
+        inputs={"v": ColumnSelection(df, None, iterate=True)},
+        subject=[1, 2],
+    )
+    assert list(result.columns) == ["subject", "a"]
+
+
+def test_noniterate_all_columns_passes_all_data_cols():
+    """Non-iterate ColumnSelection with empty columns passes all data columns
+    (schema keys excluded) as a sub-DataFrame."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(data):
+        received.append(data)
+        return 0
+
+    for_each(fn, inputs={"data": ColumnSelection(df)}, subject=[1, 2])
+    for r in received:
+        assert isinstance(r, pd.DataFrame)
+        assert list(r.columns) == ["a", "b"]  # schema col excluded
+
+
+# ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
 

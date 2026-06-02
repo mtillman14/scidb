@@ -23,19 +23,29 @@ class ColumnSelection:
     column (as a single-column array) to fn in turn and reassembles the
     per-column results into one wide row. All iterate selections in a single
     for_each() call must share the same column set (zipped by name).
+
+    An **empty** ``columns`` (the default, e.g. ``ColumnSelection(df)``) means
+    "all data columns" — every column that is not a schema key — resolved at
+    for_each time from the DataFrame. This mirrors how an empty iteration list
+    (``subject=[]``) means "all values from the data". (``None`` is accepted as
+    an alias for the empty/all sentinel for backward compatibility.)
     """
 
-    def __init__(self, data: Any, columns: list[str], iterate: bool = False):
+    def __init__(self, data: Any, columns: "list[str] | None" = [], iterate: bool = False):
         """
         Args:
             data: A pandas DataFrame.
-            columns: List of column names to extract after filtering.
+            columns: List of column names to extract after filtering. An empty
+                list ``[]`` (the default) means "all data columns", resolved at
+                for_each time. ``None`` is accepted as an alias for ``[]``.
             iterate: If True, iterate over the columns (one fn call each) and
                 reassemble; if False (default), pass the column(s) as a single
                 argument.
         """
         self.data = data
-        self.columns = columns
+        # Normalize the all-columns sentinel to an empty list (copying any
+        # provided list so a shared default object is never mutated).
+        self.columns = list(columns) if columns else []
         self.iterate = iterate
 
     @property
@@ -43,6 +53,8 @@ class ColumnSelection:
         """Return a display name for format_inputs and error messages."""
         data_name = _display_name(self.data)
         suffix = ", iterate" if self.iterate else ""
+        if not self.columns:
+            return f'{data_name}[<all columns>{suffix}]'
         if len(self.columns) == 1 and not self.iterate:
             return f'{data_name}["{self.columns[0]}"]'
         cols = ", ".join(f'"{c}"' for c in self.columns)

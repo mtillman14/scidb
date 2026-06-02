@@ -117,7 +117,7 @@ def _expand_data(value, var_name, columns):
     # Single-row (multi-column allowed) table variable.
     if isinstance(value, pd.DataFrame):
         df = value
-        if columns is not None:
+        if columns:
             missing = [c for c in columns if c not in df.columns]
             if missing:
                 raise ValueError(
@@ -145,7 +145,7 @@ def _expand_data(value, var_name, columns):
 
     # Plain scalar variable.
     if is_scalar_value(value):
-        if columns is not None:
+        if columns:
             raise ValueError(
                 f"Column selection {columns} was given, but {var_name} is a scalar "
                 f"variable with no columns to select."

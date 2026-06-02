@@ -45,7 +45,12 @@
       "Bash(sed -n '116,135p' scidb/src/scidb/database.py)",
       "Bash(sed -n '1455,1525p' scidb/src/scidb/database.py)",
       "Bash(awk 'NR>=2555 && NR<=2820 && \\(/where/ || /resolve/ || /schema_id/ || /def /\\)' scidb/src/scidb/database.py)",
-      "Bash(awk -F: '$1>=2900 && $1<=3100')"
+      "Bash(awk -F: '$1>=2900 && $1<=3100')",
+      "Bash(sed -n '15,27p' /workspace/scifor/src/scifor/foreach.py)",
+      "Bash(sed -n '183,210p' /workspace/scidb/src/scidb/foreach.py)",
+      "Bash(sed -n '2220,2228p;2270,2278p' /workspace/scidb/src/scidb/foreach.py)",
+      "Bash(sed -n '115,123p;144,150p' /workspace/scidb/src/scidb/csv_export.py)",
+      "Bash(sed -n '1957,1965p' /workspace/scidb/src/scidb/foreach.py)"
     ]
   }
 }

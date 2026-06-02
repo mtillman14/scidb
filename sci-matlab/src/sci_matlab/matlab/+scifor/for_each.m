@@ -257,6 +257,18 @@ function varargout = for_each(fn, inputs, varargin)
         for p = find(iterate_pos)
             cs = unwrap_column_selection(inputs.(input_names{p}));
             cols = string(cs.columns);
+            if isempty(cols)
+                % Empty selection (the all-columns sentinel) -> resolve to
+                % every data column of the underlying table.
+                cols = all_data_columns(cs.data, schema_keys);
+                if isempty(cols)
+                    error('scifor:for_each', ...
+                        ['for_columns(): no data columns found to iterate over ' ...
+                         '(columns: [%s], schema keys: [%s]).'], ...
+                        strjoin(string(cs.data.Properties.VariableNames), ', '), ...
+                        strjoin(schema_keys, ', '));
+                end
+            end
             if first_set
                 iterate_columns = cols;
                 first_set = false;
@@ -552,7 +564,8 @@ function varargout = for_each(fn, inputs, varargin)
                 % for_columns: run fn once per column and reassemble into a
                 % single 1xN-wide table (one output, validated at Step 6.5).
                 result = {run_column_iteration(fn, loaded, iterate_pos, ...
-                    iterate_tables, iterate_columns)};
+                    iterate_tables, iterate_columns, schema_keys, ...
+                    as_table_set, input_names)};
             elseif n_outputs == 0
                 % Zero-output function (e.g. plotting side-effects only)
                 fn(loaded{:});
@@ -577,6 +590,12 @@ function varargout = for_each(fn, inputs, varargin)
                 result = {fn(loaded{:})};
             end
         catch err
+            % Structural for_columns errors are deterministic across combos and
+            % indicate a return-contract bug — surface immediately, don't skip.
+            if strcmp(err.identifier, 'scifor:for_each:forColumnsDuplicate') || ...
+               strcmp(err.identifier, 'scifor:for_each:forColumnsBadReturn')
+                rethrow(err);
+            end
             skip_msg = sprintf('[skip] %s: %s raised: %s', ...
                 metadata_str, fn_name, err.message);
             fprintf('%s\n', skip_msg);
@@ -830,22 +849,43 @@ function result = prepare_iterate_table(var_spec, metadata, schema_keys, where_f
 end
 
 
-function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_tables, iterate_columns)
+function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_tables, iterate_columns, schema_keys, as_table_set, input_names)
 %RUN_COLUMN_ITERATION  Run fn once per column and reassemble into a single
-%   1xN-wide table. For each column, every iterate input is sliced to that
-%   column's values (matching single-column ColumnSelection semantics) and
-%   passed positionally; non-iterate inputs/constants in BASE_ARGS pass
-%   through unchanged. The per-column scalar results become the columns of a
-%   one-row table whose column order mirrors ITERATE_COLUMNS.
+%   one-row wide table. For each column, every iterate input is sliced to that
+%   column and passed positionally; non-iterate inputs/constants in BASE_ARGS
+%   pass through unchanged. An iterate input named in AS_TABLE_SET is sliced to
+%   a table holding all schema key columns plus that one column (mirroring the
+%   non-iterate ColumnSelection as_table behavior in prepare_input); otherwise
+%   it is sliced to that column's bare values (the default).
+%
+%   The per-column return is expanded into output columns by
+%   EXPAND_COLUMN_RESULT: a scalar yields one column named after the source
+%   column; a struct / 1-row table yields one column per field/variable, named
+%   "<col><sep><key>". Different source columns may return different numbers
+%   (and names) of outputs — the reassembled row is the ordered concatenation
+%   of every produced column, so a single for_each call supports an arbitrary,
+%   per-column-varying number of outputs.
+    sep = '__';
     n = numel(iterate_columns);
-    col_results = cell(1, n);
     iter_positions = find(iterate_pos);
+    out_names = {};
+    out_values = {};
     for ci = 1:n
         col = char(iterate_columns(ci));
         call_args = base_args;
         for pi = 1:numel(iter_positions)
             p = iter_positions(pi);
             t = iterate_tables{p};
+            wants_table = ~isempty(as_table_set) && ...
+                ismember(string(input_names{p}), as_table_set);
+            if wants_table
+                % Keep all schema key columns alongside the current column.
+                schema_cols = intersect( ...
+                    string(t.Properties.VariableNames), schema_keys, 'stable');
+                keep_cols = [schema_cols(:)', string(col)];
+                call_args{p} = t(:, cellstr(keep_cols));
+                continue
+            end
             vals = t.(col);
             if iscell(vals) && isscalar(vals)
                 vals = vals{1};
@@ -860,10 +900,70 @@ function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_t
         if isa(res, 'scidb.LineageFcnResult')
             res = res.data;
         end
-        col_results{ci} = res;
+        [names_i, values_i] = expand_column_result(col, res, sep);
+        for k = 1:numel(names_i)
+            if any(strcmp(names_i{k}, out_names))
+                error('scifor:for_each:forColumnsDuplicate', ...
+                    ['for_columns produced a duplicate output column ''%s''. ' ...
+                     'Per-column output keys must be unique after prefixing ' ...
+                     'with the source column name (separator ''%s'').'], ...
+                    names_i{k}, sep);
+            end
+            out_names{end+1} = names_i{k}; %#ok<AGROW>
+            out_values{end+1} = values_i{k}; %#ok<AGROW>
+        end
     end
-    result_tbl = cell2table(col_results, ...
-        'VariableNames', cellstr(iterate_columns(:)'));
+    result_tbl = cell2table(out_values, 'VariableNames', out_names);
+end
+
+
+function cols = all_data_columns(tbl, schema_keys)
+%ALL_DATA_COLUMNS  A table's data columns: everything that is not a schema key
+%   or an internal ``__*`` column. Used to expand an empty (all-columns)
+%   ColumnSelection to a concrete list.
+    vn = string(tbl.Properties.VariableNames);
+    is_internal = startsWith(vn, "__");
+    is_schema = ismember(vn, string(schema_keys));
+    cols = vn(~is_schema & ~is_internal);
+end
+
+
+function [names, values] = expand_column_result(col, res, sep)
+%EXPAND_COLUMN_RESULT  Expand one source column's return into name/value pairs.
+%   scalar (or any non-struct / non-table value) -> { col }
+%   struct                -> one pair per field,    "<col><sep><field>"
+%   1-row table           -> one pair per variable, "<col><sep><variable>"
+%   A multi-row table is rejected: for_columns reassembles to one row per combo.
+    if isstruct(res) && isscalar(res)
+        fns = fieldnames(res);
+        names = cell(1, numel(fns));
+        values = cell(1, numel(fns));
+        for i = 1:numel(fns)
+            names{i} = sprintf('%s%s%s', col, sep, fns{i});
+            values{i} = res.(fns{i});
+        end
+    elseif istable(res)
+        if height(res) ~= 1
+            error('scifor:for_each:forColumnsBadReturn', ...
+                ['for_columns function returned a %d-row table for column ' ...
+                 '''%s''; expected a single row (one value per output key). ' ...
+                 'Return a scalar, struct, or 1-row table.'], height(res), col);
+        end
+        vns = string(res.Properties.VariableNames);
+        names = cell(1, numel(vns));
+        values = cell(1, numel(vns));
+        for i = 1:numel(vns)
+            names{i} = sprintf('%s%s%s', col, sep, char(vns(i)));
+            v = res.(char(vns(i)));
+            if iscell(v) && isscalar(v)
+                v = v{1};
+            end
+            values{i} = v;
+        end
+    else
+        names = {col};
+        values = {res};
+    end
 end
 
 

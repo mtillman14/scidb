@@ -310,7 +310,7 @@ def for_each(
         Log.info("[scidb] Step 1: no EachOf expansion needed")
 
     # --- Step 1.5: Resolve for_columns (iterate-mode ColumnSelection) inputs ---
-    # Expand columns=None -> all data columns and validate the shared column
+    # Expand empty columns ([] / all) -> all data columns and validate the shared column
     # axis BEFORE version keys are built (Step 8) and before dry-run display,
     # so caching reflects the concrete column set.
     inputs = _resolve_for_columns(inputs, db)
@@ -1968,7 +1968,7 @@ def _resolve_all_columns(var_type: Any, db: Any | None) -> list[str]:
     """Resolve ``for_columns()`` (all columns) to the variable's data column names.
 
     Loads the variable's stored table and returns its columns minus schema keys
-    and internal ``__*`` columns. Used so that ``columns=None`` becomes a
+    and internal ``__*`` columns. Used so that an empty ``columns`` becomes a
     concrete list before version keys are computed.
     """
     import pandas as pd
@@ -1996,7 +1996,7 @@ def _resolve_all_columns(var_type: Any, db: Any | None) -> list[str]:
 def _resolve_for_columns(inputs: dict, db: Any | None) -> dict:
     """Resolve iterate-mode ColumnSelection inputs (``for_columns``).
 
-    Expands ``columns=None`` to all data columns and validates that every
+    Expands empty ``columns`` ([] / all) to all data columns and validates that every
     iterate input shares the same column set (zipped by name). Returns a new
     inputs dict with concrete ColumnSelections; raises ValueError on mismatch.
     Inputs without any iterate selection are returned unchanged.
@@ -2023,7 +2023,7 @@ def _resolve_for_columns(inputs: dict, db: Any | None) -> dict:
 
     resolved_cols: dict[str, list[str]] = {}
     for name, cs in iterate_params.items():
-        if cs.columns is None:
+        if not cs.columns:  # empty [] (or legacy None) -> all data columns
             cols = _resolve_all_columns(cs.var_type, resolved_db)
             Log.info(
                 f"[scidb] for_columns: resolved '{name}' to all {len(cols)} "
@@ -2222,7 +2222,7 @@ def _resolve_per_combo_loader(pcl: "PerComboLoader", load_kw: dict) -> Any:
             inner = inner.var_type
         lv = inner.load(**effective_kw)
         raw = lv.data if hasattr(lv, 'data') else lv
-        if columns is not None:
+        if columns:
             cls_name = getattr(inner, '__name__', type(inner).__name__)
             raw = _apply_per_combo_col_selection(raw, columns, cls_name)
         return raw
@@ -2271,7 +2271,7 @@ def _resolve_per_combo_merge(pcl_merge: "PerComboLoaderMerge", load_kw: dict) ->
         part_df = _to_dataframe(raw, cls_name)
 
         # Apply column selection
-        if columns is not None:
+        if columns:
             missing = [c for c in columns if c not in part_df.columns]
             if missing:
                 raise KeyError(

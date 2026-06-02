@@ -164,7 +164,7 @@ def for_each(
     iterate_columns: list[str] | None = None
     if iterate_params:
         col_sets = {
-            name: list(_unwrap_column_selection(data_inputs[name]).columns)
+            name: _resolve_iterate_columns(data_inputs[name], schema_keys)
             for name in iterate_params
         }
         iterate_columns = col_sets[iterate_params[0]]
@@ -389,6 +389,7 @@ def for_each(
             if iterate_params:
                 result = (_run_column_iteration(
                     fn, filtered_inputs, iterate_dfs, iterate_columns,
+                    schema_keys, as_table_set,
                 ),)
             else:
                 result = _call_fn(fn, filtered_inputs, n_outputs)
@@ -397,6 +398,10 @@ def for_each(
             print(done_msg)
             if _log_fn is not None:
                 _log_fn(done_msg)
+        except ForColumnsError:
+            # Structural for_columns errors are deterministic across combos and
+            # indicate a return-contract bug — surface immediately, don't skip.
+            raise
         except Exception as e:
             msg = f"[skip] {metadata_str}: {fn_name} raised: {e}"
             print(msg)
@@ -483,28 +488,98 @@ def _call_fn(fn, kwargs, n_outputs):
     return fn(**kwargs)
 
 
-def _run_column_iteration(fn, base_kwargs, iterate_dfs, iterate_columns):
-    """Run fn once per column and reassemble into a single 1xN-wide DataFrame.
+class ForColumnsError(ValueError):
+    """A structural error in for_columns reassembly (e.g. a colliding output
+    column or a non-collapsible return). These are deterministic across combos
+    and indicate a function/return-contract bug, so they propagate as hard
+    errors rather than being swallowed as a per-combo ``[skip]``."""
 
-    For each column, every iterate input is sliced to that column (as a
-    single-column array, matching single-column ColumnSelection semantics) and
-    passed to fn; non-iterate inputs/constants in ``base_kwargs`` pass through
-    unchanged. The per-column scalar results become the columns of a one-row
-    DataFrame whose column order mirrors ``iterate_columns``.
+
+# Separator joining a source column name to a per-column output key when a
+# for_columns function returns multiple named values (dict / Series / 1-row
+# DataFrame) instead of a single scalar.
+FOR_COLUMNS_OUTPUT_SEP = "__"
+
+
+def _run_column_iteration(
+    fn, base_kwargs, iterate_dfs, iterate_columns, schema_keys, as_table_set
+):
+    """Run fn once per column and reassemble into a single one-row DataFrame.
+
+    For each column, every iterate input is sliced to that column and passed to
+    fn; non-iterate inputs/constants in ``base_kwargs`` pass through unchanged.
+    An iterate input named in ``as_table_set`` is sliced to a DataFrame holding
+    all schema key columns plus that one column (mirroring the non-iterate
+    ColumnSelection as_table behavior at ``_prepare_input``); otherwise it is
+    sliced to a bare single-column numpy array (the default).
+
+    The per-column return is expanded into output columns by
+    ``_expand_column_result``: a scalar yields one column named after the source
+    column; a dict / pandas Series / 1-row DataFrame yields one column per key,
+    named ``"<col><sep><key>"``. Different source columns may return different
+    numbers (and names) of outputs — the reassembled row is the ordered
+    concatenation of every produced column, so a single for_each call supports
+    an arbitrary, per-column-varying number of outputs.
     """
     import pandas as pd
 
-    col_results = {}
+    ordered: list[tuple[str, Any]] = []
     for col in iterate_columns:
         call_kwargs = dict(base_kwargs)
         for name, df in iterate_dfs.items():
-            call_kwargs[name] = df[col].values
+            if name in as_table_set:
+                keep = [c for c in df.columns if c in schema_keys] + [col]
+                call_kwargs[name] = df[keep]
+            else:
+                call_kwargs[name] = df[col].values
         res = fn(**call_kwargs)
         if isinstance(res, tuple):
-            # for_columns has a single output; take the first element.
+            # for_columns is a single (reassembled) output; a tuple return is
+            # collapsed to its first element. Return a dict/Series/1-row frame
+            # to emit multiple named values per column.
             res = res[0]
-        col_results[col] = res
-    return pd.DataFrame({col: [col_results[col]] for col in iterate_columns})
+        ordered.extend(_expand_column_result(col, res))
+
+    # Assemble a one-row DataFrame, preserving encounter order and rejecting
+    # collisions (two produced names mapping to the same output column).
+    data: dict[str, list] = {}
+    for out_name, value in ordered:
+        if out_name in data:
+            raise ForColumnsError(
+                f"for_columns produced a duplicate output column '{out_name}'. "
+                f"Per-column output keys must be unique after prefixing with the "
+                f"source column name (separator '{FOR_COLUMNS_OUTPUT_SEP}')."
+            )
+        data[out_name] = [value]
+    return pd.DataFrame(data)
+
+
+def _expand_column_result(col: str, res: Any) -> "list[tuple[str, Any]]":
+    """Expand one source column's return into (output_name, value) pairs.
+
+    - scalar (or any non-mapping / non-frame value) -> ``[(col, res)]``
+    - dict / pandas Series -> one pair per item, named ``"<col><sep><key>"``
+    - 1-row pandas DataFrame -> one pair per column, ``"<col><sep><column>"``
+
+    A multi-row DataFrame is rejected: for_columns reassembles to a single row
+    per combo, so each source column must collapse to scalar output value(s).
+    """
+    import pandas as pd
+
+    sep = FOR_COLUMNS_OUTPUT_SEP
+    if isinstance(res, dict):
+        return [(f"{col}{sep}{k}", v) for k, v in res.items()]
+    if isinstance(res, pd.Series):
+        return [(f"{col}{sep}{k}", v) for k, v in res.items()]
+    if isinstance(res, pd.DataFrame):
+        if len(res) != 1:
+            raise ForColumnsError(
+                f"for_columns function returned a {len(res)}-row DataFrame for "
+                f"column '{col}'; expected a single row (one value per output "
+                f"key). Return a scalar, dict, pandas Series, or 1-row DataFrame."
+            )
+        return [(f"{col}{sep}{c}", res[c].iloc[0]) for c in res.columns]
+    return [(col, res)]
 
 
 def _describe_result(val) -> str:
@@ -675,18 +750,22 @@ def _prepare_input(
     if not _is_per_combo_df(df, schema_keys):
         # Constant DataFrame — pass unchanged every iteration
         if column_selection is not None:
-            return _apply_column_selection(df, column_selection)
+            # An empty selection means "all data columns".
+            cols = column_selection or _all_data_columns(df, schema_keys)
+            return _apply_column_selection(df, cols)
         return df
 
     filtered = _filter_df_for_combo(df, effective_metadata, schema_keys)
     filtered = _apply_where_filter(filtered, where)
 
     if column_selection is not None:
+        # An empty selection means "all data columns".
+        cols = column_selection or _all_data_columns(filtered, schema_keys)
         if as_table:
             # Keep schema columns alongside selected data columns
-            keep = [c for c in filtered.columns if c in schema_keys] + column_selection
+            keep = [c for c in filtered.columns if c in schema_keys] + cols
             return filtered[keep]
-        return _apply_column_selection(filtered, column_selection)
+        return _apply_column_selection(filtered, cols)
 
     return _extract_data(filtered, schema_keys, as_table)
 
@@ -722,6 +801,41 @@ def _unwrap_column_selection(var_spec: Any) -> Any:
     if isinstance(var_spec, Fixed) and isinstance(var_spec.data, ColumnSelection):
         return var_spec.data
     return var_spec
+
+
+def _all_data_columns(df: "pd.DataFrame", schema_keys: list[str]) -> list[str]:
+    """Return a DataFrame's data columns: everything that is not a schema key
+    or an internal ``__*`` column. Used to expand an empty (all-columns)
+    ColumnSelection to a concrete list."""
+    return [
+        c for c in df.columns
+        if c not in schema_keys and not str(c).startswith("__")
+    ]
+
+
+def _resolve_iterate_columns(var_spec: Any, schema_keys: list[str]) -> list[str]:
+    """Resolve an iterate-mode ColumnSelection's column list.
+
+    An explicit list is returned as-is; an empty list (the all-columns
+    sentinel) is expanded to every data column of the underlying DataFrame.
+    """
+    cs = _unwrap_column_selection(var_spec)
+    cols = list(cs.columns)
+    if cols:
+        return cols
+    df = cs.data if isinstance(cs, ColumnSelection) else None
+    if df is None or not _is_dataframe(df):
+        raise ValueError(
+            "for_columns(): cannot resolve all columns — the input is not a "
+            "DataFrame-backed ColumnSelection. Pass an explicit column list."
+        )
+    resolved = _all_data_columns(df, schema_keys)
+    if not resolved:
+        raise ValueError(
+            f"for_columns(): no data columns found to iterate over "
+            f"(columns were {list(df.columns)}, schema keys {schema_keys})."
+        )
+    return resolved
 
 
 def _prepare_iterate_df(

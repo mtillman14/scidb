@@ -20,34 +20,38 @@ class ColumnSelection:
     When ``iterate=True`` (constructed via ``MyVar.for_columns(...)``) the
     selection means "run fn once per column and reassemble the per-column
     results into a single wide output variable" rather than "pass the columns
-    as one argument." ``columns=None`` means "all data columns", resolved at
-    for_each time.
+    as one argument." An **empty** ``columns`` (``[]``, the default) means "all
+    data columns", resolved at for_each time. ``None`` is accepted as an alias
+    for the empty/all sentinel for backward compatibility.
 
     For standalone DataFrame usage, see scifor.ColumnSelection.
     """
 
-    def __init__(self, var_type: type, columns: list[str] | None, iterate: bool = False):
+    def __init__(self, var_type: type, columns: "list[str] | None" = [], iterate: bool = False):
         """
         Args:
             var_type: The variable class to load.
-            columns: List of column names to extract after loading. ``None`` is
-                only valid with ``iterate=True`` and means "all data columns",
-                resolved at for_each time.
+            columns: List of column names to extract after loading. An empty
+                list ``[]`` (the default) means "all data columns", resolved at
+                for_each time (only meaningful with ``iterate=True``). ``None``
+                is accepted as an alias for ``[]``.
             iterate: If True, iterate over the columns (one fn call each) and
                 reassemble into one wide output; if False (default), pass the
                 column(s) as a single argument.
         """
         self.var_type = var_type
-        self.columns = columns
+        # Normalize the all-columns sentinel to an empty list (copying any
+        # provided list so a shared default object is never mutated).
+        self.columns = list(columns) if columns else []
         self.iterate = iterate
 
     @property
     def __name__(self) -> str:
         """Return a display name for format_inputs and error messages."""
         var_name = getattr(self.var_type, '__name__', type(self.var_type).__name__)
-        if self.columns is None:
-            return f'{var_name}[<all columns>, iterate]'
         suffix = ", iterate" if self.iterate else ""
+        if not self.columns:
+            return f'{var_name}[<all columns>{suffix}]'
         if len(self.columns) == 1 and not self.iterate:
             return f'{var_name}["{self.columns[0]}"]'
         cols = ", ".join(f'"{c}"' for c in self.columns)
@@ -143,12 +147,11 @@ class ColumnSelection:
         """Return a canonical string for use as a version key.
 
         Includes ``iterate`` and the resolved column list so that changing the
-        iterated column set (including ``None`` -> all-columns resolution done
-        before this is called) invalidates cached results.
+        iterated column set (including the empty ``[]`` -> all-columns
+        resolution done before this is called) invalidates cached results.
         """
         name = getattr(self.var_type, '__name__', repr(self.var_type))
         return f"{name}[{self.columns!r}, iterate={self.iterate}]"
 
     def __hash__(self):
-        cols = tuple(self.columns) if self.columns is not None else None
-        return hash((self.var_type, cols, self.iterate))
+        return hash((self.var_type, tuple(self.columns), self.iterate))

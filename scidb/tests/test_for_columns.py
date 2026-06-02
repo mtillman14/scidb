@@ -61,6 +61,18 @@ def mean_change(baseline, value):
     return float(np.mean(value) - np.mean(baseline))
 
 
+def col_stats(value):
+    """Multiple named stats per column -> <col>__mean, <col>__max."""
+    return {"mean": float(np.mean(value)), "max": float(np.max(value))}
+
+
+def col_stats_varying(value):
+    """Different number of stats depending on the column's magnitude."""
+    if np.max(value) < 5:
+        return {"mean": float(np.mean(value))}
+    return {"mean": float(np.mean(value)), "max": float(np.max(value))}
+
+
 # --- Seeding ---------------------------------------------------------------
 
 def _seed_wide(db, session="A"):
@@ -83,7 +95,15 @@ class TestForColumnsConstruction:
     def test_for_columns_all_sets_iterate(self):
         cs = GaitData.for_columns()
         assert cs.iterate is True
-        assert cs.columns is None
+        # Empty list [] is the all-columns sentinel (resolved at for_each time).
+        assert cs.columns == []
+
+    def test_for_columns_empty_list_equivalent_to_no_arg(self):
+        assert GaitData.for_columns([]).columns == []
+
+    def test_for_columns_none_alias_for_all(self):
+        # None is accepted as a backward-compatible alias for the [] sentinel.
+        assert GaitData.for_columns(None).columns == []
 
     def test_for_columns_subset(self):
         cs = GaitData.for_columns(["StepLength", "Cadence"])
@@ -261,6 +281,19 @@ class TestForColumnsCaching:
         versions = DeltaGait.list_versions(db=db, subject="1", session="A")
         assert len(versions) == 1
 
+    def test_empty_list_and_no_arg_resolve_identically(self, db):
+        """for_columns([]) and for_columns() resolve to the same column set, so
+        the second run is a cache hit (one version), not a distinct record."""
+        _seed_wide(db)
+
+        for_each(col_mean, inputs={"value": GaitData.for_columns()},
+                 outputs=[DeltaGait], db=db, subject=[], session=[])
+        for_each(col_mean, inputs={"value": GaitData.for_columns([])},
+                 outputs=[DeltaGait], db=db, subject=[], session=[])
+
+        versions = DeltaGait.list_versions(db=db, subject="1", session="A")
+        assert len(versions) == 1
+
     def test_changing_function_creates_new_record(self, db):
         # Different function over the same columns -> distinct version key ->
         # a new record coexists (same physical output columns, so the table
@@ -301,3 +334,161 @@ class TestForColumnsDryRun:
             subject=[], session=[],
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# as_table interaction (schema columns available per-column call)
+# ---------------------------------------------------------------------------
+
+class TestForColumnsAsTable:
+    def test_as_table_passes_dataframe_with_schema_cols(self, db):
+        """as_table=True + for_columns feeds each per-column call a DataFrame
+        with the schema key columns + the one current column (mirrors the
+        non-iterate ColumnSelection as_table behavior), flowing through the
+        scidb load + scifor delegation path."""
+        _seed_wide(db)
+        received = []
+
+        def col_max_table(value):
+            received.append(value)
+            data_col = [c for c in value.columns if c not in SCHEMA][0]
+            return float(value[data_col].max())
+
+        for_each(
+            col_max_table,
+            inputs={"value": GaitData.for_columns()},
+            outputs=[DeltaGait],
+            db=db,
+            as_table=True,
+            subject=[], session=[],
+        )
+
+        # Each per-column call received a DataFrame: schema cols + 1 data column
+        assert received, "function was never called"
+        for r in received:
+            assert isinstance(r, pd.DataFrame), f"expected DataFrame, got {type(r)}"
+            assert "subject" in r.columns
+            assert "session" in r.columns
+            non_schema = [c for c in r.columns if c not in SCHEMA]
+            assert len(non_schema) == 1, f"expected 1 data column, got {non_schema}"
+            assert non_schema[0] in ("StepLength", "Cadence")
+
+        # Reassembled output: per-column max per subject
+        d1 = DeltaGait.load(db=db, subject="1", session="A")
+        assert d1.data["StepLength"].iloc[0] == pytest.approx(3.0)
+        assert d1.data["Cadence"].iloc[0] == pytest.approx(30.0)
+        d2 = DeltaGait.load(db=db, subject="2", session="A")
+        assert d2.data["StepLength"].iloc[0] == pytest.approx(6.0)
+        assert d2.data["Cadence"].iloc[0] == pytest.approx(60.0)
+
+    def test_as_table_false_passes_array(self, db):
+        """Default (no as_table) still feeds each per-column call a bare array."""
+        _seed_wide(db)
+        received = []
+
+        def col_max_arr(value):
+            received.append(value)
+            return float(np.max(value))
+
+        for_each(
+            col_max_arr,
+            inputs={"value": GaitData.for_columns()},
+            outputs=[DeltaGait],
+            db=db,
+            subject=[], session=[],
+        )
+
+        assert received, "function was never called"
+        for r in received:
+            assert not isinstance(r, pd.DataFrame), "default should not pass a DataFrame"
+            assert isinstance(r, np.ndarray), f"expected ndarray, got {type(r)}"
+
+
+# ---------------------------------------------------------------------------
+# Multi-output-per-column reassembly (dict return -> <col>__<key> columns)
+# ---------------------------------------------------------------------------
+
+class TestForColumnsMultiOutput:
+    def test_dict_return_round_trips_as_suffixed_columns(self, db):
+        """A dict return per column reassembles into <col>__<key> columns,
+        saved to one output variable and round-tripped through the DB."""
+        _seed_wide(db)
+
+        result = for_each(
+            col_stats,
+            inputs={"value": GaitData.for_columns()},
+            outputs=[DeltaGait],
+            db=db,
+            subject=[], session=[],
+        )
+        assert "StepLength__mean" in result.columns
+        assert "Cadence__max" in result.columns
+
+        d1 = DeltaGait.load(db=db, subject="1", session="A")
+        assert list(d1.data.columns) == [
+            "StepLength__mean", "StepLength__max", "Cadence__mean", "Cadence__max",
+        ]
+        # subject 1: StepLength=[1,2,3], Cadence=[10,20,30]
+        assert d1.data["StepLength__mean"].iloc[0] == pytest.approx(2.0)
+        assert d1.data["StepLength__max"].iloc[0] == pytest.approx(3.0)
+        assert d1.data["Cadence__mean"].iloc[0] == pytest.approx(20.0)
+        assert d1.data["Cadence__max"].iloc[0] == pytest.approx(30.0)
+
+        d2 = DeltaGait.load(db=db, subject="2", session="A")
+        # subject 2: StepLength=[4,5,6], Cadence=[40,50,60]
+        assert d2.data["StepLength__mean"].iloc[0] == pytest.approx(5.0)
+        assert d2.data["Cadence__max"].iloc[0] == pytest.approx(60.0)
+
+    def test_varying_output_counts_per_column(self, db):
+        """Different source columns may emit different numbers of outputs.
+
+        NOTE: scidb fixes a variable's physical columns on first write, so the
+        per-column output set must be consistent *across combos*. Here the seed
+        keeps StepLength < 5 (-> mean only) and Cadence >= 5 (-> mean + max) for
+        every subject, so the column set is stable while still differing
+        per-source-column. (Varying *across combos* is a documented limitation.)
+        """
+        GaitData.save(
+            pd.DataFrame({"StepLength": [1.0, 2.0, 3.0], "Cadence": [10.0, 20.0, 30.0]}),
+            db=db, subject="1", session="A",
+        )
+        GaitData.save(
+            pd.DataFrame({"StepLength": [2.0, 3.0, 4.0], "Cadence": [40.0, 50.0, 60.0]}),
+            db=db, subject="2", session="A",
+        )
+
+        for_each(
+            col_stats_varying,
+            inputs={"value": GaitData.for_columns()},
+            outputs=[DeltaGait],
+            db=db,
+            subject=[], session=[],
+        )
+        d1 = DeltaGait.load(db=db, subject="1", session="A")
+        # StepLength max=3 (<5) -> mean only; Cadence max=30 (>=5) -> mean + max
+        assert list(d1.data.columns) == [
+            "StepLength__mean", "Cadence__mean", "Cadence__max",
+        ]
+        assert d1.data["StepLength__mean"].iloc[0] == pytest.approx(2.0)
+        assert d1.data["Cadence__mean"].iloc[0] == pytest.approx(20.0)
+        assert d1.data["Cadence__max"].iloc[0] == pytest.approx(30.0)
+
+        d2 = DeltaGait.load(db=db, subject="2", session="A")
+        # StepLength max=4 (<5) -> mean only; Cadence max=60 (>=5) -> mean + max
+        assert list(d2.data.columns) == [
+            "StepLength__mean", "Cadence__mean", "Cadence__max",
+        ]
+        assert d2.data["StepLength__mean"].iloc[0] == pytest.approx(3.0)
+        assert d2.data["Cadence__max"].iloc[0] == pytest.approx(60.0)
+
+    def test_dict_return_identical_rerun_is_cached(self, db):
+        """An identical multi-output re-run is a cache hit (one version)."""
+        _seed_wide(db)
+
+        for_each(col_stats, inputs={"value": GaitData.for_columns()},
+                 outputs=[DeltaGait], db=db, subject=[], session=[])
+        for_each(col_stats, inputs={"value": GaitData.for_columns()},
+                 outputs=[DeltaGait], db=db, subject=[], session=[])
+
+        versions = DeltaGait.list_versions(db=db, subject="1", session="A")
+        assert len(versions) == 1

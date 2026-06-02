@@ -28,24 +28,131 @@ for_each(mean_change,
          outputs=[DeltaGait], subject=[], session=["FV"])
 ```
 
-`MyVar.for_columns(cols=None)` returns a `ColumnSelection` with `iterate=True`.
+`MyVar.for_columns(columns=[])` returns a `ColumnSelection` with `iterate=True`.
 It reuses the existing `ColumnSelection` abstraction — there is **no** new
 wrapper type. `MyVar[[...]]` (bracket syntax) remains `iterate=False` and means
 "pass the columns as one argument," unchanged.
+
+**All-columns sentinel is `[]` (empty), not `None`.** An empty `columns`
+(`for_columns()` / `for_columns([])` / `ColumnSelection(df, iterate=True)`)
+means "all data columns", resolved at for_each time. This matches MATLAB
+(`string.empty`) and is consistent with scifor's existing "empty list = resolve
+all from data" idiom (`subject=[]`). `None` is still accepted as a
+backward-compatible alias (every check is "falsy = all", e.g. `not cs.columns`).
+The resolution excludes schema keys and internal `__*` columns. It now happens
+at **both** layers: scidb (`_resolve_all_columns`, loads the variable) and
+standalone scifor (`_resolve_iterate_columns` / `_all_data_columns`, from the
+in-memory DataFrame) — and likewise in MATLAB standalone scifor
+(`all_data_columns`). Empty `columns` on a **non-iterate** ColumnSelection means
+"all data columns as one argument" (equivalent to no selection).
 
 ## Semantics
 
 - The function runs once **per column** per schema combo and must take the
   iterated column as a single-column argument (a numpy array, same as
   `MyVar["col"]`).
-- It returns a scalar per column; the per-column scalars become the columns of
-  a one-row DataFrame (`1 × N`), saved as the single output variable's data for
-  that combo.
+- **Per-column return → output columns** (see "Multi-output per column" below):
+  a **scalar** yields one column named after the source column; a **dict /
+  pandas Series / 1-row DataFrame** (struct / 1-row table in MATLAB) yields one
+  column per key, named `"<col>__<key>"`. The produced columns are concatenated
+  in order into a one-row DataFrame, saved as the single output variable's data
+  for that combo.
 - When multiple inputs use `for_columns`, they are **zipped by column name** and
   must resolve to the same column set (else `ValueError`). The same column drives
   every iterate input in lockstep (e.g. `baseline[c]` and `value[c]` together).
 - **Column drift is a hard error**: the iterate column set is fixed up front, so
   a combo missing one of those columns raises (it does not silently skip).
+
+## as_table interaction
+
+By default each per-column call receives the iterated column as a **bare
+array** (numpy in Python / numeric vector in MATLAB), matching single-column
+`ColumnSelection` semantics. When the iterate input is named in `as_table`
+(either `as_table=True` for all inputs or a list including it), each per-column
+call instead receives a **table/DataFrame containing all schema key columns +
+the one current column** — mirroring the non-iterate `ColumnSelection` as_table
+path (`scifor/foreach.py` `_prepare_input`, MATLAB `prepare_input`).
+
+- Retained: every schema key column (the iterated ones — constant within a call
+  but available for reference — plus any deeper non-iterated levels, which
+  vary), and the single current iterated column.
+- Dropped: non-schema data columns (consistent with how `ColumnSelection`
+  as_table already drops unselected columns).
+- The per-column frame therefore has exactly **one non-schema column** (the
+  current one); the function can locate it via "the column not in the schema."
+
+This enables an argmax→label lookup inside the per-column function: declare the
+label column (e.g. `intervention`) as a **schema key** (it need not be
+iterated). `_filter_df_for_combo` only filters on schema keys present in the
+combo metadata, so a non-iterated schema key keeps all its rows in each slice,
+and the function can do `df.loc[df[col].idxmax(), "intervention"]`.
+
+Implementation: `_run_column_iteration` (Python) / `run_column_iteration`
+(MATLAB) take `schema_keys` + the as_table set and slice
+`df[schema_keys + [col]]` for as_table inputs.
+
+**Through `scidb.for_each`:** wiring is automatic — `scidb.for_each` loads the
+iterate input as a `scifor.ColumnSelection(loaded_spread_df, columns,
+iterate=True)` (`scidb/foreach.py` `_load_input` ~1710) and delegates to
+`scifor.for_each` passing `as_table` (~438). The spread DataFrame carries the
+(stringified) schema-key columns, and `configure_database` propagates the
+dataset schema to scifor via `scifor.set_schema` (`scidb/database.py` ~548), so
+`scifor.get_schema()` inside `_run_column_iteration` returns the right keys and
+the `df[schema_keys + [col]]` slice keeps them. To make a within-combo label
+(e.g. `intervention`) available for an argmax lookup in scidb, declare it as a
+dataset **schema key** (it need not be iterated — aggregation mode keeps its
+rows). Non-schema data columns of the variable are dropped, same as standalone.
+
+Tests: `scifor/tests/test_foreach_standalone.py::test_iterate_as_table_*`,
+`tests/matlab/scifor/TestSciforForEachFeatures.m::test_iterate_as_table_*`, and
+`scidb/tests/test_for_columns.py::TestForColumnsAsTable`.
+
+## Multi-output per column
+
+A for_columns function may return **more than one named value per source
+column**. The return shape is auto-detected (no opt-in flag):
+
+| Return (Python / MATLAB) | Output columns |
+|--------------------------|----------------|
+| scalar | `<col>` (one column, back-compatible) |
+| `dict` / `pandas.Series` / `struct` | `<col>__<key>` per item |
+| 1-row `DataFrame` / 1-row `table` | `<col>__<column>` per column |
+| multi-row frame/table | **hard error** (`ForColumnsError` / `scifor:for_each:forColumnsBadReturn`) |
+| `tuple` | collapsed to first element (use a dict for multiple values) |
+
+Separator is `FOR_COLUMNS_OUTPUT_SEP = "__"` (Python) / `sep = '__'` (MATLAB).
+The reassembled row is the **ordered concatenation** of every produced column,
+so different source columns may emit **different numbers (and names)** of
+outputs within one call. Two produced names colliding on the same output column
+is a **hard error** (`ForColumnsError` / `scifor:for_each:forColumnsDuplicate`).
+
+**Hard vs skip:** structural reassembly errors (collision, multi-row return) are
+deterministic across combos, so they propagate immediately instead of being
+swallowed by the per-combo `[skip]` handler — Python via a dedicated
+`ForColumnsError(ValueError)` re-raised before the generic `except`; MATLAB via
+an identifier check that `rethrow`s `forColumnsDuplicate`/`forColumnsBadReturn`.
+
+The argmax→label use case combines this with as_table: return
+`{"value": v[col].max(), "best": v.loc[v[col].idxmax(), "intervention"]}` to get
+`<col>__value` and `<col>__best` per metric column in one call.
+
+**Limitation — output set must be stable across combos.** A variable's physical
+columns are fixed on first write, so while the per-column output count may vary
+*across source columns within a combo*, the overall produced column set must be
+the **same for every schema combo** (else the second save hits a DuckDB binder
+error). If your stat set depends on data magnitude, ensure the branch is
+column-consistent across combos, or use a distinct output variable.
+
+Implementation: `_run_column_iteration` + `_expand_column_result` (Python,
+`scifor/foreach.py`); `run_column_iteration` + `expand_column_result` (MATLAB,
+`+scifor/for_each.m`). Tests:
+`scifor/tests/test_foreach_standalone.py` (`test_iterate_dict_*`,
+`test_iterate_varying_*`, `test_iterate_series_*`, `test_iterate_multi_output_*`,
+`test_iterate_duplicate_*`, `test_iterate_multirow_*`),
+`tests/matlab/scifor/TestSciforForEachFeatures.m` (`test_iterate_struct_*`,
+`test_iterate_varying_*`, `test_iterate_multi_output_*`,
+`test_iterate_duplicate_*`, `test_iterate_multirow_*`), and
+`scidb/tests/test_for_columns.py::TestForColumnsMultiOutput`.
 
 ## Why not EachOf
 
@@ -72,7 +179,8 @@ assembled `1 × N` row — the existing save path does the rest. No bespoke merg
 | scifor | `scifor/foreach.py` | Step 6.5 detect iterate inputs + shared column set; per-combo `_run_column_iteration` (loop fn per column → 1×N DataFrame); `_prepare_iterate_df`, `_unwrap_column_selection`; hard drift error |
 | scidb | `scidb/column_selection.py` | `iterate` flag, `columns=None`, `to_key`/`__hash__`/`__name__` |
 | scidb | `scidb/variable.py` | `BaseVariable.for_columns()` classmethod |
-| scidb | `scidb/foreach.py` | Step 1.5 `_resolve_for_columns` (None→all columns + zip-by-name validation, **before** version keys); pass `iterate` through `_load_input`; `_make_raw_value_wrapper` (lineage); dry-run display |
+| scidb | `scidb/foreach.py` | Step 1.5 `_resolve_for_columns` (empty `[]`/falsy→all columns + zip-by-name validation, **before** version keys); pass `iterate` through `_load_input`; `_make_raw_value_wrapper` (lineage); dry-run display |
+| scifor | `scifor/foreach.py` | `_resolve_iterate_columns` / `_all_data_columns` expand empty `[]`→all columns at Step 6.5 (and non-iterate `_prepare_input`) for standalone use |
 | sci-matlab | `+scifor/ColumnSelection.m` | `iterate` property (3rd ctor arg) |
 | sci-matlab | `+scifor/for_each.m` | Step 6.5 detect iterate inputs + shared column set; `unwrap_column_selection`, `prepare_iterate_table`, `run_column_iteration` (loop fn per column → 1×N table, collapse per-column `scidb.LineageFcnResult` to `.data`); hard drift error |
 | sci-matlab | `+scidb/BaseVariable.m` | `iterate` property + `for_columns(cols)` method |
@@ -106,7 +214,7 @@ record_ids. There is no per-column function-hash lineage.
 ## Caching
 
 `ColumnSelection.to_key()` includes `iterate` and the resolved column list, so
-changing the iterated column set (including the `None`→all resolution) creates a
+changing the iterated column set (including the empty `[]`→all resolution) creates a
 new record; an identical re-run is a cache hit.
 
 ## Saving: branch_params contains the reassembled column values

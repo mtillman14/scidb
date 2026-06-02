@@ -445,6 +445,229 @@ classdef TestSciforForEachFeatures < matlab.unittest.TestCase
                 'as_table=false + column selection should return a numeric vector');
         end
 
+        function test_iterate_default_passes_bare_vectors(tc)
+        %   iterate=true without as_table feeds each column as a bare vector.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;3;4], [10;20;30;40], ...
+                'VariableNames', {'subject','a','b'});
+
+            all_vectors = true;
+
+            function out = colmax(v)
+                all_vectors = all_vectors && ~istable(v);
+                out = max(v);
+            end
+
+            result = scifor.for_each(@colmax, ...
+                struct('v', scifor.ColumnSelection(tbl, ["a" "b"], true)), ...
+                subject=[1 2]);
+
+            % Each per-column call gets a bare numeric vector, not a table
+            tc.verifyTrue(all_vectors, ...
+                'iterate without as_table should pass bare vectors');
+            % Reassembled 1xN per combo: max of a/b per subject
+            tc.verifyEqual(result.a, [2;4]);
+            tc.verifyEqual(result.b, [20;40]);
+        end
+
+        function test_iterate_as_table_passes_table_with_schema_cols(tc)
+        %   iterate=true + as_table feeds a table with all schema cols + the
+        %   one current column; non-selected data columns are dropped.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;3;4], [10;20;30;40], [0.1;0.2;0.3;0.4], ...
+                'VariableNames', {'subject','a','b','noise'});
+
+            all_tables = true;
+            has_subject = true;
+            one_nonschema = true;
+            no_noise = true;
+
+            function out = colmax(v)
+                all_tables = all_tables && istable(v);
+                vn = string(v.Properties.VariableNames);
+                has_subject = has_subject && ismember("subject", vn);
+                nonschema = setdiff(vn, "subject", 'stable');
+                one_nonschema = one_nonschema && (numel(nonschema) == 1);
+                no_noise = no_noise && ~ismember("noise", vn);
+                out = max(v.(char(nonschema(1))));
+            end
+
+            result = scifor.for_each(@colmax, ...
+                struct('v', scifor.ColumnSelection(tbl, ["a" "b"], true)), ...
+                as_table=true, subject=[1 2]);
+
+            tc.verifyTrue(all_tables, 'as_table iterate should pass tables');
+            tc.verifyTrue(has_subject, 'schema column should be present');
+            tc.verifyTrue(one_nonschema, 'exactly one non-schema (current) column');
+            tc.verifyTrue(no_noise, 'non-selected data columns should be dropped');
+            % Reassembled output matches the bare-vector case
+            tc.verifyEqual(result.a, [2;4]);
+            tc.verifyEqual(result.b, [20;40]);
+        end
+
+        function test_iterate_as_table_enables_argmax_label_lookup(tc)
+        %   With a label column declared as a schema key, as_table iterate can
+        %   map per-column argmax back to that label.
+            % intervention is a schema key but is NOT iterated (only subject is)
+            scifor.set_schema(["subject", "intervention"]);
+
+            tbl = table([1;1;1;2;2;2], [1;2;3;1;2;3], ...
+                [0.5;0.9;0.2;0.1;0.4;0.8], [10;5;8;7;9;3], ...
+                'VariableNames', {'subject','intervention','StepLength','Cadence'});
+
+            function best = best_intervention(v)
+                nonschema = setdiff(string(v.Properties.VariableNames), ...
+                    ["subject" "intervention"], 'stable');
+                [~, idx] = max(v.(char(nonschema(1))));
+                best = v.intervention(idx);
+            end
+
+            result = scifor.for_each(@best_intervention, ...
+                struct('v', scifor.ColumnSelection(tbl, ["StepLength" "Cadence"], true)), ...
+                as_table=true, subject=[1 2]);
+
+            % subject 1: StepLength best at intervention 2; Cadence best at 1
+            % subject 2: StepLength best at intervention 3; Cadence best at 2
+            tc.verifyEqual(result.StepLength, [2;3]);
+            tc.verifyEqual(result.Cadence, [1;2]);
+        end
+
+        function test_iterate_struct_return_expands_to_suffixed_columns(tc)
+        %   A struct return per column expands to <col>__<field> columns.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;3;4], [10;20;30;40], ...
+                'VariableNames', {'subject','a','b'});
+
+            function s = stats(v)
+                s = struct('min', min(v), 'max', max(v));
+            end
+
+            result = scifor.for_each(@stats, ...
+                struct('v', scifor.ColumnSelection(tbl, ["a" "b"], true)), ...
+                subject=[1 2]);
+
+            tc.verifyEqual(string(result.Properties.VariableNames), ...
+                ["subject" "a__min" "a__max" "b__min" "b__max"]);
+            tc.verifyEqual(result.a__min, [1;3]);
+            tc.verifyEqual(result.a__max, [2;4]);
+            tc.verifyEqual(result.b__min, [10;30]);
+            tc.verifyEqual(result.b__max, [20;40]);
+        end
+
+        function test_iterate_varying_output_counts_per_column(tc)
+        %   Different source columns may return different numbers of outputs.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;3;4], [10;20;30;40], ...
+                'VariableNames', {'subject','a','b'});
+
+            function s = stats(v)
+                if max(v) < 5
+                    s = struct('max', max(v));            % 'a' -> one field
+                else
+                    s = struct('max', max(v), 'min', min(v));  % 'b' -> two fields
+                end
+            end
+
+            result = scifor.for_each(@stats, ...
+                struct('v', scifor.ColumnSelection(tbl, ["a" "b"], true)), ...
+                subject=[1 2]);
+
+            tc.verifyEqual(string(result.Properties.VariableNames), ...
+                ["subject" "a__max" "b__max" "b__min"]);
+            tc.verifyEqual(result.a__max, [2;4]);
+            tc.verifyEqual(result.b__max, [20;40]);
+            tc.verifyEqual(result.b__min, [10;30]);
+        end
+
+        function test_iterate_multi_output_with_as_table_value_and_label(tc)
+        %   Motivating case: per column return both the max value and the
+        %   identity of the best label (a non-iterated schema key).
+            scifor.set_schema(["subject", "intervention"]);
+
+            tbl = table([1;1;1;2;2;2], [1;2;3;1;2;3], ...
+                [0.5;0.9;0.2;0.1;0.4;0.8], [10;5;8;7;9;3], ...
+                'VariableNames', {'subject','intervention','StepLength','Cadence'});
+
+            function s = best(v)
+                nonschema = setdiff(string(v.Properties.VariableNames), ...
+                    ["subject" "intervention"], 'stable');
+                [mx, idx] = max(v.(char(nonschema(1))));
+                s = struct('value', mx, 'best', v.intervention(idx));
+            end
+
+            result = scifor.for_each(@best, ...
+                struct('v', scifor.ColumnSelection(tbl, ["StepLength" "Cadence"], true)), ...
+                as_table=true, subject=[1 2]);
+
+            tc.verifyEqual(result.StepLength__value, [0.9;0.8], 'AbsTol', 1e-10);
+            tc.verifyEqual(result.StepLength__best, [2;3]);
+            tc.verifyEqual(result.Cadence__value, [10;9], 'AbsTol', 1e-10);
+            tc.verifyEqual(result.Cadence__best, [1;2]);
+        end
+
+        function test_iterate_duplicate_output_column_raises(tc)
+        %   Colliding produced output names raise a clear error.
+        %   Column 'a' returning field 'b' -> 'a__b'; column 'a__b' returning a
+        %   scalar -> 'a__b'. The two collide.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1], [1;2], [3;4], ...
+                'VariableNames', {'subject','a','a__b'});
+
+            function out = stats(v)
+                col = setdiff(string(v.Properties.VariableNames), "subject", 'stable');
+                if col(1) == "a"
+                    out = struct('b', max(v.a));      % -> 'a__b'
+                else
+                    out = max(v.a__b);                % scalar -> 'a__b' (collision)
+                end
+            end
+
+            tc.verifyError(@() scifor.for_each(@stats, ...
+                struct('v', scifor.ColumnSelection(tbl, ["a" "a__b"], true)), ...
+                as_table=true, subject=[1]), ...
+                'scifor:for_each:forColumnsDuplicate');
+        end
+
+        function test_iterate_multirow_table_return_raises(tc)
+        %   A multi-row table return is rejected (must collapse to one row).
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1], [1;2], 'VariableNames', {'subject','a'});
+
+            function out = bad(~)
+                out = table([1;2], 'VariableNames', {'x'});
+            end
+
+            tc.verifyError(@() scifor.for_each(@bad, ...
+                struct('v', scifor.ColumnSelection(tbl, "a", true)), ...
+                subject=[1]), ...
+                'scifor:for_each:forColumnsBadReturn');
+        end
+
+        function test_iterate_all_columns_resolves_from_table(tc)
+        %   for_columns with empty columns ([] sentinel) iterates over all
+        %   non-schema columns, resolved from the table.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;3;4], [10;20;30;40], ...
+                'VariableNames', {'subject','a','b'});
+
+            result = scifor.for_each(@(v) max(v), ...
+                struct('v', scifor.ColumnSelection(tbl, [], true)), ...
+                subject=[1 2]);
+
+            % Schema key 'subject' excluded; iterates a, b
+            tc.verifyEqual(string(result.Properties.VariableNames), ...
+                ["subject" "a" "b"]);
+            tc.verifyEqual(result.a, [2;4]);
+            tc.verifyEqual(result.b, [20;40]);
+        end
+
     end
 
     % =====================================================================

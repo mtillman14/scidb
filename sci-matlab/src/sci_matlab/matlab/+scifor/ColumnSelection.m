@@ -38,17 +38,25 @@ classdef ColumnSelection
         function obj = ColumnSelection(data, columns, iterate)
         %COLUMNSELECTION  Construct a ColumnSelection wrapper.
         %
+        %   CS = scifor.ColumnSelection(tbl)                % all data columns
         %   CS = scifor.ColumnSelection(tbl, columns)
         %   CS = scifor.ColumnSelection(tbl, columns, iterate)
         %
         %   Arguments:
         %       data    - A MATLAB table
-        %       columns - String or string array of column names
+        %       columns - String or string array of column names. An empty
+        %                 value ([] / string.empty, the default) means "all
+        %                 data columns", resolved at for_each time.
         %       iterate - (optional) logical; iterate per-column and
         %                 reassemble into one wide row. Default false.
 
             obj.data = data;
-            obj.columns = string(columns);
+            % Empty (or omitted) columns is the all-columns sentinel.
+            if nargin < 2 || isempty(columns)
+                obj.columns = string.empty;
+            else
+                obj.columns = string(columns);
+            end
             if nargin >= 3 && ~isempty(iterate)
                 obj.iterate = logical(iterate);
             else
