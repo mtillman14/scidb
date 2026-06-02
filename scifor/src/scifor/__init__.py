@@ -23,7 +23,7 @@ Example:
 """
 
 from .schema import set_schema, get_schema
-from .foreach import for_each
+from .foreach import for_each, ColumnFunctionError, ForColumnsError
 from .fixed import Fixed
 from .merge import Merge
 from .column_selection import ColumnSelection
@@ -38,6 +38,8 @@ __all__ = [
     "get_schema",
     # Batch execution
     "for_each",
+    "ColumnFunctionError",
+    "ForColumnsError",
     # Input wrappers
     "Fixed",
     "Merge",

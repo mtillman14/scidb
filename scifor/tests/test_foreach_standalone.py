@@ -755,6 +755,52 @@ def test_iterate_multirow_dataframe_return_raises():
         )
 
 
+def test_iterate_function_failure_lists_all_bad_columns(capsys):
+    """A function that fails on some columns raises ColumnFunctionError naming
+    EVERY offending column (not just the first), and logs it to stderr."""
+    set_schema(["subject"])
+    # Two numeric columns the function can handle; two string columns it can't.
+    df = pd.DataFrame({
+        "subject": [1, 1],
+        "good1": [1.0, 2.0],
+        "label1": ["x", "y"],
+        "good2": [3.0, 4.0],
+        "label2": ["p", "q"],
+    })
+
+    with pytest.raises(scifor.ColumnFunctionError) as excinfo:
+        for_each(
+            lambda v: float(np.mean(np.asarray(v, dtype=float))),
+            inputs={"v": ColumnSelection(df, ["good1", "label1", "good2", "label2"],
+                                         iterate=True)},
+            subject=[1],
+        )
+
+    err = excinfo.value
+    # Both bad columns are reported; neither good column is.
+    failed_cols = {col for col, _ in err.failures}
+    assert failed_cols == {"label1", "label2"}
+    msg = str(err)
+    assert "label1" in msg and "label2" in msg
+    assert "good1" not in msg and "good2" not in msg
+    # The full error is echoed to stderr for visibility.
+    assert "label1" in capsys.readouterr().err
+
+
+def test_iterate_function_failure_propagates_not_skipped():
+    """Per-column failures are a hard error, not a swallowed [skip] that yields
+    an empty result."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 1], "label": ["x", "y"]})
+
+    with pytest.raises(scifor.ColumnFunctionError):
+        for_each(
+            lambda v: float(np.mean(np.asarray(v, dtype=float))),
+            inputs={"v": ColumnSelection(df, ["label"], iterate=True)},
+            subject=[1],
+        )
+
+
 # ---------------------------------------------------------------------------
 # iterate=True (for_columns) all-columns resolution (empty [] = all)
 # ---------------------------------------------------------------------------
@@ -821,6 +867,97 @@ def test_noniterate_all_columns_passes_all_data_cols():
     for r in received:
         assert isinstance(r, pd.DataFrame)
         assert list(r.columns) == ["a", "b"]  # schema col excluded
+
+
+# ---------------------------------------------------------------------------
+# excl_columns — drop named columns from the resolved selection
+# ---------------------------------------------------------------------------
+
+def test_iterate_excl_columns_drops_from_all_columns():
+    """excl_columns removes columns from the all-columns expansion: they are not
+    iterated and are absent from the aggregated result."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "label": ["x", "x", "y", "y"],   # non-numeric, to be excluded
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    result = for_each(
+        lambda v: float(np.max(v)),
+        inputs={"v": ColumnSelection(df, iterate=True, excl_columns=["label"])},
+        subject=[1, 2],
+    )
+    # 'label' neither iterated nor present in the output.
+    assert list(result.columns) == ["subject", "a", "b"]
+    assert "label" not in result.columns
+
+
+def test_iterate_excl_columns_drops_from_explicit_list():
+    """excl_columns also subtracts from an explicit columns list."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 2],
+        "a": [1.0, 2.0],
+        "b": [3.0, 4.0],
+        "c": [5.0, 6.0],
+    })
+    result = for_each(
+        lambda v: float(np.max(v)),
+        inputs={"v": ColumnSelection(df, ["a", "b", "c"], iterate=True,
+                                     excl_columns=["b"])},
+        subject=[1, 2],
+    )
+    assert list(result.columns) == ["subject", "a", "c"]
+
+
+def test_iterate_excl_columns_lets_run_succeed_after_failure():
+    """The workflow from ColumnFunctionError: excluding the reported non-numeric
+    columns makes the same run complete."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "good": [1.0, 2.0, 3.0, 4.0],
+        "label1": ["x", "x", "y", "y"],
+        "label2": ["p", "p", "q", "q"],
+    })
+    fn = lambda v: float(np.mean(np.asarray(v, dtype=float)))
+
+    # Without exclusion: hard error naming both bad columns.
+    with pytest.raises(scifor.ColumnFunctionError) as excinfo:
+        for_each(fn, inputs={"v": ColumnSelection(df, iterate=True)},
+                 subject=[1, 2])
+    assert {c for c, _ in excinfo.value.failures} == {"label1", "label2"}
+
+    # Excluding them: the run completes over the remaining numeric column.
+    result = for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, iterate=True,
+                                     excl_columns=["label1", "label2"])},
+        subject=[1, 2],
+    )
+    assert list(result.columns) == ["subject", "good"]
+
+
+def test_noniterate_excl_columns_drops_data_column():
+    """excl_columns works in non-iterate mode: dropped column is absent from the
+    sub-DataFrame passed to the function. (Two data columns remain so the
+    selection stays a DataFrame rather than collapsing to a 1-col array.)"""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+        "c": [100.0, 200.0, 300.0, 400.0],
+    })
+    received = []
+    for_each(
+        lambda data: received.append(data) or 0,
+        inputs={"data": ColumnSelection(df, excl_columns=["b"])},
+        subject=[1, 2],
+    )
+    for r in received:
+        assert list(r.columns) == ["a", "c"]  # 'b' excluded, schema key excluded
 
 
 # ---------------------------------------------------------------------------

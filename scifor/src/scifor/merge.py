@@ -49,6 +49,42 @@ class Merge:
                 raise TypeError("Cannot nest Merge inside another Merge.")
         self.tables = tables
 
+    def to_csv(
+        self, filename: str, where=None, verbose: bool = False, **metadata: Any
+    ) -> None:
+        """Inner-join the constituents and write the result to a flat CSV.
+
+        Each constituent DataFrame is row-filtered by ``**metadata`` (scalar →
+        equality, list/tuple/set → membership) on any matching schema column and
+        then the constituents are inner-joined on their shared schema columns —
+        keeping a single copy of those columns — and an optional ``where=``
+        ColName/Col filter is applied to the joined table (so it may reference a
+        column from any constituent). Non-schema columns are assumed not to
+        overlap. ``filename`` must end with ``.csv``.
+
+        Unlike the ``for_each`` merge path, this is a real key-based inner join
+        (no per-combo iteration); see ``csv_export.export_merge_csv``.
+
+        Args:
+            filename: Output path; must end with ``.csv``.
+            where: Optional scifor ColName/Col filter applied to every constituent.
+            verbose: If True, print diagnostic logging of the join (NOTE 2).
+            **metadata: Per-constituent row filters on matching schema columns.
+
+        Example:
+            # subject,trial,StepLength,Speed
+            Merge(step_df, speed_df).to_csv("gait.csv", subject=[1, 2])
+        """
+        from .csv_export import export_merge_csv
+
+        export_merge_csv(
+            self,
+            filename,
+            where=where,
+            _log_fn=print if verbose else None,
+            **metadata,
+        )
+
     @property
     def __name__(self) -> str:
         """Display name for format_inputs and error messages."""

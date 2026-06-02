@@ -1,5 +1,6 @@
 """Pure for_each loop — works with DataFrames only, no I/O."""
 
+import sys
 import time
 import traceback
 from itertools import product
@@ -453,6 +454,18 @@ def for_each(
             print(done_msg)
             if _log_fn is not None:
                 _log_fn(done_msg)
+        except ColumnFunctionError as e:
+            # The function failed on specific columns. This is deterministic
+            # across combos (a bad column is bad everywhere), so surface it as a
+            # hard error naming every offending column — to stderr and the log —
+            # rather than silently skipping the whole combo.
+            full = f"[error] {metadata_str}: {e}"
+            print(full, file=sys.stderr)
+            if _log_fn is not None:
+                _log_fn(full)
+            with open("/tmp/scihist_diag.log", "a") as _f:
+                _f.write(f"[DIAG] COLUMN FUNCTION ERROR:\n{full}\n")
+            raise
         except ForColumnsError:
             # Structural for_columns errors are deterministic across combos and
             # indicate a return-contract bug — surface immediately, don't skip.
@@ -550,6 +563,22 @@ class ForColumnsError(ValueError):
     errors rather than being swallowed as a per-combo ``[skip]``."""
 
 
+class ColumnFunctionError(ValueError):
+    """The for_columns function raised on one or more iterated columns.
+
+    Rather than skipping the whole combo on the first column that fails, the
+    column loop runs every column, collects each failure, and raises this once
+    with the complete list. A per-column failure is almost always deterministic
+    across combos (e.g. a non-numeric column the function can't process), so the
+    full list is the actionable signal: it names exactly which columns to drop
+    from the selection or fix upstream. The failing ``(column, message)`` pairs
+    are available on the ``failures`` attribute."""
+
+    def __init__(self, message: str, failures: "list[tuple[str, str]]"):
+        super().__init__(message)
+        self.failures = failures
+
+
 # Separator joining a source column name to a per-column output key when a
 # for_columns function returns multiple named values (dict / Series / 1-row
 # DataFrame) instead of a single scalar.
@@ -579,6 +608,9 @@ def _run_column_iteration(
     import pandas as pd
 
     ordered: list[tuple[str, Any]] = []
+    # Per-column failures, collected across the whole loop so we can report
+    # every offending column at once instead of dying on the first one.
+    failures: list[tuple[str, str]] = []
     # Constant inputs that are deferred ColName() markers resolve to the name of
     # the column currently being iterated (recomputed each pass below).
     deferred_colname_params = [
@@ -595,13 +627,31 @@ def _run_column_iteration(
                 call_kwargs[name] = df[keep]
             else:
                 call_kwargs[name] = df[col].values
-        res = fn(**call_kwargs)
+        try:
+            res = fn(**call_kwargs)
+        except Exception as e:
+            # Record and keep going so the raised error names every bad column.
+            failures.append((col, f"{type(e).__name__}: {e}"))
+            continue
         if isinstance(res, tuple):
             # for_columns is a single (reassembled) output; a tuple return is
             # collapsed to its first element. Return a dict/Series/1-row frame
             # to emit multiple named values per column.
             res = res[0]
         ordered.extend(_expand_column_result(col, res))
+
+    if failures:
+        fn_name = getattr(fn, "__name__", repr(fn))
+        detail = "\n".join(f"  - {col}: {msg}" for col, msg in failures)
+        message = (
+            f"for_columns: {fn_name} raised on {len(failures)} of "
+            f"{len(iterate_columns)} iterated column(s). These columns could not "
+            f"be processed:\n{detail}\n"
+            f"Hint: schema keys are already excluded; restrict the selection to "
+            f"data columns (e.g. ColumnSelection(df, columns=[...])) or ensure "
+            f"these columns are numeric."
+        )
+        raise ColumnFunctionError(message, failures)
 
     # Assemble a one-row DataFrame, preserving encounter order and rejecting
     # collisions (two produced names mapping to the same output column).
@@ -817,11 +867,14 @@ def _prepare_input(
     # Resolve the raw DataFrame and effective metadata
     df, effective_metadata, column_selection = _resolve_data_spec(var_spec, metadata)
 
+    excl = _excluded_columns(var_spec)
+
     if not _is_per_combo_df(df, schema_keys):
         # Constant DataFrame — pass unchanged every iteration
         if column_selection is not None:
             # An empty selection means "all data columns".
             cols = column_selection or _all_data_columns(df, schema_keys)
+            cols = _apply_exclusions(cols, excl)
             return _apply_column_selection(df, cols)
         return df
 
@@ -831,6 +884,7 @@ def _prepare_input(
     if column_selection is not None:
         # An empty selection means "all data columns".
         cols = column_selection or _all_data_columns(filtered, schema_keys)
+        cols = _apply_exclusions(cols, excl)
         if as_table:
             # Keep schema columns alongside selected data columns
             keep = [c for c in filtered.columns if c in schema_keys] + cols
@@ -873,6 +927,22 @@ def _unwrap_column_selection(var_spec: Any) -> Any:
     return var_spec
 
 
+def _excluded_columns(var_spec: Any) -> list[str]:
+    """Return the ColumnSelection's ``excl_columns`` (bare or Fixed-wrapped)."""
+    cs = _unwrap_column_selection(var_spec)
+    if isinstance(cs, ColumnSelection):
+        return cs.excl_columns
+    return []
+
+
+def _apply_exclusions(cols: list[str], excl: list[str]) -> list[str]:
+    """Drop ``excl`` names from ``cols``, preserving order. No-op if ``excl`` empty."""
+    if not excl:
+        return cols
+    excl_set = set(excl)
+    return [c for c in cols if c not in excl_set]
+
+
 def _all_data_columns(df: "pd.DataFrame", schema_keys: list[str]) -> list[str]:
     """Return a DataFrame's data columns: everything that is not a schema key
     or an internal ``__*`` column. Used to expand an empty (all-columns)
@@ -888,22 +958,25 @@ def _resolve_iterate_columns(var_spec: Any, schema_keys: list[str]) -> list[str]
 
     An explicit list is returned as-is; an empty list (the all-columns
     sentinel) is expanded to every data column of the underlying DataFrame.
+    Any ``excl_columns`` are removed from whichever list is produced.
     """
     cs = _unwrap_column_selection(var_spec)
+    excl = _excluded_columns(var_spec)
     cols = list(cs.columns)
     if cols:
-        return cols
+        return _apply_exclusions(cols, excl)
     df = cs.data if isinstance(cs, ColumnSelection) else None
     if df is None or not _is_dataframe(df):
         raise ValueError(
             "for_columns(): cannot resolve all columns — the input is not a "
             "DataFrame-backed ColumnSelection. Pass an explicit column list."
         )
-    resolved = _all_data_columns(df, schema_keys)
+    resolved = _apply_exclusions(_all_data_columns(df, schema_keys), excl)
     if not resolved:
         raise ValueError(
             f"for_columns(): no data columns found to iterate over "
-            f"(columns were {list(df.columns)}, schema keys {schema_keys})."
+            f"(columns were {list(df.columns)}, schema keys {schema_keys}, "
+            f"excluded {excl})."
         )
     return resolved
 

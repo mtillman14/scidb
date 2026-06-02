@@ -29,9 +29,21 @@ class ColumnSelection:
     for_each time from the DataFrame. This mirrors how an empty iteration list
     (``subject=[]``) means "all values from the data". (``None`` is accepted as
     an alias for the empty/all sentinel for backward compatibility.)
+
+    ``excl_columns`` drops named columns from whatever ``columns`` resolves to
+    (explicit list or the all-columns expansion). This is the natural companion
+    to the all-columns/iterate mode: take the non-numeric (or otherwise
+    unwanted) columns surfaced in a failure and exclude them, so they are
+    skipped during iteration and absent from the aggregated result.
     """
 
-    def __init__(self, data: Any, columns: "list[str] | None" = [], iterate: bool = False):
+    def __init__(
+        self,
+        data: Any,
+        columns: "list[str] | None" = [],
+        iterate: bool = False,
+        excl_columns: "list[str] | None" = None,
+    ):
         """
         Args:
             data: A pandas DataFrame.
@@ -41,27 +53,36 @@ class ColumnSelection:
             iterate: If True, iterate over the columns (one fn call each) and
                 reassemble; if False (default), pass the column(s) as a single
                 argument.
+            excl_columns: Column names to remove from the resolved selection
+                (after the all-columns expansion). Useful for dropping the
+                non-data columns reported by a ``ColumnFunctionError`` without
+                having to enumerate every column you *do* want.
         """
         self.data = data
         # Normalize the all-columns sentinel to an empty list (copying any
         # provided list so a shared default object is never mutated).
         self.columns = list(columns) if columns else []
         self.iterate = iterate
+        self.excl_columns = list(excl_columns) if excl_columns else []
 
     @property
     def __name__(self) -> str:
         """Return a display name for format_inputs and error messages."""
         data_name = _display_name(self.data)
         suffix = ", iterate" if self.iterate else ""
+        if self.excl_columns:
+            excl = ", ".join(f'"{c}"' for c in self.excl_columns)
+            suffix = f"{suffix}, excl=[{excl}]"
         if not self.columns:
             return f'{data_name}[<all columns>{suffix}]'
-        if len(self.columns) == 1 and not self.iterate:
+        if len(self.columns) == 1 and not self.iterate and not self.excl_columns:
             return f'{data_name}["{self.columns[0]}"]'
         cols = ", ".join(f'"{c}"' for c in self.columns)
         return f'{data_name}[{cols}{suffix}]'
 
     def __hash__(self):
-        return hash((id(self.data), tuple(self.columns), self.iterate))
+        return hash((id(self.data), tuple(self.columns), self.iterate,
+                     tuple(self.excl_columns)))
 
 
 def _display_name(obj: Any) -> str:
