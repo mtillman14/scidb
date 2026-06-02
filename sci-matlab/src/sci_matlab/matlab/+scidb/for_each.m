@@ -722,6 +722,12 @@ function val = build_scifor_input_from_desc(desc)
                 val = scifor.PathInput(tmpl, 'root_folder', root, 'regex', is_regex);
             end
 
+        case 'colname'
+            % Deferred ColName() marker — rebuild the MATLAB-side scifor
+            % wrapper so +scifor/for_each.m substitutes the current
+            % for_columns column name per iteration.
+            val = scifor.ColName();
+
         case 'raw'
             val = scidb.internal.from_python(desc{'value'});
 
@@ -862,6 +868,19 @@ function spec = describe_input_for_python(val)
             'template', char(val.path_template), ...
             'root_folder', root_str, ...
             'regex', logical(val.regex)));
+
+    elseif isa(val, 'scidb.ColName')
+        % Deferred ColName() ships with no type_name; the Python bridge
+        % resolves it to a scifor.ColName() marker (current for_columns
+        % column). Static ColName(MyVar()) ships its type_name and is
+        % resolved to a column-name string during Python prepare.
+        if val.is_deferred()
+            spec = py.dict(pyargs('kind', 'colname', 'deferred', true));
+        else
+            scidb.internal.ensure_registered(class(val.var_type));
+            spec = py.dict(pyargs('kind', 'colname', 'deferred', false, ...
+                'type_name', class(val.var_type)));
+        end
 
     elseif istable(val)
         % A literal MATLAB table input: ship as a constant DataFrame so

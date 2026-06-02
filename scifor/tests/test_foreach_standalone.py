@@ -963,3 +963,99 @@ def test_colname_with_other_inputs():
     assert len(received) == 2
     assert received[0] == ("velocity", 2.0)
     assert received[1] == ("velocity", 2.0)
+
+
+# ---------------------------------------------------------------------------
+# Deferred ColName() — resolves to the current for_columns column
+# ---------------------------------------------------------------------------
+
+def test_deferred_colname_resolves_to_current_column():
+    """No-arg ColName() resolves per-column to the current for_columns column."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(v, col_name):
+        received.append(col_name)
+        return float(np.max(v))
+
+    result = for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
+                "col_name": ColName()},
+        subject=[1, 2],
+    )
+    # Two combos x two columns; each call sees the name of its current column.
+    assert received == ["a", "b", "a", "b"]
+    assert list(result["a"]) == [2.0, 4.0]
+    assert list(result["b"]) == [20.0, 40.0]
+
+
+def test_deferred_colname_with_as_table_iterate_input():
+    """Deferred ColName() works when the iterate input is fed as_table."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(v, col_name):
+        received.append(col_name)
+        # col_name tells the function which column to read without sniffing.
+        return float(v[col_name].max())
+
+    result = for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
+                "col_name": ColName()},
+        as_table=True,
+        subject=[1, 2],
+    )
+    assert received == ["a", "b", "a", "b"]
+    assert list(result["a"]) == [2.0, 4.0]
+    assert list(result["b"]) == [20.0, 40.0]
+
+
+def test_deferred_colname_with_two_zipped_iterate_inputs():
+    """Deferred ColName() resolves to the shared column axis of zipped inputs."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(x, y, col_name):
+        received.append(col_name)
+        return float(np.max(x)) + float(np.max(y))
+
+    result = for_each(
+        fn,
+        inputs={"x": ColumnSelection(df, ["a", "b"], iterate=True),
+                "y": ColumnSelection(df, ["a", "b"], iterate=True),
+                "col_name": ColName()},
+        subject=[1, 2],
+    )
+    assert received == ["a", "b", "a", "b"]
+    assert list(result["a"]) == [4.0, 8.0]
+    assert list(result["b"]) == [40.0, 80.0]
+
+
+def test_deferred_colname_without_iterate_input_raises():
+    """No-arg ColName() with no for_columns input is a hard error."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "velocity": [3.0, 4.0]})
+    with pytest.raises(ValueError, match="requires at least one iterate input"):
+        for_each(
+            lambda table, col_name: 0,
+            inputs={"table": df, "col_name": ColName()},
+            as_table=True,
+            subject=[1, 2],
+        )

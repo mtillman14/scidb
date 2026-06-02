@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 import scifor as _scifor
 
-from scidb import BaseVariable, configure_database, for_each, Fixed
+from scidb import BaseVariable, configure_database, for_each, Fixed, ColName
 
 
 SCHEMA = ["subject", "session"]
@@ -168,6 +168,46 @@ class TestForColumnsReassembly:
         d1 = DeltaGait.load(db=db, subject="1", session="A")
         assert list(d1.data.columns) == ["StepLength"]
         assert d1.data["StepLength"].iloc[0] == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# Deferred ColName() — resolves to the current for_columns column
+# ---------------------------------------------------------------------------
+
+def col_name_len(value, col_name):
+    """Return the length of the current column's name (proves col_name is the
+    source column being iterated, not a static single value)."""
+    return {"name_len": len(col_name)}
+
+
+class TestForColumnsDeferredColName:
+    def test_deferred_colname_resolves_per_column(self, db):
+        _seed_wide(db)
+
+        for_each(
+            col_name_len,
+            inputs={"value": GaitData.for_columns(), "col_name": ColName()},
+            outputs=[DeltaGait],
+            db=db,
+            subject=[], session=[],
+        )
+
+        # Per-column dict return -> "<col>__name_len"; the value is the length
+        # of that source column's own name (StepLength=10, Cadence=7).
+        d1 = DeltaGait.load(db=db, subject="1", session="A")
+        assert d1.data["StepLength__name_len"].iloc[0] == 10
+        assert d1.data["Cadence__name_len"].iloc[0] == 7
+
+    def test_deferred_colname_without_iterate_raises(self, db):
+        _seed_wide(db)
+        with pytest.raises(ValueError, match="requires at least one iterate input"):
+            for_each(
+                col_name_len,
+                inputs={"value": GaitData["StepLength"], "col_name": ColName()},
+                outputs=[DeltaGait],
+                db=db,
+                subject=[], session=[],
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -169,6 +169,14 @@ def _reconstruct_input_for_keys(spec):
             cols,
             iterate=bool(spec.get("iterate", False)),
         )
+    if kind == "colname":
+        from scidb.colname import ColName
+        # Deferred ColName() -> no var_type; _convert_inputs turns it into a
+        # scifor.ColName() marker. Static ColName(MyVar) carries type_name and
+        # is resolved to a column-name string during prepare.
+        if spec.get("deferred", False):
+            return ColName()
+        return ColName(get_surrogate_class(spec["type_name"]))
     if kind == "fixed":
         from scidb.fixed import Fixed
         inner = _reconstruct_input_for_keys(spec["inner"])
@@ -756,9 +764,15 @@ def for_each_describe_loaded_input(val):
     from scifor.column_selection import ColumnSelection as _SciforColSel
     from scifor.merge import Merge as _SciforMerge
     from scifor.pathinput import PathInput as _SciforPathInput
+    from scifor.colname import ColName as _SciforColName
 
     if isinstance(val, pd.DataFrame):
         return {"kind": "dataframe", "data": val}
+    if isinstance(val, _SciforColName):
+        # _convert_inputs only ever leaves a deferred (no-arg) ColName in
+        # loaded_inputs (static ColName(MyVar) was resolved to a string).
+        # MATLAB rebuilds scifor.ColName() to substitute the current column.
+        return {"kind": "colname"}
     if isinstance(val, _SciforFixed):
         return {
             "kind": "fixed",

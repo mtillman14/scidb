@@ -5,16 +5,22 @@ from typing import Any
 
 class ColName:
     """
-    Marker that resolves to the single non-schema data column name.
+    Marker that resolves to a data column name string at for_each time.
 
-    Use this when a function needs to know the name of the data column
-    in a DataFrame, but the function itself should stay framework-agnostic.
+    Two forms:
 
-    Works with plain DataFrames (standalone mode). At for_each time,
-    ColName(df) is replaced by the string name of the single data column
-    (i.e., the one column that is not a schema key).
+    1. ``ColName(df)`` — *static*. Resolves once, up front, to the single
+       non-schema data column name of ``df``. Use when a function needs to know
+       the name of the one data column in a DataFrame but should stay
+       framework-agnostic. Raises ValueError if ``df`` has 0 or 2+ non-schema
+       data columns.
 
-    Example:
+    2. ``ColName()`` — *deferred*. Resolves per-column inside a ``for_columns``
+       iteration to the name of the column currently being fed to the function.
+       Requires at least one iterate input (``for_columns`` /
+       ``ColumnSelection(..., iterate=True)``); using it without one is an error.
+
+    Example (static):
         set_schema(["subject", "session"])
         result = for_each(
             analyze,
@@ -27,12 +33,24 @@ class ColName:
         def analyze(table, col_name):
             return table[col_name].mean()
 
-    Raises ValueError if the DataFrame has 0 or 2+ non-schema data columns.
+    Example (deferred, current for_columns column):
+        for_each(
+            analyze,
+            inputs={"df": means_df.for_columns(), "col_name": ColName()},
+            subject=[],
+        )
     """
 
-    def __init__(self, data: Any):
+    def __init__(self, data: Any = None):
         """
         Args:
-            data: A pandas DataFrame whose single data column name will be resolved.
+            data: A pandas DataFrame whose single data column name will be
+                resolved (static form). Omit it for the deferred form, which
+                resolves to the current ``for_columns`` column.
         """
         self.data = data
+
+    @property
+    def is_deferred(self) -> bool:
+        """True for the no-arg form (resolves to the current for_columns column)."""
+        return self.data is None

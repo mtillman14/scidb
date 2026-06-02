@@ -107,6 +107,72 @@ Tests: `scifor/tests/test_foreach_standalone.py::test_iterate_as_table_*`,
 `tests/matlab/scifor/TestSciforForEachFeatures.m::test_iterate_as_table_*`, and
 `scidb/tests/test_for_columns.py::TestForColumnsAsTable`.
 
+## Current column name via `ColName()`
+
+A for_columns function often needs to know *which* column it is currently
+processing — e.g. to label its output, or to read the right column from an
+`as_table` frame — without sniffing "the one non-schema column." The **deferred
+(no-arg) `ColName()`** marker provides it:
+
+```python
+for_each(analyze,
+         inputs={"df": means_df.for_columns(), "col_name": ColName()},
+         outputs=[Result], subject=[])
+```
+
+```matlab
+scidb.for_each(@analyze, ...
+    struct('df', MeansVar().for_columns(), 'col_name', scidb.ColName()), ...
+    {Result()}, subject=[])
+```
+
+On each per-column pass, `ColName()` is replaced with the **string name of the
+column currently being iterated**. This is distinct from the *static*
+`ColName(df)` / `ColName(MyVar)` form, which resolves **once, up front**, to the
+single non-schema data column of a frame (and errors on 2+ columns — so it can't
+serve a wide for_columns source).
+
+**Two forms, one class:**
+
+| Form | When resolved | Resolves to |
+|------|---------------|-------------|
+| `ColName(df)` / `ColName(MyVar)` (static) | up front, Step 4 | the single data column name |
+| `ColName()` (deferred) | per-column, in the iteration loop | the current for_columns column |
+
+**Rules:**
+
+- Deferred `ColName()` **requires at least one iterate input**. With no
+  for_columns input there is nothing to resolve against, so it is a hard error
+  (`ValueError` Python / `scifor:ColName` MATLAB) raised before the run — it must
+  never reach the non-iterate call path.
+- When multiple iterate inputs are zipped, the column axis is shared, so
+  `ColName()` is unambiguous (it equals the single current column name).
+- It is classified as a *constant* input (not a data input), so it flows
+  untouched into the per-column loop and is substituted there.
+
+**Implementation:**
+
+- Python scifor: `colname.py` (`data=None` default + `is_deferred`);
+  `foreach.py` Step 4 (`_resolve_colnames`) skips deferred markers; Step 6.5
+  validates "deferred ⇒ iterate present"; `_run_column_iteration` substitutes
+  the current `col` for each deferred-marker kwarg.
+- Python scidb: `colname.py` (`var_type=None` + `is_deferred`); `foreach.py`
+  `_convert_inputs` turns a deferred `scidb.ColName()` into a
+  `scifor.ColName()` marker (instead of hitting the DB) so the scifor engine
+  resolves it per column.
+- MATLAB scifor: `+scifor/ColName.m` (zero-arg + `is_deferred`); `+scifor/for_each.m`
+  mirrors the skip / validate / per-column substitute in `run_column_iteration`.
+- MATLAB scidb + bridge: `+scidb/ColName.m` (zero-arg); `describe_input_for_python`
+  ships `kind='colname'` with a `deferred` flag; `bridge._reconstruct_input_for_keys`
+  rebuilds `scidb.ColName()`; `bridge.for_each_describe_loaded_input` describes a
+  leftover deferred `scifor.ColName` back as `kind='colname'`, and
+  `build_scifor_input_from_desc` rebuilds `scifor.ColName()` MATLAB-side.
+
+Tests: `scifor/tests/test_foreach_standalone.py::test_deferred_colname_*`,
+`scidb/tests/test_for_columns.py::TestForColumnsDeferredColName`,
+`tests/matlab/scifor/TestSciforForEachFeatures.m::test_deferred_colname_*`,
+`tests/matlab/scidb/TestForColumns.m::test_deferred_colname_*`.
+
 ## Multi-output per column
 
 A for_columns function may return **more than one named value per source

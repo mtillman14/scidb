@@ -177,11 +177,17 @@ function varargout = for_each(fn, inputs, varargin)
         distribute_key = schema_keys(deepest_idx + 1);
     end
 
-    % --- Resolve ColName wrappers before the data/constant split ---
+    % --- Resolve static ColName(tbl) wrappers before the data/constant split.
+    %     Deferred ColName() markers (no table) are left in place — they resolve
+    %     per-column inside the for_columns iteration loop (validated below). ---
     input_names = fieldnames(inputs);
     for p = 1:numel(input_names)
         var_spec = inputs.(input_names{p});
-        if isa(var_spec, 'scifor.ColName')
+        if isa(var_spec, 'scifor.ColName') && var_spec.is_deferred()
+            % No-arg ColName() — leave in place; resolved per-column in
+            % run_column_iteration.
+            continue
+        elseif isa(var_spec, 'scifor.ColName')
             inner_tbl = var_spec.data;
             if ~istable(inner_tbl)
                 error('scifor:ColName', ...
@@ -251,6 +257,26 @@ function varargout = for_each(fn, inputs, varargin)
         end
     end
     has_iterate = any(iterate_pos);
+
+    % Deferred ColName() markers resolve to the current iterated column, so they
+    % require at least one for_columns input. (Static ColName(tbl) was already
+    % resolved to a char above, so only no-arg markers remain here.)
+    deferred_colname_names = {};
+    for p = 1:n_inputs
+        var_spec = inputs.(input_names{p});
+        if isa(var_spec, 'scifor.ColName') && var_spec.is_deferred()
+            deferred_colname_names{end+1} = input_names{p}; %#ok<AGROW>
+        end
+    end
+    if ~isempty(deferred_colname_names) && ~has_iterate
+        error('scifor:ColName', ...
+            ['ColName() with no argument resolves to the current for_columns ' ...
+             'column, so it requires at least one iterate input ' ...
+             '(ColumnSelection(..., iterate=true)). Deferred ColName() ' ...
+             'input(s): %s. Use ColName(tbl) for the static single-column ' ...
+             'form instead.'], strjoin(string(deferred_colname_names), ', '));
+    end
+
     iterate_columns = string.empty;
     if has_iterate
         first_set = true;
@@ -868,11 +894,22 @@ function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_t
     sep = '__';
     n = numel(iterate_columns);
     iter_positions = find(iterate_pos);
+    % Constant positions holding a deferred ColName() marker resolve to the name
+    % of the column currently being iterated (recomputed each pass below).
+    deferred_colname_positions = [];
+    for k = 1:numel(base_args)
+        if isa(base_args{k}, 'scifor.ColName') && base_args{k}.is_deferred()
+            deferred_colname_positions(end+1) = k; %#ok<AGROW>
+        end
+    end
     out_names = {};
     out_values = {};
     for ci = 1:n
         col = char(iterate_columns(ci));
         call_args = base_args;
+        for di = 1:numel(deferred_colname_positions)
+            call_args{deferred_colname_positions(di)} = col;
+        end
         for pi = 1:numel(iter_positions)
             p = iter_positions(pi);
             t = iterate_tables{p};

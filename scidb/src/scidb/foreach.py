@@ -1370,7 +1370,16 @@ def _convert_inputs(
     total_t0 = time.perf_counter()
     for param_name, var_spec in inputs.items():
         if isinstance(var_spec, ColName):
-            result[param_name] = _resolve_colname_from_db(var_spec, db)
+            if var_spec.is_deferred:
+                # No-arg ColName() resolves to the current for_columns column;
+                # hand the scifor engine a deferred marker so it substitutes the
+                # column name per-iteration (validated there against the
+                # presence of an iterate input).
+                from scifor import ColName as SciforColName
+                result[param_name] = SciforColName()
+                Log.debug(f"input '{param_name}': deferred ColName() -> scifor marker")
+            else:
+                result[param_name] = _resolve_colname_from_db(var_spec, db)
         elif _is_loadable(var_spec):
             t0 = time.perf_counter()
             loaded = _load_input(var_spec, db, where)

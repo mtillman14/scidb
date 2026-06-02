@@ -114,11 +114,22 @@ def for_each(
     elif _log_fn:
         _log_fn("[scifor] Step 3: distribute=False, skipping validation")
 
-    # Step 4: Resolve ColName wrappers before the data/constant split
+    # Step 4: Resolve static ColName(df) wrappers before the data/constant split.
+    # Deferred ColName() markers (no DataFrame) are left in place — they resolve
+    # per-column inside the for_columns iteration loop (validated at Step 6.5).
     if _log_fn:
-        colname_count = sum(1 for v in inputs.values() if isinstance(v, ColName))
-        if colname_count > 0:
-            _log_fn(f"[scifor] Step 4: resolving {colname_count} ColName wrapper(s)")
+        static_count = sum(
+            1 for v in inputs.values() if isinstance(v, ColName) and not v.is_deferred
+        )
+        deferred_count = sum(
+            1 for v in inputs.values() if isinstance(v, ColName) and v.is_deferred
+        )
+        if static_count or deferred_count:
+            _log_fn(
+                f"[scifor] Step 4: resolving {static_count} static ColName(df) "
+                f"wrapper(s); deferring {deferred_count} no-arg ColName() marker(s) "
+                f"to for_columns iteration"
+            )
         else:
             _log_fn("[scifor] Step 4: no ColName wrappers to resolve")
     inputs = _resolve_colnames(inputs, schema_keys)
@@ -161,6 +172,23 @@ def for_each(
         name for name, spec in data_inputs.items()
         if getattr(_unwrap_column_selection(spec), "iterate", False)
     ]
+
+    # Deferred ColName() markers resolve to the current iterated column, so they
+    # require at least one for_columns input. (Static ColName(df) was already
+    # resolved to a string at Step 4, so only no-arg markers remain here.)
+    deferred_colname_params = [
+        name for name, v in constant_inputs.items()
+        if isinstance(v, ColName) and v.is_deferred
+    ]
+    if deferred_colname_params and not iterate_params:
+        raise ValueError(
+            f"ColName() with no argument resolves to the current for_columns "
+            f"column, so it requires at least one iterate input "
+            f"(for_columns() / ColumnSelection(..., iterate=True)). "
+            f"Deferred ColName() input(s): {deferred_colname_params}. "
+            f"Use ColName(df) for the static single-column form instead."
+        )
+
     iterate_columns: list[str] | None = None
     if iterate_params:
         col_sets = {
@@ -524,8 +552,16 @@ def _run_column_iteration(
     import pandas as pd
 
     ordered: list[tuple[str, Any]] = []
+    # Constant inputs that are deferred ColName() markers resolve to the name of
+    # the column currently being iterated (recomputed each pass below).
+    deferred_colname_params = [
+        name for name, v in base_kwargs.items()
+        if isinstance(v, ColName) and v.is_deferred
+    ]
     for col in iterate_columns:
         call_kwargs = dict(base_kwargs)
+        for name in deferred_colname_params:
+            call_kwargs[name] = col
         for name, df in iterate_dfs.items():
             if name in as_table_set:
                 keep = [c for c in df.columns if c in schema_keys] + [col]
@@ -630,17 +666,24 @@ def _is_dataframe(value: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 def _resolve_colnames(inputs: dict[str, Any], schema_keys: list[str]) -> dict[str, Any]:
-    """Replace ColName wrappers with the resolved column name string.
+    """Replace static ColName(df) wrappers with the resolved column name string.
 
-    For each ColName(df) in inputs:
+    For each static ColName(df) in inputs:
     1. Get the inner DataFrame
     2. Compute data_cols = columns not in schema_keys
     3. If exactly 1 data column -> replace with the string name
     4. Otherwise -> raise ValueError
+
+    Deferred (no-arg) ColName() markers are passed through unchanged — they are
+    resolved per-column during for_columns iteration (_run_column_iteration).
     """
     resolved = {}
     for param_name, var_spec in inputs.items():
-        if isinstance(var_spec, ColName):
+        if isinstance(var_spec, ColName) and var_spec.is_deferred:
+            # No-arg ColName() — leave in place; resolved per-column during
+            # for_columns iteration (see _run_column_iteration).
+            resolved[param_name] = var_spec
+        elif isinstance(var_spec, ColName):
             df = var_spec.data
             if not _is_dataframe(df):
                 raise TypeError(

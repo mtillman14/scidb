@@ -106,6 +106,39 @@ classdef TestForColumns < matlab.unittest.TestCase
         end
 
         % -----------------------------------------------------------------
+        % Deferred ColName() — resolves to the current for_columns column
+        % -----------------------------------------------------------------
+
+        function test_deferred_colname_resolves_per_column(testCase)
+            testCase.seedWide();
+
+            scidb.for_each(@col_name_len, ...
+                struct('value', GaitData().for_columns(), ...
+                       'col_name', scidb.ColName()), ...
+                {DeltaGait()}, ...
+                'subject', [], 'session', []);
+
+            % Per-column struct return -> "<col>__name_len"; the value is the
+            % length of that source column's own name (StepLength=10, Cadence=7).
+            d1 = DeltaGait().load('subject', "1", 'session', "A");
+            testCase.verifyEqual(d1.data.StepLength__name_len(1), 10);
+            testCase.verifyEqual(d1.data.Cadence__name_len(1), 7);
+        end
+
+        function test_deferred_colname_without_iterate_errors(testCase)
+            testCase.seedWide();
+
+            % A plain (non-iterate) variable input -> no for_columns axis, so
+            % the deferred ColName() has nothing to resolve against and errors.
+            testCase.verifyError(@() scidb.for_each(@col_name_len, ...
+                struct('value', GaitData(), ...
+                       'col_name', scidb.ColName()), ...
+                {DeltaGait()}, ...
+                'subject', [], 'session', []), ...
+                ?MException);
+        end
+
+        % -----------------------------------------------------------------
         % Two for_columns inputs zipped by name (baseline + value)
         % -----------------------------------------------------------------
 

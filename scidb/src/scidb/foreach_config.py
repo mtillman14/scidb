@@ -142,9 +142,20 @@ class ForEachConfig:
         return call_id_from_version_keys(self.to_version_keys())
 
     def _get_direct_constants(self) -> dict:
-        """Return scalar constant inputs (non-loadable values)."""
+        """Return scalar constant inputs (non-loadable values).
+
+        ColName markers are excluded: they are resolution markers, not real
+        constant values (the no-arg form is not even serializable), and their
+        effect is fully determined by the resolved column — which derives from
+        the input variable (already captured in ``__inputs``) and the function.
+        Including the marker object would also break version-key hashing.
+        """
         from .foreach import _is_loadable
-        return {k: v for k, v in self.inputs.items() if not _is_loadable(v)}
+        from .colname import ColName
+        return {
+            k: v for k, v in self.inputs.items()
+            if not _is_loadable(v) and not isinstance(v, ColName)
+        }
 
     def _serialize_inputs(self) -> dict:
         """Serialize loadable inputs to a dict.

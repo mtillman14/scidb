@@ -471,6 +471,48 @@ classdef TestSciforForEachFeatures < matlab.unittest.TestCase
             tc.verifyEqual(result.b, [20;40]);
         end
 
+        function test_deferred_colname_resolves_to_current_column(tc)
+        %   No-arg scifor.ColName() resolves per-column to the name of the
+        %   column currently being iterated by for_columns.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;1;2;2], [1;2;3;4], [10;20;30;40], ...
+                'VariableNames', {'subject','a','b'});
+
+            received = strings(0, 1);
+
+            function out = colmax(v, col_name)
+                received(end+1) = string(col_name); %#ok<AGROW>
+                out = max(v);
+            end
+
+            result = scifor.for_each(@colmax, ...
+                struct('v', scifor.ColumnSelection(tbl, ["a" "b"], true), ...
+                       'col_name', scifor.ColName()), ...
+                subject=[1 2]);
+
+            % Two combos x two columns; each call sees its current column name.
+            tc.verifyEqual(received, ["a";"b";"a";"b"]);
+            tc.verifyEqual(result.a, [2;4]);
+            tc.verifyEqual(result.b, [20;40]);
+        end
+
+        function test_deferred_colname_without_iterate_errors(tc)
+        %   No-arg scifor.ColName() with no for_columns input is a hard error.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;2], [3;4], 'VariableNames', {'subject','velocity'});
+
+            function out = fn(t, col_name) %#ok<INUSD>
+                out = 0;
+            end
+
+            tc.verifyError(@() scifor.for_each(@fn, ...
+                struct('t', tbl, 'col_name', scifor.ColName()), ...
+                as_table=true, subject=[1 2]), ...
+                'scifor:ColName');
+        end
+
         function test_iterate_as_table_passes_table_with_schema_cols(tc)
         %   iterate=true + as_table feeds a table with all schema cols + the
         %   one current column; non-selected data columns are dropped.
