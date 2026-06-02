@@ -1059,3 +1059,45 @@ def test_deferred_colname_without_iterate_input_raises():
             as_table=True,
             subject=[1, 2],
         )
+
+
+# ---------------------------------------------------------------------------
+# Bare ColName class (forgiving, no parentheses) is normalized to ColName()
+# ---------------------------------------------------------------------------
+
+def test_bare_colname_class_resolves_like_deferred():
+    """Passing the bare ColName class behaves like the deferred ColName()."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(v, col_name):
+        received.append(col_name)
+        return float(np.max(v))
+
+    result = for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
+                "col_name": ColName},  # bare class, no parentheses
+        subject=[1, 2],
+    )
+    assert received == ["a", "b", "a", "b"]
+    assert list(result["a"]) == [2.0, 4.0]
+    assert list(result["b"]) == [20.0, 40.0]
+
+
+def test_bare_colname_class_without_iterate_input_raises_clear_error():
+    """Bare ColName class with no for_columns input names the bare-class mistake."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "velocity": [3.0, 4.0]})
+    with pytest.raises(ValueError, match="bare ColName class"):
+        for_each(
+            lambda table, col_name: 0,
+            inputs={"table": df, "col_name": ColName},  # bare class, no parentheses
+            as_table=True,
+            subject=[1, 2],
+        )

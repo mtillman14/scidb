@@ -57,6 +57,22 @@ def for_each(
     """
     schema_keys = get_schema()
 
+    # Step 0: Forgive a bare ColName class passed without parentheses.
+    # `scifor.ColName` (uninstantiated) can only mean the no-arg deferred form,
+    # since there is no DataFrame to attach. Normalize it to ColName() so all
+    # downstream isinstance(v, ColName) checks treat it uniformly. We remember
+    # which inputs arrived this way to give a clearer error if they turn out to
+    # lack a for_columns input to resolve against.
+    bare_colname_params = [
+        name for name, v in inputs.items()
+        if isinstance(v, type) and issubclass(v, ColName)
+    ]
+    if bare_colname_params:
+        inputs = {
+            name: (v() if (isinstance(v, type) and issubclass(v, ColName)) else v)
+            for name, v in inputs.items()
+        }
+
     # Step 1: Resolve output_names
     if output_names is None:
         resolved_output_names = ["output"]
@@ -181,12 +197,23 @@ def for_each(
         if isinstance(v, ColName) and v.is_deferred
     ]
     if deferred_colname_params and not iterate_params:
+        bare_here = [p for p in deferred_colname_params if p in bare_colname_params]
+        if bare_here:
+            hint = (
+                f"Input(s) {bare_here} were given the bare ColName class "
+                f"(no parentheses), which is treated as the deferred ColName() form. "
+                f"If you meant the static single-column form, instantiate it with a "
+                f"DataFrame: ColName(df). Otherwise add a for_columns input to "
+                f"iterate over."
+            )
+        else:
+            hint = "Use ColName(df) for the static single-column form instead."
         raise ValueError(
             f"ColName() with no argument resolves to the current for_columns "
             f"column, so it requires at least one iterate input "
             f"(for_columns() / ColumnSelection(..., iterate=True)). "
             f"Deferred ColName() input(s): {deferred_colname_params}. "
-            f"Use ColName(df) for the static single-column form instead."
+            f"{hint}"
         )
 
     iterate_columns: list[str] | None = None

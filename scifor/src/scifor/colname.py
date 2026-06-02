@@ -20,6 +20,10 @@ class ColName:
        Requires at least one iterate input (``for_columns`` /
        ``ColumnSelection(..., iterate=True)``); using it without one is an error.
 
+    As a convenience, passing the bare class ``ColName`` (no parentheses) is
+    accepted and treated as the deferred ``ColName()`` form — the only form it
+    can mean, since there is no DataFrame to attach.
+
     Example (static):
         set_schema(["subject", "session"])
         result = for_each(
