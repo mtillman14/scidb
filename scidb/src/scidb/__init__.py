@@ -45,7 +45,7 @@ from .each_of import EachOf
 from .foreach_config import ForEachConfig
 
 # From scifor (Layer 1)
-from scifor import Col, set_schema, get_schema, PathInput
+from scifor import Col, set_schema, get_schema, PathInput, PathOutput
 
 from .variable import BaseVariable
 from .filters import raw_sql, schema_key
@@ -94,6 +94,7 @@ __all__ = [
     "EachOf",
     "ForEachConfig",
     "PathInput",
+    "PathOutput",
     # Standalone / DataFrame support
     "Col",
     "set_schema",

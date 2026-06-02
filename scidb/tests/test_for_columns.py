@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 import scifor as _scifor
 
-from scidb import BaseVariable, configure_database, for_each, Fixed, ColName
+from scidb import BaseVariable, configure_database, for_each, Fixed, ColName, PathOutput
 
 
 SCHEMA = ["subject", "session"]
@@ -180,6 +180,11 @@ def col_name_len(value, col_name):
     return {"name_len": len(col_name)}
 
 
+def capture_filename(value, filename):
+    """Return the per-column filename so a test can assert templating happened."""
+    return {"fname": str(filename)}
+
+
 class TestForColumnsDeferredColName:
     def test_deferred_colname_resolves_per_column(self, db):
         _seed_wide(db)
@@ -204,6 +209,47 @@ class TestForColumnsDeferredColName:
             for_each(
                 col_name_len,
                 inputs={"value": GaitData["StepLength"], "col_name": ColName()},
+                outputs=[DeltaGait],
+                db=db,
+                subject=[], session=[],
+            )
+
+
+class TestForColumnsPathOutput:
+    def test_pathoutput_resolves_metadata_and_column(self, db, tmp_path):
+        """PathOutput substitutes combo metadata ({subject}) and the current
+        column ({ColName}), reaching the function as a plain per-column Path."""
+        _seed_wide(db)
+        root = tmp_path / "out"
+
+        for_each(
+            capture_filename,
+            inputs={
+                "value": GaitData.for_columns(),
+                "filename": PathOutput(root / "{subject}_{ColName}_anova2way.pdf"),
+            },
+            outputs=[DeltaGait],
+            db=db,
+            subject=[], session=[],
+        )
+
+        d1 = DeltaGait.load(db=db, subject="1", session="A")
+        assert d1.data["StepLength__fname"].iloc[0] == str(root / "1_StepLength_anova2way.pdf")
+        assert d1.data["Cadence__fname"].iloc[0] == str(root / "1_Cadence_anova2way.pdf")
+
+        d2 = DeltaGait.load(db=db, subject="2", session="A")
+        assert d2.data["StepLength__fname"].iloc[0] == str(root / "2_StepLength_anova2way.pdf")
+
+    def test_pathoutput_colname_token_without_iterate_raises(self, db):
+        """{ColName} resolves per-column, so it still requires an iterate input."""
+        _seed_wide(db)
+        with pytest.raises(ValueError, match="requires at least one iterate input"):
+            for_each(
+                capture_filename,
+                inputs={
+                    "value": GaitData["StepLength"],
+                    "filename": PathOutput("{ColName}.pdf"),
+                },
                 outputs=[DeltaGait],
                 db=db,
                 subject=[], session=[],

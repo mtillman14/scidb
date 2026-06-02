@@ -144,17 +144,21 @@ class ForEachConfig:
     def _get_direct_constants(self) -> dict:
         """Return scalar constant inputs (non-loadable values).
 
-        ColName markers are excluded: they are resolution markers, not real
-        constant values (the no-arg form is not even serializable), and their
-        effect is fully determined by the resolved column — which derives from
-        the input variable (already captured in ``__inputs``) and the function.
-        Including the marker object would also break version-key hashing.
+        ColName and PathOutput markers are excluded: they are resolution
+        markers, not real constant values, and their effect is determined per
+        combo/column at run time rather than being a fixed scalar. ColName
+        resolves from the input variable (already captured in ``__inputs``);
+        PathOutput resolves a template into an output path, which is write
+        bookkeeping rather than computation identity. Including either raw
+        marker object would also break version-key hashing (they are not
+        JSON-serializable).
         """
         from .foreach import _is_loadable
         from .colname import ColName
+        from scifor import PathOutput
         return {
             k: v for k, v in self.inputs.items()
-            if not _is_loadable(v) and not isinstance(v, ColName)
+            if not _is_loadable(v) and not isinstance(v, (ColName, PathOutput))
         }
 
     def _serialize_inputs(self) -> dict:

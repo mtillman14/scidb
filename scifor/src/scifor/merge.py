@@ -85,6 +85,32 @@ class Merge:
             **metadata,
         )
 
+    def as_df(self, where=None, verbose: bool = False, **metadata: Any):
+        """Inner-join the constituents and return the result as a pandas DataFrame.
+
+        Same join and filter semantics as :meth:`to_csv` (per-constituent
+        ``**metadata`` filters, post-join ``where=``, one copy of the shared
+        schema columns), but returns the DataFrame instead of writing a file.
+        ``pd.DataFrame(Merge(...))`` is intentionally not supported — use this.
+
+        Args:
+            where: Optional scifor ColName/Col filter applied to the joined table.
+            verbose: If True, print diagnostic logging of the join (NOTE 2).
+            **metadata: Per-constituent row filters on matching schema columns.
+
+        Example:
+            merged = Merge(step_df, speed_df)
+            df = merged.as_df(subject=[1, 2])
+        """
+        from .csv_export import merge_to_dataframe
+
+        return merge_to_dataframe(
+            self,
+            where=where,
+            _log_fn=print if verbose else None,
+            **metadata,
+        )
+
     @property
     def __name__(self) -> str:
         """Display name for format_inputs and error messages."""

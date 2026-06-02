@@ -1,11 +1,15 @@
-"""CSV export for ``scifor.Merge``: inner-join constituents into a flat table.
+"""Flat-table export for ``scifor.Merge``: inner-join constituents into one frame.
+
+``merge_to_dataframe`` builds the joined pandas DataFrame; ``export_merge_csv`` is
+a thin wrapper that writes it to a ``.csv``. Both back ``Merge.as_df`` and
+``Merge.to_csv`` respectively.
 
 Unlike the ``for_each`` merge path (``_prepare_merge``/``_merge_parts`` in
 ``foreach.py``), which combo-filters each constituent then positionally
-concatenates after *dropping* the schema columns, this export performs a real
+concatenates after *dropping* the schema columns, this performs a real
 ``pd.merge(how="inner")`` across the constituents and keeps a single copy of the
-shared schema columns. There is no per-combo iteration here — ``to_csv`` is
-handed the whole constituent DataFrames at once.
+shared schema columns. There is no per-combo iteration here — the whole
+constituent DataFrames are joined at once.
 
 Non-schema columns are assumed not to overlap between constituents (caller
 guarantee), so the columns common to any two constituents are exactly the shared
@@ -15,24 +19,26 @@ schema columns, which become the join keys.
 from typing import Any
 
 
-def export_merge_csv(
+def merge_to_dataframe(
     merge: Any,
-    filename: str,
     where=None,
     _log_fn: "Any" = None,
     **metadata: Any,
-) -> None:
-    """Inner-join a ``Merge``'s constituents and write the result to ``filename``.
+) -> "Any":
+    """Inner-join a ``Merge``'s constituents and return the joined DataFrame.
 
     Args:
         merge: A ``scifor.Merge`` instance.
-        filename: Output path; must end with ``.csv``.
         where: Optional scifor ColName/Col filter applied once to the joined
             table (so it may reference columns from any constituent).
         _log_fn: Optional ``Callable[[str], None]`` for diagnostics (NOTE 2).
         **metadata: Row filters applied per constituent on any matching schema
             column. A scalar matches by equality; a list/tuple/set matches by
             membership. Keys absent from a given constituent are skipped.
+
+    Returns:
+        The inner-joined pandas DataFrame with one copy of the shared schema
+        columns plus every selected data column.
     """
     import pandas as pd
 
@@ -49,13 +55,8 @@ def export_merge_csv(
         if _log_fn is not None:
             _log_fn(f"[scifor] {msg}")
 
-    if not isinstance(filename, str) or not filename.endswith(".csv"):
-        raise ValueError(
-            f"to_csv() filename must be a string ending with '.csv', got {filename!r}."
-        )
-
     schema_keys = get_schema()
-    _log(f"to_csv: schema keys = {schema_keys or '(unset)'}")
+    _log(f"merge: schema keys = {schema_keys or '(unset)'}")
 
     parts: list[tuple[str, "pd.DataFrame"]] = []
     for i, spec in enumerate(merge.tables):
@@ -87,7 +88,7 @@ def export_merge_csv(
         part_df = filtered[keep].reset_index(drop=True)
 
         _log(
-            f"to_csv: {label} -> {part_df.shape[0]} row(s) x {part_df.shape[1]} "
+            f"merge: {label} -> {part_df.shape[0]} row(s) x {part_df.shape[1]} "
             f"col(s); schema={schema_present}, data={data_cols}"
         )
         parts.append((label, part_df))
@@ -105,7 +106,7 @@ def export_merge_csv(
                 f"{label} columns: {list(part.columns)}. Schema keys: "
                 f"{schema_keys or '(unset — call set_schema())'}."
             )
-        _log(f"to_csv: joining {label} into {acc_label} on {join_keys}")
+        _log(f"merge: joining {label} into {acc_label} on {join_keys}")
         acc = pd.merge(acc, part, on=join_keys, how="inner")
         acc_label = f"{acc_label}+{label}"
 
@@ -114,13 +115,36 @@ def export_merge_csv(
     if where is not None:
         before = len(acc)
         acc = _apply_where_filter(acc, where)
-        _log(f"to_csv: where= filter kept {len(acc)}/{before} row(s)")
+        _log(f"merge: where= filter kept {len(acc)}/{before} row(s)")
 
-    _log(
-        f"to_csv: writing {acc.shape[0]} row(s) x {acc.shape[1]} col(s) "
-        f"to {filename!r}"
-    )
-    acc.to_csv(filename, index=False)
+    _log(f"merge: result {acc.shape[0]} row(s) x {acc.shape[1]} col(s)")
+    return acc
+
+
+def export_merge_csv(
+    merge: Any,
+    filename: str,
+    where=None,
+    _log_fn: "Any" = None,
+    **metadata: Any,
+) -> None:
+    """Inner-join a ``Merge``'s constituents and write the result to ``filename``.
+
+    Thin wrapper over ``merge_to_dataframe``; ``filename`` must end with ``.csv``.
+    """
+    if not isinstance(filename, str) or not filename.endswith(".csv"):
+        raise ValueError(
+            f"to_csv() filename must be a string ending with '.csv', got {filename!r}."
+        )
+
+    df = merge_to_dataframe(merge, where=where, _log_fn=_log_fn, **metadata)
+
+    if _log_fn is not None:
+        _log_fn(
+            f"[scifor] to_csv: writing {df.shape[0]} row(s) x {df.shape[1]} "
+            f"col(s) to {filename!r}"
+        )
+    df.to_csv(filename, index=False)
 
 
 def _filter_rows_by_metadata(

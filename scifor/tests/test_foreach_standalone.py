@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 import scifor
-from scifor import set_schema, for_each, Fixed, Merge, ColumnSelection, Col, ColName
+from scifor import set_schema, for_each, Fixed, Merge, ColumnSelection, Col, ColName, PathOutput
 
 
 def setup_function():
@@ -1235,6 +1235,143 @@ def test_bare_colname_class_without_iterate_input_raises_clear_error():
         for_each(
             lambda table, col_name: 0,
             inputs={"table": df, "col_name": ColName},  # bare class, no parentheses
+            as_table=True,
+            subject=[1, 2],
+        )
+
+
+# ---------------------------------------------------------------------------
+# PathOutput — output-path template (combo metadata + {ColName})
+# ---------------------------------------------------------------------------
+
+def test_pathoutput_colname_token_resolves_per_column():
+    """PathOutput(Path) substitutes {ColName} per column and preserves Path type."""
+    from pathlib import Path
+
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(v, filename):
+        received.append(filename)
+        return float(np.max(v))
+
+    root = Path("/tmp/anova")
+    result = for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
+                "filename": PathOutput(root / "{ColName}_anova2way.pdf")},
+        subject=[1, 2],
+    )
+    # Two combos x two columns; each call sees its own per-column Path.
+    assert received == [
+        Path("/tmp/anova/a_anova2way.pdf"),
+        Path("/tmp/anova/b_anova2way.pdf"),
+        Path("/tmp/anova/a_anova2way.pdf"),
+        Path("/tmp/anova/b_anova2way.pdf"),
+    ]
+    assert all(isinstance(p, Path) for p in received)
+    assert list(result["a"]) == [2.0, 4.0]
+    assert list(result["b"]) == [20.0, 40.0]
+
+
+def test_pathoutput_str_template_preserves_str_type():
+    """PathOutput(str) substitutes {ColName} and returns a str (not a Path)."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1],
+        "a": [1.0, 2.0],
+        "b": [10.0, 20.0],
+    })
+    received = []
+
+    def fn(v, filename):
+        received.append(filename)
+        return float(np.max(v))
+
+    for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
+                "filename": PathOutput("{ColName}_results.json")},
+        subject=[1],
+    )
+    assert received == ["a_results.json", "b_results.json"]
+    assert all(isinstance(s, str) for s in received)
+
+
+def test_pathoutput_substitutes_combo_metadata():
+    """PathOutput fills {subject} from the combo metadata (no for_columns needed)."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "velocity": [3.0, 4.0]})
+    received = []
+
+    def fn(velocity, filename):
+        received.append(filename)
+        return float(np.max(velocity))
+
+    for_each(
+        fn,
+        inputs={"velocity": ColumnSelection(df, ["velocity"]),
+                "filename": PathOutput("subject_{subject}.pdf")},
+        subject=[1, 2],
+    )
+    assert received == ["subject_1.pdf", "subject_2.pdf"]
+
+
+def test_pathoutput_combines_metadata_and_column():
+    """PathOutput fills both {subject} (combo) and {ColName} (current column)."""
+    set_schema(["subject"])
+    df = pd.DataFrame({
+        "subject": [1, 1, 2, 2],
+        "a": [1.0, 2.0, 3.0, 4.0],
+        "b": [10.0, 20.0, 30.0, 40.0],
+    })
+    received = []
+
+    def fn(v, filename):
+        received.append(filename)
+        return float(np.max(v))
+
+    for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
+                "filename": PathOutput("{subject}_{ColName}.pdf")},
+        subject=[1, 2],
+    )
+    assert received == ["1_a.pdf", "1_b.pdf", "2_a.pdf", "2_b.pdf"]
+
+
+def test_pathoutput_without_tokens_passes_through_unchanged():
+    """A template with no recognized tokens is returned verbatim each combo."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "velocity": [3.0, 4.0]})
+    received = []
+
+    def fn(velocity, filename):
+        received.append(filename)
+        return float(np.max(velocity))
+
+    for_each(
+        fn,
+        inputs={"velocity": ColumnSelection(df, ["velocity"]),
+                "filename": PathOutput("static_name.pdf")},
+        subject=[1, 2],
+    )
+    assert received == ["static_name.pdf", "static_name.pdf"]
+
+
+def test_pathoutput_colname_token_without_iterate_input_raises():
+    """{ColName} resolves per-column, so it requires an iterate input."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "velocity": [3.0, 4.0]})
+    with pytest.raises(ValueError, match="requires at least one iterate input"):
+        for_each(
+            lambda table, filename: 0,
+            inputs={"table": df, "filename": PathOutput("{ColName}.pdf")},
             as_table=True,
             subject=[1, 2],
         )

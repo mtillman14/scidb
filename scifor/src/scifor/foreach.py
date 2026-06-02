@@ -10,6 +10,7 @@ from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .merge import Merge
+from .pathoutput import PathOutput
 from .schema import get_schema
 
 
@@ -215,6 +216,21 @@ def for_each(
             f"(for_columns() / ColumnSelection(..., iterate=True)). "
             f"Deferred ColName() input(s): {deferred_colname_params}. "
             f"{hint}"
+        )
+
+    # A PathOutput template using {ColName} resolves per-column, so it likewise
+    # needs an iterate input. (Metadata-only PathOutput templates are fine
+    # without one — they resolve per-combo.)
+    path_output_column_params = [
+        name for name, v in constant_inputs.items()
+        if isinstance(v, PathOutput) and v.has_column_token
+    ]
+    if path_output_column_params and not iterate_params:
+        raise ValueError(
+            f"PathOutput template uses the {{ColName}} token, which resolves to "
+            f"the current for_columns column, so it requires at least one iterate "
+            f"input (for_columns() / ColumnSelection(..., iterate=True)). "
+            f"PathOutput input(s): {path_output_column_params}."
         )
 
     iterate_columns: list[str] | None = None
@@ -445,10 +461,13 @@ def for_each(
             if iterate_params:
                 result = (_run_column_iteration(
                     fn, filtered_inputs, iterate_dfs, iterate_columns,
-                    schema_keys, as_table_set,
+                    schema_keys, as_table_set, metadata,
                 ),)
             else:
-                result = _call_fn(fn, filtered_inputs, n_outputs)
+                # PathOutput constants resolve to a finished path from this
+                # combo's metadata (no column outside for_columns).
+                call_inputs = _resolve_path_outputs(filtered_inputs, metadata, None)
+                result = _call_fn(fn, call_inputs, n_outputs)
             fn_elapsed = time.perf_counter() - fn_t0
             done_msg = f"[done] {metadata_str}: {fn_name} completed in {fn_elapsed:.3f}s"
             print(done_msg)
@@ -556,6 +575,20 @@ def _call_fn(fn, kwargs, n_outputs):
     return fn(**kwargs)
 
 
+def _resolve_path_outputs(kwargs: dict, metadata: dict, column: "str | None") -> dict:
+    """Return a copy of kwargs with any PathOutput resolved to a finished path.
+
+    Substitutes the combo metadata and (inside for_columns) the current column.
+    Non-PathOutput entries pass through untouched.
+    """
+    if not any(isinstance(v, PathOutput) for v in kwargs.values()):
+        return kwargs
+    return {
+        name: (v.resolve(metadata, column) if isinstance(v, PathOutput) else v)
+        for name, v in kwargs.items()
+    }
+
+
 class ForColumnsError(ValueError):
     """A structural error in for_columns reassembly (e.g. a colliding output
     column or a non-collapsible return). These are deterministic across combos
@@ -586,7 +619,8 @@ FOR_COLUMNS_OUTPUT_SEP = "__"
 
 
 def _run_column_iteration(
-    fn, base_kwargs, iterate_dfs, iterate_columns, schema_keys, as_table_set
+    fn, base_kwargs, iterate_dfs, iterate_columns, schema_keys, as_table_set,
+    metadata,
 ):
     """Run fn once per column and reassemble into a single one-row DataFrame.
 
@@ -617,10 +651,18 @@ def _run_column_iteration(
         name for name, v in base_kwargs.items()
         if isinstance(v, ColName) and v.is_deferred
     ]
+    # PathOutput constants resolve per-column (current combo metadata + column).
+    path_output_params = [
+        name for name, v in base_kwargs.items() if isinstance(v, PathOutput)
+    ]
     for col in iterate_columns:
         call_kwargs = dict(base_kwargs)
         for name in deferred_colname_params:
             call_kwargs[name] = col
+        for name in path_output_params:
+            # PathOutput resolves to a finished path using this combo's metadata
+            # and the current column ({ColName}).
+            call_kwargs[name] = base_kwargs[name].resolve(metadata, col)
         for name, df in iterate_dfs.items():
             if name in as_table_set:
                 keep = [c for c in df.columns if c in schema_keys] + [col]
