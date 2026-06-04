@@ -55,9 +55,17 @@ nav:
     - api/index.md
     - Variables (BaseVariable): api/variables.md
     - Database: api/database.md
-    - Lineage (Thunk System): api/lineage.md
+    - Lineage & Provenance: api/lineage.md
     - Batch Processing (for_each): api/for-each.md
     - Filters: api/filters.md
+  - Internals:
+    - internals/index.md
+    - Lineage Engine (scilineage): internals/scilineage.md
+    - DuckDB Layer (sciduckdb): internals/sciduckdb.md
+    - Content Hashing (scicanonicalhash): internals/scicanonicalhash.md
+    - Path Generation (scipathgen): internals/scipathgen.md
+    - MATLAB Bridge (scimatlab): internals/scimatlab.md
+    - Networking (scidb-net): internals/scidb-net.md
   - Project:
     - project/index.md
     - Roadmap: project/roadmap.md

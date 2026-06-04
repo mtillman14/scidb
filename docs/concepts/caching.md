@@ -58,9 +58,9 @@ reloaded = ArrayValue.load(subject=1)
 result2  = double(reloaded)                    # cache hit — call_count STILL 1
 ```
 
-This works because `scihist` registers the `scidb` database as scilineage's cache
-backend (`configure_backend`), so lineage hashes are looked up against everything
-already stored.
+This works because `scihist` registers the `scidb` database as the lineage cache
+backend, so lineage hashes are looked up against everything already stored (see
+[Internals — scilineage](../internals/scilineage.md)).
 
 ### 2. `skip_computed` — per combo in batch processing
 

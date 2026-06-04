@@ -37,9 +37,9 @@ a `for_each` input. `MyVar.for_columns()` runs the function once per column.
 **Combo state** — The per-combination classification underlying node state:
 `up_to_date`, `stale`, or `missing`. → [Node States](node-states.md)
 
-**configure_backend** — Registers a cache backend with scilineage so lineage
-hashes can be looked up; `scihist` wires the `scidb` database in as this backend.
-→ [Computation Caching](caching.md)
+**configure_backend** — Registers a cache backend with the lineage engine so
+lineage hashes can be looked up; `scihist` wires the `scidb` database in as this
+backend. → [Computation Caching](caching.md)
 
 **configure_database** — One-call setup that opens the DuckDB database, declares
 the dataset schema keys, and auto-registers known variable types.
@@ -138,17 +138,16 @@ chosen branch_param variant at load time. → [Node States](node-states.md)
 
 ## Packages
 
-The stack is split into single-responsibility packages (see
-[Architecture & Layers](architecture.md) for how they depend on each other):
+The three **user-facing** layers are all you import (see
+[Architecture & Layers](architecture.md) for how they stack):
 
 | Package | Role |
 |---|---|
-| `scicanonicalhash` | Deterministic content hashing and record-id generation |
-| `sciduckdb` | DuckDB storage: one table per variable, versioning, type round-trip |
-| `scipathgen` | Generates file paths from metadata |
 | `scifor` | The batch-iteration engine over plain tables (no database) |
-| `scilineage` | Provenance graph and pluggable caching (`@lineage_fcn`) |
 | `scidb` | Typed, versioned variable storage + DB-backed `for_each` |
-| `scihist` | Lineage-wrapped `for_each` + node-state / staleness |
-| `scimatlab` | MATLAB bridge exposing `scifor.*` / `scidb.*` |
-| `scidb-net` | Optional networking / serialization layer |
+| `scihist` | Lineage-wrapped `for_each` + node-state / staleness (re-exports the lineage decorator) |
+
+Everything else is an **internal package** you reach through those layers,
+documented under [Internals](../internals/index.md): `scilineage` (provenance
+engine), `sciduckdb` (DuckDB storage), `scicanonicalhash` (hashing), `scipathgen`
+(path generation), `scimatlab` (MATLAB bridge), and `scidb-net` (networking).

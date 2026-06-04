@@ -60,8 +60,7 @@ the stored result **without executing again** — even after reloading the input
 in a separate script:
 
 ```python
-from scihist import save
-from scilineage import lineage_fcn
+from scihist import save, lineage_fcn
 
 @lineage_fcn
 def double(x):
@@ -76,8 +75,8 @@ save(SignalOut, result, subject=1)        # records the result + its lineage
 again = double(RawSignal.load(subject=1))  # cache hit — "computing" does NOT print
 ```
 
-This works because `scihist.configure_database` registers the database as
-scilineage's cache backend, and saved results carry the lineage hash used as the
+This works because `scihist.configure_database` registers the database as the
+lineage cache backend, and saved results carry the lineage hash used as the
 lookup key.
 
 ## What counts as the "same" computation

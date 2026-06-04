@@ -10,10 +10,10 @@
      NOTE: folder `path-gen` ships package `scipathgen`; folder `scicanonicalhash` ships
      `scicanonicalhash`. Install editable in dependency order. -->
 
-SciStack is a stack of small packages, each in its own folder. You install the
-ones for the layer you want — and because every package depends only on the ones
-below it, the install order follows the layers. For which layer you need, see
-[Choosing Your Layer](choosing-a-layer.md).
+SciStack is a stack of three user-facing layers — `scifor`, `scidb`, `scihist` —
+built on a handful of internal packages. For most users a single install brings
+in everything; if you only need a lower layer, you can install just that. For
+which layer you need, see [Choosing Your Layer](choosing-a-layer.md).
 
 ## Prerequisites
 
@@ -21,36 +21,49 @@ below it, the install order follows the layers. For which layer you need, see
 - `pip` (a virtual environment is recommended)
 - For the MATLAB bridge: MATLAB R2021b or later — see [MATLAB Setup](../matlab-setup.md)
 
-## Install from the repository
+## Install the full stack
 
-Clone the repo, then install the packages **in editable mode, in dependency
-order**. Each folder is a separate installable package:
+```bash
+pip install scistack
+```
+
+This installs the top layer (`scihist`) and everything it depends on, so you can
+`from scihist import for_each, configure_database, lineage_fcn` right away.
+
+## Install from the repository (development)
+
+To work on SciStack, clone the repo and install the packages **in editable mode,
+in dependency order**. Each layer lives in its own folder, alongside the internal
+packages it builds on (documented in [Internals](../internals/index.md)):
 
 ```bash
 git clone https://github.com/mtillman14/general-sqlite-database
 cd general-sqlite-database
 
-# Layer 0 — no internal dependencies
+# Internal foundation packages (no internal dependencies)
 pip install -e ./scicanonicalhash
 pip install -e ./path-gen          # ships the `scipathgen` package
-pip install -e ./scifor
 pip install -e ./sciduckdb
+pip install -e ./scilineage        # provenance engine (depends on scicanonicalhash)
 
-# Layer 1 — provenance (depends on scicanonicalhash)
-pip install -e ./scilineage
+# scifor — user-facing batch iteration (no internal dependencies)
+pip install -e ./scifor
 
-# Layer 2 — storage + DB-backed for_each (depends on the above)
+# scidb — user-facing storage + DB-backed for_each
 pip install -e ./scidb
 
-# Layer 3 — top layers (depend on scidb)
+# scihist — user-facing full pipeline
 pip install -e ./scihist
-pip install -e ./scimatlab        # MATLAB bridge (optional)
-pip install -e ./scidb-net        # optional networking layer
+
+# Bridges (optional)
+pip install -e ./scimatlab        # MATLAB bridge
+pip install -e ./scidb-net        # networking layer
 ```
 
-Installing a higher layer pulls in the layers below it, so if you only want, say,
+Installing a higher layer pulls in everything below it, so if you only want, say,
 batch iteration on plain tables you can stop after `scifor`; for the full
-pipeline, install through `scihist`.
+pipeline, install through `scihist`. (The non-user-facing packages above are
+described in [Internals](../internals/index.md).)
 
 !!! tip "Convenience script"
     The repo ships `dev-install.sh`, which runs these editable installs in order.
@@ -64,14 +77,13 @@ You don't have to install everything. Minimal sets:
 | You want | Install (in order) |
 |---|---|
 | Batch iteration on plain tables (`scifor`) | `scifor` |
-| Provenance for a function graph (`scilineage`) | `scicanonicalhash`, then `scilineage` |
 | Versioned storage + DB `for_each` (`scidb`) | `scicanonicalhash`, `path-gen`, `scifor`, `sciduckdb`, then `scidb` |
 | Full pipeline (`scihist`) | all of the `scidb` set, plus `scilineage`, then `scihist` |
 
 ## Verify the install
 
 ```python
-import scihist, scidb, scifor, scilineage   # the layers you installed
+import scihist, scidb, scifor   # the layers you installed
 print(scidb.__version__)
 ```
 

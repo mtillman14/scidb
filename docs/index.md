@@ -2,11 +2,13 @@
 
 <!-- Ground truth (source/tests win over prose). Verified against this session's reconciled
      pages and: scidb/__init__ (BaseVariable, configure_database, get_database, for_each);
-     scihist/__init__ (for_each, save, configure_database, lineage_fcn); scilineage (lineage_fcn
-     -> LineageFcnResult.data); scimatlab configure_database (2 args); all data + lineage in one
-     DuckDB file. NOTE: layered stack (scifor/scidb/scilineage/scihist), NOT a single-package
-     scidb; decorator is @lineage_fcn (not @thunk); configure_database takes 2 args (no SQLite
-     "pipeline.db"); persist lineage results via scihist.save, not VarClass.save. -->
+     scihist/__init__ (for_each, save, configure_database, AND re-exports lineage_fcn,
+     LineageFcn, set_schema, Fixed, ... from the layers below); scimatlab configure_database
+     (2 args); all data + lineage in one DuckDB file. NOTE: three USER-FACING layers
+     (scifor/scidb/scihist); lineage is a scihist feature (lineage_fcn is re-exported by
+     scihist, so import it from scihist — the scilineage package is internal); decorator is
+     @lineage_fcn (not @thunk); configure_database takes 2 args (no SQLite "pipeline.db");
+     persist lineage results via scihist.save, not VarClass.save. -->
 
 **A layered framework for reproducible scientific data processing.**
 
@@ -25,17 +27,18 @@ the ones above it when you want more. (See
 | Layer | Package | What it adds |
 |---|---|---|
 | Batch iteration | `scifor` | Run a function over every condition combination on plain tables — no database |
-| Provenance | `scilineage` | Record what produced each value; cache by lineage |
 | Storage | `scidb` | Typed, versioned variables in a database; DB-backed `for_each` |
 | Full pipeline | `scihist` | `for_each` with automatic lineage + "recompute only what's stale" |
+
+Each layer re-exports the one below it, so the top layer (`scihist`) gives you the
+whole API from a single import.
 
 ## Quick example
 
 ```python
 import numpy as np
 from scidb import BaseVariable
-from scihist import for_each, configure_database
-from scilineage import lineage_fcn
+from scihist import for_each, configure_database, lineage_fcn
 
 # One DuckDB file holds data and lineage; declare the experiment's condition keys
 configure_database("experiment.duckdb", ["subject", "session"])

@@ -107,9 +107,10 @@ debugging and provenance inspection.
 
 ## How data is stored
 
-Storage is handled by the `sciduckdb` layer. Each variable type gets **its own
-DuckDB table**, and values are stored in *queryable* DuckDB types (`LIST`,
-nested `LIST`, `JSON`) — so the database can be opened in DBeaver or any
+Storage is handled by `scidb`'s database layer (internally, `sciduckdb` — see
+[Internals](../internals/sciduckdb.md)). Each variable type gets **its own DuckDB
+table**, and values are stored in *queryable* DuckDB types (`LIST`, nested
+`LIST`, `JSON`) — so the database can be opened in DBeaver or any
 DuckDB-compatible viewer and read directly, not as opaque blobs.
 
 The bridge between your Python object and a stored row is a pair of methods:
@@ -120,8 +121,8 @@ The bridge between your Python object and a stored row is a pair of methods:
   unwraps the `value` column.
 
 For common data — scalars, numpy arrays, lists, dicts, and pandas DataFrames —
-the defaults (plus sciduckdb's native type handling) round-trip losslessly, so
-**you override nothing**. Override `to_db`/`from_db` only for a custom
+the defaults (plus the database layer's native type handling) round-trip
+losslessly, so **you override nothing**. Override `to_db`/`from_db` only for a custom
 multi-column layout or a domain-specific object — and if you override one, you
 must override the other:
 

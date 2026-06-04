@@ -12,20 +12,23 @@
      NOTE: NO @thunk/Thunk/ThunkOutput/load_all — the decorator is @lineage_fcn, results are
      LineageFcnResult, and load() returns BaseVariable | list | DataFrame. -->
 
-SciStack's public API spans a few packages that compose into a stack. The core
-abstractions (`scidb`) and the lineage system (`scilineage`) are surfaced together
-through the top layer (`scihist`); the same concepts are available from MATLAB via
-`scimatlab`.
+SciStack's public API is the three user-facing layers — `scifor`, `scidb`, and
+`scihist`. Because each layer re-exports the one below it, the top layer
+(`scihist`) surfaces the whole API — storage, batch processing, and the lineage
+decorator — from a single import. The same concepts are available from MATLAB
+through the `scidb.*` / `scifor.*` surfaces.
 
 ## Packages
 
 | Package | Purpose | Import |
 |---|---|---|
+| `scifor` | Standalone batch iteration on tables | `from scifor import ...` / `scifor.*` |
 | `scidb` | Variables, database, DB-backed `for_each` | `from scidb import ...` / `scidb.*` |
-| `scihist` | `for_each` + lineage + `save` (full pipeline) | `from scihist import ...` |
-| `scilineage` | `@lineage_fcn`, provenance, hashing | `from scilineage import ...` |
-| `scifor` | Standalone batch iteration on tables | `from scifor import ...` |
-| `scimatlab` | MATLAB bridge | `addpath(...)` then `scidb.*` |
+| `scihist` | `for_each` + lineage + `save` (full pipeline); re-exports the layers below, incl. `lineage_fcn` | `from scihist import ...` |
+
+The lineage engine, hashing, DuckDB layer, and MATLAB bridge are **internal
+packages** reached through the three layers above — see
+[Internals](../internals/index.md).
 
 ## Sections
 

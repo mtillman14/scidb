@@ -16,7 +16,14 @@
 
 The lineage system records what produced each value and serves as the cache key.
 For task usage see [Tracking Lineage](../guide/lineage.md); for the model see
-[Lineage & Provenance](../concepts/lineage.md). This package is Python-only.
+[Lineage & Provenance](../concepts/lineage.md). It is Python-only.
+
+!!! note "Reached through `scihist`"
+    The `lineage_fcn` decorator and the `LineageFcn*` types are **re-exported by
+    `scihist`** — import them as `from scihist import lineage_fcn`. The
+    lower-level extractors (`extract_lineage`, `get_upstream_lineage`) live in the
+    internal engine, [scilineage](../internals/scilineage.md); import those
+    directly only when you need them.
 
 ---
 
@@ -39,7 +46,7 @@ function (`lineage_fcn(fn)`).
   returning data; enables cache-hit skipping. Does not affect the function hash.
 
 ```python
-from scilineage import lineage_fcn
+from scihist import lineage_fcn
 
 @lineage_fcn
 def process(signal, factor):

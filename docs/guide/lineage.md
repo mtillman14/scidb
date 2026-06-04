@@ -19,8 +19,9 @@
 
 This guide shows how to add provenance tracking to a pipeline and query it. For
 the model behind it (how lineage forms a cache key, how it survives save/reload),
-see [Lineage & Provenance](../concepts/lineage.md). Lineage requires `scilineage`;
-the `scihist` layer wires it in automatically.
+see [Lineage & Provenance](../concepts/lineage.md). Lineage is a `scihist`
+feature — it re-exports the `lineage_fcn` decorator, so you import it from
+`scihist`.
 
 ## Add tracking with `@lineage_fcn`
 
@@ -28,7 +29,7 @@ Decorate a processing function. Each call returns a `LineageFcnResult` carrying
 provenance; the value is on `.data`:
 
 ```python
-from scilineage import lineage_fcn
+from scihist import lineage_fcn
 
 @lineage_fcn
 def process_signal(signal, factor):
@@ -113,7 +114,8 @@ db.has_lineage(record_id)   # True if this record was produced with lineage
 
 ## Inspect lineage without saving
 
-To examine provenance in memory, use scilineage's extractors:
+To examine provenance in memory, use the lineage engine's extractors (see
+[Internals — scilineage](../internals/scilineage.md)):
 
 ```python
 from scilineage import extract_lineage, get_upstream_lineage
@@ -133,7 +135,7 @@ You don't have to own a function to track it — wrap any callable by *calling*
 `lineage_fcn` on it (with `unpack_output=True` for tuple returns):
 
 ```python
-from scilineage import lineage_fcn
+from scihist import lineage_fcn
 from scipy.signal import butter, filtfilt
 
 butter_l   = lineage_fcn(butter, unpack_output=True)   # returns (b, a)
@@ -152,7 +154,7 @@ When you must edit data outside the pipeline, re-enter with `manual()` so the
 correction is recorded rather than hidden:
 
 ```python
-from scilineage import manual
+from scidb import manual
 
 clean = manual(edited_data, label="outlier_removal",
                reason="amplitude < 0.1 in trial 3 is a sensor artifact")

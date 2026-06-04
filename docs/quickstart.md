@@ -76,8 +76,7 @@ that carries provenance; the value is on `.data`. Persist it with `scihist.save`
 so the lineage is recorded too:
 
 ```python
-from scihist import save
-from scilineage import lineage_fcn
+from scihist import save, lineage_fcn
 
 @lineage_fcn
 def compute_power(signal):

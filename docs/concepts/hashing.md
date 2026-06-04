@@ -17,6 +17,13 @@
        generate_record_id -> record_id; stored in _record_metadata).
      scicanonicalhash depends on nothing; it is the leaf every other layer builds on. -->
 
+!!! note "Under-the-hood concept"
+    This page explains a mechanism SciStack uses *for* you. You normally never
+    call the hashing functions directly — versioning (`scidb`) and lineage
+    (`scihist`) invoke them automatically. The implementation lives in the
+    internal [scicanonicalhash](../internals/scicanonicalhash.md) package; the
+    code below is illustrative.
+
 Hashing is the foundation the rest of SciStack stands on. A **hash** is a short,
 deterministic fingerprint of some data or code: the same input always produces
 the same fingerprint, and different inputs produce different ones. That turns
@@ -24,8 +31,6 @@ expensive questions — *"is this the same value? the same function? the same
 computation?"* — into a cheap string comparison, which is what makes
 [storage identity](variables.md), [lineage](lineage.md), and
 [caching](caching.md) possible.
-
-All of this lives in `scicanonicalhash`, a leaf package with no dependencies.
 
 ## Content hashing — `canonical_hash`
 
@@ -53,8 +58,7 @@ values hash equal and meaningfully different ones don't:
   `int32` vs `int64`, or flat vs reshaped, hash differently.
 - **pandas DataFrames** hash by their content.
 
-This is the same `canonical_hash` re-exported by `scilineage` — one definition of
-"same value" across the whole stack.
+This is the single definition of "same value" used across the whole stack.
 
 ## Record identity — `generate_record_id`
 
@@ -87,8 +91,9 @@ so old and new structural layouts of a variable never collide.
 ## Function hashing — `compute_function_hash`
 
 To know whether a *computation* is the same, you also need to fingerprint the
-**function**. This lives in `scilineage` and is **bytecode-based**: it hashes the
-function's compiled code, not its source text. Two consequences:
+**function**. Function hashing is **bytecode-based**: it hashes the function's
+compiled code, not its source text (it is part of the lineage engine — see
+[Internals — scilineage](../internals/scilineage.md)). Two consequences:
 
 - **Reformatting is invisible.** Changing whitespace, comments, or the docstring
   does **not** change the hash — only changing what the function actually computes

@@ -13,17 +13,20 @@
        UNSAVED_RESULT/RAW_DATA/CONSTANT);
      scidb/tests/test_optional_lineage_dependency.py (HAS_LINEAGE; scidb works without
        scilineage; version_keys __fn/__fn_hash/__inputs/__constants + namespaced branch_params).
-     scilineage is Python-only and depends only on scicanonicalhash. -->
+     NOTE: lineage is a scihist feature — lineage_fcn/LineageFcn are RE-EXPORTED by scihist
+       (import from scihist); manual() is re-exported by scidb; extract_lineage/
+       get_upstream_lineage live only in the internal scilineage package. Python-only. -->
 
 **Lineage** is the record of *how a value was produced*: which function ran, what
-its inputs were, and a version stamp of the function itself. SciLineage captures
-this automatically as your code runs, building a provenance graph that doubles as
-a cache key — the same lineage means the same result, so work can be reused
-instead of repeated.
+its inputs were, and a version stamp of the function itself. SciStack captures
+this automatically as your code runs (this is what [`scihist`](architecture.md)
+adds on top of `scidb`), building a provenance graph that doubles as a cache key —
+the same lineage means the same result, so work can be reused instead of repeated.
 
-This page explains the model. SciLineage is **Python-only** and depends only on
-`scicanonicalhash`; it is the provenance engine that
-[`scihist`](architecture.md) layers on top of `scidb`.
+This page explains the model. Lineage is **Python-only**; you reach it through
+`scihist`, which re-exports the `lineage_fcn` decorator and wraps your functions
+for you. (The engine itself is the internal `scilineage` package — see
+[Internals](../internals/scilineage.md).)
 
 ## Functions that remember their inputs
 
@@ -32,7 +35,7 @@ Decorate a function with `@lineage_fcn` and each call returns a
 value and the provenance of the computation:
 
 ```python
-from scilineage import lineage_fcn
+from scihist import lineage_fcn
 
 @lineage_fcn
 def process(x, factor):
@@ -72,7 +75,7 @@ b.data, b.output_num   # 10, 1
 ## Inputs vs. constants: how an input is classified
 
 The fidelity of lineage comes from correctly distinguishing *what kind of thing*
-each input is. SciLineage classifies every input into one of five kinds:
+each input is. Every input is classified into one of five kinds:
 
 | Kind | Meaning |
 |---|---|
@@ -130,7 +133,8 @@ classified inputs, giving the stable cache key that
 
 ## Reading the provenance graph
 
-Two helpers turn a result into inspectable lineage:
+Two helpers turn a result into inspectable lineage. They live in the lineage
+engine itself (see [Internals](../internals/scilineage.md)):
 
 ```python
 from scilineage import extract_lineage, get_upstream_lineage
@@ -155,7 +159,7 @@ artifact, say. Rather than breaking the provenance chain, re-enter the pipeline
 with `manual()`, which records the edit as a first-class lineage step:
 
 ```python
-from scilineage import manual
+from scidb import manual
 
 corrected = manual(edited_data, label="outlier_removal",
                    reason="amplitude < 0.1 in trial 3 is a sensor artifact")
@@ -167,12 +171,13 @@ documented and reproducible, not a silent hand-edit.
 
 ## Where lineage fits in the stack
 
-SciLineage is optional *below* `scihist`. `scidb` runs without it (guarded by a
-`HAS_LINEAGE` flag); even for plain functions it still records function and input
-identity (`__fn`, `__fn_hash`, `__inputs`, `__constants`, and namespaced
-`branch_params`) for its own version tracking. The full provenance graph and
-automatic function wrapping come from `scihist`, which decorates your functions
-for you.
+Lineage is what `scihist` adds on top of `scidb`. `scidb` itself runs without the
+lineage engine (guarded by a `HAS_LINEAGE` flag); even for plain functions it
+still records function and input identity (`__fn`, `__fn_hash`, `__inputs`,
+`__constants`, and namespaced `branch_params`) for its own version tracking. The
+full provenance graph and automatic function wrapping come from `scihist`, which
+decorates your functions for you. (Implementation:
+[Internals — scilineage](../internals/scilineage.md).)
 
 **Next:** [Computation Caching](caching.md) ·
 [Versioning & Content Hashing](hashing.md) · [Node States](node-states.md) ·

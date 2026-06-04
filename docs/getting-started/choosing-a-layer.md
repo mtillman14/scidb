@@ -5,34 +5,35 @@
      scidb/tests/test_integration.py + conftest.py  (configure_database, BaseVariable,
         save->record_id, load->record with .data/.record_id/.metadata)
      scihist/src/scihist/__init__.py + scihist/tests/test_foreach.py  (for_each + outputs=,
-        auto-wraps in LineageFcn)
-     scilineage/tests/test_lineage.py + README  (@lineage_fcn -> result.data, Python-only)
-     Package __init__ exports; docs/claude/layer-friction-analysis.md (layer separation). -->
+        auto-wraps in LineageFcn; __init__ RE-EXPORTS lineage_fcn/LineageFcn from scilineage,
+        so user-facing imports use `from scihist import ..., lineage_fcn`)
+     Package __init__ exports; docs/claude/layer-friction-analysis.md (layer separation).
+     NOTE: scilineage is INTERNAL — three user-facing layers only (scifor/scidb/scihist);
+     lineage is presented as a scihist feature. -->
 
-SciStack is a **stack**, not a single library. Each layer adds one capability on
-top of the one below it, and **you can enter at any level**. Start with just the
-piece you need today; adopt the layers above it only when you actually need what
-they add.
+SciStack is a **stack** of three user-facing layers. Each layer adds one
+capability on top of the one below it, and **you can enter at any level**. Start
+with just the piece you need today; adopt the layers above it only when you
+actually need what they add.
 
 ```
-  scihist     lineage + staleness on top of scidb   (reproducible pipelines)
+  scihist   reproducible pipelines: for_each + automatic lineage + recompute-only-what's-stale
     │
-  scidb       typed, versioned storage + DB-backed for_each
+  scidb     typed, versioned storage + DB-backed for_each
     │
-  scifor      batch iteration over conditions on plain tables   (no database)
-
-  scilineage  provenance + caching for a function graph   (used by scidb/scihist,
-              or directly when you don't need batch iteration or storage)
+  scifor    batch iteration over conditions on plain tables   (no database)
 ```
+
+Each layer re-exports the one below it, so `scihist` exposes the whole API —
+including the lineage decorator — from a single import.
 
 ## Quick chooser
 
 | You want to… | Use | Import | Languages |
 |---|---|---|---|
 | Replace nested `for` loops over subjects/sessions/trials; data is already in a table | **scifor** | `from scifor import for_each, set_schema` | Python & MATLAB |
-| Add reproducibility / caching to a chain of functions (no batch, no storage) | **scilineage** | `from scilineage import lineage_fcn` | Python |
 | Persist typed results in a versioned database, loaded/saved by metadata | **scidb** | `from scidb import configure_database, BaseVariable, for_each` | Python & MATLAB |
-| Run a full pipeline that auto-tracks provenance and recomputes only what's stale | **scihist** | `from scihist import for_each` | Python (MATLAB via the scidb path) |
+| Run a full pipeline that auto-tracks provenance and recomputes only what's stale | **scihist** | `from scihist import for_each, lineage_fcn` | Python (MATLAB via the scidb path) |
 
 If you're unsure, start one layer lower than you think you need — moving up is
 additive and doesn't require rewriting your analysis function.
@@ -79,36 +80,6 @@ data and returns a result. No database is created or touched.
 
 ---
 
-## scilineage — provenance & caching for a function graph
-
-**What it adds:** automatic provenance tracking. Decorate a function with
-`@lineage_fcn` and every call captures its inputs and a hash of the function
-itself, building a complete lineage graph. With a caching backend registered, a
-repeated computation can be served from cache instead of re-run.
-
-**Choose this when:** you want reproducibility or caching for a chain of
-computations, but you are *not* iterating over experimental conditions and you
-don't need data persisted to a database. This layer is **Python only**.
-
-```python
-from scilineage import lineage_fcn
-
-@lineage_fcn
-def process(data, factor):
-    return data * factor
-
-result = process([1, 2, 3], 2)
-result.data            # [2, 4, 6]  — the computed value lives on .data
-result.invoked.inputs  # captured inputs, for the lineage graph
-```
-
-A `@lineage_fcn` call returns a `LineageFcnResult` (carrying lineage), not the
-raw value — read `.data` to get the value. scilineage is the provenance engine
-that **scidb** and **scihist** build on; you only use it directly when you want
-provenance without batch iteration or storage.
-
----
-
 ## scidb — typed, versioned storage + DB-backed `for_each`
 
 **What it adds:** a versioned DuckDB database of *typed variables*. You define
@@ -148,9 +119,9 @@ for_each(
 
 `load(..., version="all")` returns a generator over every stored version instead
 of the latest one. scidb has **first-class MATLAB support** via `scidb.*` (see
-[MATLAB Setup](../matlab-setup.md)). Lineage tracking here is *optional*: if
-scilineage is installed and you pass a `@lineage_fcn`, provenance is recorded —
-but scidb does not wrap your functions for you.
+[MATLAB Setup](../matlab-setup.md)). Lineage tracking here is *optional* and not
+automatic — for full provenance plus "recompute only what's stale," use
+**scihist**.
 
 ---
 
@@ -165,8 +136,7 @@ of date. It exposes the *same* `for_each` interface as scidb.
 *and* automatic provenance *and* "only recompute what's stale" behavior.
 
 ```python
-from scihist import for_each, Fixed, configure_database
-from scilineage import lineage_fcn
+from scihist import for_each, Fixed, configure_database, lineage_fcn
 
 configure_database("experiment.duckdb", ["subject", "session"])
 
@@ -191,17 +161,19 @@ See [Node States](../concepts/node-states.md) for how staleness is decided.
 
 ## How the layers stack
 
-Each layer depends only on the ones below it, so adopting a higher layer never
-takes a capability away:
+Each layer depends only on the ones below it and re-exports its API, so adopting
+a higher layer never takes a capability away:
 
-- **scihist** → scidb + scilineage
-- **scidb** → scifor + sciduckdb + scicanonicalhash + scipathgen
-- **scilineage** → scicanonicalhash
+- **scihist** → scidb (+ automatic lineage and staleness)
+- **scidb** → scifor (+ versioned database storage)
 
 Practical path: prototype your analysis function against plain tables with
 **scifor**; move to **scidb** when results need to persist; adopt **scihist**
-when you want provenance and stale-aware recomputation. Reach for **scilineage**
-directly only when you need provenance without batch iteration or a database.
+when you want provenance and stale-aware recomputation.
+
+The lineage engine, content hashing, DuckDB layer, and MATLAB bridge are
+**internal packages** you reach through these three layers — see
+[Internals](../internals/index.md) if you want the implementation details.
 
 **Next:** [Installation](installation.md) · [Quickstart](../quickstart.md) ·
 [Architecture & Layers](../concepts/architecture.md)

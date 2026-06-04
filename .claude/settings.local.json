@@ -71,7 +71,10 @@
       "Bash(bash /tmp/setupcheck.sh)",
       "WebFetch(domain:scistack.readthedocs.io)",
       "Bash(sed -n '24,30p' docs/claude/multi-database-workflow.md)",
-      "Bash(sed -n '96,99p' docs/claude/lineage-design.md)"
+      "Bash(sed -n '96,99p' docs/claude/lineage-design.md)",
+      "Bash(sed -n '1,40p' scihist/README.md)",
+      "Bash(sed -n '1,25p' scidb/README.md)",
+      "Bash(sed -n '1,25p' scifor/README.md)"
     ]
   }
 }

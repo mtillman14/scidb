@@ -59,9 +59,10 @@ recurring mismatches, collected here.
     [Database & Configuration](../guide/database.md).
 
 ??? question "Do I have to install the whole stack?"
-    No. Each layer is usable on its own — `scifor` alone for batch iteration,
-    `scilineage` for provenance, `scidb` for storage. `scidb` even runs without
-    `scilineage` installed (lineage is optional behind a feature flag). See
+    No. Each user-facing layer is usable on its own — `scifor` alone for batch
+    iteration, `scidb` for storage, `scihist` for the full pipeline with lineage.
+    `scidb` even runs without the lineage engine installed (lineage is optional
+    behind a feature flag). See
     [Choosing Your Layer](../getting-started/choosing-a-layer.md).
 
 ## Errors
