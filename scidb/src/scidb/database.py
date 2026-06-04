@@ -520,7 +520,7 @@ def configure_database(
     Configure the global database connection.
 
     Single-call setup that creates the database, auto-registers all known
-    BaseVariable subclasses, and enables thunk caching.
+    BaseVariable subclasses, and enables lineage caching.
 
     Args:
         dataset_db_path: Path to the DuckDB database file
@@ -1882,8 +1882,8 @@ class DatabaseManager:
         Save data as a variable.
 
         Accepts a BaseVariable instance (which may carry a lineage_hash) or
-        raw data. For ThunkOutput / lineage-tracked saves, use
-        scihist.save_variable() which wraps this method.
+        raw data. For lineage-tracked saves, use scihist.save() which wraps
+        this method.
 
         Args:
             variable_class: The BaseVariable subclass to save as

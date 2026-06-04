@@ -69,7 +69,9 @@
       "Bash(sed -n '118,145p' scidb/tests/test_each_of.py)",
       "Bash(cat)",
       "Bash(bash /tmp/setupcheck.sh)",
-      "WebFetch(domain:scistack.readthedocs.io)"
+      "WebFetch(domain:scistack.readthedocs.io)",
+      "Bash(sed -n '24,30p' docs/claude/multi-database-workflow.md)",
+      "Bash(sed -n '96,99p' docs/claude/lineage-design.md)"
     ]
   }
 }

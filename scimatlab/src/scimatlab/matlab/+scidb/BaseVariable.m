@@ -148,7 +148,7 @@ classdef BaseVariable < dynamicprops
         %   Example:
         %       RawSignal().save(randn(100,3), subject=1, session="A");
         %
-        %       result = my_thunk(input_var, 2.5);
+        %       result = my_lineage_fcn(input_var, 2.5);
         %       Processed().save(result, subject=1, session="A");
         %
         %       % Auto-distribute a table (subject is a schema key)

@@ -264,7 +264,7 @@ for var in all_sessions:
 
 # Load everything as a DataFrame for analysis
 import pandas as pd
-df = MaxActivation.load_all(as_df=True)
+df = MaxActivation.load(as_df=True)
 #   subject  session    data
 #   1        baseline   0.82
 #   1        post       1.47
@@ -365,7 +365,7 @@ for_each(
 )
 
 # --- Analyze results ---
-df = MeanStepLength.load_all(as_df=True)
+df = MeanStepLength.load(as_df=True)
 print(df.groupby("session")["data"].mean())
 ```
 
@@ -381,7 +381,7 @@ emg = FilteredEMG.load(subject=3, session="post")
 all_sessions = FilteredEMG.load(subject=3)
 
 # Load everything as a DataFrame
-df = FilteredEMG.load_all(as_df=True)
+df = FilteredEMG.load(as_df=True)
 ```
 
 ```sql

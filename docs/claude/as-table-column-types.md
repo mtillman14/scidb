@@ -2,7 +2,7 @@
 
 ## Context
 
-When `as_table=true` is used in `load()`, `load_all()`, or `for_each()`, multiple
+When `as_table=true` is used in `load()` or `for_each()`, multiple
 database results are combined into a single MATLAB table. Each result's metadata
 (schema keys like `subject`, `session`) becomes a column in that table.
 
@@ -42,7 +42,7 @@ cell array, then normalized via `normalize_meta_column()`:
 
 ### 3. `multi_result_to_table` (BaseVariable.m)
 
-Used by `load(as_table=true)` and `load_all(as_table=true)`. Same normalization
+Used by `load(as_table=true)`. Same normalization
 logic inline: checks all-numeric and all-string before assigning to table column.
 
 ## Data Column Normalization

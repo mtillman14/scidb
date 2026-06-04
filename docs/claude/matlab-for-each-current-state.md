@@ -51,7 +51,7 @@ Unlike Python (where the layers are clean delegations), the MATLAB layers have s
 | File | Lines | Purpose |
 |---|---|---|
 | `for_each.m` | 2160 | DB-backed for_each. Builds version keys, loads inputs, propagates schema, delegates the loop to `+scifor/for_each`, then saves results. Includes a 340-line `run_parallel` branch (not currently in use). |
-| `BaseVariable.m` | 972 | Base class for variable types. Provides `.save()`, `.load()`, `.load_all()`, `.list_versions()`, `.provenance()`. Each method bridges to a Python equivalent. |
+| `BaseVariable.m` | 972 | Base class for variable types. Provides `.save()`, `.load()`, `.list_versions()`, `.provenance()`. Each method bridges to a Python equivalent. |
 | `LineageFcn.m` | 190 | Wraps a MATLAB function for lineage tracking. Constructs a `MatlabLineageFcn` Python proxy. On call: builds `MatlabLineageFcnInvocation`, checks Python cache, executes in MATLAB on miss, wraps results as `scidb.LineageFcnResult`. |
 | `LineageFcnResult.m` | 59 | Pairs MATLAB result data with the Python lineage shadow. |
 | `PathGenerator.m` | 218 | Filesystem path generator helper. |
@@ -87,7 +87,6 @@ Helper functions used by `+scidb/for_each.m`, `+scidb/BaseVariable.m`, `+scidb/L
 | `to_python_input.m` | 23 | Convert a single function input for `MatlabLineageFcnInvocation`. |
 | `function_name.m` | 13 | Extract function name from a function handle. |
 | `ensure_registered.m` | 12 | Auto-register a MATLAB type with Python via `register_matlab_variable`. |
-| `split_load_all_args.m` | 49 | Split `load_all` keyword arguments into metadata vs options. |
 
 ### `+scihist/`
 
@@ -116,7 +115,7 @@ Helper functions used by `+scidb/for_each.m`, `+scidb/BaseVariable.m`, `+scidb/L
 - `get_data_column_name(py_class, db)` — resolve `ColName` via `_variables` table query.
 
 **Bulk load:**
-- `load_and_extract(py_class, metadata_dict, version_id, db, where)` — single-call replacement for `load_all → list → wrap_batch_bridge`.
+- `load_and_extract(py_class, metadata_dict, version_id, db, where)` — single-call replacement for `load → list → wrap_batch_bridge`.
 - `wrap_batch_bridge(py_vars_list)` — extract scalars/metadata/data from a list of `BaseVariable`. Caches data in `_batch_cache`; returns lightweight strings/JSON.
 - `get_batch_item(batch_id, index)` — fetch one item from cache.
 - `get_batch_data_item(batch_id, index)` — fetch just the data.
@@ -395,7 +394,7 @@ What happens:
 
 The MATLAB layer has been progressively optimized to reduce MATLAB↔Python crossings:
 
-- **Bulk load:** `load_and_extract` in one call instead of `load_all → list → wrap_batch_bridge` separately.
+- **Bulk load:** `load_and_extract` in one call instead of `load → list → wrap_batch_bridge` separately.
 - **Server-side data cache:** `_batch_cache` keeps loaded data in Python; MATLAB only fetches scalars/JSON across the bridge until it needs an item. `get_batch_data_item(batch_id, index)` retrieves single items lazily.
 - **Scalar fast path:** `wrap_batch_bridge` packs all-scalar data into one numpy array for single-crossing transfer.
 - **DataFrame fast path:** same-schema DataFrames are concatenated with `pd.concat` and a `row_counts` array; MATLAB receives one large table instead of N small ones.

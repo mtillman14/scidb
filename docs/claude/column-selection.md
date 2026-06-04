@@ -52,7 +52,7 @@ The column names are passed to the `BaseVariable` constructor and stored in the 
 
 1. `MyVar("col_a")` stores `"col_a"` in `selected_columns` property.
 2. In `for_each`, after loading and after the `as_table` conversion, `apply_column_selection()` checks `var_inst.selected_columns`.
-3. If non-empty, it extracts the column(s) from the loaded ThunkOutput's `.data` table.
+3. If non-empty, it extracts the column(s) from the loaded BaseVariable's `.data` table.
 4. Single column → `tbl.(col_name)` (array). Multiple columns → `tbl(:, cols)` (subtable).
 
 ## Key Files

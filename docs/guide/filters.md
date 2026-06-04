@@ -13,7 +13,7 @@
      scidb/src/scidb/__init__.py exports raw_sql, schema_key, exclude_schema, include_schema,
        list_exclusions.
      NOTE: where= works in load() and for_each(), NOT a `load_all` method (no such method).
-     Orphan api/filters.md is the API-reference companion (also still uses stale load_all). -->
+     api/filters.md is the API-reference companion. -->
 
 Filters let you load and process only the records you want, by the *values of
 other variables*. The same `where=` filter works in both `load()` and

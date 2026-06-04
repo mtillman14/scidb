@@ -215,7 +215,8 @@ def for_each(
     7. Saves results from the returned table
 
     Args:
-        fn: The function to execute (plain function handle, no Thunk wrapping).
+        fn: The function to execute (plain function handle; for_each handles
+            lineage tracking internally).
         inputs: Dict mapping parameter names to variable types, Fixed wrappers,
                 Merge wrappers, ColumnSelection wrappers, PathInput, or constants.
         outputs: List of output types/objects with ``.save()``.

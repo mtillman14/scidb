@@ -6,7 +6,7 @@
 
 1. **Per-iteration database queries**: Each `load()` call in the `for_each` loop ran a separate database query. For 108 iterations with 1 input, that was 108 queries (~86s total, ~800ms each).
 
-2. **Per-variable wrapping overhead**: Converting each Python BaseVariable to a MATLAB ThunkOutput required ~34 MATLAB-Python boundary crossings (attribute accesses for record_id, content_hash, lineage_hash, version_id, parameter_id, plus ~4 crossings per metadata key). For 8328 variables with 6 metadata keys each, this was ~250K boundary crossings (~20.7s).
+2. **Per-variable wrapping overhead**: Converting each Python BaseVariable to a MATLAB BaseVariable wrapper required ~34 MATLAB-Python boundary crossings (attribute accesses for record_id, content_hash, lineage_hash, version_id, parameter_id, plus ~4 crossings per metadata key). For 8328 variables with 6 metadata keys each, this was ~250K boundary crossings (~20.7s).
 
 ## Solution: Two-Part Optimization
 
@@ -22,7 +22,7 @@ Instead of crossing the MATLAB-Python boundary ~34 times per variable, a Python 
 
 This reduces boundary crossings from ~34 per variable to ~3 per variable (data, py_obj reference, and the fixed overhead of bulk field extraction).
 
-**Used by**: `BaseVariable.load()` (multi-result path), `BaseVariable.load_all()`, and `for_each` preloading.
+**Used by**: `BaseVariable.load()` (multi-result and `as_df`/`as_table` paths) and `for_each` preloading.
 
 ### Optimization 2: Pre-loading in for_each
 
@@ -30,7 +30,7 @@ This reduces boundary crossings from ~34 per variable to ~3 per variable (data, 
 
 Instead of calling `load()` per iteration (one DB query each), `for_each` now pre-loads all data for each input variable type in a single query before the main loop:
 
-1. For each loadable input (BaseVariable or Fixed, not PathInput), the iteration metadata values are passed as arrays to `load_all()`, which uses SQL `IN` clauses for matching.
+1. For each loadable input (BaseVariable or Fixed, not PathInput), the iteration metadata values are passed as arrays to `load_all_as_df()`, which uses SQL `IN` clauses for matching.
 2. Results are batch-wrapped via Optimization 1.
 3. A `containers.Map` lookup table is built, keyed by a sorted metadata string (e.g., `"session=A|subject=1"`).
 4. In the main loop, results are looked up from the map instead of querying the database.
@@ -71,15 +71,15 @@ The preloaded path is skipped (falls back to per-iteration `load()`) when:
 
 ### Optimization 3: Bulk Loading for Custom-Dtype Records
 
-**File**: `database.py` (`load_all()`, `_deserialize_custom_subdf()`, `_build_bulk_where()`)
+**File**: `database.py` (`load_all_as_df()`, `_deserialize_custom_subdf()`, `_build_bulk_where()`)
 
-The `load_all()` bulk path originally fell back to per-record SQL queries (`_load_by_record_row()`) when:
+The `load_all_as_df()` bulk path originally fell back to per-record SQL queries (`_load_by_record_row()`) when:
 1. The variable class had custom serialization (`to_db`/`from_db` overrides), or
 2. The `dtype_meta` had `custom=True` (e.g., DataFrame variables stored as raw columns)
 
 This meant types like tables (DataFrames stored with `custom=True` dtype) would issue N individual `SELECT * WHERE pid=? AND vid=? AND sid=?` queries — one per record. For 2741 records, this was ~5500 SQL queries taking ~10s.
 
-**Solution**: `load_all()` now partitions parameter_ids into `custom_pids` and `native_pids`, then handles each with a single bulk SQL query:
+**Solution**: `load_all_as_df()` now partitions parameter_ids into `custom_pids` and `native_pids`, then handles each with a single bulk SQL query:
 
 1. **Custom pids**: One `SELECT * FROM "table" WHERE ...` fetches all data rows at once. Results are grouped by `(parameter_id, version_id, schema_id)` via `DataFrame.groupby()`. Each group is passed to `_deserialize_custom_subdf()`, which dispatches to the correct deserialization path:
    - `dict_of_arrays`: reconstruct dict of numpy arrays with dtype/shape restoration
