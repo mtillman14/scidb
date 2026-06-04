@@ -65,6 +65,9 @@ nav:
     - Building These Docs: project/building-docs.md
     - FAQ & Troubleshooting: project/faq.md
 
+extra_css:
+  - stylesheets/extra.css
+
 markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
@@ -87,9 +90,7 @@ markdown_extensions:
 plugins:
   - search
 
-# Internal engineering notes and retire-after-migration files: kept in the repo
-# but excluded from the published site (they were never in nav).
+# Internal engineering notes: kept in the repo but excluded from the published
+# site (they were never in nav).
 exclude_docs: |
   claude/
-  README_old.md
-  api.md

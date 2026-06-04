@@ -2,7 +2,7 @@
 
 <!-- Ground truth (source win over prose). Verified against:
      mkdocs.yml (material theme; nav tree; navigation.tabs/indexes; pymdownx extensions;
-     exclude_docs for claude/, README_old.md, api.md); docs/requirements.txt
+     exclude_docs for claude/); docs/requirements.txt
      (mkdocs>=1.5, mkdocs-material>=9.0); .readthedocs.yaml (ubuntu-22.04, python 3.11,
      mkdocs configuration: mkdocs.yml, install docs/requirements.txt).
      Local venv at .venv has mkdocs + mkdocs-material installed. -->
@@ -41,8 +41,8 @@ Everything lives in `mkdocs.yml`:
 - **`markdown_extensions`** — the authoring features pages rely on: admonitions,
   collapsible blocks (`pymdownx.details`), tabbed code, tables, task lists, and
   emoji/status icons.
-- **`exclude_docs`** — internal engineering notes under `docs/claude/` and
-  retired files are kept in the repo but excluded from the published site.
+- **`exclude_docs`** — internal engineering notes under `docs/claude/` are kept
+  in the repo but excluded from the published site.
 
 ## Authoring conventions
 
