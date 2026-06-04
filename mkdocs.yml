@@ -1,6 +1,6 @@
 site_name: SciStack
 site_description: Scientific Data Versioning Framework
-site_url: https://scidb.readthedocs.io
+site_url: https://scistack.readthedocs.io
 
 repo_name: scistack
 repo_url: https://github.com/mtillman14/scistack
