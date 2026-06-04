@@ -68,7 +68,8 @@
       "Bash(sed -n '140,170p' scidb/tests/test_aggregation.py)",
       "Bash(sed -n '118,145p' scidb/tests/test_each_of.py)",
       "Bash(cat)",
-      "Bash(bash /tmp/setupcheck.sh)"
+      "Bash(bash /tmp/setupcheck.sh)",
+      "WebFetch(domain:scistack.readthedocs.io)"
     ]
   }
 }
