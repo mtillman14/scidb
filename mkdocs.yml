@@ -2,8 +2,8 @@ site_name: SciStack
 site_description: Scientific Data Versioning Framework
 site_url: https://scidb.readthedocs.io
 
-repo_name: scidb
-repo_url: https://github.com/mtillman14/general-sqlite-database
+repo_name: scistack
+repo_url: https://github.com/mtillman14/scistack
 
 theme:
   name: material
