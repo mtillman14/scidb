@@ -1,71 +1,78 @@
 # SciStack
 
-**Scientific Data Versioning Framework**
+<!-- Ground truth (source/tests win over prose). Verified against this session's reconciled
+     pages and: scidb/__init__ (BaseVariable, configure_database, get_database, for_each);
+     scihist/__init__ (for_each, save, configure_database, lineage_fcn); scilineage (lineage_fcn
+     -> LineageFcnResult.data); scimatlab configure_database (2 args); all data + lineage in one
+     DuckDB file. NOTE: layered stack (scifor/scidb/scilineage/scihist), NOT a single-package
+     scidb; decorator is @lineage_fcn (not @thunk); configure_database takes 2 args (no SQLite
+     "pipeline.db"); persist lineage results via scihist.save, not VarClass.save. -->
 
-SciStack is a lightweight database framework for scientific computing that provides automatic versioning, provenance tracking, and computation caching using DuckDB for data storage and SQLite for lineage persistence.
+**A layered framework for reproducible scientific data processing.**
 
-## Key Features
+SciStack turns ordinary analysis functions into versioned, provenance-tracked,
+cache-aware pipelines. Every result remembers how it was produced; nothing is
+recomputed unless an input or the code actually changed; and all data plus lineage
+lives in a single, inspectable DuckDB file. It works from both **Python** and
+**MATLAB**.
 
-- **Type-safe storage** - Define custom variable types with explicit serialization
-- **Content-based versioning** - Automatic deduplication via deterministic hashing
-- **Metadata addressing** - Query data by flexible key-value metadata
-- **Lineage tracking** - Automatic provenance capture via `@thunk` decorator
-- **External library support** - Wrap functions from scipy, sklearn, etc. with `Thunk(fn)`
-- **Computation caching** - Skip redundant computations automatically
-- **Portable storage** - DuckDB file for data, SQLite file for lineage
+## Enter at any level
 
-## Installation
+SciStack is a *stack* of small packages — use only the layer you need, and adopt
+the ones above it when you want more. (See
+[Choosing Your Layer](getting-started/choosing-a-layer.md).)
 
-```bash
-pip install scidb
-```
+| Layer | Package | What it adds |
+|---|---|---|
+| Batch iteration | `scifor` | Run a function over every condition combination on plain tables — no database |
+| Provenance | `scilineage` | Record what produced each value; cache by lineage |
+| Storage | `scidb` | Typed, versioned variables in a database; DB-backed `for_each` |
+| Full pipeline | `scihist` | `for_each` with automatic lineage + "recompute only what's stale" |
 
-## Quick Example
+## Quick example
 
 ```python
-from scidb import BaseVariable, configure_database, thunk
 import numpy as np
+from scidb import BaseVariable
+from scihist import for_each, configure_database
+from scilineage import lineage_fcn
 
-# Define a variable type (native storage - no to_db/from_db needed)
-class TimeSeries(BaseVariable):
-    pass
+# One DuckDB file holds data and lineage; declare the experiment's condition keys
+configure_database("experiment.duckdb", ["subject", "session"])
 
-# Setup (DuckDB for data, SQLite for lineage)
-db = configure_database("experiment.duckdb", ["subject", "session"], "pipeline.db")
+class RawSignal(BaseVariable): schema_version = 1
+class SignalPower(BaseVariable): schema_version = 1
 
-# Save with metadata
-data = np.array([1.0, 2.0, 3.0])
-TimeSeries.save(data, subject=1, session="baseline")
+# A tracked function: each call records its inputs + a hash of the function
+@lineage_fcn
+def compute_power(signal):
+    return float(np.mean(signal ** 2))
 
-# Load by metadata
-loaded = TimeSeries.load(subject=1, session="baseline")
+# Process every subject/session, loading inputs and saving outputs with lineage
+for_each(compute_power, inputs={"signal": RawSignal}, outputs=[SignalPower],
+         subject=[1, 2, 3], session=["A", "B"])
 
-# Track lineage with @thunk
-@thunk
-def normalize(arr: np.ndarray) -> np.ndarray:
-    return (arr - arr.mean()) / arr.std()
-
-result = normalize(loaded)  # Pass the variable, not .data
-TimeSeries.save(result, subject=1, session="normalized")
-
-# Query provenance
-provenance = db.get_provenance(TimeSeries, subject=1, session="normalized")
-print(provenance["function_name"])  # "normalize"
+# Re-run: nothing recomputes — every result is already current
+for_each(compute_power, inputs={"signal": RawSignal}, outputs=[SignalPower],
+         subject=[1, 2, 3], session=["A", "B"])
 ```
 
-## Why SciStack?
+## Why SciStack
 
-| Problem                                   | SciStack Solution                                |
-| ----------------------------------------- | --------------------------------------------- |
-| "Which version of this data did I use?"   | Content-based hashing ensures reproducibility |
-| "What processing produced this result?"   | Automatic lineage tracking via `@thunk`       |
-| "I already computed this, why recompute?" | Computation caching skips redundant work      |
-| "How do I organize my experimental data?" | Flexible metadata addressing                  |
-| "I need to share this database"           | Portable DuckDB + SQLite files                |
+| Question | How SciStack answers it |
+|---|---|
+| "Which version of this data did I use?" | Content-addressed `record_id`s and automatic versioning |
+| "What produced this result?" | Lineage captured automatically via `@lineage_fcn` |
+| "I already computed this — why recompute?" | Cache hits and `skip_computed` reuse current results |
+| "How do I organize experimental data?" | Address records by flexible metadata (subject/session/…) |
+| "Can I share or inspect the database?" | One DuckDB file, queryable in DBeaver |
 
-## Documentation
+## Get started
 
-- [Quickstart](quickstart.md) - Get up and running in 5 minutes
-- [VO2 Max Walkthrough](guide/walkthrough.md) - Step-by-step example with design philosophy
-- [User Guide](guide/variables.md) - Detailed documentation
-- [API Reference](api.md) - Complete API documentation
+- [Installation](getting-started/installation.md) — install the layers you need
+- [Quickstart](quickstart.md) — a working pipeline in a few minutes
+- [Choosing Your Layer](getting-started/choosing-a-layer.md) — pick your entry point
+- [Concepts](concepts/index.md) — variables, lineage, caching, hashing
+- [User Guide](guide/index.md) — task-oriented how-tos
+- [API Reference](api/index.md) — the full surface
+- [MATLAB Setup](matlab-setup.md) — the same workflow from MATLAB

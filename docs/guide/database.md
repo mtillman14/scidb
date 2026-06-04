@@ -1,175 +1,146 @@
-# Database
+# Database & Configuration
 
-The `DatabaseManager` handles all storage operations. SciStack uses DuckDB (via SciDuck) for data and lineage storage.
+<!-- Ground truth (tests/source win over prose). Verified against:
+     scidb/src/scidb/database.py: configure_database(dataset_db_path, dataset_schema_keys)
+       -> DatabaseManager (auto-registers known subclasses, sets scifor schema, enables caching);
+       get_database(); register() idempotent; list_versions(variable_class, include_excluded=False,
+       **metadata) -> list[dict] with keys record_id/schema/branch_params/timestamp (sorted newest
+       first); get_provenance(...) -> {function_name, function_hash, inputs, constants}|None;
+       has_lineage(record_id)->bool; find_by_lineage(invocation); distinct_schema_values(key);
+       save/load/etc accept db= for one-shot ops;
+     scidb/src/scidb/discover.py: discover_module(module), scan_package(name), scan_project(root,*,
+       skip_dists, library_filter) -> DiscoveryResult (tooling/GUI introspection);
+     scidb/src/scidb/exceptions.py: SciStackError + NotRegisteredError/NotFoundError/
+       DatabaseNotConfiguredError/ReservedMetadataKeyError/AmbiguousVersionError/AmbiguousParamError.
+     NOTE: list_versions keys are timestamp + branch_params (NOT created_at/version);
+     there is no load_all / include_record_id. -->
 
-## Configuration
+This guide covers configuring the database, the schema-key model, and the
+operations on the database handle. For where it sits in the stack, see
+[Architecture & Layers](../concepts/architecture.md).
 
-### Global Database
+## Configure the database
+
+One call opens the DuckDB database, declares the dataset schema, auto-registers
+known variable types, and enables lineage caching. It returns the database
+handle:
 
 ```python
-from scidb import configure_database, get_database
+from scidb import configure_database
 
-# Configure once at startup
-# dataset_schema_keys defines which metadata keys identify dataset location
-db = configure_database(
-    "experiment.duckdb",
-    dataset_schema_keys=["subject", "trial", "condition"],
-)
-
-# Access anywhere
-db = get_database()
+db = configure_database("experiment.duckdb", ["subject", "session"])
 ```
 
-### Schema Keys
+The two arguments are the database file path and the **dataset schema keys** —
+both required.
 
-The `dataset_schema_keys` parameter is **required** and defines which metadata keys identify the "location" in your dataset (e.g., subject, trial, sensor) versus computational variants at that location.
+## Schema keys vs. version keys
 
-- **Schema keys**: Identify the dataset location (used for table queries)
-- **Version keys**: Everything else - distinguish computational variants at the same location
+The schema keys you pass are the dividing line for *all* metadata:
+
+- **Schema keys** (e.g. `subject`, `session`) identify the *location* of data —
+  the coordinates you address records by.
+- **Everything else** is a **version key**: metadata that distinguishes different
+  computational *variants* at the same location.
+
+So with `["subject", "session"]` declared, saving a result with an extra
+`factor=2.0` keeps `subject`/`session` as the address and treats `factor` as a
+variant discriminator (it lands in `branch_params`). This is the mechanism behind
+[variants and caching](caching.md).
+
+## Access the database anywhere
+
+After configuration, retrieve the global handle without passing it around:
+
+```python
+from scidb import get_database
+
+db = get_database()   # raises DatabaseNotConfiguredError if not configured yet
+```
+
+### Working with more than one database
+
+`configure_database` sets the *global* default, but `save`, `load`,
+`get_provenance`, and similar accept a `db=` argument for one-shot operations
+against another database without changing the global:
+
+```python
+other = configure_database("aim2.duckdb", ["subject", "session"])  # also becomes global
+StepLength.save(data, db=other, subject=1, session="A")            # explicit target
+```
 
 ## Registration
 
-Variable types are **auto-registered** on first save or load. Manual registration is optional:
+Variable types are registered automatically — `configure_database` registers
+every defined `BaseVariable` subclass, and using a type registers it on demand.
+Registering creates the type's table if needed and is idempotent, so explicit
+registration is only occasionally useful (e.g. a class defined *after* setup):
 
 ```python
-# Automatic (preferred) - registers on first save
-MyVariable.save(data, subject=1)
-
-# Manual (optional) - register explicitly
-db.register(MyVariable)
+db.register(LateDefinedVariable)   # safe to call repeatedly
 ```
 
-Registration creates the table if it doesn't exist. Re-registering is safe (idempotent).
+## Inspect version history
 
-## Save Operations
-
-### Basic Save
+`list_versions` returns every stored version at a location, newest first. Each
+entry is a dict with `record_id`, `schema` (the location keys), `branch_params`
+(the variant keys), and `timestamp`:
 
 ```python
-record_id = MyVariable.save(data, subject=1, trial=1, condition="A")
+for v in db.list_versions(StepLength, subject=1, session="A"):
+    print(v["record_id"][:12], v["timestamp"], v["branch_params"])
 ```
 
-### Saves with Same Content
+Non-schema keyword arguments are treated as `branch_params` filters, so you can
+narrow to a single variant. To list the distinct values a schema key takes across
+the database, use `db.distinct_schema_values("subject")`.
 
-Saving identical data+metadata produces the same deterministic record_id:
+## Query provenance
+
+`get_provenance` returns what produced a stored value — or `None` if it was saved
+without lineage:
 
 ```python
-record_id1 = MyVar.save(data, subject=1)
-record_id2 = MyVar.save(data, subject=1)  # Same data+metadata
-assert record_id1 == record_id2  # Same record_id (deterministic)
+prov = db.get_provenance(StepLength, subject=1, session="A")
+if prov:
+    prov["function_name"]   # the producing function
+    prov["inputs"]          # variable inputs it consumed
+    prov["constants"]       # literal parameters
+
+db.has_lineage(record_id)   # True if this record has a lineage record
 ```
 
-Note: Both saves insert rows into the database. The record_id is computed deterministically from the content hash and metadata, so it will be the same string.
+See [Tracking Lineage](lineage.md) for how provenance is recorded.
 
-## Load Operations
+## Discovering variable types
 
-### Load Single Result
+For tooling that needs to find the variable types and lineage functions defined
+across a codebase, `scidb` provides introspection helpers — `discover_module(module)`
+and `scan_package(name)` enumerate a module's or package's pipeline-relevant
+exports, and `scan_project(root)` scans a whole project (this is what the GUI's
+library panel uses). Day-to-day pipelines don't need these; reach for them when
+building tooling on top of SciStack.
 
-`load()` returns the **latest version** at the specified schema location:
+## Errors you might hit
 
-```python
-# Load by schema keys - returns latest version
-var = MyVariable.load(subject=1, trial=1, condition="A")
-
-# Partial match on schema - returns latest at that location
-var = MyVariable.load(subject=1)
-```
-
-### Load by Version Hash
-
-```python
-var = MyVariable.load(version="abc123...")
-```
-
-### Load All Matching
-
-Use `load_all()` to iterate over all matching records:
-
-```python
-# Generator (memory-efficient)
-for var in MyVariable.load_all(condition="A"):
-    print(var.data)
-
-# Load all into DataFrame
-df = MyVariable.load_all(condition="A", as_df=True)
-df = MyVariable.load_all(condition="A", as_df=True, include_record_id=True)
-```
-
-## Version History
-
-### List All Versions
-
-```python
-versions = db.list_versions(MyVariable, subject=1)
-for v in versions:
-    print(f"{v['record_id'][:16]} - {v['created_at']}")
-    print(f"  Schema: {v['schema']}")    # Dataset location keys
-    print(f"  Version: {v['version']}")  # Computational variant keys
-```
-
-### Load Specific Version
-
-```python
-# By record_id
-var = MyVariable.load(version="abc123...")
-
-# By metadata (returns latest matching)
-var = MyVariable.load(subject=1, trial=1)
-```
-
-## Provenance Queries
-
-### What Produced This?
-
-```python
-provenance = db.get_provenance(MyVariable, subject=1, stage="processed")
-if provenance:
-    print(f"Function: {provenance['function_name']}")
-    print(f"Inputs: {provenance['inputs']}")
-    print(f"Constants: {provenance['constants']}")
-```
-
-### Check Lineage Exists
-
-```python
-if db.has_lineage(record_id):
-    print("This variable was produced by a thunked function")
-```
-
-## Cache Operations
-
-See [Caching Guide](caching.md) for details.
-
-Caching is handled automatically through `Thunk.query`, which is set to the `DatabaseManager` instance during `configure_database()`. The `DatabaseManager.find_by_lineage()` method looks up previously computed results by lineage hash, then loads the data from DuckDB.
-
-## Database Schema
-
-SciStack uses a single DuckDB database for both data and lineage:
-
-| Table               | Purpose                     |
-|---------------------|-----------------------------|
-| `_registered_types` | Type registry               |
-| `_schema`           | Dataset schema entries      |
-| `_variables`        | Variable version metadata   |
-| `_record_metadata`  | Record audit trail          |
-| `_lineage`          | Provenance DAG              |
-| `_variable_groups`  | Named groups of variables   |
-| `{VariableName}_data` | One per registered type   |
-
-## Storage Format
-
-Data is stored using **DuckDB native types** (via SciDuck), providing:
-
-- Native DuckDB types for arrays (LIST), nested arrays (LIST[]), and JSON
-- Queryable data visible in DBeaver or any DuckDB-compatible viewer
-- Efficient columnar storage
-- Custom serialization via `to_db()`/`from_db()` for complex types
-
-## Exceptions
+All inherit from `SciStackError`:
 
 | Exception | Cause |
-|-----------|-------|
-| `NotRegisteredError` | Loading a type that has never been saved |
-| `NotFoundError` | No data matches the query |
-| `DatabaseNotConfiguredError` | `get_database()` called before `configure_database()` |
-| `ReservedMetadataKeyError` | Using reserved key in metadata |
+|---|---|
+| `DatabaseNotConfiguredError` | `get_database()` (or a save/load) before `configure_database()` |
+| `NotRegisteredError` | Using a type that was never registered |
+| `NotFoundError` | No record matches the query |
+| `ReservedMetadataKeyError` | A reserved key used in metadata |
+| `AmbiguousVersionError` | `version="latest"` but multiple variants exist at the location |
+| `AmbiguousParamError` | A parameter reference matches more than one candidate |
+
+## Where the data lives
+
+Everything is one DuckDB file. Each variable type gets its own data table
+(`{ClassName}_data`), alongside shared tables for schema, metadata, lineage, and
+variable groups. Because values are stored in native, queryable DuckDB types
+(`LIST`, nested `LIST`, `JSON`), you can open the file in DBeaver or any
+DuckDB-compatible viewer and read it directly.
+
+**Next:** [Defining Variables](variables.md) · [Tracking Lineage](lineage.md) ·
+[Computation Caching](caching.md) · [API: Database](../api/database.md)

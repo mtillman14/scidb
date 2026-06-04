@@ -6,7 +6,7 @@ MATLAB .m files declared in ``[tool.scistack.matlab]``.
 
 Module-level state tracks discovered MATLAB functions and variables.
 On load, Python surrogate classes are created for each MATLAB variable via
-:func:`sci_matlab.bridge.register_matlab_variable` so they participate in
+:func:`scimatlab.bridge.register_matlab_variable` so they participate in
 the DAG graph (which is built from DB history that references these types).
 """
 
@@ -91,7 +91,7 @@ def load_from_config(config: SciStackConfig) -> dict:
             # contains this type and the DAG builder can reference it.
             logger.debug("[matlab_registry] Creating Python surrogate for MATLAB variable: %s", var_name)
             try:
-                from sci_matlab.bridge import register_matlab_variable
+                from scimatlab.bridge import register_matlab_variable
                 register_matlab_variable(var_name)
                 logger.info("[matlab_registry] Registered MATLAB variable: %s (%s)", var_name, path)
             except Exception:

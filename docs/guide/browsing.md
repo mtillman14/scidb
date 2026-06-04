@@ -1,95 +1,110 @@
-# Browsing and Exporting Data
+# Browsing & Exporting
 
-SciStack stores data in a DuckDB database file using native DuckDB types (arrays, JSON, etc.). This means you can inspect data directly using DBeaver or any DuckDB-compatible viewer.
+<!-- Ground truth (tests/source win over prose). Verified against:
+     scidb/src/scidb/variable.py:661 BaseVariable.to_csv(filename, *args, **kwargs) CLASSMETHOD —
+       flat table, one row per schema_id, value column named after the class; filename must end
+       ".csv"; supports **metadata filters and where=; ValueError for multi-row table / bare vector;
+     scidb/tests/test_to_csv.py (ScalarValue.to_csv(path); .to_csv(path, subject=1);
+       .to_csv(path, where=_Side=="L"); filename must end .csv);
+     scidb/src/scidb/database.py:4017 db.export_to_csv(variable_class, path, **metadata) -> int
+       (raw to_db() rows + _record_id + _meta_<key> columns; NotFoundError if none);
+     scifor/src/scifor/merge.py Merge(a,b).to_csv(path, ...) and .as_df(where=None, verbose=False,
+       **metadata) — inner-join on shared schema columns; scifor Col("col") filters;
+     scifor/tests/test_merge_as_df.py, test_merge_to_csv.py.
+     NOTE: to_csv is a CLASSMETHOD (VarClass.to_csv(...)), NOT an instance method var.to_csv();
+     data is one DuckDB file with native types (DBeaver-inspectable). Do not invent column
+     names for the underlying tables. -->
 
-This guide covers how to browse and export your data.
+Your data lives in one DuckDB file with native, queryable types, so you can read
+it three ways: browse it directly, export flat CSVs, or pull DataFrames in Python.
 
-## Viewing Data in DuckDB Browsers
+## Browse the database directly
 
-Open your `.duckdb` file in DBeaver or any DuckDB viewer. Each variable type has its own table with these columns:
+Open the `.duckdb` file in [DBeaver](https://dbeaver.io/) or any
+DuckDB-compatible viewer. Each variable type has its own table (`{ClassName}_data`),
+and because values are stored as native DuckDB types (`LIST`, nested `LIST`,
+`JSON`) you can read them without any export step. This is the quickest way to
+sanity-check what a pipeline wrote.
 
-| Column            | Description                                  |
-|-------------------|----------------------------------------------|
-| `value`           | The stored data (DuckDB native type)         |
-| `_dtype_meta`     | Type metadata for round-trip restoration     |
-| `_record_id`      | Unique content hash                          |
-| `_content_hash`   | Hash of data content                         |
-| `_lineage_hash`   | Hash of computation lineage (if applicable)  |
-| `_schema_version` | Schema version number                        |
-| `_metadata`       | JSON with addressing keys                    |
-| `_user_id`        | User ID (if set via SCIDB_USER_ID env var)   |
-| `_created_at`     | Timestamp                                    |
-| Schema columns    | One column per dataset schema key            |
+## Export a variable to CSV
 
-For variables with custom serialization (`to_db()`/`from_db()`), the data columns match the DataFrame structure returned by `to_db()`.
-
-## Exporting to CSV
-
-### Single Variable
-
-```python
-var = TimeSeries.load(subject=1, trial=1)
-var.to_csv("subject1_trial1.csv")
-```
-
-### Multiple Variables
-
-```python
-# Export all matching records to a single CSV
-count = db.export_to_csv(
-    TimeSeries,
-    "all_experiment_data.csv",
-    experiment="exp1"
-)
-print(f"Exported {count} records")
-```
-
-The exported CSV includes:
-- All columns from `to_db()` output
-- `_record_id` column for traceability
-- `_meta_*` columns for each metadata key
-
-### Example CSV Output
-
-```csv
-index,value,_record_id,_meta_subject,_meta_trial
-0,0.123,abc123...,1,1
-1,0.456,abc123...,1,1
-2,0.789,abc123...,1,1
-0,0.234,def456...,1,2
-1,0.567,def456...,1,2
-```
-
-## Workflow Recommendations
-
-1. **Quick inspection**: Use DBeaver or a DuckDB viewer to browse tables directly
-2. **Detailed analysis**: Use `var.to_csv()` or `db.export_to_csv()` to export, then open in Excel/pandas
-3. **Programmatic access**: Use `load()` and work with data directly in Python
-
-## Example: Full Workflow
+`to_csv` is a **classmethod on the variable** — call it on the class, not on a
+loaded instance. It loads every matching record and writes a flat table: one row
+per schema location, one column per schema key, plus a value column named after
+the variable.
 
 ```python
-from scidb import configure_database, BaseVariable
-import numpy as np
-
-class Measurement(BaseVariable):
-    pass
-
-# Setup
-db = configure_database(
-    "experiment.duckdb",
-    ["subject", "experiment"],
-    "pipeline.db",
-)
-
-# Save some data
-for subject in [1, 2, 3]:
-    data = np.random.randn(100)
-    Measurement.save(data, subject=subject, experiment="demo")
-
-# Export for external analysis
-db.export_to_csv(Measurement, "demo_data.csv", experiment="demo")
-
-# Or view in DuckDB browser - open experiment.duckdb and browse
-# the 'Measurement' table directly
+ScalarValue.to_csv("scalars.csv")                       # all records
+ScalarValue.to_csv("subject1.csv", subject=1)           # filter by metadata
+ScalarValue.to_csv("left.csv", where=Side == "L")       # filter by value
 ```
+
+A subject-level variable produces one row per subject (no `trial` column); a
+trial-level variable, one row per subject/trial. A few rules from the
+implementation:
+
+- The filename **must end in `.csv`** (otherwise `ValueError`).
+- The layout is **one row per schema location**. A record may carry multiple
+  *columns* (a single-row table writes one column per table column), but a record
+  holding a multi-row table or a bare vector can't be flattened this way and
+  raises `ValueError`.
+
+### Many records, raw layout
+
+When you want every record's full `to_db()` rows stacked (rather than one row per
+location), use the database handle's `export_to_csv`. It writes each record's rows
+with added `_record_id` and `_meta_<key>` columns and returns the count:
+
+```python
+n = db.export_to_csv(TimeSeries, "all_timeseries.csv", experiment="exp1")
+```
+
+It raises `NotFoundError` if nothing matches.
+
+## Export merged variables (joined)
+
+To export several variables side by side, join them with `Merge` and call
+`to_csv` on the result. The constituents are inner-joined on their shared schema
+columns, so only matching rows appear and the schema keys aren't duplicated:
+
+```python
+from scidb import Merge
+
+Merge(StepLength, Speed).to_csv("gait.csv")
+```
+
+## Pull a DataFrame in Python
+
+For programmatic analysis without a file round-trip, get a DataFrame directly:
+
+- **A merged join** → `Merge(...).as_df()`, which returns the same frame `to_csv`
+  would have written, and accepts a `where=` filter:
+
+  ```python
+  from scifor import Col
+  df = Merge(StepLength, Speed).as_df(where=Col("StepLength") > 0.55)
+  ```
+
+- **A single variable** → `load(..., as_df=True)` (see
+  [Defining Variables](variables.md)):
+
+  ```python
+  df = StepLength.load(subject=1, as_df=True)
+  ```
+
+- **A `for_each` result** → run with `save=False` and it returns the result table
+  for inspection (see [Batch Processing](for_each.md)).
+
+## Which to use
+
+| Goal | Use |
+|---|---|
+| Eyeball what's stored | DBeaver / DuckDB viewer on the `.duckdb` file |
+| One flat CSV per variable | `VariableClass.to_csv("out.csv", …)` |
+| Several variables joined into one CSV | `Merge(A, B).to_csv("out.csv")` |
+| Every record's raw rows to CSV | `db.export_to_csv(VariableClass, "out.csv", …)` |
+| A DataFrame in Python | `Merge(...).as_df()` · `load(as_df=True)` · `for_each(save=False)` |
+
+**Next:** [Defining Variables](variables.md) ·
+[Batch Processing (for_each)](for_each.md) ·
+[Filtering & Selection](filters.md) · [Database & Configuration](database.md)

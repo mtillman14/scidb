@@ -8,7 +8,7 @@ signals, computes rolling averages, and extracts peak metrics.
 
 Framework features showcased:
   - BaseVariable: Type-safe data storage with automatic and custom serialization
-  - configure_database: DuckDB (data) + SQLite (lineage) dual-backend setup
+  - configure_database: single-call setup of one DuckDB file (data + lineage)
   - for_each: Run a function over all schema combinations, tracking variants
   - Provenance queries: Listing pipeline variants and upstream lineage
 
@@ -27,7 +27,7 @@ from pathlib import Path
 #
 # All core framework components come from the `scidb` package:
 #   - BaseVariable: Base class for defining storable data types
-#   - configure_database: One-call setup for DuckDB + SQLite backends
+#   - configure_database: One-call setup for the DuckDB backend
 #   - for_each: Run a function for every combination of schema values,
 #               loading inputs automatically and saving outputs automatically.
 #               Constants passed in `inputs` are tracked as pipeline variants
@@ -208,9 +208,8 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------------
     # 3a. Configure the database  [scidb.configure_database]
     #
-    # configure_database() sets up two storage backends in a single call:
-    #   - DuckDB file: stores all variable data (via SciDuck backend)
-    #   - SQLite file: stores lineage/provenance records (via PipelineDB)
+    # configure_database() opens a single DuckDB file that holds both the
+    # variable data and the lineage/provenance records.
     #
     # dataset_schema_keys defines which metadata keys represent the "location"
     # of data. Here, "subject" identifies which person's test this is.
@@ -401,8 +400,7 @@ if __name__ == "__main__":
 
     print()
     print("Pipeline complete!")
-    print(f"  Data stored in:    {db_dir / 'vo2max_data.duckdb'}")
-    print(f"  Lineage stored in: {db_dir / 'vo2max_lineage.db'}")
+    print(f"  Data + lineage stored in: {db_dir / 'vo2max_data.duckdb'}")
     print()
     print("To explore in the GUI:")
     print(f"  scistack-gui {db_dir / 'vo2max_data.duckdb'} --module {Path(__file__)}")

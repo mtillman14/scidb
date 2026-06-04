@@ -11,11 +11,12 @@ SciStack works natively in MATLAB via a thin wrapper around the Python package. 
 
 ## Installation
 
-### 1. Install the Python Package
+### 1. Install the Python Packages
 
-```bash
-pip install git+https://github.com/mtillman14/general-sqlite-database
-```
+SciStack is a multi-package stack — install the Python packages (at least
+`scidb`, plus `scimatlab`) in dependency order as described in
+[Installation](getting-started/installation.md). MATLAB drives these through its
+Python bridge, so they must be importable from the interpreter MATLAB uses.
 
 ### 2. Configure MATLAB's Python Environment
 
@@ -48,7 +49,7 @@ which python
 
 ```matlab
 % Add the scidb-matlab MATLAB package to your MATLAB path
-addpath('/path/to/sci-matlab/src/sci_matlab/matlab');
+addpath('/path/to/scimatlab/src/scimatlab/matlab');
 
 % Verify it works
 help scidb.BaseVariable
@@ -60,7 +61,7 @@ Add both lines to your `startup.m` so they run automatically when MATLAB starts.
 
 ```matlab
 % This should complete without errors
-scidb.configure_database("test.duckdb", ["subject", "session"], "pipeline.db");
+scidb.configure_database("test.duckdb", ["subject", "session"]);
 
 % Define a variable type
 % (In a real project, this goes in its own .m file — see below)
@@ -101,13 +102,15 @@ my_project/
 
 ```matlab
 % In startup.m
-addpath('/path/to/sci-matlab/src/sci_matlab/matlab');
+addpath('/path/to/scimatlab/src/scimatlab/matlab');
 addpath(fullfile(pwd, 'vars'));
 ```
 
 ## Cross-Language Interoperability
 
-Data saved from Python can be loaded in MATLAB and vice versa. The database format is identical — both languages write to the same DuckDB and SQLite files.
+Data saved from Python can be loaded in MATLAB and vice versa. There is one
+DuckDB file holding both the data and the lineage, and both languages read and
+write it identically.
 
 ```matlab
 % Load data that was saved from Python
@@ -116,7 +119,11 @@ disp(raw.data);  % Your Python-saved array, now in MATLAB
 ```
 
 !!! note "Lineage caching is language-specific"
-    Python thunks and MATLAB thunks have separate cache namespaces. A MATLAB thunk does not find cache entries written by a Python thunk for the same function, and vice versa. This is because function identity is computed differently (bytecode hash in Python, source file hash in MATLAB).
+    Python and MATLAB lineage functions have separate cache namespaces: a MATLAB
+    function does not find cache entries written by a Python function for the same
+    operation, and vice versa. This is because function identity is computed
+    differently — Python hashes the function's bytecode, while MATLAB hashes the
+    function's source file.
 
 ## Troubleshooting
 

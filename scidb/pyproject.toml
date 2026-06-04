@@ -26,7 +26,7 @@ dependencies = [
     "pandas>=1.3.0",
     "duckdb>=0.9.0",
     "scipathgen>=0.1.0",
-    "canonicalhash>=0.1.0",
+    "scicanonicalhash>=0.1.0",
     "sciduckdb>=0.1.0",
     "scifor>=0.1.0",
 ]

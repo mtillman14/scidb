@@ -1,184 +1,124 @@
-# Computation Caching
+# Caching Computations
 
-SciStack automatically caches computation results. When you save a variable produced by a thunked function, the result is cached. Future identical computations are skipped automatically.
+<!-- Ground truth (tests/source win over prose). Verified against:
+     scihist/tests/test_skip_computed.py (skip_computed default True; second run -> [skip];
+       skip_computed=False bypasses; input change -> [recompute] only affected combo;
+       constants are independent variants; output saved without lineage -> always recompute);
+     scihist/tests/test_cache_hit.py (save(VarClass, result) then reload + re-run same
+       @lineage_fcn -> cache hit, function not re-called);
+     scihist/tests/test_generates_file.py (@lineage_fcn(generates_file=True); save(Figure, result)
+       -> id starts "generated:"; re-run cache hit -> result.data is None, result.is_complete True;
+       different inputs -> executes; idempotent save);
+     scilineage/src/scilineage/core.py lineage_fcn(..., generates_file=False);
+     scihist.configure_database wires the db as the scilineage cache backend.
+     NOTE: `@thunk` / `Thunk.query` / "PipelineDB (SQLite)" are stale — the decorator is
+     @lineage_fcn, lineage lives in the same DuckDB, and lineage results persist via scihist.save. -->
 
-## How Caching Works
+SciStack reuses results instead of recomputing them. This guide shows the two
+practical ways that happens and how to control them. For the model behind it, see
+[Computation Caching](../concepts/caching.md). Caching relies on `scihist` —
+import `configure_database` from `scihist` so the database is registered as the
+cache backend.
 
-1. **Save populates cache** - When saving a `ThunkOutput`, lineage is stored in PipelineDB
-2. **Cache key** - Lineage hash: hash of function + input hashes
-3. **Automatic lookup** - Thunks check `Thunk.query` (the `DatabaseManager`) before executing
+## Batch caching with `for_each`
 
-```
-                    ┌─────────────────┐
-                    │ @thunk function │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │                             │
-              ▼                             ▼
-    ┌─────────────────┐          ┌─────────────────┐
-    │  First run:     │          │  Later run:     │
-    │  Execute +      │          │  Auto cache hit │
-    │  Save + Cache   │          │  Skip execution │
-    └─────────────────┘          └─────────────────┘
-```
-
-## Automatic Caching
-
-Caching is fully automatic. Just save once, and future calls with the same inputs skip execution:
-
-```python
-@thunk
-def expensive_computation(data):
-    print("Computing...")  # Only prints on first run
-    return data * 2
-
-# First run: executes and prints "Computing..."
-result = expensive_computation(raw_data)
-MyVar.save(result, subject=1, stage="computed")
-
-# Second run: cache hit, no execution!
-result2 = expensive_computation(raw_data)  # No print, returns cached
-print(result2.data)        # Same result, no recomputation
-```
-
-**Requirements for automatic caching:**
-
-- Database must be configured (`configure_database(...)`)
-- Variable class must be registered (happens on first `save()` or `load()`)
-
-### Multi-Output Functions
-
-Multi-output functions are also cached automatically. All outputs must be saved before caching takes effect:
+The common case: `scihist.for_each` runs `skip_computed=True` by default, so a
+re-run executes only the combinations whose outputs are missing or out of date.
+Each run prints `[skip]` / `[recompute]` lines so you can see what it decided:
 
 ```python
-@thunk(unpack_output=True)
-def split_data(data):
-    print("Splitting...")  # Only prints on first run
-    return data[:len(data)//2], data[len(data)//2:]
+from scihist import for_each
 
-# First run: executes
-left, right = split_data(raw_data)
-LeftHalf.save(left, subject=1)
-RightHalf.save(right, subject=1)
+for_each(process, inputs={"x": RawSignal}, outputs=[Filtered],
+         subject=[1, 2, 3], session=["A"])   # first run: all compute
 
-# Second run: cache hit for both outputs!
-left2, right2 = split_data(raw_data)  # No print
+for_each(process, inputs={"x": RawSignal}, outputs=[Filtered],
+         subject=[1, 2, 3], session=["A"])   # second run: all [skip]
 ```
 
-**Important:** If only some outputs are saved, no caching occurs:
+- **Change one input** (re-save it with different data) and only *that*
+  combination recomputes; the rest still skip.
+- **Edit the function or pass a new constant value** and the affected results
+  recompute (a new constant is a new [variant](../concepts/caching.md), so old
+  results are kept, not overwritten).
+- **Force a full re-run** with `skip_computed=False`.
 
 ```python
-left, right = split_data(raw_data)
-LeftHalf.save(left, subject=1)  # Only save one output
-# right is not saved
-
-# Next run: cache miss (partial save)
-left2, right2 = split_data(raw_data)  # Executes again
+for_each(process, inputs={"x": RawSignal}, outputs=[Filtered],
+         skip_computed=False, subject=[1, 2, 3], session=["A"])
 ```
 
-## Cache Key Components
+An output written with a plain `VariableClass.save()` (no lineage) can't be proven
+current, so `for_each` always recomputes it — another reason to persist pipeline
+outputs through `for_each` or `scihist.save`.
 
-The cache key (lineage hash) is a SHA-256 hash of:
+## Per-call caching with lineage
 
-| Component            | Source                   |
-| -------------------- | ------------------------ |
-| Function hash        | Bytecode + constants     |
-| Input record_ids     | For saved variables      |
-| Input content hashes | For unsaved values       |
-| Output thunk hashes  | For chained computations |
-
-This ensures cache hits only when:
-
-- Same function code
-- Same input data
-- Same input metadata
-
-## When Cache Misses Occur
-
-Cache misses happen when:
-
-| Scenario            | Reason                    |
-| ------------------- | ------------------------- |
-| First run           | No previous result exists |
-| Different inputs    | Input data changed        |
-| Function modified   | Bytecode hash changed     |
-| Different constants | e.g., `x * 2` vs `x * 3` |
-
-## Side-Effect Functions (`generates_file`)
-
-Some pipeline steps produce files — plots, reports, exported CSVs — rather than
-returning data to store in the database. You still want cache-hit behavior so
-these steps are skipped on re-runs when inputs haven't changed.
-
-Use `@thunk(generates_file=True)`:
+Outside of `for_each`, a `@lineage_fcn` call is itself cached. Persist a result
+with `scihist.save`, and re-running the same function on the same input returns
+the stored result **without executing again** — even after reloading the input or
+in a separate script:
 
 ```python
-class Figure(BaseVariable):
-    schema_version = 1
+from scihist import save
+from scilineage import lineage_fcn
 
-@thunk(generates_file=True)
-def plot_signal(data, subject, session):
+@lineage_fcn
+def double(x):
+    print("computing")     # prints only on the first run
+    return x * 2
+
+RawSignal.save(np.array([1, 2, 3]), subject=1)
+result = double(RawSignal.load(subject=1))
+save(SignalOut, result, subject=1)        # records the result + its lineage
+
+# later, or in another script
+again = double(RawSignal.load(subject=1))  # cache hit — "computing" does NOT print
+```
+
+This works because `scihist.configure_database` registers the database as
+scilineage's cache backend, and saved results carry the lineage hash used as the
+lookup key.
+
+## What counts as the "same" computation
+
+A cache hit requires all of:
+
+- the **same function** (its bytecode hash — reformatting doesn't matter, changing
+  what it computes does),
+- the **same inputs** (saved variables by `record_id`, unsaved values by content),
+- the **same constants** (a different constant value is a separate variant).
+
+So cache *misses* happen on the first run, when an input's data changes, when the
+function's code changes, or for a brand-new constant value. You never invalidate
+manually — changing any ingredient simply produces a new identity.
+
+!!! tip "Stable cache keys"
+    Pass *loaded variables* to your functions rather than raw arrays. A loaded
+    variable has a `record_id`, giving a stable key; an inline `np.array(...)` is
+    keyed by its content each time.
+
+## Side-effect steps that write files
+
+Some steps produce a file — a plot, a report — instead of data to store. Mark them
+with `generates_file=True` so they still get cache-hit skipping:
+
+```python
+@lineage_fcn(generates_file=True)
+def plot_signal(data):
     plt.plot(data)
-    plt.title(f"Subject {subject}, Session {session}")
-    plt.savefig(f"signal_s{subject}_{session}.png")
+    plt.savefig("signal.png")
+    return None
 
-# Run and save lineage (no data stored in DuckDB):
-data = ProcessedData.load(subject=1, session="A")
-result = plot_signal(data, subject=1, session="A")
-Figure.save(result, subject=1, session="A")  # Returns "generated:..." ID
-
-# Next run — cache hit, function skipped:
-data = ProcessedData.load(subject=1, session="A")
-result = plot_signal(data, subject=1, session="A")
-# result.data is None, result.is_complete is True
+result = plot_signal(ProcessedData.load(subject=1))
+save(Figure, result, subject=1)     # records lineage only; id starts "generated:"
 ```
 
-### How it works
+On a later run with the same input, the function is **skipped**: the cached result
+has `data is None` and `is_complete is True`, and nothing is re-plotted. Different
+inputs run it again. This works inside `for_each` too — pass `as_table=True` when
+the function needs the current schema-key values as arguments.
 
-1. `Figure.save()` detects `generates_file=True` on the thunk and saves **lineage only** to PipelineDB, with a `generated:` prefixed record ID. No data row is written to DuckDB.
-2. On the next call with the same inputs, `Thunk.query.find_by_lineage()` finds the `generated:` record and returns a cache hit with `data=None`.
-3. The function is never re-executed.
-
-### With `for_each`
-
-When used with `for_each`, a `generates_file` function can receive
-the current metadata values by using `as_table=True`, which keeps schema key
-columns in the input DataFrames:
-
-```python
-for_each(
-    plot_signal,
-    inputs={"data": ProcessedData},
-    outputs=[Figure],
-    as_table=True,
-    subject=subjects,
-    session=sessions,
-)
-```
-
-## Best Practices
-
-### 1. Save After Expensive Computations
-
-```python
-result = expensive_computation(data)
-MyVar.save(result, subject=1)  # Populates cache
-```
-
-### 2. Use Saved Variables as Inputs
-
-Variables with record_ids have stable cache keys:
-
-```python
-# Good: loaded variable has record_id
-raw = RawData.load(subject=1)
-result = process(raw)  # Pass variable, not .data
-
-# Less stable: unsaved data uses content hash
-result = process(np.array([1, 2, 3]))
-```
-
-### 3. Cache Keys Are Content-Based
-
-If you modify a function's code, the cache key changes automatically. You don't need to manually invalidate—the next run will simply compute fresh results.
+**Next:** [Node States](../concepts/node-states.md) ·
+[Batch Processing (for_each)](for_each.md) · [Tracking Lineage](lineage.md) ·
+[Concept: Computation Caching](../concepts/caching.md)

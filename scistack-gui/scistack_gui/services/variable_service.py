@@ -110,7 +110,7 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
         return {"ok": False, "error": f"Failed to write .m file: {e}"}
 
     try:
-        from sci_matlab.bridge import register_matlab_variable
+        from scimatlab.bridge import register_matlab_variable
         register_matlab_variable(name)
         matlab_registry.refresh_all()
     except Exception as e:

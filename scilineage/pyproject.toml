@@ -34,7 +34,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "canonicalhash>=0.1.0",
+    "scicanonicalhash>=0.1.0",
 ]
 
 [project.optional-dependencies]

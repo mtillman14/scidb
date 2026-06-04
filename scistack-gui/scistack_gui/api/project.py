@@ -148,7 +148,7 @@ def _run_scan() -> None:
             "sciduckdb",
             "scilineage",
             "scipathgen",
-            "canonicalhash",
+            "scicanonicalhash",
             "scirun",
             "scihist",
             "scistack",

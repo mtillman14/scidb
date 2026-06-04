@@ -1,155 +1,142 @@
 # Quickstart
 
-Get started with SciStack in 5 minutes.
+<!-- Ground truth (tests/source win over prose). Verified against:
+     scidb/src/scidb/{variable,database}.py (BaseVariable.schema_version; save->record_id;
+       load->.data/.record_id/.metadata; configure_database; get_provenance ->
+       {function_name, function_hash, inputs, constants});
+     scihist/src/scihist/{__init__,foreach,database}.py (configure_database wires the
+       lineage cache backend via configure_backend; for_each(inputs=, outputs=);
+       save(variable_class, data, **metadata) persists a LineageFcnResult WITH lineage);
+     scihist/tests/test_cache_hit.py (save(VarClass, result, ...); reload->cache hit);
+     scihist/tests/test_skip_computed.py (second for_each run skips current combos);
+     scilineage/tests/test_core.py (@lineage_fcn -> LineageFcnResult, value on .data).
+     NOTE: `Thunk` is NOT a real export; persist lineage results with scihist.save. -->
 
-## Installation
+Go from raw data to a cached, provenance-tracked pipeline in a few minutes. This
+uses the top layer, `scihist`, which gives you typed storage, automatic lineage,
+and caching together. (You can also enter lower — see
+[Choosing Your Layer](getting-started/choosing-a-layer.md).)
 
-```bash
-pip install scidb
-```
+## Install
 
-## 1. Define a Variable Type
+SciStack is a set of packages installed in dependency order. See
+[Installation](getting-started/installation.md) for the full setup; once done,
+the imports below resolve.
 
-For most data types (scalars, numpy arrays, lists, dicts), no serialization methods are needed — SciDuck handles them natively:
+## 1. Define variable types
+
+A *variable* is a typed kind of result, defined as a `BaseVariable` subclass. For
+scalars, numpy arrays, lists, dicts, and DataFrames you don't write any
+serialization code:
 
 ```python
-from scidb import BaseVariable
 import numpy as np
+from scidb import BaseVariable
 
-class SignalData(BaseVariable):
-    pass
+class RawSignal(BaseVariable):
+    schema_version = 1
+
+class SignalPower(BaseVariable):
+    schema_version = 1
 ```
 
-For simple types, conversion to and from the database is handled automatically. For complex custom serialization, override `to_db()` and `from_db()`:
+`schema_version` stamps the variable's structure — bump it whenever its layout
+changes. (See [Variables & Storage](concepts/variables.md).)
+
+## 2. Configure the database
+
+Declare where data lives and which metadata keys are your experiment's
+*conditions*. Importing `configure_database` from `scihist` also wires up lineage
+caching:
 
 ```python
-import pandas as pd
+from scihist import configure_database
 
-class CustomSignal(BaseVariable):
-
-    def to_db(self) -> pd.DataFrame:
-        """Convert numpy array to DataFrame for storage."""
-        return pd.DataFrame({
-            "index": range(len(self.data)),
-            "value": self.data
-        })
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        """Convert DataFrame back to numpy array."""
-        return df.sort_values("index")["value"].values
+db = configure_database("experiment.duckdb", ["subject", "session"])
 ```
 
-## 2. Configure the Database
+## 3. Save and load by metadata
+
+`save` returns a content-addressed `record_id`; `load` returns the value plus its
+provenance metadata:
 
 ```python
-from scidb import configure_database
+RawSignal.save(np.sin(np.linspace(0, 2 * np.pi, 100)), subject=1, session="A")
 
-# dataset_schema_keys defines which metadata keys identify dataset location
-# (vs. computational variants at that location)
-db = configure_database(
-    "my_experiment.duckdb",
-    dataset_schema_keys=["subject", "trial", "condition"],
-)
+raw = RawSignal.load(subject=1, session="A")
+raw.data        # the numpy array
+raw.record_id   # content-addressed id (same data + coords -> same id)
+raw.metadata    # {"subject": 1, "session": "A"}
 ```
 
-## 3. Save Data with Metadata
+## 4. Process with lineage
+
+Decorate a processing function with `@lineage_fcn`. Calling it returns a result
+that carries provenance; the value is on `.data`. Persist it with `scihist.save`
+so the lineage is recorded too:
 
 ```python
-# Save data with metadata
-signal = np.sin(np.linspace(0, 2*np.pi, 100))
-record_id = SignalData.save(signal,
-    subject=1,
-    trial=1,
-    condition="control"
-)
-print(f"Saved with hash: {record_id[:16]}...")
-```
-
-## 4. Load Data by Metadata
-
-```python
-# Load by metadata query
-loaded = SignalData.load(subject=1, trial=1)
-print(loaded.data)       # The numpy array
-print(loaded.record_id)      # Version hash
-print(loaded.metadata)   # {"subject": 1, "trial": 1, "condition": "control"}
-```
-
-## 5. Track Processing Lineage
-
-Use `@lineage_fcn` to automatically track what processing produced each result:
-
-```python
+from scihist import save
 from scilineage import lineage_fcn
 
 @lineage_fcn
-def bandpass_filter(signal: np.ndarray, low: float, high: float) -> np.ndarray:
-    # Your filtering logic here
-    return filtered_signal
+def compute_power(signal):
+    return float(np.mean(signal ** 2))
 
-@lineage_fcn
-def compute_power(signal: np.ndarray) -> float:
-    return np.mean(signal ** 2)
-
-# Run pipeline - lineage tracked automatically
-# Pass the loaded variable (not .data) to preserve lineage
-raw = SignalData.load(subject=1, trial=1)
-filtered = bandpass_filter(raw, low=1.0, high=40.0)
-power = compute_power(filtered)
-
-# Save result - lineage captured
-class PowerValue(BaseVariable):
-    pass
-
-PowerValue.save(power, subject=1, trial=1, stage="power")
-
-# Query what produced this result
-provenance = db.get_provenance(PowerValue, subject=1, trial=1, stage="power")
-print(provenance["function_name"])  # "compute_power"
+power = compute_power(raw)          # a LineageFcnResult; value on power.data
+save(SignalPower, power, subject=1, session="A")   # persists WITH lineage
 ```
 
-## 6. Wrap External Functions
-
-Leverage existing libraries with lineage tracking:
+Now you can ask what produced a stored result:
 
 ```python
-from scidb import Thunk
-from scipy.signal import butter, filtfilt
-
-# Wrap external functions
-# unpack_output=True splits the returned tuple into separate LineageFcnResults
-thunked_butter = Thunk(butter, unpack_output=True)
-thunked_filtfilt = Thunk(filtfilt)
-
-# Use with full lineage tracking
-b, a = thunked_butter(N=4, Wn=0.1, btype='low')
-filtered = thunked_filtfilt(b, a, raw_data)
-
-SignalData.save(filtered, subject=1, stage="filtered")
+prov = db.get_provenance(SignalPower, subject=1, session="A")
+prov["function_name"]   # "compute_power"
+prov["inputs"]          # the variable inputs it consumed
+prov["constants"]       # any literal parameters
 ```
 
-## 7. Specialized Types via Subclassing
+## 5. Scale it to a batch
 
-When one variable class represents multiple data types, create subclasses:
+The same function runs across every combination of conditions with `for_each`,
+which loads each input and saves each output for you. First seed some inputs,
+then process them all:
 
 ```python
-# Create specialized types - each gets its own table
-class Temperature(SignalData):
-    pass  # Table: Temperature
+from scihist import for_each
 
-class Humidity(SignalData):
-    pass  # Table: Humidity
+for s in (1, 2, 3):
+    RawSignal.save(np.random.randn(100), subject=s, session="A")
 
-# Data stored in separate tables (auto-registered on first save)
-Temperature.save(temp_array, sensor=1, day="monday")
-Humidity.save(humid_array, sensor=1, day="monday")
+for_each(
+    compute_power,
+    inputs={"signal": RawSignal},
+    outputs=[SignalPower],
+    subject=[1, 2, 3],
+    session=["A"],
+)
 ```
 
-## Next Steps
+Each `SignalPower` is saved with full lineage — no loops, no manual bookkeeping.
 
-- [VO2 Max Walkthrough](guide/walkthrough.md) - Full example pipeline with design philosophy explanations
-- [Variables Guide](guide/variables.md) - Deep dive into variable types
-- [Database Guide](guide/database.md) - All database operations
-- [Lineage Guide](guide/lineage.md) - Full lineage tracking details
-- [Caching Guide](guide/caching.md) - Computation caching
+## 6. Re-runs are cached
+
+Run the exact same `for_each` again and nothing recomputes — every combination is
+already current, so `compute_power` is never called:
+
+```python
+for_each(compute_power, inputs={"signal": RawSignal}, outputs=[SignalPower],
+         subject=[1, 2, 3], session=["A"])   # all combos skipped
+```
+
+Change an input's data (giving it a new `record_id`) or edit the function, and
+only the affected results recompute. (See [Computation Caching](concepts/caching.md).)
+
+## Next steps
+
+- [Choosing Your Layer](getting-started/choosing-a-layer.md) — enter at the level
+  you need (`scifor` / `scidb` / `scihist`)
+- [VO2 Max Walkthrough](guide/walkthrough.md) — a full example pipeline
+- [Concepts](concepts/index.md) — how variables, lineage, caching, and hashing fit
+  together
+- [MATLAB Setup](matlab-setup.md) — the same workflow from MATLAB

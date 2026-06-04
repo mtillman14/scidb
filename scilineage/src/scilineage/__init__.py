@@ -6,7 +6,7 @@ provenance tracking.
 Features:
 - Full lineage tracking for reproducibility
 - Automatic input capture and output wrapping
-- Lightweight (core dependency: canonicalhash)
+- Lightweight (core dependency: scicanonicalhash)
 
 Example:
     from scilineage import lineage_fcn

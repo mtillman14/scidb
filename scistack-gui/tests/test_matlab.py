@@ -550,7 +550,7 @@ class TestConfigMatlabParsing:
 
 
 # ---------------------------------------------------------------------------
-# sci-matlab MATLAB directory discovery
+# scimatlab MATLAB directory discovery
 # ---------------------------------------------------------------------------
 
 
@@ -708,13 +708,13 @@ class TestMatlabFnProxyHash:
 
 class TestFindSciMatlabMatlabDir:
     def test_finds_matlab_dir(self):
-        """sci-matlab is installed in this environment; its matlab/ dir must be found."""
-        from scistack_gui.server import _find_sci_matlab_matlab_dir
+        """scimatlab is installed in this environment; its matlab/ dir must be found."""
+        from scistack_gui.server import _find_scimatlab_matlab_dir
         from pathlib import Path
 
-        result = _find_sci_matlab_matlab_dir()
+        result = _find_scimatlab_matlab_dir()
         assert result is not None, (
-            "sci-matlab is installed but _find_sci_matlab_matlab_dir returned None"
+            "scimatlab is installed but _find_scimatlab_matlab_dir returned None"
         )
         d = Path(result)
         assert d.is_dir(), f"Expected a directory at {result}"
@@ -727,10 +727,10 @@ class TestFindSciMatlabMatlabDir:
         """Regression: +scidb/close_database.m must exist so matlab_command.py
         can call scidb.close_database(db) for post-close lock-release logging.
         """
-        from scistack_gui.server import _find_sci_matlab_matlab_dir
+        from scistack_gui.server import _find_scimatlab_matlab_dir
         from pathlib import Path
 
-        result = _find_sci_matlab_matlab_dir()
+        result = _find_scimatlab_matlab_dir()
         assert result is not None
         close_db = Path(result) / "+scidb" / "close_database.m"
         assert close_db.exists(), (
@@ -751,10 +751,10 @@ class TestFindSciMatlabMatlabDir:
 
     def test_scihist_configure_database_present(self):
         """Regression: +scihist/configure_database.m must exist so MATLAB can call it."""
-        from scistack_gui.server import _find_sci_matlab_matlab_dir
+        from scistack_gui.server import _find_scimatlab_matlab_dir
         from pathlib import Path
 
-        result = _find_sci_matlab_matlab_dir()
+        result = _find_scimatlab_matlab_dir()
         assert result is not None
         cfg_db = Path(result) / "+scihist" / "configure_database.m"
         assert cfg_db.exists(), (

@@ -1,7 +1,7 @@
 """Deterministic hashing for arbitrary Python objects.
 
 This module re-exports the canonical hashing functionality from the
-canonicalhash package for convenience, and provides function hashing
+scicanonicalhash package for convenience, and provides function hashing
 utilities. Function hashing is AST-based and recurses through
 user-defined callees so that mutating a helper changes its callers'
 hashes too.
@@ -14,7 +14,7 @@ import logging
 import os
 from typing import Any, Callable
 
-from canonicalhash import canonical_hash
+from scicanonicalhash import canonical_hash
 
 logger = logging.getLogger(__name__)
 

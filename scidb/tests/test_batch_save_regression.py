@@ -92,7 +92,7 @@ class TestBatchSaveRegression:
 
     def test_matlab_bridge_uses_batch_save(self, db, caplog):
         """MATLAB bridge path should also use batch save (via _for_each_save_resolved)."""
-        from sci_matlab.bridge import for_each_prepare, for_each_save
+        from scimatlab.bridge import for_each_prepare, for_each_save
 
         # Setup input data for 3 subjects
         for subj in ["S01", "S02", "S03"]:

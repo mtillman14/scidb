@@ -4,7 +4,7 @@
 
 % Setup
 this_dir = fileparts(mfilename('fullpath'));
-run(fullfile(this_dir, 'sci-matlab/tests/matlab/scidb/setup_paths.m'));
+run(fullfile(this_dir, 'scimatlab/tests/matlab/scidb/setup_paths.m'));
 
 % Create temporary test database
 test_dir = tempname;

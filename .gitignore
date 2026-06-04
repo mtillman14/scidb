@@ -6,5 +6,10 @@ scistack-gui/extension/node_modules/
 scistack-gui/frontend/node_modules/__pycache__/ 
 *.pyc 
 __pycache__/ 
-*.pyc 
-*.pyo 
+*.pyc
+*.pyo
+
+# Generated database artifacts (DuckDB data/lineage + write-ahead logs)
+*.duckdb
+*.duckdb.wal
+*.wal

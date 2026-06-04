@@ -1,0 +1,2717 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Scientific Data Versioning Framework">
+      
+      
+      
+        <link rel="canonical" href="https://scidb.readthedocs.io/concepts/node-states/">
+      
+      
+        <link rel="prev" href="../caching/">
+      
+      
+        <link rel="next" href="../hashing/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.2">
+    
+    
+      
+        <title>Node States - SciStack</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#node-run-states-green-grey-red" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="SciStack" class="md-header__button md-logo" aria-label="SciStack" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            SciStack
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Node States
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/mtillman14/general-sqlite-database" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    scidb
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guide/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guide/walkthrough/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Walkthroughs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../project/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="SciStack" class="md-nav__button md-logo" aria-label="SciStack" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    SciStack
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/mtillman14/general-sqlite-database" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    scidb
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/choosing-a-layer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choosing Your Layer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../matlab-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MATLAB Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Layers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Variables & Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage & Provenance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Computation Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Node States
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Node States
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-three-states" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Three States
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#function-node-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Function Node State
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Function Node State">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#combo-states" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combo States
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#staleness-check-for-up_to_date-vs-stale" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Staleness Check (for up_to_date vs stale)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#expected-combos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expected Combos
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregation Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variable-node-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variable Node State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Propagation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Propagation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-change-propagation-deep-handled-by-scihist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data-change propagation — deep (handled by scihist)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#function-code-change-propagation-shallow-gui-layer-concern" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Function-code-change propagation — shallow (GUI layer concern)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constants
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Constants">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-runtime-constants-a-variant-discriminator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Runtime constants — a variant discriminator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-pending-constants-a-gui-only-grey-downgrade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Pending constants — a GUI-only grey downgrade
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Scenarios
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common Scenarios">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#full-run-all-combos-succeed-green" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full run, all combos succeed → Green
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#partial-run-some-combos-error-or-files-missing-grey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partial run (some combos error or files missing) → Grey
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#re-run-adds-new-data-grey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Re-run adds new data → Grey
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input-re-saved-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input re-saved → Red
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#function-code-changed-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Function code changed → Red
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-grey-is-not-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why Grey Is Not Red
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#no-input-data-function-never-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No input data, function never run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#all-combos-fail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        All combos fail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#downstream-function-upstream-is-grey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Downstream function, upstream is grey
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hashing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning & Content Hashing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guide/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Defining Variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database & Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracking Lineage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching Computations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/for_each/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Batch Processing (for_each)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/filters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Filtering & Selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/browsing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Browsing & Exporting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Walkthroughs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Walkthroughs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/walkthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    VO2 Max Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Variables (BaseVariable)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage (Thunk System)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/for-each/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Batch Processing (for_each)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/filters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Filters
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../project/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing & Dev Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/building-docs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building These Docs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ & Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-three-states" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Three States
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#function-node-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Function Node State
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Function Node State">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#combo-states" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combo States
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#staleness-check-for-up_to_date-vs-stale" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Staleness Check (for up_to_date vs stale)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#expected-combos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expected Combos
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregation Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variable-node-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variable Node State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Propagation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Propagation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-change-propagation-deep-handled-by-scihist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data-change propagation — deep (handled by scihist)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#function-code-change-propagation-shallow-gui-layer-concern" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Function-code-change propagation — shallow (GUI layer concern)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constants
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Constants">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-runtime-constants-a-variant-discriminator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Runtime constants — a variant discriminator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-pending-constants-a-gui-only-grey-downgrade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Pending constants — a GUI-only grey downgrade
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Scenarios
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common Scenarios">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#full-run-all-combos-succeed-green" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full run, all combos succeed → Green
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#partial-run-some-combos-error-or-files-missing-grey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partial run (some combos error or files missing) → Grey
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#re-run-adds-new-data-grey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Re-run adds new data → Grey
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input-re-saved-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input re-saved → Red
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#function-code-changed-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Function code changed → Red
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-grey-is-not-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why Grey Is Not Red
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#no-input-data-function-never-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No input data, function never run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#all-combos-fail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        All combos fail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#downstream-function-upstream-is-grey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Downstream function, upstream is grey
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="node-run-states-green-grey-red">Node Run States: Green, Grey, Red<a class="headerlink" href="#node-run-states-green-grey-red" title="Permanent link">&para;</a></h1>
+<p>Every function node and variable node in the pipeline GUI has a <strong>run state</strong> that tells you whether its outputs are current. This document defines the exact rules that determine each state.</p>
+<hr />
+<h2 id="the-three-states">The Three States<a class="headerlink" href="#the-three-states" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Green</strong></td>
+<td>Every expected combo has been run and all outputs are up-to-date</td>
+</tr>
+<tr>
+<td><strong>Grey</strong></td>
+<td>Some combos have been run successfully, but others are missing (partial completion)</td>
+</tr>
+<tr>
+<td><strong>Red</strong></td>
+<td>Never run, or at least one combo's output is stale (inputs or function changed)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="function-node-state">Function Node State<a class="headerlink" href="#function-node-state" title="Permanent link">&para;</a></h2>
+<p>A function node's state is computed by <code>scihist.check_node_state</code>. It enumerates <strong>actual combos</strong> (output records that exist in the DB) and <strong>expected combos</strong> (combos that should have been run), then classifies each.</p>
+<h3 id="combo-states">Combo States<a class="headerlink" href="#combo-states" title="Permanent link">&para;</a></h3>
+<p>Each individual (schema_combo, branch_params) pair has one of three states:</p>
+<table>
+<thead>
+<tr>
+<th>Combo State</th>
+<th>Condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>up_to_date</code></td>
+<td>Output exists <strong>and</strong> full upstream provenance is unchanged</td>
+</tr>
+<tr>
+<td><code>stale</code></td>
+<td>Output exists but something upstream has changed</td>
+</tr>
+<tr>
+<td><code>missing</code></td>
+<td>No output record exists for this combo</td>
+</tr>
+</tbody>
+</table>
+<h3 id="staleness-check-for-up_to_date-vs-stale">Staleness Check (for <code>up_to_date</code> vs <code>stale</code>)<a class="headerlink" href="#staleness-check-for-up_to_date-vs-stale" title="Permanent link">&para;</a></h3>
+<p>Two methods are used, in priority order:</p>
+<p><strong>1. Lineage-based</strong> (used when the output was saved via <code>scihist.for_each</code>):</p>
+<ul>
+<li>Function hash mismatch → stale</li>
+<li>Any upstream input record_id has since been superseded → stale</li>
+<li>Otherwise → up_to_date</li>
+</ul>
+<p><strong>2. <code>__fn_hash</code> fallback</strong> (used when the output was saved via <code>scidb.for_each</code>, which does not write lineage records):</p>
+<ul>
+<li><code>__fn_hash</code> in version_keys mismatches current function hash → stale</li>
+<li>If <code>__upstream</code> record_ids are stored: any superseded → stale</li>
+<li>Otherwise: if any upstream input was re-saved <em>after</em> the output timestamp → stale</li>
+<li>Otherwise → up_to_date</li>
+</ul>
+<h3 id="expected-combos">Expected Combos<a class="headerlink" href="#expected-combos" title="Permanent link">&para;</a></h3>
+<p>The expected set is determined by:</p>
+<ol>
+<li>
+<p><strong>Variable-input functions</strong>: For each registered pipeline variant, query the DB for all (schema_id, branch_params) combinations of the input variable types. Any input combo that exists in the DB is expected to have a corresponding output.</p>
+</li>
+<li>
+<p><strong>PathInput-only functions</strong> (no DB-variable inputs): scidb/scihist.for_each writes the full expected combo set to <code>_for_each_expected</code> before execution begins (before any skip_computed filtering). <code>check_node_state</code> falls back to this table when no variable-input combos can be found.</p>
+</li>
+</ol>
+<blockquote>
+<p><strong>Key implication</strong>: <code>_for_each_expected</code> is written at the <em>start</em> of a run, reflecting all combos that were <em>attempted</em>. If a combo raises an exception mid-run, it is still in <code>_for_each_expected</code> as expected but will be absent from the output records → detected as <code>missing</code>.</p>
+</blockquote>
+<h3 id="aggregation-rules">Aggregation Rules<a class="headerlink" href="#aggregation-rules" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Counts</th>
+<th>Node State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stale &gt; 0</code></td>
+<td><strong>Red</strong></td>
+</tr>
+<tr>
+<td><code>missing &gt; 0</code> and <code>up_to_date == 0</code></td>
+<td><strong>Red</strong> (never successfully run)</td>
+</tr>
+<tr>
+<td><code>missing &gt; 0</code> and <code>up_to_date &gt; 0</code></td>
+<td><strong>Grey</strong> (partial completion)</td>
+</tr>
+<tr>
+<td><code>missing == 0</code> and <code>stale == 0</code></td>
+<td><strong>Green</strong></td>
+</tr>
+<tr>
+<td>No combos at all (never run, no input data)</td>
+<td><strong>Red</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="variable-node-state">Variable Node State<a class="headerlink" href="#variable-node-state" title="Permanent link">&para;</a></h2>
+<p>Variable nodes inherit their state from the function that produces them via DAG propagation:</p>
+<ul>
+<li>A variable node's state equals the <strong>effective state</strong> of its producing function node.</li>
+<li>The effective state of a function is the <strong>minimum</strong> of its own state and all its input variable states (green &gt; grey &gt; red).</li>
+<li>Variable nodes with no known producer (i.e., not connected to any function in the current graph) default to <strong>green</strong> if they have records in the DB.</li>
+</ul>
+<hr />
+<h2 id="propagation">Propagation<a class="headerlink" href="#propagation" title="Permanent link">&para;</a></h2>
+<p><code>check_node_state</code> handles two kinds of upstream change:</p>
+<h3 id="data-change-propagation-deep-handled-by-scihist">Data-change propagation — <strong>deep</strong> (handled by scihist)<a class="headerlink" href="#data-change-propagation-deep-handled-by-scihist" title="Permanent link">&para;</a></h3>
+<p>When an upstream record is re-saved, the staleness <strong>cascades through the entire lineage graph</strong> down to every descendant, regardless of depth or DAG shape (chain, fork, join).</p>
+<p>Implementation: <code>_has_superseded_ancestor</code> performs a BFS across <code>_lineage</code> rows starting from the output's <code>record_id</code>, walking both <code>variable</code> and <code>rid_tracking</code> input entries. For each visited record, it checks whether the current latest variant equals the record_id referenced in the downstream's lineage. If any ancestor has been superseded, the descendant is stale.</p>
+<p>Covered scenarios:</p>
+<ul>
+<li><code>step1 → step2 → step3</code>: resave the ultimate input → every step turns red for the affected combo.</li>
+<li><code>fork_left</code> and <code>fork_right</code> both consume the same root; re-save the root → both branches red.</li>
+<li><code>join_sides(left, right)</code> → deep cascade from root reaches the join via the branches.</li>
+</ul>
+<h3 id="function-code-change-propagation-shallow-gui-layer-concern">Function-code-change propagation — <strong>shallow</strong> (GUI layer concern)<a class="headerlink" href="#function-code-change-propagation-shallow-gui-layer-concern" title="Permanent link">&para;</a></h3>
+<p><code>check_node_state(fn, outputs)</code> can only detect a function-hash mismatch for the <em>queried</em> function, because it receives no handle on ancestor functions.</p>
+<p>If a user edits an ancestor function's code but hasn't re-run it:</p>
+<ul>
+<li>The ancestor's own node turns red (its stored lineage hash mismatches the current in-memory <code>fn.hash</code>).</li>
+<li>Descendants' <strong>own</strong> state stays green — scihist cannot introspect current ancestor functions from inside <code>check_node_state</code>.</li>
+<li>The GUI is responsible for propagating the ancestor's red down the DAG via its own graph walk.</li>
+</ul>
+<p>Workaround: once the ancestor is re-run, it produces a new <code>record_id</code>. That new record_id then cascades as a <strong>data change</strong>, and the deep walk above turns every descendant red automatically.</p>
+<blockquote>
+<p><strong>Note on <code>check_node_state</code> scope</strong>: it returns a function's <em>own</em> state. A downstream function may be green (ran correctly for all available inputs) even when its upstream is grey. The GUI layer combines these to show the downstream node as grey.</p>
+</blockquote>
+<hr />
+<h2 id="constants">Constants<a class="headerlink" href="#constants" title="Permanent link">&para;</a></h2>
+<p>"Constant" means two very different things in this system. Both influence node color, but through independent mechanisms.</p>
+<h3 id="1-runtime-constants-a-variant-discriminator">1. Runtime constants — a <strong>variant discriminator</strong><a class="headerlink" href="#1-runtime-constants-a-variant-discriminator" title="Permanent link">&para;</a></h3>
+<p>Values passed via <code>inputs={"scale": 2.0}</code> or wrapped in <code>scidb.constant(...)</code>. Stored in <code>version_keys</code> on every output record. A run with <code>scale=2.0</code> and a run with <code>scale=3.0</code> produce <strong>two independent variants</strong> of the same function — they never shadow each other.</p>
+<p>Consequences for state:</p>
+<ul>
+<li>Changing a constant's value at a call site does <em>not</em> make the old combo stale. It creates a new variant; the old one stays green.</li>
+<li><code>check_node_state</code> enumerates expected combos <strong>per variant</strong> (via <code>list_pipeline_variants</code> for scidb-saved outputs, and via <code>_lineage</code> rows for scihist-saved outputs). If <code>scale=2.0</code> has 4 of 4 combos and <code>scale=3.0</code> has 2 of 4, the node is <strong>grey</strong> (aggregate over all variants).</li>
+<li>Editing the function body that <em>reads</em> the constant still changes <code>fn.hash</code> → the normal fn-hash stale path applies.</li>
+</ul>
+<h3 id="2-pending-constants-a-gui-only-grey-downgrade">2. Pending constants — a <strong>GUI-only grey downgrade</strong><a class="headerlink" href="#2-pending-constants-a-gui-only-grey-downgrade" title="Permanent link">&para;</a></h3>
+<p>A pending constant is a value the user has dragged onto a constant node in the canvas but has <strong>not yet run</strong>. It lives in the <code>_pipeline_pending_constants</code> table (scistack-gui only) and has no corresponding record in <code>_record_metadata</code>.</p>
+<p>Rule (<code>scistack_gui/domain/run_state.py::propagate_run_states</code>):</p>
+<blockquote>
+<p>If a function consumes constant <code>c</code> AND <code>c</code> has at least one pending value AND the function's own state is <code>green</code>, downgrade to <strong>grey</strong>.</p>
+</blockquote>
+<p>The downgrade cascades like any other grey through <code>propagate_run_states</code>'s DAG walk — downstream functions also turn grey.</p>
+<p>Lifecycle:</p>
+<ol>
+<li>User adds pending value <code>c=4.0</code> → <code>add_pending_constant</code> writes the row.</li>
+<li>Graph builder downgrades every consumer (and its descendants) green → grey.</li>
+<li>User runs the pipeline; the new combo is saved and <code>c=4.0</code> now appears in <code>const_counts</code>.</li>
+<li><code>auto_clean_pending_constants</code> removes the pending row on the next graph build. Node returns to green.</li>
+</ol>
+<p>Scope of the downgrade:</p>
+<ul>
+<li>Only applies to <code>green</code> functions. A function that is already <code>grey</code> or <code>red</code> is left alone — the more severe state wins.</li>
+<li><code>red</code> is <strong>never</strong> promoted or reset by pending constants.</li>
+<li>Pending constants do not affect scihist-level state (<code>check_node_state</code>). They are evaluated only when the GUI assembles the React Flow graph.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Change type</th>
+<th>Where handled</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New variant value, not run yet</td>
+<td>GUI (<code>propagate_run_states</code>)</td>
+<td>Green → grey</td>
+</tr>
+<tr>
+<td>New variant value, run</td>
+<td>scihist (<code>check_node_state</code>)</td>
+<td>New variant counted as up_to_date</td>
+</tr>
+<tr>
+<td>Old variant's constant edited</td>
+<td>scihist (fn-hash mismatch)</td>
+<td>Red (function body changed)</td>
+</tr>
+<tr>
+<td>Pending + downstream dependency</td>
+<td>GUI (DAG propagation)</td>
+<td>Downstream also grey</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="common-scenarios">Common Scenarios<a class="headerlink" href="#common-scenarios" title="Permanent link">&para;</a></h2>
+<h3 id="full-run-all-combos-succeed-green">Full run, all combos succeed → Green<a class="headerlink" href="#full-run-all-combos-succeed-green" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Expected: {sub01/trial01, sub01/trial02, sub02/trial01, sub02/trial02}
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>Actual:   all four, all up_to_date
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>→ Green
+</code></pre></div>
+<h3 id="partial-run-some-combos-error-or-files-missing-grey">Partial run (some combos error or files missing) → Grey<a class="headerlink" href="#partial-run-some-combos-error-or-files-missing-grey" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Expected: {sub01/trial01, ..., sub03/trial05}  (15 combos, written to _for_each_expected)
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>Actual:   14 combos up_to_date, sub03/trial05 missing (function raised during execution)
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>→ Grey
+</code></pre></div>
+<p>This is the key scenario for PathInput-only functions (e.g., <code>load_csv</code>). Because the expected set is written before execution, a combo that errors mid-run is correctly detected as missing.</p>
+<h3 id="re-run-adds-new-data-grey">Re-run adds new data → Grey<a class="headerlink" href="#re-run-adds-new-data-grey" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Round 1: Seed sub01, sub02 data. Run function. state=green (10 combos).
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>Action:  Seed sub03 data (new subjects arrive).
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>state=grey (10 up_to_date, 5 missing — new sub03 inputs exist but haven&#39;t been processed)
+</code></pre></div>
+<h3 id="input-re-saved-red">Input re-saved → Red<a class="headerlink" href="#input-re-saved-red" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>State was green. Re-save one input record with different data (same schema combo).
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>→ That combo becomes stale.
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>→ Node state = red (any stale → red).
+</code></pre></div>
+<h3 id="function-code-changed-red">Function code changed → Red<a class="headerlink" href="#function-code-changed-red" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>State was green. Modify the function body (changes its hash).
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>→ All combos become stale.
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>→ Node state = red.
+</code></pre></div>
+<hr />
+<h2 id="why-grey-is-not-red">Why Grey Is Not Red<a class="headerlink" href="#why-grey-is-not-red" title="Permanent link">&para;</a></h2>
+<p>Grey means "partially done, not broken". The outputs that exist are correct — they were computed from the inputs that were available at the time. Grey is the right state when:</p>
+<ul>
+<li>New subjects/trials have been added to the dataset since the last run</li>
+<li>Some combos failed due to bad input files but others succeeded</li>
+<li>A function was run for a subset of the full schema and more data has since arrived</li>
+</ul>
+<p>Red means "something is wrong with what exists" — either nothing exists, or what exists was computed from inputs that have since changed.</p>
+<hr />
+<h2 id="edge-cases">Edge Cases<a class="headerlink" href="#edge-cases" title="Permanent link">&para;</a></h2>
+<h3 id="no-input-data-function-never-run">No input data, function never run<a class="headerlink" href="#no-input-data-function-never-run" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>counts = {up_to_date: 0, stale: 0, missing: 0}
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>→ Red
+</code></pre></div>
+<p>There are no records and no expected combos, so the function has never meaningfully run.</p>
+<h3 id="all-combos-fail">All combos fail<a class="headerlink" href="#all-combos-fail" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Expected: 15 combos (written to _for_each_expected before execution)
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>Actual:   0 combos (all raised exceptions)
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>→ counts = {up_to_date: 0, missing: 15}
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>→ Red  (missing &gt; 0 and up_to_date == 0)
+</code></pre></div>
+<h3 id="downstream-function-upstream-is-grey">Downstream function, upstream is grey<a class="headerlink" href="#downstream-function-upstream-is-grey" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>upstream (load_csv):     grey  (14/15 combos)
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>downstream (compute_peak): green (ran for all 14 available inputs, 0 missing from its perspective)
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>GUI propagates:          downstream effective state = grey
+</code></pre></div>
+<p><code>check_node_state</code> for the downstream function returns green — it did its job correctly for everything it was given. The grey comes from DAG propagation in the GUI layer.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../caching/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Computation Caching">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Computation Caching
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../hashing/" class="md-footer__link md-footer__link--next" aria-label="Next: Versioning &amp; Content Hashing">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Versioning & Content Hashing
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.footer", "navigation.indexes", "toc.follow", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

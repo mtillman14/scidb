@@ -50,7 +50,23 @@
       "Bash(sed -n '183,210p' /workspace/scidb/src/scidb/foreach.py)",
       "Bash(sed -n '2220,2228p;2270,2278p' /workspace/scidb/src/scidb/foreach.py)",
       "Bash(sed -n '115,123p;144,150p' /workspace/scidb/src/scidb/csv_export.py)",
-      "Bash(sed -n '1957,1965p' /workspace/scidb/src/scidb/foreach.py)"
+      "Bash(sed -n '1957,1965p' /workspace/scidb/src/scidb/foreach.py)",
+      "Bash(.venv/bin/python -m mkdocs --version)",
+      "Bash(echo \"EXIT $? \\(1/empty = no in-site links to excluded targets except below\\)\")",
+      "Bash(sed -n '1,120p' scidb/tests/test_introspect.py)",
+      "Bash(sed -n '1,90p' scidb/tests/test_constant.py)",
+      "Bash(sed -n '130,260p' scilineage/tests/test_core.py)",
+      "Bash(sed -n '1,90p' scilineage/tests/test_hashing.py)",
+      "Bash(sed -n '1,40p')",
+      "Bash(sed -n '60,120p' scidb/tests/test_optional_lineage_dependency.py)",
+      "Bash(sed -n '1,45p')",
+      "Bash(sed -n '1,40p' scidb/tests/test_call_id.py)",
+      "Bash(sed -n '37,68p' scidb/tests/test_load_all_ordering.py)",
+      "Bash(sed -n '112,122p' scidb/tests/test_where.py)",
+      "Bash(sed -n '3015,3075p' scidb/src/scidb/database.py)",
+      "Bash(sed -n '345,400p' scidb/src/scidb/discover.py)",
+      "Bash(sed -n '140,170p' scidb/tests/test_aggregation.py)",
+      "Bash(sed -n '118,145p' scidb/tests/test_each_of.py)"
     ]
   }
 }

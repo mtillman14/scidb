@@ -1,318 +1,219 @@
 # Walkthrough: VO2 Max Pipeline
 
-This walkthrough follows the `examples/vo2max/pipeline.py` example step by step, explaining not just *how* to use SciStack but *why* the framework is designed the way it is.
+<!-- Ground truth: this walkthrough follows examples/vo2max/pipeline.py (the real,
+     current example) and is reconciled against source/tests. Verified against:
+     examples/vo2max/pipeline.py (uses scidb.for_each with PLAIN undecorated functions +
+       inputs=/outputs=, NOT @lineage_fcn + manual save(); configure_database(dataset_db_path=,
+       dataset_schema_keys=["subject"]) 2 args; db.list_pipeline_variants(); BaseVariable.
+       list_versions(**metadata) classmethod; load -> .data/.record_id);
+     scidb/src/scidb/variable.py:507 list_versions classmethod; database.py:3344
+       list_pipeline_variants -> dicts {function_name, output_type, input_types, constants,
+       record_count}; configure_database 2 args; one DuckDB file (no SQLite lineage db).
+     NOTE: the example's own comments/prints mentioning "SQLite (lineage)"/"vo2max_lineage.db"
+     are stale — storage is a single DuckDB file. This page describes the for_each approach the
+     code actually uses; for the @lineage_fcn-by-hand style see the Lineage guide. -->
 
-The example simulates a common scientific workflow: loading raw physiological data from a VO2 max exercise test, combining signals, computing derived metrics, and saving everything with full provenance tracking.
+This walkthrough follows the runnable example at `examples/vo2max/pipeline.py`,
+explaining not just *how* to use SciStack but *why* it's built this way. The
+pipeline simulates a common workflow: load raw physiological signals from a VO2
+max exercise test, combine them, compute derived metrics, and save everything with
+provenance — driven entirely by [`for_each`](for_each.md).
 
-## The Problem SciStack Solves
+To run it yourself:
 
-A typical scientific data pipeline looks like this:
+```bash
+cd examples/vo2max
+python generate_data.py   # create dummy CSV files
+python pipeline.py        # run the pipeline
+```
 
-1. Load raw data from files
-2. Combine and align signals
-3. Compute derived metrics (rolling averages, peaks)
-4. Save results
+## The problem SciStack solves
 
-Without SciStack, you'd save results as loose files (`results_v2_final_FINAL.csv`) and have no systematic way to answer: "What processing produced this number?" or "Did I already compute this?"
+A typical pipeline loads raw data, combines and aligns signals, computes metrics,
+and saves results. Done by hand, you end up with loose files
+(`results_v2_final_FINAL.csv`) and no systematic way to answer *"what produced this
+number?"* or *"did I already compute this?"*. SciStack answers both automatically
+through lineage tracking and content-based caching.
 
-SciStack answers both questions automatically through two mechanisms:
-- **Lineage tracking** records what function and inputs produced each result
-- **Content-based caching** skips redundant computations
-
-## Step 1: Define Variable Types
+## Step 1 — Define variable types
 
 ```python
 from scidb import BaseVariable
 
-class RawTime(BaseVariable):
-    pass
-
-class RawHeartRate(BaseVariable):
-    pass
-
-class RawVO2(BaseVariable):
-    pass
+class RawTime(BaseVariable): pass
+class RawHeartRate(BaseVariable): pass
+class RawVO2(BaseVariable): pass
+class RollingVO2(BaseVariable): pass
+class MaxHeartRate(BaseVariable): pass
+class MaxVO2(BaseVariable): pass
 ```
 
-### Why subclass BaseVariable?
+Each subclass becomes its **own table**, so a table is never ambiguous about what
+it holds, and `RawHeartRate.load(subject="S01")` is guaranteed to return heart-rate
+data — each type is its own namespace. Scalars, numpy arrays, lists, and dicts need
+no serialization code.
 
-Each subclass creates a **separate table** in the database. This is a deliberate design choice:
-
-- `RawTime` data lives in a table called `RawTime`
-- `RawHeartRate` data lives in a table called `RawHeartRate`
-- There's no ambiguity about what kind of data a table holds
-
-The alternative — storing everything in one table with a "type" column — would make queries slower and the database harder to inspect directly in tools like DBeaver.
-
-### Why no `schema_version` or serialization methods?
-
-For numpy arrays, scalars, lists, and dicts, SciDuck (the DuckDB backend) handles serialization automatically using native DuckDB types. You only need to override `to_db()` and `from_db()` when storing complex objects like DataFrames:
+The one DataFrame type overrides `to_db` / `from_db` to keep its columns:
 
 ```python
 class CombinedData(BaseVariable):
-    """Multi-column DataFrame needs custom serialization."""
-
     def to_db(self) -> pd.DataFrame:
-        return self.data  # Already a DataFrame
-
+        return self.data           # already a DataFrame
     @classmethod
     def from_db(cls, df: pd.DataFrame) -> pd.DataFrame:
         return df
 ```
 
-`schema_version` defaults to 1. You only set it explicitly when you change the structure of a variable type and need to distinguish old records from new ones.
+`schema_version` defaults to `1`; set it explicitly when you change a type's
+structure.
 
-### Why separate types for each signal?
+## Step 2 — Define plain processing functions
 
-You might wonder: why not a single `RawSignal` type for all three signals? The reason is **type-safe querying**. When you write:
-
-```python
-RawHeartRate.load(subject="S01")
-```
-
-You're guaranteed to get heart rate data, not time data that happens to share the same metadata. Each type is its own namespace.
-
-## Step 2: Define Processing Functions
+The functions are **ordinary Python** — no decorator. `for_each` handles loading
+inputs, unwrapping them to plain arrays/DataFrames, passing constants through, and
+saving outputs:
 
 ```python
-from scilineage import lineage_fcn
+def load_time(data_dir: str) -> np.ndarray:
+    return pd.read_csv(Path(data_dir) / "time_sec.csv").iloc[:, 0].values
 
-@lineage_fcn
-def load_csv(path: str) -> np.ndarray:
-    df = pd.read_csv(path)
-    return df.iloc[:, 0].values
-
-@lineage_fcn
 def combine_signals(time, hr, vo2) -> pd.DataFrame:
-    return pd.DataFrame({
-        "time_sec": time,
-        "heart_rate_bpm": hr,
-        "vo2_ml_min": vo2,
-    })
+    return pd.DataFrame({"time_sec": time, "heart_rate_bpm": hr, "vo2_ml_min": vo2})
 
-@lineage_fcn
-def compute_rolling_vo2(combined, window_seconds=30, sample_interval=5):
-    window_size = window_seconds // sample_interval
-    rolling_avg = (
-        pd.Series(combined["vo2_ml_min"])
-        .rolling(window=window_size, min_periods=1)
-        .mean()
-    )
-    return rolling_avg.values
+def compute_rolling_vo2(combined, window_seconds=30, sample_interval=5) -> np.ndarray:
+    window = window_seconds // sample_interval
+    return pd.Series(combined["vo2_ml_min"]).rolling(window, min_periods=1).mean().values
 
-@lineage_fcn
-def compute_max_hr(combined: pd.DataFrame) -> float:
-    return float(combined["heart_rate_bpm"].max())
-
-@lineage_fcn
-def compute_max_vo2(rolling_vo2: np.ndarray) -> float:
-    sorted_vals = np.sort(rolling_vo2)[::-1]
-    return float(np.mean(sorted_vals[:2]))
+def compute_max_vo2(rolling_vo2) -> float:
+    return float(np.mean(np.sort(rolling_vo2)[::-1][:2]))
 ```
 
-### Why `@lineage_fcn` and not a custom decorator?
+Your math sees plain numpy/pandas, never framework wrapper types — so these
+functions are trivially testable on their own.
 
-The `@lineage_fcn` decorator does three things that would be tedious to implement per-function:
+!!! note "Two ways to track lineage"
+    This example uses `for_each`, which records provenance for you around plain
+    functions. You can instead decorate functions with `@lineage_fcn` and call them
+    directly — see [Tracking Lineage](lineage.md). Both record the same kind of
+    provenance; `for_each` is the batch-oriented path.
 
-1. **Hashes the function's bytecode** — so if you change the function body, the framework knows it's a different computation
-2. **Classifies inputs** — each argument is recorded as either a LineageFcnResult (from another `@lineage_fcn` call), a saved BaseVariable, or a raw constant
-3. **Returns a LineageFcnResult** instead of raw data — this wrapper carries the lineage information forward
-
-The key insight: your function code stays clean. `combine_signals` receives plain numpy arrays, not framework wrapper types. The `@lineage_fcn` decorator handles all the bookkeeping at the boundary.
-
-### Why does `@lineage_fcn` auto-unwrap inputs?
-
-When you call `combine_signals(time_data, hr_data, vo2_data)` where each argument is a LineageFcnResult from `load_csv()`, the decorator automatically extracts the `.data` from each before calling your function. This means:
-
-- Your function signature uses normal types (`np.ndarray`, `pd.DataFrame`)
-- You can test functions outside SciStack with plain data
-- The lineage tracking is completely transparent to the function body
-
-### Why are constants recorded in lineage?
-
-In `compute_rolling_vo2`, the `window_seconds=30` and `sample_interval=5` arguments are recorded as **constants** in the lineage record. This is important because:
-
-- If you re-run with `window_seconds=60`, it produces a **different lineage hash**
-- The cached result for `window_seconds=30` won't be returned for `window_seconds=60`
-- You can later query provenance and see exactly what parameters were used
-
-## Step 3: Configure the Database
+## Step 3 — Configure the database
 
 ```python
+from scidb import configure_database
+
 db = configure_database(
     dataset_db_path="vo2max_data.duckdb",
     dataset_schema_keys=["subject"],
 )
 ```
 
-SciStack stores both data and lineage in a single DuckDB file. Data is stored in columnar format with native array types, and the lineage DAG is stored alongside it for transactional consistency.
+Two arguments: the DuckDB file (which holds **both** data and lineage — there is no
+separate lineage file) and the schema keys. `["subject"]` declares that `subject`
+identifies a record's *location*; any other metadata passed to a save becomes a
+*version key* distinguishing variants at that location. This call also
+auto-registers every `BaseVariable` subclass defined above.
 
-### What are `dataset_schema_keys`?
+## Step 4 — Run the pipeline with `for_each`
 
-Schema keys define the **location** within your dataset. In this example, `["subject"]` means "subject" identifies where in the dataset a record belongs. Any additional metadata you pass to `save()` becomes a **version key** — it distinguishes different computational variants at the same location.
-
-For example:
-- `MaxVO2.save(result, subject="S01")` — "S01" is the dataset location
-- If you later add `stage="filtered"` — "filtered" becomes a version key
-
-This split matters for queries: `load(subject="S01")` returns the latest version at that location, regardless of what version keys exist.
-
-### What does `configure_database` actually do?
-
-Behind the scenes, this single call:
-
-1. Creates a `DatabaseManager` that bridges DuckDB and SQLite
-2. **Auto-registers** every `BaseVariable` subclass defined so far (creates their tables)
-3. Sets `Thunk.query` to the `DatabaseManager` — this is what enables caching
-
-The last point is subtle but important: `Thunk.query` is a **class variable** on `Thunk`. Every `@lineage_fcn`-decorated function checks this before executing. If it's set, the function looks up its lineage hash in the database before running.
-
-## Step 4: Run the Pipeline
-
-### Loading and saving raw data
+Each stage is a `for_each` call. Constants (like `data_dir`) are passed in `inputs`
+alongside variable types and recorded as part of the output's provenance.
 
 ```python
-time_data = load_csv(str(data_dir / "time_sec.csv"))
-hr_data = load_csv(str(data_dir / "heart_rate_bpm.csv"))
-vo2_data = load_csv(str(data_dir / "vo2_ml_min.csv"))
+data_dir = "data"
 
-RawTime.save(time_data, subject="S01")
-RawHeartRate.save(hr_data, subject="S01")
-RawVO2.save(vo2_data, subject="S01")
+# Load raw signals from CSV (data_dir is a constant input)
+for_each(load_time,       inputs={"data_dir": data_dir}, outputs=[RawTime],      subject=["S01"])
+for_each(load_heart_rate, inputs={"data_dir": data_dir}, outputs=[RawHeartRate], subject=["S01"])
+for_each(load_vo2,        inputs={"data_dir": data_dir}, outputs=[RawVO2],       subject=["S01"])
+
+# Combine: for_each loads the three Raw* variables for each subject and joins them
+for_each(combine_signals,
+         inputs={"time": RawTime, "hr": RawHeartRate, "vo2": RawVO2},
+         outputs=[CombinedData], subject=["S01"])
+
+# Derived metrics; window_seconds / sample_interval are constants -> a tracked variant
+for_each(compute_rolling_vo2,
+         inputs={"combined": CombinedData, "window_seconds": 30, "sample_interval": 5},
+         outputs=[RollingVO2], subject=["S01"])
+for_each(compute_max_hr,  inputs={"combined": CombinedData},  outputs=[MaxHeartRate], subject=["S01"])
+for_each(compute_max_vo2, inputs={"rolling_vo2": RollingVO2}, outputs=[MaxVO2],       subject=["S01"])
 ```
 
-Each `load_csv()` call returns a **LineageFcnResult**, not a raw array. The LineageFcnResult wraps:
-- `.data` — the actual numpy array
-- `.pipeline_thunk` — metadata about the function call and its inputs
-- `.hash` — a lineage-based hash for cache lookups
+A few things happen automatically here:
 
-When you pass a LineageFcnResult to `BaseVariable.save()`, the framework:
-1. Extracts the raw data from `.data`
-2. Extracts the lineage record (function name, hash, inputs, constants)
-3. Stores the data in DuckDB and the lineage in SQLite
-4. Registers the lineage hash for future cache lookups
-5. Returns a deterministic `record_id` (hash of content + metadata)
+- **Inputs load and join by schema key.** `combine_signals` runs once per subject
+  with that subject's `RawTime` / `RawHeartRate` / `RawVO2` data.
+- **Outputs save with provenance.** Each result is stored as its output type, with
+  the function, its inputs' `record_id`s, and any constants recorded.
+- **The computation graph emerges.** You never build it explicitly — it falls out
+  of which variable types each `for_each` consumes and produces:
 
-### Chaining computations
+```
+load_time   ─┐
+load_hr     ─┼─> combine_signals ─┬─> compute_rolling_vo2 ─> compute_max_vo2
+load_vo2    ─┘                     └─> compute_max_hr
+```
+
+Changing a constant (say `window_seconds=60`) creates a **separate variant** rather
+than overwriting the `30` result.
+
+## Step 5 — Load results and inspect provenance
+
+`load` returns the latest record at a location, with its data and id:
 
 ```python
-combined = combine_signals(time_data, hr_data, vo2_data)
-CombinedData.save(combined, subject="S01")
+loaded = MaxVO2.load(subject="S01")
+loaded.data        # e.g. 3854.2 (mL/min)
+loaded.record_id   # content-addressed id
 
-rolling_vo2 = compute_rolling_vo2(combined, window_seconds=30, sample_interval=5)
-RollingVO2.save(rolling_vo2, subject="S01")
-
-max_hr = compute_max_hr(combined)
-max_vo2 = compute_max_vo2(rolling_vo2)
-MaxHeartRate.save(max_hr, subject="S01")
-MaxVO2.save(max_vo2, subject="S01")
-```
-
-Notice that `compute_rolling_vo2(combined, ...)` receives a LineageFcnResult from `combine_signals`. The `@lineage_fcn` decorator:
-
-1. Records that the input came from `combine_signals` (by its lineage hash)
-2. Unwraps `combined` to the raw DataFrame before calling the function
-3. Wraps the result in a new LineageFcnResult with updated lineage
-
-This builds a **computation graph** automatically:
-
-```
-load_csv("time_sec.csv")  ─┐
-load_csv("hr_bpm.csv")    ─┼─> combine_signals ─┬─> compute_rolling_vo2 ─> compute_max_vo2
-load_csv("vo2_ml_min.csv") ─┘                    └─> compute_max_hr
-```
-
-You never construct this graph explicitly. It emerges from normal function calls.
-
-## Step 5: Query Provenance
-
-```python
-loaded_max_vo2 = MaxVO2.load(subject="S01")
-print(loaded_max_vo2.data)         # 3854.2 mL/min
-print(loaded_max_vo2.lineage_hash) # "a1b2c3..."
-
+# What produced this result?
 prov = db.get_provenance(MaxVO2, subject="S01")
-print(prov["function_name"])  # "compute_max_vo2"
-print(prov["inputs"])         # [{name: "rolling_vo2", kind: "thunk_output", ...}]
+prov["function_name"]   # "compute_max_vo2"
+prov["inputs"]          # the variable inputs it consumed
+prov["constants"]       # any constant parameters
 ```
 
-### Two levels of provenance
-
-SciStack provides two complementary views, both stored in the same SQLite database:
-
-**Schema-blind (pipeline structure):** What does the computation graph look like in general?
+The example also lists every pipeline variant that ran — the same data the GUI uses
+to draw the graph:
 
 ```python
-structure = db.get_pipeline_structure()
-# ['RawTime', 'RawHeartRate', 'RawVO2'] --[combine_signals]--> CombinedData
-# ['CombinedData'] --[compute_rolling_vo2]--> RollingVO2
-# ['RollingVO2'] --[compute_max_vo2]--> MaxVO2
+for v in db.list_pipeline_variants():
+    print(v["function_name"], "->", v["output_type"],
+          v["input_types"], v["constants"], f"[{v['record_count']} record(s)]")
 ```
 
-This ignores specific data instances. It answers: "What's my pipeline topology?"
+## Step 6 — Versions and re-runs
 
-**Schema-aware (instance provenance):** What exact data produced this specific result?
+Each variable type can report its stored versions at a location:
 
 ```python
-prov = db.get_provenance(MaxVO2, subject="S01")
-# function: compute_max_vo2
-# inputs: [{record_id: "abc123", type: "RollingVO2", content_hash: "..."}]
+for var_type in [RawTime, RawHeartRate, RawVO2, CombinedData,
+                 RollingVO2, MaxHeartRate, MaxVO2]:
+    print(var_type.__name__, len(var_type.list_versions(subject="S01")))
 ```
 
-This traces the full chain for a specific subject/trial/condition.
+Run the whole pipeline again and, because every output is already current,
+[`skip_computed`](caching.md) means nothing recomputes — until you change an
+input's data, a function's code, or a constant, at which point only the affected
+results rebuild.
 
-## Step 6: Caching in Action
+## Design philosophy, in one table
 
-```python
-# Re-load saved variables
-reloaded_time = RawTime.load(subject="S01")
-reloaded_hr = RawHeartRate.load(subject="S01")
-reloaded_vo2 = RawVO2.load(subject="S01")
-
-# Re-run the pipeline
-combined_2 = combine_signals(reloaded_time, reloaded_hr, reloaded_vo2)
-rolling_2 = compute_rolling_vo2(combined_2, window_seconds=30, sample_interval=5)
-max_vo2_2 = compute_max_vo2(rolling_2)
-```
-
-The second run **skips execution** for every function. Here's how:
-
-1. `combine_signals(reloaded_time, reloaded_hr, reloaded_vo2)` computes a lineage hash from:
-   - The function's bytecode hash
-   - The `record_id` of each loaded input variable
-2. The framework checks `Thunk.query` (the DatabaseManager) for this hash
-3. A match is found in the lineage database — the previously saved `CombinedData` record
-4. The data is loaded from DuckDB and returned without executing the function
-5. The same happens for `compute_rolling_vo2` and `compute_max_vo2`
-
-### Why cache by lineage hash, not just content?
-
-Content hashing alone can't distinguish between "same output from different computations." Lineage hashing captures the full computation identity: same function + same inputs = same hash. This means:
-
-- Changing the function body invalidates the cache (bytecode hash changes)
-- Changing input data invalidates the cache (input record_ids change)
-- Changing constant parameters invalidates the cache (constants are part of the hash)
-- Identical re-runs hit the cache (everything matches)
-
-### Why must you save before caching works?
-
-Caching is tied to `save()`, not to function execution. The cache is populated when you save a LineageFcnResult — that's when the lineage record is written to SQLite. This is intentional:
-
-- You choose what to cache by choosing what to save
-- Intermediate results you don't save don't consume database space
-- You have full control over what's cached
-
-## Summary: The Design Philosophy
-
-| Principle | Implementation |
+| Principle | How it shows up here |
 |---|---|
-| **Separation of concerns** | Data in DuckDB, lineage in SQLite, logic in Python |
-| **Transparency** | `@lineage_fcn` is invisible to function bodies; data flows as normal Python types |
-| **Type safety** | Each `BaseVariable` subclass is its own namespace and table |
-| **Content addressing** | Deterministic hashes ensure identical data produces identical record_ids |
-| **Lineage as a side effect** | Provenance tracking requires no explicit graph construction |
-| **Opt-in caching** | Cache is populated on save, not on execution — you control what's cached |
-| **Inspectable storage** | DuckDB files are browsable in standard tools (DBeaver, DuckDB CLI) |
-| **Minimal boilerplate** | Native types need no serialization; `schema_version` defaults to 1 |
+| **Enter at any level** | The whole pipeline is plain functions + `for_each` |
+| **Transparency** | Functions see plain numpy/pandas, never framework types |
+| **Type safety** | Each `BaseVariable` subclass is its own table and namespace |
+| **Content addressing** | Identical data + metadata → identical `record_id` (dedup) |
+| **Lineage as a side effect** | Provenance is recorded by `for_each`; no graph built by hand |
+| **Caching** | Current results are reused; only real changes recompute |
+| **Inspectable storage** | One DuckDB file, browsable in DBeaver |
 
-The overall goal: scientific data pipelines should be **reproducible by default** without requiring researchers to learn a new programming paradigm. Write normal Python functions, decorate with `@lineage_fcn`, save with `BaseVariable.save()`, and the framework handles versioning, provenance, and caching.
+The goal: pipelines that are **reproducible by default** without a new programming
+paradigm — write normal functions, run them through `for_each`, and the framework
+handles versioning, provenance, and caching.
+
+**Next:** [Batch Processing (for_each)](for_each.md) ·
+[Tracking Lineage](lineage.md) · [Computation Caching](caching.md) ·
+[Concepts](../concepts/index.md)

@@ -95,10 +95,10 @@ def _build_matlab_fn_proxy(fn_name: str):
     matches what was stored at save time.
     """
     from scistack_gui import matlab_registry
-    from sci_matlab.bridge import MatlabLineageFcn
+    from scimatlab.bridge import MatlabLineageFcn
 
     info = matlab_registry.get_matlab_function(fn_name)
-    # unpack_output MUST match sci-matlab/.../+scihist/for_each.m's default.
+    # unpack_output MUST match scimatlab/.../+scihist/for_each.m's default.
     # Native MATLAB multi-output (`[a,b,c] = fn(...)`) uses unpack_output=False
     # and is unpacked at runtime via LineageFcn's n_out>1 branch. unpack_output=True
     # is only for the rarer single-cell-array-return pattern.
