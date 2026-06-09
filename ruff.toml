@@ -1,0 +1,32 @@
+# Repo-wide lint/format defaults for the SciStack monorepo.
+# Packages that define their own [tool.ruff] (scicanonicalhash, scilineage,
+# sciduckdb, scipathgen) override this for files under them; everything else
+# uses these settings. Keep this in sync with those per-package blocks.
+
+target-version = "py310"
+line-length = 88
+
+# Don't lint vendored / generated / build output.
+extend-exclude = [
+    "**/dist",
+    "**/build",
+    "**/site",
+    "**/__pycache__",
+    "**/*.egg-info",
+    ".venv",
+    "scistack-gui/frontend",
+]
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]

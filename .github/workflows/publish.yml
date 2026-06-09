@@ -1,19 +1,36 @@
 name: Publish to PyPI
 
+# Lockstep release: a single version tag (e.g. v0.2.0) builds and publishes
+# every library package at that version. The version itself comes from the tag
+# via hatch-vcs — there is no version string to edit anywhere.
+#
+# Flow: the CI workflow runs as a gate, then (only if green) all libraries are
+# built into one dist/ and published via PyPI trusted publishing (OIDC, no
+# secrets). Each project must list this workflow as a trusted publisher.
+
 on:
   push:
     tags:
-      - '*-v*'  # e.g. canonicalhash-v0.1.0, scidb-v1.0.0
+      - 'v*'  # e.g. v0.1.0, v1.2.3
 
 permissions:
-  id-token: write  # Required for trusted publishing (OIDC)
+  contents: read
 
 jobs:
+  # Reuse the full CI suite (lint / test / build) as a pre-publish gate.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: ci
     runs-on: ubuntu-latest
     environment: pypi
+    permissions:
+      id-token: write  # Required for trusted publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs needs tags to resolve the version
 
       - uses: actions/setup-python@v5
         with:
@@ -22,31 +39,23 @@ jobs:
       - name: Install build tools
         run: pip install build
 
-      - name: Determine package directory
-        id: pkg
+      - name: Build all libraries into dist/
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          # Extract package name (everything before -v)
-          PKG_NAME="${TAG%-v*}"
-
-          # Map package name to directory
-          case "$PKG_NAME" in
-            canonicalhash) DIR="canonical-hash" ;;
-            scipathgen)    DIR="path-gen" ;;
-            scirun)        DIR="scirun-lib" ;;
-            sciduckdb)     DIR="sciduck" ;;
-            thunk)         DIR="thunk-lib" ;;
-            scidb)         DIR="." ;;
-            sci-matlab)    DIR="sci-matlab" ;;
-            scidb-net)     DIR="scidb-net" ;;
-            *) echo "Unknown package: $PKG_NAME" && exit 1 ;;
-          esac
-
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-          echo "Publishing $PKG_NAME from $DIR"
-
-      - name: Build package
-        run: python -m build ${{ steps.pkg.outputs.dir }}
+          set -euo pipefail
+          rm -rf dist && mkdir dist
+          # Dependency order is irrelevant for building (each uses only its
+          # build backend), but listed by layer for readability.
+          # scistack-gui is intentionally excluded — it needs a JS frontend
+          # build before it can ship a correct wheel.
+          for pkg in scicanonicalhash path-gen scifor sciduckdb \
+                     scilineage scidb \
+                     scimatlab scihist scidb-net scistack; do
+            echo "== build $pkg =="
+            python -m build --outdir dist "$pkg"
+          done
+          ls -la dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

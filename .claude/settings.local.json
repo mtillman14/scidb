@@ -74,7 +74,10 @@
       "Bash(sed -n '96,99p' docs/claude/lineage-design.md)",
       "Bash(sed -n '1,40p' scihist/README.md)",
       "Bash(sed -n '1,25p' scidb/README.md)",
-      "Bash(sed -n '1,25p' scifor/README.md)"
+      "Bash(sed -n '1,25p' scifor/README.md)",
+      "Bash([ -f \"$d/pyproject.toml\" ])",
+      "Bash(awk '/^\\\\[tool\\\\./{p=1} p' scicanonicalhash/pyproject.toml)",
+      "Bash(awk '/^\\\\[tool\\\\.ruff/{p=1} p&&/^\\\\[/&&!/ruff/&&NR>1{if\\(seen\\)exit} {if\\(/^\\\\[tool\\\\.ruff/\\)seen=1; if\\(seen\\)print}' path-gen/pyproject.toml)"
     ]
   }
 }
