@@ -1,9 +1,9 @@
 site_name: SciStack
 site_description: Scientific Data Versioning Framework
-site_url: https://scidb.readthedocs.io
+site_url: https://scistack.readthedocs.io
 
-repo_name: scidb
-repo_url: https://github.com/mtillman14/general-sqlite-database
+repo_name: scistack
+repo_url: https://github.com/mtillman14/scistack
 
 theme:
   name: material
@@ -11,31 +11,70 @@ theme:
     primary: indigo
     accent: indigo
   features:
-    - navigation.sections
-    - navigation.expand
+    # Top-level areas render as header tabs; the left sidebar is scoped to the
+    # active tab and uses collapsible dropdowns. This replaces navigation.sections
+    # + navigation.expand, which rendered the whole tree flat and force-expanded.
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
     - content.code.copy
+    - content.code.annotate
     - content.tabs.link
 
 nav:
   - Home: index.md
   - Getting Started:
+    - Installation: getting-started/installation.md
     - Quickstart: quickstart.md
+    - Choosing Your Layer: getting-started/choosing-a-layer.md
     - MATLAB Setup: matlab-setup.md
+  - Concepts:
+    - concepts/index.md
+    - Architecture & Layers: concepts/architecture.md
+    - Variables & Storage: concepts/variables.md
+    - Lineage & Provenance: concepts/lineage.md
+    - Computation Caching: concepts/caching.md
+    - Node States: concepts/node-states.md
+    - Versioning & Content Hashing: concepts/hashing.md
+    - Glossary: concepts/glossary.md
   - User Guide:
-    - Variables: guide/variables.md
+    - guide/index.md
+    - Defining Variables: guide/variables.md
     - Database & Configuration: guide/database.md
-    - Lineage Tracking: guide/lineage.md
-    - Computation Caching: guide/caching.md
-    - Batch Processing: guide/for_each.md
+    - Tracking Lineage: guide/lineage.md
+    - Caching Computations: guide/caching.md
+    - Batch Processing (for_each): guide/for_each.md
+    - Filtering & Selection: guide/filters.md
     - Browsing & Exporting: guide/browsing.md
   - Walkthroughs:
     - VO2 Max Pipeline: guide/walkthrough.md
   - API Reference:
-    - Overview: api/index.md
+    - api/index.md
     - Variables (BaseVariable): api/variables.md
     - Database: api/database.md
-    - Lineage (Thunk System): api/lineage.md
+    - Lineage & Provenance: api/lineage.md
     - Batch Processing (for_each): api/for-each.md
+    - Filters: api/filters.md
+  - Internals:
+    - internals/index.md
+    - Lineage Engine (scilineage): internals/scilineage.md
+    - DuckDB Layer (sciduckdb): internals/sciduckdb.md
+    - Content Hashing (scicanonicalhash): internals/scicanonicalhash.md
+    - Path Generation (scipathgen): internals/scipathgen.md
+    - MATLAB Bridge (scimatlab): internals/scimatlab.md
+    - Networking (scidb-net): internals/scidb-net.md
+  - Project:
+    - project/index.md
+    - Roadmap: project/roadmap.md
+    - Contributing & Dev Setup: project/contributing.md
+    - Building These Docs: project/building-docs.md
+    - FAQ & Troubleshooting: project/faq.md
+
+extra_css:
+  - stylesheets/extra.css
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -43,10 +82,23 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
+  - pymdownx.details
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - admonition
   - toc:
       permalink: true
   - attr_list
+  - md_in_html
+  - tables
 
 plugins:
   - search
+
+# Internal engineering notes: kept in the repo but excluded from the published
+# site (they were never in nav).
+exclude_docs: |
+  claude/

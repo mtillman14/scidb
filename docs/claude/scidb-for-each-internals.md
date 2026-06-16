@@ -86,7 +86,7 @@ Each row is one saved record. Key columns:
 
 These two fields serve different roles and are easy to confuse. The short version:
 
-- **`version_keys`** = "what produced me" — the full configuration of the *current* computation step (function name, function hash, input types, constants). It drives the `load_all(version_id="latest")` query, which partitions by `(variable_name, schema_id, version_keys)` to find the newest version of each specific computation variant at each schema location.
+- **`version_keys`** = "what produced me" — the full configuration of the *current* computation step (function name, function hash, input types, constants). It drives the `load(version="latest")` query, which partitions by `(variable_name, schema_id, version_keys)` to find the newest version of each specific computation variant at each schema location.
 
 - **`branch_params`** = "what pipeline choices led to me" — the accumulated constants from *every* function in the pipeline chain, namespaced by function name. It drives the variant expansion system (Steps 11–12) so that downstream steps can keep upstream variants separated and propagate the history forward.
 
@@ -354,7 +354,7 @@ Here, `"signal"` maps to a variable type (loadable), while `"low_hz"` and `"high
 The loading logic lives in `_load_input()` (lines 742–811). Each input type is handled differently:
 
 **Variable type (class with `.load()`):**
-- If the class has a `load_all()` method → bulk-load all records into a single DataFrame via `_load_var_type_all()` (lines 834–918)
+- If the class has a `load()` method → bulk-load all records into a single DataFrame via `_load_var_type_all()` (uses `db.load_all_as_df`) (lines 834–918)
 - If not → wrap in a `PerComboLoader` sentinel (loaded individually per-combo during iteration)
 
 **`Fixed` wrapper:**
@@ -364,11 +364,11 @@ The loading logic lives in `_load_input()` (lines 742–811). Each input type is
 - Otherwise → strip `__record_id` and `__branch_params` from the loaded DataFrame (Fixed inputs are not part of the variant tracking system — see Step 11 for why), stringify fixed metadata values for schema keys, wrap in `scifor.Fixed`
 
 **`ColumnSelection` wrapper:**
-- If the inner type has `load_all()` → bulk-load, wrap in `scifor.ColumnSelection`
+- If the inner type has `load()` → bulk-load, wrap in `scifor.ColumnSelection`
 - Otherwise → `PerComboLoader`
 
 **`Merge` wrapper:**
-- If any constituent lacks `load_all()` → `PerComboLoaderMerge` (all constituents loaded per-combo)
+- If any constituent cannot be bulk-loaded → `PerComboLoaderMerge` (all constituents loaded per-combo)
 - Otherwise → load each constituent, wrap in `scifor.Merge`
 
 **`PathInput`:**
@@ -382,9 +382,9 @@ The loading logic lives in `_load_input()` (lines 742–811). Each input type is
 
 #### Bulk loading: `_load_var_type_all()` (lines 834–918)
 
-This is the primary loading path. It calls `var_type.load_all(version_id="latest")` to fetch all records for a variable type, then assembles them into a single pandas DataFrame with both metadata columns and data columns.
+This is the primary loading path. It calls `var_type.load(version="latest")` to fetch all records for a variable type, then assembles them into a single pandas DataFrame with both metadata columns and data columns.
 
-**What `load_all(version_id="latest")` does:** (source: `/workspace/scidb/src/scidb/variable.py`, lines 412–500, delegating to `/workspace/scidb/src/scidb/database.py`, lines 1313–1333)
+**What `load(version="latest")` does:** (source: `/workspace/scidb/src/scidb/variable.py`, lines 412–500, delegating to `/workspace/scidb/src/scidb/database.py`, lines 1313–1333)
 
 It executes a SQL query against `_record_metadata` with a window function:
 
@@ -576,7 +576,7 @@ The metadata iterables are also extended with all distinct rid values per rid co
 
 ### Step 16: Wrap fn for PerComboLoader resolution and metadata injection (lines 491–517)
 
-**Why this is needed:** Some inputs could not be bulk-loaded in Step 10 (they lack `load_all()`) and were replaced with `PerComboLoader` sentinel objects. These sentinels travel through scifor's loop as opaque constants — scifor doesn't know what they are and doesn't try to filter them. They need to be resolved into actual data just before the function is called.
+**Why this is needed:** Some inputs could not be bulk-loaded in Step 10 (they lack bulk-load support) and were replaced with `PerComboLoader` sentinel objects. These sentinels travel through scifor's loop as opaque constants — scifor doesn't know what they are and doesn't try to filter them. They need to be resolved into actual data just before the function is called.
 
 Additionally, `generates_file` functions (used via scihist) need to know the current combo's metadata (e.g., the current subject and session) so they can construct file paths. The `_inject_combo_metadata` flag enables this.
 
@@ -788,7 +788,7 @@ Same concept as `scifor.Fixed`, but wraps a variable class instead of a DataFram
 
 ```python
 Fixed(StepLength, session="BL")
-# During loading: StepLength.load_all() is called, then the resulting
+# During loading: StepLength.load(version="latest") is called, then the resulting
 # DataFrame is wrapped in scifor.Fixed with the stringified fixed metadata
 ```
 
@@ -806,7 +806,7 @@ Wraps 2+ variable types (or Fixed/ColumnSelection wrappers) for combined loading
 
 Key property: `var_specs` (not `tables` as in scifor.Merge).
 
-If any constituent lacks `load_all()`, the entire Merge becomes a `PerComboLoaderMerge` — loaded individually per combo.
+If any constituent cannot be bulk-loaded, the entire Merge becomes a `PerComboLoaderMerge` — loaded individually per combo.
 
 ### `scidb.ColumnSelection(var_type, columns)`
 
@@ -847,7 +847,7 @@ Always becomes a `PerComboLoader` (paths cannot be bulk-loaded).
 
 ## The PerComboLoader mechanism
 
-Some variable types cannot be bulk-loaded (they lack a `load_all()` method). For these, scidb creates sentinel objects that travel through scifor's loop as opaque constants and are resolved just before the function is called.
+Some inputs cannot be bulk-loaded (e.g. `PathInput`, or types the DB can't serve via `load_all_as_df`). For these, scidb creates sentinel objects that travel through scifor's loop as opaque constants and are resolved just before the function is called.
 
 ### `PerComboLoader` (lines 26–40)
 
@@ -855,7 +855,7 @@ Wraps a single input spec (plain class, Fixed, ColumnSelection, or PathInput). W
 
 ### `PerComboLoaderMerge` (lines 43–52)
 
-Wraps a `scidb.Merge` where some constituents lack `load_all()`. When encountered, `_resolve_per_combo_merge()` loads each constituent individually and merges them.
+Wraps a `scidb.Merge` where some constituents cannot be bulk-loaded. When encountered, `_resolve_per_combo_merge()` loads each constituent individually and merges them.
 
 The wrapper function (Step 16) checks each kwarg for these sentinels before calling the original function, resolving them transparently.
 
@@ -965,7 +965,7 @@ What happens:
 9. **Pre-filter combos**: No empty lists resolved — skip.
 
 10. **Load inputs**:
-    - `signal`: `RawEMG` has `load_all()` → bulk-load all records → assemble into DataFrame:
+    - `signal`: `RawEMG` has `load()` → bulk-load all records → assemble into DataFrame:
       ```
       | subject | session | RawEMG       | __record_id      | __branch_params |
       |---------|---------|--------------|------------------|-----------------|

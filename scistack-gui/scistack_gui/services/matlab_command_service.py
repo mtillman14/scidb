@@ -71,15 +71,15 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     if matlab_registry._config is not None:
         addpath_dirs = [str(p) for p in matlab_registry._config.matlab_addpath]
 
-    # Prepend the sci-matlab MATLAB package directory.
-    from scistack_gui.server import _find_sci_matlab_matlab_dir
-    sci_matlab_dir = _find_sci_matlab_matlab_dir()
-    if sci_matlab_dir:
-        addpath_dirs = [sci_matlab_dir] + addpath_dirs
-        logger.info("generate_matlab_command: prepended sci-matlab dir: %s", sci_matlab_dir)
+    # Prepend the scimatlab MATLAB package directory.
+    from scistack_gui.server import _find_scimatlab_matlab_dir
+    scimatlab_dir = _find_scimatlab_matlab_dir()
+    if scimatlab_dir:
+        addpath_dirs = [scimatlab_dir] + addpath_dirs
+        logger.info("generate_matlab_command: prepended scimatlab dir: %s", scimatlab_dir)
     else:
         logger.warning(
-            "generate_matlab_command: sci-matlab MATLAB directory not found; "
+            "generate_matlab_command: scimatlab MATLAB directory not found; "
             "scihist.* / scidb.* may be unavailable in MATLAB"
         )
 

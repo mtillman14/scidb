@@ -215,7 +215,8 @@ def for_each(
     7. Saves results from the returned table
 
     Args:
-        fn: The function to execute (plain function handle, no Thunk wrapping).
+        fn: The function to execute (plain function handle; for_each handles
+            lineage tracking internally).
         inputs: Dict mapping parameter names to variable types, Fixed wrappers,
                 Merge wrappers, ColumnSelection wrappers, PathInput, or constants.
         outputs: List of output types/objects with ``.save()``.
@@ -511,7 +512,7 @@ def _apply_introspect(result_tbl, state, where):
 #   - Python pipelines (the ``for_each`` orchestration above) call them
 #     in sequence with a Python ``for`` loop in between (delegated to
 #     ``scifor.for_each``).
-#   - MATLAB pipelines (the ``sci_matlab.bridge.for_each_prepare`` /
+#   - MATLAB pipelines (the ``scimatlab.bridge.for_each_prepare`` /
 #     ``for_each_save`` bridge entries) call them in sequence with the
 #     MATLAB-side ``+scifor/for_each.m`` running the inner loop in
 #     between.

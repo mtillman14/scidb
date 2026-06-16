@@ -1,0 +1,105 @@
+name: CI
+
+# Test / lint / build gate. Runs on every push to main & dev and on every PR.
+# Also exposed via workflow_call so the release workflow (publish.yml) can reuse
+# it as a pre-publish gate instead of duplicating the job definitions.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_call:
+
+# hatch-vcs derives the version from git tags, so jobs that build or install the
+# packages need full history + tags (fetch-depth: 0).
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ruff
+        run: pip install ruff
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Tooling targets py310 (ruff/mypy target-version, classifiers); test the
+        # floor, a mid version, and the newest.
+        python-version: ['3.10', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install all packages (editable, dependency order) + test tools
+        run: |
+          pip install --upgrade pip
+          bash dev-install.sh
+          pip install pytest pytest-cov
+      - name: Run tests
+        # scimatlab is skipped automatically by run_tests.sh when MATLAB is absent.
+        run: bash run_tests.sh
+
+  typecheck:
+    runs-on: ubuntu-latest
+    # Non-blocking to start: the repo has never been type-gated. Flip
+    # continue-on-error to false (or remove it) once these pass cleanly.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install packages + mypy
+        run: |
+          pip install --upgrade pip
+          bash dev-install.sh
+          pip install mypy
+      - name: mypy (packages that declare [tool.mypy])
+        run: |
+          for pkg in scicanonicalhash path-gen sciduckdb scilineage; do
+            echo "== mypy $pkg =="
+            mypy "$pkg" || exit 1
+          done
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build tooling
+        run: pip install build twine
+      - name: Build every library and validate metadata
+        run: |
+          set -euo pipefail
+          rm -rf dist_ci && mkdir dist_ci
+          for pkg in scicanonicalhash path-gen scifor sciduckdb \
+                     scilineage scidb \
+                     scimatlab scihist scidb-net scistack; do
+            echo "== build $pkg =="
+            python -m build --outdir dist_ci "$pkg"
+          done
+          python -m twine check dist_ci/*

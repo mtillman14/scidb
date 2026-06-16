@@ -90,10 +90,10 @@ ORDER BY rm.timestamp
 
 ## Python vs MATLAB Argument Names
 
-Python `@thunk`-decorated functions use `inspect.signature()` to capture
+Python `@lineage_fcn`-decorated functions use `inspect.signature()` to capture
 the actual parameter names, so constants appear as `{"name": "low_hz", …}`.
 
-MATLAB `scidb.Thunk` passes inputs as `{"arg_0": ..., "arg_1": ..., …}`,
+MATLAB `scidb.LineageFcn` passes inputs as `{"arg_0": ..., "arg_1": ..., …}`,
 so constants appear as `{"name": "arg_1", …}`.  The value is still fully
 preserved in `value_repr`.
 

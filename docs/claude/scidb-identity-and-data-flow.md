@@ -73,7 +73,7 @@ for_each(fn, inputs, outputs, subject=[], session=[])
   |
   +--> ForEachConfig.to_version_keys()   --> config_keys (__fn, __fn_hash, __inputs, ...)
   +--> ForEachConfig.to_call_id()        --> call_id (16 hex chars, for _for_each_expected)
-  +--> _convert_inputs() / load_all()    --> DataFrames with __record_id, __branch_params
+  +--> _convert_inputs() / load()        --> DataFrames with __record_id, __branch_params
   +--> variant tracking (rid_to_bp)      --> maps record_id -> upstream branch_params
   +--> scifor.for_each(fn, ...)          --> result_tbl (DataFrame)
   +--> _save_results()                   --> per-row: merge upstream bp + namespace constants
@@ -247,7 +247,7 @@ Two formats:
 | ----------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | **schema_id**     | `_schema.schema_id`                     | User-provided schema keys (subject, session, trial)                                                | Locating data within the experimental hierarchy                                                                        | Global -- shared across all variable types                |
 | **content_hash**  | `_record_metadata.content_hash`         | Raw data bytes                                                                                     | Content-addressed deduplication; same data -> same hash                                                                | Per-record                                                |
-| **version_keys**  | `_record_metadata.version_keys` (JSON)  | Non-schema metadata: `__fn`, `__fn_hash`, `__inputs`, `__constants`, `__upstream`, etc.            | Distinguishing computational variants at the same schema location. Drives `load_all(version_id="latest")` partitioning | Per-record, current step only                             |
+| **version_keys**  | `_record_metadata.version_keys` (JSON)  | Non-schema metadata: `__fn`, `__fn_hash`, `__inputs`, `__constants`, `__upstream`, etc.            | Distinguishing computational variants at the same schema location. Drives `load(version="latest")` partitioning | Per-record, current step only                             |
 | **record_id**     | `_record_metadata.record_id`            | `class_name` + `schema_version` + `content_hash` + `canonical_hash(nested_metadata)`               | Unique identity -- addressing a specific data record                                                                   | Per-record                                                |
 | **branch_params** | `_record_metadata.branch_params` (JSON) | Upstream records' branch_params + current function's namespaced constants + dynamic discriminators | Variant tracking across the entire pipeline chain. Keeps upstream variants separated in downstream steps               | Per-record, full pipeline chain                           |
 | **call_id**       | `_for_each_expected.call_id`            | `SHA-256` of `{__fn, __inputs, __constants, __where, __distribute, __as_table}` from version_keys  | Disambiguating multiple for_each() call sites using the same function                                                  | Per-call-site, derived (not stored in `_record_metadata`) |
@@ -307,7 +307,7 @@ Additionally, per-record keys may be added:
 
 Source: `/workspace/scidb/src/scidb/foreach_config.py`, lines 87-107.
 
-The `load_all(version_id="latest")` query partitions by `(variable_name, schema_id, version_keys)`. This means different `for_each` configurations produce separate "version groups" at the same schema location, and `"latest"` returns the newest within each group.
+The `load(version="latest")` query partitions by `(variable_name, schema_id, version_keys)`. This means different `for_each` configurations produce separate "version groups" at the same schema location, and `"latest"` returns the newest within each group.
 
 ### record_id
 
@@ -521,7 +521,7 @@ DatabaseManager.load_variable(MyVar, version="latest", subject=1, session="A")
   return BaseVariable instance
 ```
 
-### for_each load: `_convert_inputs()` / `load_all()`
+### for_each load: `_convert_inputs()` / `load()`
 
 The for_each load path loads **all** records for a variable type, returning a DataFrame with tracking columns:
 
@@ -604,9 +604,9 @@ FilteredSignal.load(subject=1, low_hz=20)
     |     schema_metadata    = {subject: 1}      # in dataset_schema_keys
     |     branch_params_filter = {low_hz: 20}     # everything else
     |
-    +-- _db.load_all(FilteredSignal, schema_metadata,
-    |                 version_id="latest",
-    |                 branch_params_filter={low_hz: 20})
+    +-- _db.load_all_as_df(FilteredSignal, schema_metadata,
+    |                       version_id="latest",
+    |                       branch_params_filter={low_hz: 20})
     |     |
     |     +-- _find_record("FilteredSignal",
     |     |     nested_metadata={"schema":{subject:1}, "version":{}},
@@ -670,7 +670,7 @@ for_each(compute_rms, inputs={"signal": FilteredSignal, ...}, ...)
     |
     +-- _load_var_type_all(FilteredSignal, db, where=None)
     |     |
-    |     +-- FilteredSignal.load_all(version_id="latest")
+    |     +-- FilteredSignal.load(version="latest")
     |     |     → returns ALL variants: low_hz=20 AND low_hz=30, for all subjects
     |     |
     |     +-- Assembles DataFrame:
@@ -785,7 +785,7 @@ This stripping is intentional -- without it, constants from one pipeline step wo
 | Goal | Syntax | Mechanism |
 |------|--------|-----------|
 | **Load one version directly** | `FilteredSignal.load(subject=1, low_hz=20)` | Non-schema kwargs become `branch_params_filter` in `_find_record()`. Checks `version_keys` first, then `branch_params` with suffix matching. |
-| **for_each: use all variants** | `inputs={"signal": FilteredSignal}` | `load_all()` gets all variants; variant tracking expands combos and propagates branch_params downstream. **This is the normal pattern.** |
+| **for_each: use all variants** | `inputs={"signal": FilteredSignal}` | `load(version="latest")` gets all variants (each distinct `version_keys` group yields its latest); variant tracking expands combos and propagates branch_params downstream. **This is the normal pattern.** |
 | **for_each: restrict to one variant** | No first-class syntax | **Known gap.** `Fixed` only filters on schema keys, not pipeline variants. See Case 3 above. |
 | **for_each: override schema key** | `inputs={"baseline": Fixed(Signal, session="BL")}` | `Fixed` merges override into combo metadata; scifor filters DataFrame on schema key column. Works as intended. |
 | **Load by exact record_id** | `FilteredSignal.load(version="a3f8b2c1e9d04567")` | Bypasses all filtering; direct PK lookup on `_record_metadata`. |
@@ -815,7 +815,7 @@ Source: `/workspace/scidb/src/scidb/database.py` lines 89-108 (`_match_branch_pa
 | `class MyVar(BaseVariable)`                           | Define a variable type                          |
 | `MyVar.save(data, **metadata)`                        | Save data directly                              |
 | `MyVar.load(**metadata)`                              | Load one record                                 |
-| `MyVar.load_all(**metadata)`                          | Load all matching records                       |
+| `MyVar.load(version="all", **metadata)`               | Load all matching records                       |
 | `for_each(fn, inputs, outputs, **metadata_iterables)` | Batch execute with auto load/save               |
 
 ### Internal: for_each orchestration
@@ -882,7 +882,7 @@ The `call_id_from_version_keys()` function uses a strict allow-list (`_CALL_ID_I
 
 Constants appear in **both** places but serve different purposes:
 
-- In `version_keys.__constants`: JSON-encoded dict, part of the computational config fingerprint. Used for partitioning in `load_all(version_id="latest")`.
+- In `version_keys.__constants`: JSON-encoded dict, part of the computational config fingerprint. Used for partitioning in `load(version="latest")`.
 - In `branch_params.{fn_name}.{const_name}`: Namespaced, part of the pipeline history. Used for variant tracking and downstream propagation.
 
 They are also unpacked as direct keys in `save_metadata` (e.g., `low_hz=20`) so that `_split_metadata()` routes them correctly. If the constant name matches a schema key, it goes into `schema`; otherwise into `version`.

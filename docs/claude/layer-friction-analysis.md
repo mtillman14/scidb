@@ -281,7 +281,7 @@ From scidb doc line 625:
 
 **Flow:**
 
-1. scidb wraps certain inputs (PathInput, types lacking `load_all()`) in `PerComboLoader`
+1. scidb wraps certain inputs (PathInput, types lacking bulk-load support) in `PerComboLoader`
 2. scifor sees these as plain constants (no filtering, just pass-through)
 3. scidb wraps the function (Step 16) to unwrap them just before the call
 4. The function receives the unwrapped data

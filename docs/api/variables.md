@@ -1,411 +1,213 @@
 # Variables API — `BaseVariable`
 
-`BaseVariable` is the foundation of SciStack. Every piece of data you store is an instance of a `BaseVariable` subclass. The subclass name becomes the database table name; the class itself has no required properties or methods for the common case.
+<!-- Ground truth (source/tests win over prose). Verified against:
+     scidb/src/scidb/variable.py:
+       schema_version: int = 1; _reserved_keys = {record_id,id,created_at,schema_version,
+         index,loc,iloc};
+       to_db(self)->DataFrame (default wraps {"value":[self.data]}); from_db(cls, df) (default
+         unwraps "value"); __class_getitem__ -> ColumnSelection; for_columns(columns=[]);
+       save(data, index=None, db=None, **metadata)->str (list[str] if DataFrame has schema-key
+         cols); save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)
+         ->list[str]; load(as_df=False, version="latest", where=None, db=None, introspect=False,
+         **metadata)->BaseVariable|list|DataFrame (NotFoundError on miss); to_csv(filename, *args,
+         **kwargs) classmethod (flat, one row per schema_id, .csv required);
+     scidb/src/scidb/database.py:1801-1809 loaded instance attrs (record_id, metadata,
+       content_hash, lineage_hash, branch_params);
+     scimatlab/.../+scidb (classdef MyVar < scidb.BaseVariable; MyVar().save/.load).
+     NOTE: NO load_all, NO ThunkOutput, NO include_record_id; saving does NOT record lineage
+     (use scihist.save). -->
 
-## Defining a Variable Type
+`BaseVariable` is the base class for every stored value. Subclass it once per kind
+of result; the subclass name is its table name. For task-oriented usage see
+[Defining Variables](../guide/variables.md); for the model, see
+[Variables & Storage](../concepts/variables.md).
+
+## Defining a type
 
 === "Python"
-
     ```python
     from scidb import BaseVariable
 
     class StepLength(BaseVariable):
-        pass  # That's it — no boilerplate needed
+        schema_version = 1
     ```
-
-    For custom multi-column serialization (e.g., storing a pandas DataFrame in a structured way), override `to_db()` and `from_db()`:
-
-    ```python
-    import pandas as pd
-    import numpy as np
-
-    class GaitTable(BaseVariable):
-
-        def to_db(self) -> pd.DataFrame:
-            """Convert self.data (a DataFrame) to storage format."""
-            return self.data  # already a DataFrame
-
-        @classmethod
-        def from_db(cls, df: pd.DataFrame):
-            """Convert back from storage."""
-            return df
-    ```
-
-    `schema_version` defaults to 1. Increment it when you change the structure of a variable type and need to distinguish old records from new ones.
-
 === "MATLAB"
-
     ```matlab
-    % In StepLength.m:
+    % In StepLength.m
     classdef StepLength < scidb.BaseVariable
     end
-
-    % In GaitTable.m:
-    classdef GaitTable < scidb.BaseVariable
-    end
     ```
 
-    Custom serialization is handled on the Python side. In MATLAB, variable type definitions are always empty classdefs.
+**`schema_version: int`** — defaults to `1`. Bump it when the data's structure
+changes so old and new records remain distinct.
 
 ---
 
 ## `save()`
 
-Saves data to the database under the calling variable type. Accepts raw data, a `ThunkOutput` (from a thunked function), or an existing variable instance. Lineage is extracted and stored automatically when saving a `ThunkOutput`.
+```python
+@classmethod
+save(data, index=None, db=None, **metadata) -> str | list[str]
+```
 
-Returns a `record_id` string — a deterministic hash of the data content and metadata.
+Stores `data` at the coordinates in `**metadata` and returns the content-addressed
+`record_id`. Saving identical data at identical coordinates returns the same id
+(dedup); different data creates a new version.
+
+- **`data`** — raw value (scalar, array, list, dict, DataFrame), or an existing
+  `BaseVariable` instance to re-save.
+- **`index`** — optional index applied to the DataFrame after `to_db()`.
+- **`db`** — target a specific database instead of the global default.
+- **`**metadata`** — addressing keys. Reserved keys (`record_id`, `id`,
+  `created_at`, `schema_version`, `index`, `loc`, `iloc`) raise
+  `ReservedMetadataKeyError`.
+- **Returns** — `str`, or `list[str]` when `data` is a DataFrame whose columns
+  include dataset schema keys (each row saved as its own record).
+
+!!! note
+    `save()` stores data only — it does **not** record lineage for a
+    `LineageFcnResult`. Use [`scihist.save()`](lineage.md) to persist a tracked
+    result with its provenance.
 
 === "Python"
-
     ```python
-    # Save raw data
-    record_id = StepLength.save(np.array([0.65, 0.72]), subject=1, session="A")
-
-    # Save a thunk result (lineage tracked automatically)
-    result = bandpass_filter(raw_signal, 20, 450)
-    record_id = FilteredSignal.save(result, subject=1, session="A")
-
-    # Re-save an existing variable under new metadata
-    var = StepLength.load(subject=1, session="A")
-    record_id = StepLength.save(var, subject=2, session="A")
-
-    # Save to a specific database (not the global one)
-    record_id = StepLength.save(data, db=my_db, subject=1, session="A")
+    rid = StepLength.save(np.array([0.65, 0.72]), subject=1, session="A")
     ```
-
 === "MATLAB"
-
     ```matlab
-    % Save raw data
-    record_id = StepLength().save(data, subject=1, session="A");
-
-    % Save a thunk result (lineage tracked automatically)
-    result = filter_fn(raw_signal, 20, 450);
-    record_id = FilteredSignal().save(result, subject=1, session="A");
-
-    % Re-save an existing variable under new metadata
-    var = StepLength().load(subject=1, session="A");
-    record_id = StepLength().save(var, subject=2, session="A");
-
-    % Save to a specific database
-    record_id = StepLength().save(data, db=my_db, subject=1, session="A");
+    rid = StepLength().save([0.65 0.72], subject=1, session="A");
     ```
 
-**Parameters:**
+---
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `data` | any | Data to save: raw value, `ThunkOutput`, or existing `BaseVariable` |
-| `index` | optional | Label-based index for the stored DataFrame rows (Python only) |
-| `db` | optional | `DatabaseManager` to use instead of the global database |
-| `**metadata` | keyword args | Addressing metadata (e.g., `subject=1, session="A"`) |
+## `save_from_dataframe()`
 
-**Returns:** `str` — the `record_id` of the saved record
+```python
+@classmethod
+save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata) -> list[str]
+```
 
-!!! note "Deterministic record IDs"
-    Saving identical data with identical metadata always produces the same `record_id`. This means saving the same data twice is safe — you get the same ID back both times.
+Saves each row of `df` as a separate record. `data_column` names the value column,
+`metadata_columns` names the per-row metadata columns, and `**common_metadata` is
+applied to every row. Returns the list of record ids.
+
+```python
+ids = ScalarValue.save_from_dataframe(
+    df=results_df, data_column="Value",
+    metadata_columns=["subject", "trial"], experiment="exp1",
+)
+```
 
 ---
 
 ## `load()`
 
-Loads variable(s) from the database. Returns a **single variable** when exactly one record matches, or a **list** of variables when multiple records match (e.g., when only partial schema keys are given).
+```python
+@classmethod
+load(as_df=False, version="latest", where=None, db=None, introspect=False, **metadata)
+    -> BaseVariable | list[BaseVariable] | DataFrame
+```
+
+Returns a single `BaseVariable` when one record matches, a `list` when several do,
+or a `DataFrame` when `as_df=True`. Raises `NotFoundError` if nothing matches.
+
+- **`version`** — `"latest"` (default), `"all"` (every version, as a list), or a
+  specific `record_id`.
+- **`where`** — a filter on other variables' values (see [Filters](filters.md)).
+- **`as_df`** — return a DataFrame (metadata columns + `data`).
+- **`introspect`** — attach `.where` / `.version_mode` to instances, or append
+  introspection columns (`record_id`, `branch_params`, `content_hash`, …) to a
+  DataFrame result.
+- **`**metadata`** — addressing keys; matching is partial, and a list value means
+  "match any".
 
 === "Python"
-
     ```python
-    # Single record (all schema keys specified)
-    var = StepLength.load(subject=1, session="A")
-    print(var.data)          # numpy array
-    print(var.metadata)      # {"subject": 1, "session": "A"}
-    print(var.record_id)     # "a3f8c2e1..."
-
-    # Multiple records (partial schema keys)
-    all_sessions = StepLength.load(subject=1)
-    for v in all_sessions:
-        print(v.metadata["session"], v.data.shape)
-
-    # Load as DataFrame when multiple records match
-    df = StepLength.load(subject=1, as_table=True)
-
-    # Load a specific version by record_id
-    var = StepLength.load(version="a3f8c2e1b9d04710...")
-
-    # Load from a specific database
-    var = StepLength.load(db=my_db, subject=1, session="A")
+    var   = StepLength.load(subject=1, session="A")        # one -> instance
+    many  = StepLength.load(subject=1)                     # many -> list
+    allv  = StepLength.load(subject=1, version="all")      # full history
+    frame = StepLength.load(subject=1, as_df=True)         # DataFrame
     ```
-
 === "MATLAB"
-
     ```matlab
-    % Single record (all schema keys specified)
     var = StepLength().load(subject=1, session="A");
-    disp(var.data);       % numeric array
-    disp(var.metadata);   % struct with subject, session fields
-    disp(var.record_id);  % "a3f8c2e1..."
-
-    % Multiple records (partial schema keys) — returns array of ThunkOutputs
-    all_sessions = StepLength().load(subject=1);
-    for i = 1:numel(all_sessions)
-        fprintf('%s: %s\n', all_sessions(i).metadata.session, mat2str(size(all_sessions(i).data)));
-    end
-
-    % Load as MATLAB table when multiple records match
-    tbl = StepLength().load(subject=1, as_table=true);
-
-    % Load a specific version by record_id
-    var = StepLength().load(version="a3f8c2e1b9d04710...");
-
-    % Load from a specific database
-    var = StepLength().load(db=my_db, subject=1, session="A");
     ```
 
-**Parameters:**
+There is no `load_all` method — use `load(version="all")` or `load(where=...)`.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `version` | `"latest"` | `"latest"` or a specific `record_id` |
-| `loc` | `None` | Label-based index selection (Python only) |
-| `iloc` | `None` | Integer-position index selection (Python only) |
-| `as_table` | `False` | Return a DataFrame/table when multiple records match |
-| `db` | `None` | `DatabaseManager` to use instead of the global database |
-| `**metadata` | — | Metadata to filter by |
+### Loaded instance attributes
 
-**Returns:** Single variable, list of variables, or DataFrame/table
-
-!!! tip "Loaded variables carry lineage"
-    Pass the loaded variable (not `var.data`) to a thunked function to preserve lineage tracking across pipeline steps.
-
----
-
-## `load_all()`
-
-Loads all matching variables. Returns a memory-efficient generator by default, or a DataFrame with `as_df=True`.
-
-=== "Python"
-
-    ```python
-    # Iterate over all records (generator — memory-efficient)
-    for var in StepLength.load_all(session="A"):
-        print(var.metadata["subject"], var.data)
-
-    # Load all into a DataFrame
-    df = StepLength.load_all(as_df=True)
-    #   subject  session  data
-    #   1        A        [0.65, 0.72]
-    #   2        A        [0.71, 0.68]
-    #   ...
-
-    # Filter to specific subjects
-    for var in StepLength.load_all(subject=[1, 2, 3]):
-        process(var.data)
-
-    # Load only the latest version per parameter set
-    df = StepLength.load_all(as_df=True, version_id="latest")
-
-    # Include record_id column for traceability
-    df = StepLength.load_all(as_df=True, include_record_id=True)
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    % Load all records (returns array of ThunkOutput)
-    results = StepLength().load_all(session="A");
-    for i = 1:numel(results)
-        fprintf('%d: %s\n', results(i).metadata.subject, mat2str(size(results(i).data)));
-    end
-
-    % Load as MATLAB table
-    tbl = StepLength().load_all(as_table=true);
-
-    % Filter to specific subjects (array = "match any")
-    results = StepLength().load_all(subject=[1 2 3]);
-
-    % Latest version only
-    results = StepLength().load_all(version_id="latest");
-    ```
-
-**Parameters:**
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `as_df` | `False` | Return a DataFrame instead of a generator (Python) |
-| `as_table` | `false` | Return a MATLAB table (MATLAB) |
-| `include_record_id` | `False` | Include `record_id` column in DataFrame (Python, `as_df=True` only) |
-| `version_id` | `"all"` | `"all"`, `"latest"`, an integer, or list of integers |
-| `db` | `None` | `DatabaseManager` to use instead of the global database |
-| `**metadata` | — | Metadata to filter by; list values match any element (OR semantics) |
-
----
-
-## `list_versions()`
-
-Lists all saved versions at a given schema location. Useful for seeing what computational variants exist (e.g., data computed with different parameter settings).
-
-=== "Python"
-
-    ```python
-    versions = StepLength.list_versions(subject=1, session="A")
-    for v in versions:
-        print(v["record_id"][:16], v["created_at"])
-        print("  schema:", v["schema"])    # {"subject": "1", "session": "A"}
-        print("  version:", v["version"])  # {"low_hz": "20", "high_hz": "450"}
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    versions = StepLength().list_versions(subject=1, session="A");
-    for i = 1:numel(versions)
-        fprintf('%s  %s\n', versions(i).record_id, versions(i).created_at);
-        disp(versions(i).schema);    % struct: subject, session
-        disp(versions(i).version);   % struct: version keys
-    end
-    ```
-
-**Returns (Python):** `list[dict]` with keys `record_id`, `schema`, `version`, `created_at`
-
-**Returns (MATLAB):** struct array with same fields
-
----
-
-## `save_from_dataframe()` / `save_from_table()`
-
-Bulk-saves each row of a DataFrame/table as a separate database record. Much faster than calling `save()` in a loop. Use this when a DataFrame contains multiple independent data items, each with its own metadata.
-
-=== "Python"
-
-    ```python
-    # DataFrame with results for multiple subjects/trials
-    #   subject  trial  value
-    #   1        1      0.52
-    #   1        2      0.61
-    #   2        1      0.48
-
-    record_ids = ScalarResult.save_from_dataframe(
-        df=results_df,
-        data_column="value",
-        metadata_columns=["subject", "trial"],
-        experiment="exp1",   # common metadata applied to all rows
-    )
-    # Creates 3 separate database records
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    % MATLAB table with same structure
-    record_ids = ScalarResult().save_from_table( ...
-        results_tbl, ...            % MATLAB table
-        "value", ...                % data column name
-        ["subject", "trial"], ...   % metadata column names
-        experiment="exp1");         % common metadata for all rows
-    ```
-
-**Parameters:**
-
-| Parameter | Description |
-|-----------|-------------|
-| `df` / `tbl` | DataFrame or MATLAB table |
-| `data_column` | Column name containing the data to store |
-| `metadata_columns` | Column names to use as per-row metadata |
-| `db` | Optional `DatabaseManager` |
-| `**common_metadata` | Additional metadata applied to all rows |
-
-**Returns:** list of `record_id` strings
+| Attribute | Meaning |
+|---|---|
+| `.data` | the native value |
+| `.record_id` | content-addressed id |
+| `.metadata` | addressing keys, e.g. `{"subject": 1, "session": "A"}` |
+| `.content_hash` | hash of the data content |
+| `.lineage_hash` | lineage hash, or `None` if saved without lineage |
+| `.branch_params` | constant-variant parameters, if any |
 
 ---
 
 ## `to_csv()`
 
-Exports a single loaded variable's data to a CSV file.
+```python
+@classmethod
+to_csv(filename, *args, **kwargs) -> None
+```
 
-=== "Python"
+Exports the variable to a flat CSV: one row per schema location, one column per
+schema key, plus a value column named after the class. `**kwargs` accepts metadata
+filters and `where=`. The filename must end in `.csv`. A record holding a
+multi-row table or a bare vector can't be flattened this way and raises
+`ValueError`. See [Browsing & Exporting](../guide/browsing.md).
 
-    ```python
-    var = StepLength.load(subject=1, session="A")
-    var.to_csv("step_length_s1_A.csv")
-    ```
-
-=== "MATLAB"
-
-    Use Python's `export_to_csv` via the database manager for bulk exports (see [Database API](database.md)).
-
----
-
-## Loaded Variable Attributes
-
-After `save()` or `load()`, a variable instance has the following attributes:
-
-=== "Python"
-
-    | Attribute | Type | Description |
-    |-----------|------|-------------|
-    | `data` | any | The native Python data (numpy array, scalar, DataFrame, etc.) |
-    | `record_id` | `str` | Deterministic hash identifying this record |
-    | `metadata` | `dict` | All metadata key-value pairs |
-    | `content_hash` | `str` | SHA-256 hash of the data content |
-    | `lineage_hash` | `str \| None` | Hash of the computation that produced this (None for raw saves) |
-
-=== "MATLAB"
-
-    | Property | Type | Description |
-    |----------|------|-------------|
-    | `data` | MATLAB type | The native MATLAB data (numeric array, table, etc.) |
-    | `record_id` | `string` | Deterministic hash identifying this record |
-    | `metadata` | `struct` | Metadata key-value pairs |
-    | `content_hash` | `string` | SHA-256 hash of the data content |
-    | `lineage_hash` | `string` | Hash of the computation that produced this (empty if raw) |
+```python
+StepLength.to_csv("steps.csv", subject=1, where=Side == "L")
+```
 
 ---
 
-## Subclassing for Shared Serialization
+## `to_db()` / `from_db()`
 
-When multiple variable types store the same kind of data but should live in separate tables, define a base type with the serialization logic and create empty subclasses:
+```python
+def to_db(self) -> DataFrame          # default: pd.DataFrame({"value": [self.data]})
 
-=== "Python"
+@classmethod
+def from_db(cls, df) -> Any           # default: unwrap the "value" column
+```
 
-    ```python
-    class TimeSeries(BaseVariable):
-        """Base type for all time series signals (stored as DataFrames)."""
+Override **both** only for custom multi-column serialization; scalars, arrays,
+lists, dicts, and DataFrames round-trip with the defaults.
 
-        def to_db(self) -> pd.DataFrame:
-            return self.data
-
-        @classmethod
-        def from_db(cls, df: pd.DataFrame) -> pd.DataFrame:
-            return df
-
-    # Each subclass gets its own table and inherits to_db/from_db
-    class EMGSignal(TimeSeries):
-        pass  # table: EMGSignal
-
-    class ForceSignal(TimeSeries):
-        pass  # table: ForceSignal
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    % Base type (in TimeSeries.m) — serialization handled by Python
-    classdef TimeSeries < scidb.BaseVariable
-    end
-
-    % Subclasses in their own files
-    classdef EMGSignal < TimeSeries
-    end
-
-    classdef ForceSignal < TimeSeries
-    end
-    ```
+```python
+class RotationMatrix(BaseVariable):
+    schema_version = 1
+    def to_db(self):
+        r, c = self.data.shape
+        return pd.DataFrame({"row": np.repeat(range(r), c),
+                             "col": np.tile(range(c), r),
+                             "value": self.data.flatten()})
+    @classmethod
+    def from_db(cls, df):
+        df = df.sort_values(["row", "col"])
+        return df["value"].values.reshape(df["row"].max()+1, df["col"].max()+1)
+```
 
 ---
 
-## Reserved Metadata Keys
+## Column selection
 
-These keys are used internally and cannot appear in `save()` metadata:
+Indexing a class selects columns for a `for_each` input (it does not load data by
+itself):
 
-`record_id`, `id`, `created_at`, `schema_version`, `index`, `loc`, `iloc`
+| Form | Result |
+|---|---|
+| `MyVar["col"]` | one column → the function receives an array |
+| `MyVar[["a", "b"]]` | a subset → the function receives a DataFrame |
+| `MyVar.for_columns()` | run once per column, reassembled into one output |
 
-Using them raises `ReservedMetadataKeyError`.
+The same indexing builds column filters (`MyVar["col"] != 0`) for `where=` — see
+[Filters](filters.md). In MATLAB, use the constructor form `MyVar("col")`.
+
+**See also:** [Database](database.md) · [Batch Processing](for-each.md) ·
+[Filters](filters.md)

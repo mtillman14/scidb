@@ -8,7 +8,7 @@ import pytest
 
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root / "src"))
-sys.path.insert(0, str(_root / "sciduck" / "src"))
+sys.path.insert(0, str(_root / "sciduckdb" / "src"))
 sys.path.insert(0, str(_root / "scifor" / "src"))
 sys.path.insert(0, str(_root / "scilineage" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))

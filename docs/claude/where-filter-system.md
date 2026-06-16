@@ -8,28 +8,28 @@ Users frequently need to load one variable conditioned on the value of another. 
 
 ```python
 # Equality filter on a whole-variable value
-StepLength.load_all(where=Side == "L")
+StepLength.load(where=Side == "L")
 
 # Comparison filter
-StepLength.load_all(where=Speed > 1.2)
+StepLength.load(where=Speed > 1.2)
 
 # Compound AND / OR
-StepLength.load_all(where=(Side == "L") & (Speed > 1.2))
-StepLength.load_all(where=(Side == "L") | (Side == "R"))
+StepLength.load(where=(Side == "L") & (Speed > 1.2))
+StepLength.load(where=(Side == "L") | (Side == "R"))
 
 # NOT
-StepLength.load_all(where=~(Side == "L"))
+StepLength.load(where=~(Side == "L"))
 
 # Column-level filter (tabular variable)
-StepLength.load_all(where=GaitData["Side"] == "L")
+StepLength.load(where=GaitData["Side"] == "L")
 
 # Set membership
-StepLength.load_all(where=GaitData["Side"].isin(["L", "R"]))
+StepLength.load(where=GaitData["Side"].isin(["L", "R"]))
 
 # Raw SQL escape hatch (applied to the target variable's data table)
-StepLength.load_all(where=raw_sql('"value" > 0.70'))
+StepLength.load(where=raw_sql('"value" > 0.70'))
 
-# Works with load() too
+# Combined with metadata addressing
 StepLength.load(subject=1, where=Side == "L")
 ```
 
@@ -37,7 +37,7 @@ StepLength.load(subject=1, where=Side == "L")
 
 Filters are resolved **before** data is fetched, at the schema_id level:
 
-1. `load()` / `load_all()` calls `db.load_all()` / `db.load()`.
+1. `load()` calls `db.load_all_as_df()` (DataFrame path) or `db.load()` (generator path).
 2. `_find_record()` returns the full set of matching `_record_metadata` rows.
 3. If `where` is provided, `where.resolve(db, target_class, table_name)` is called.
 4. `resolve()` returns `allowed_schema_ids: set[int]`.
@@ -73,7 +73,7 @@ Returns the set of `schema_id` integers that pass the filter. `CompoundFilter` c
 
 ### Latest-version semantics for filter variables
 
-`VariableFilter`, `ColumnFilter`, and `InFilter` all query the filter variable using "latest version per parameter set" semantics (a `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY version_id DESC)` CTE). This mirrors exactly how `load_all(version_id="latest")` works for the target variable — no special casing.
+`VariableFilter`, `ColumnFilter`, and `InFilter` all query the filter variable using "latest version per parameter set" semantics (a `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY version_id DESC)` CTE). This mirrors exactly how `load(version="latest")` works for the target variable — no special casing.
 
 ## Metaclass: `VariableMeta`
 
@@ -220,9 +220,9 @@ This is checked at `resolve()` time (when `load()` is called), not at constructi
 | File | Role |
 |------|------|
 | `scidb/src/scidb/filters.py` | All filter classes + `raw_sql()` + `schema_key()` factories |
-| `scidb/src/scidb/variable.py` | `VariableMeta` metaclass + `where=` in `load()`, `load_all()` |
+| `scidb/src/scidb/variable.py` | `VariableMeta` metaclass + `where=` in `load()` |
 | `scidb/src/scidb/__init__.py` | Exports `raw_sql`, `schema_key` |
-| `scidb/src/scidb/database.py` | `where=` in `DatabaseManager.load()` and `load_all()` — calls `resolve()` and filters the records DataFrame |
+| `scidb/src/scidb/database.py` | `where=` in `DatabaseManager.load()` and `load_all_as_df()` — calls `resolve()` and filters the records DataFrame |
 | `scirun-lib/src/scirun/column_selection.py` | Comparison operators on `ColumnSelection` |
 | `scidb/tests/test_filters.py` | Unit tests (no DB required), incl. `TestSchemaKeyConstruction` |
 | `scidb/tests/test_where.py` | Integration tests for variable-based filters |
@@ -265,11 +265,11 @@ Key files:
 - `sci-matlab/src/sci_matlab/matlab/+scidb/Filter.m`
 - `sci-matlab/src/sci_matlab/matlab/+scidb/BaseVariable.m` (comparison operators: lines 562-627)
 
-### where= in load() / load_all()
+### where= in load()
 
 ```matlab
 StepLength().load(where=Side() == "L", subject=1, session='A')
-StepLength().load_all(where=(Side() == "L") & (ScalarVar() > 1.0), db=db)
+StepLength().load(where=(Side() == "L") & (ScalarVar() > 1.0), version="all", db=db)
 ```
 
 The filter is forwarded to Python as `where_filter.py_filter` via the bridge. Schema-level validation and coverage checks behave identically to the Python API.

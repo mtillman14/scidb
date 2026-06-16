@@ -1,248 +1,180 @@
 # Database API
 
-The `DatabaseManager` handles all storage operations. You create it once via `configure_database()` and then access it globally via `get_database()` anywhere in your code.
+<!-- Ground truth (source/tests win over prose). Verified against scidb/src/scidb/database.py:
+     configure_database(dataset_db_path, dataset_schema_keys) -> DatabaseManager (2 args, both
+       required; auto-registers known subclasses; sets scifor schema; enables caching);
+     get_database() -> DatabaseManager (DatabaseNotConfiguredError if not configured);
+     register(variable_class) (idempotent); list_versions(variable_class, include_excluded=False,
+       **metadata) -> list[dict] keys record_id/schema/branch_params/timestamp (newest first);
+     get_provenance(variable_class, version=None, **metadata) -> {function_name, function_hash,
+       inputs, constants} | None; get_provenance_by_schema(**schema_keys) -> list[dict] keys
+       output_record_id/output_type/function_name/function_hash/inputs/constants;
+       get_pipeline_structure() -> list[dict] keys function_name/function_hash/output_type/
+       input_types; has_lineage(record_id)->bool; distinct_schema_values(key)->list;
+       export_to_csv(variable_class, path, **metadata)->int; add_to_var_group/remove_from_var_group/
+       list_var_groups/get_var_group;
+     scidb/__init__ module-level exclude_schema/include_schema/list_exclusions.
+     NOTE: configure_database has NO 3rd arg; list_versions keys are timestamp+branch_params
+     (not created_at/version); caching is for @lineage_fcn, not @thunk. -->
+
+The database handle (`DatabaseManager`) owns all storage operations. Create it once
+with `configure_database()` and reach it anywhere with `get_database()`. For
+task-oriented usage see [Database & Configuration](../guide/database.md).
 
 ---
 
 ## `configure_database()`
 
-Creates and globally registers the database. Call this once at startup — it connects to DuckDB for data and lineage storage, and enables caching for all `@thunk` functions.
+```python
+configure_database(dataset_db_path, dataset_schema_keys) -> DatabaseManager
+```
+
+Opens the DuckDB database, declares the dataset schema, auto-registers all defined
+`BaseVariable` subclasses, enables lineage caching, and returns the handle (also
+set as the global default). Both arguments are required; there is no third
+argument.
+
+- **`dataset_db_path`** — path to the DuckDB file (data *and* lineage).
+- **`dataset_schema_keys`** — list of metadata keys that identify a record's
+  location; all other metadata is treated as version keys / `branch_params`.
 
 === "Python"
-
     ```python
     from scidb import configure_database
-
-    db = configure_database(
-        "experiment.duckdb",                        # DuckDB file for data + lineage
-        dataset_schema_keys=["subject", "session"], # which keys identify dataset location
-    )
+    db = configure_database("experiment.duckdb", ["subject", "session"])
     ```
-
 === "MATLAB"
-
     ```matlab
-    db = scidb.configure_database( ...
-        "experiment.duckdb", ...           % DuckDB file
-        ["subject", "session"]);           % schema keys (string array)
+    db = scidb.configure_database("experiment.duckdb", ["subject" "session"]);
     ```
 
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `dataset_db_path` | `str \| Path` | Path to the DuckDB database file (created if it doesn't exist) |
-| `dataset_schema_keys` | `list[str]` | **Required.** Keys that identify dataset location vs. computational variants |
-
-**Returns:** `DatabaseManager`
-
-### Understanding `dataset_schema_keys`
-
-Schema keys define the "address" in your dataset — like subject, session, trial. Everything else in your metadata becomes a **version key** that distinguishes computational variants at the same address.
-
-```
-save(data, subject=1, session="A", smoothing=0.2)
-             ↑          ↑              ↑
-        schema key  schema key    version key
-```
-
-`load(subject=1, session="A")` returns the *latest* version at that address, regardless of `smoothing`. `load(subject=1, session="A", smoothing=0.2)` returns the specific variant.
+!!! tip
+    Import `configure_database` from **`scihist`** instead to additionally register
+    the database as the lineage cache backend (needed for cache hits). Same
+    signature.
 
 ---
 
 ## `get_database()`
 
-Retrieves the globally configured database. Use this when you need the `DatabaseManager` in a function that doesn't have direct access to it.
+```python
+get_database() -> DatabaseManager
+```
 
-=== "Python"
-
-    ```python
-    from scidb import get_database
-
-    db = get_database()
-    provenance = db.get_provenance(FilteredSignal, subject=1, session="A")
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    db = scidb.get_database();
-    prov = db.get_provenance(py.scidb.variable.BaseVariable, ...);
-    % Note: In MATLAB, prefer instance methods: FilteredSignal().provenance(...)
-    ```
-
-**Raises:** `DatabaseNotConfiguredError` if called before `configure_database()`
+Returns the global handle, or raises `DatabaseNotConfiguredError` if
+`configure_database()` hasn't run.
 
 ---
 
-## `get_provenance()`
+## `register()`
 
-Returns the immediate lineage of a saved variable — the function that produced it, its inputs, and any constant parameters.
+```python
+db.register(variable_class) -> None
+```
 
-=== "Python"
-
-    ```python
-    db = get_database()
-
-    prov = db.get_provenance(FilteredSignal, subject=1, session="A")
-    if prov:
-        print(prov["function_name"])   # "bandpass_filter"
-        print(prov["function_hash"])   # SHA-256 of function bytecode
-        print(prov["inputs"])          # list of input descriptors
-        print(prov["constants"])       # list of {name, value} dicts
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    % Preferred: call provenance() on the variable instance
-    prov = FilteredSignal().provenance(subject=1, session="A");
-    if ~isempty(prov)
-        fprintf("Function: %s\n", prov.function_name);
-        fprintf("Hash: %s\n", prov.function_hash);
-        disp(prov.inputs);
-        disp(prov.constants);
-    end
-    ```
-
-**Returns (Python):** `dict` with keys `function_name`, `function_hash`, `inputs`, `constants`, or `None` if no lineage exists
-
-**Returns (MATLAB):** struct with same fields, or `[]` if no lineage
+Registers a variable type and creates its table if needed. Idempotent.
+`configure_database` registers all defined subclasses already; call this only for a
+class defined afterward (using a type also registers it).
 
 ---
 
-## `get_pipeline_structure()`
+## `list_versions()`
 
-Returns a schema-blind view of the pipeline — how variable types are connected through functions, without reference to specific data instances. Useful for understanding the overall computation graph.
+```python
+db.list_versions(variable_class, include_excluded=False, **metadata) -> list[dict]
+```
 
-=== "Python"
+Every stored version at a location, **newest first**. Each entry has:
 
-    ```python
-    db = get_database()
+| Key | Meaning |
+|---|---|
+| `record_id` | the version's id |
+| `schema` | the location (schema) keys |
+| `branch_params` | the variant keys |
+| `timestamp` | when it was saved |
 
-    structure = db.get_pipeline_structure()
-    for step in structure:
-        inputs = step["input_types"]
-        fn = step["function_name"]
-        output = step["output_type"]
-        print(f"{inputs} --[{fn}]--> {output}")
-
-    # ['RawSignal'] --[bandpass_filter]--> FilteredSignal
-    # ['FilteredSignal'] --[compute_rms]--> RMSValue
-    ```
-
-**Returns:** `list[dict]` with keys `input_types` (list of type names), `function_name`, `output_type`
+Non-schema keyword arguments act as `branch_params` filters. With
+`include_excluded=True`, each entry also carries an `excluded` bool.
 
 ---
 
-## `get_provenance_by_schema()`
+## Provenance queries
 
-Returns all lineage records at a specific schema location — every computation that produced data there.
+```python
+db.get_provenance(variable_class, version=None, **metadata) -> dict | None
+db.get_provenance_by_schema(**schema_keys) -> list[dict]
+db.get_pipeline_structure() -> list[dict]
+db.has_lineage(record_id) -> bool
+```
 
-=== "Python"
+- **`get_provenance`** — lineage of one record (latest matching, or a specific
+  `version=`): `{function_name, function_hash, inputs, constants}`, or `None` if it
+  was saved without lineage.
+- **`get_provenance_by_schema`** — every lineage record at a schema location;
+  dicts keyed `output_record_id`, `output_type`, `function_name`, `function_hash`,
+  `inputs`, `constants`.
+- **`get_pipeline_structure`** — the abstract graph, ignoring data instances:
+  dicts keyed `function_name`, `function_hash`, `output_type`, `input_types`.
+- **`has_lineage`** — whether a record has a lineage row.
 
-    ```python
-    db = get_database()
+---
 
-    records = db.get_provenance_by_schema(subject=1)
-    for r in records:
-        print(f"{r['function_name']} → {r['output_type']}")
-        print(f"  output hash: {r['output_content_hash']}")
+## `distinct_schema_values()`
 
-    # Narrow to a specific subject + session
-    records = db.get_provenance_by_schema(subject=1, session="A")
-    ```
+```python
+db.distinct_schema_values(key) -> list
+```
+
+The distinct values a schema key takes across the database.
 
 ---
 
 ## `export_to_csv()`
 
-Exports all matching records of a variable type to a single CSV file.
+```python
+db.export_to_csv(variable_class, path, **metadata) -> int
+```
 
-=== "Python"
-
-    ```python
-    db = get_database()
-
-    count = db.export_to_csv(
-        FilteredSignal,
-        "filtered_signals.csv",
-        session="A",  # optional filter
-    )
-    print(f"Exported {count} records")
-    ```
-
-**Returns:** `int` — number of records exported
+Writes every matching record's `to_db()` rows to `path`, adding `_record_id` and
+`_meta_<key>` columns, and returns the number of records. Raises `NotFoundError`
+if none match. (For one flat row per location instead, use
+[`BaseVariable.to_csv()`](variables.md).)
 
 ---
 
-## Variable Groups
+## Variable groups
 
-Variable groups are named collections that help you organize related variable types. Groups are stored in the database and persist across sessions.
+```python
+db.add_to_var_group(group_name, variables) -> None      # classes or name strings
+db.remove_from_var_group(group_name, variables) -> None
+db.list_var_groups() -> list[str]
+db.get_var_group(group_name) -> list[type]              # sorted by class name
+```
 
-=== "Python"
+Named, persisted collections of variable types. Adding the same variable twice is
+idempotent.
 
-    ```python
-    from scidb import get_database
+---
 
-    db = get_database()
+## Exclusions
 
-    # Add to a group (accepts classes, strings, or a list of either)
-    db.add_to_var_group("kinematics", StepLength)
-    db.add_to_var_group("kinematics", [StepWidth, StepTime])
-    db.add_to_var_group("kinematics", "CadenceValue")   # by name string
+Module-level functions (not methods) — see [Filtering & Selection](../guide/filters.md):
 
-    # List all group names
-    groups = db.list_var_groups()
-    # ["emg", "kinematics", "outcomes"]
+```python
+from scidb import exclude_schema, include_schema, list_exclusions
 
-    # Get all variable classes in a group (sorted alphabetically)
-    var_classes = db.get_var_group("kinematics")
-    # [<class 'StepLength'>, <class 'StepTime'>, <class 'StepWidth'>]
-
-    for cls in var_classes:
-        for var in cls.load_all(subject=1):
-            process(var.data)
-
-    # Remove from a group
-    db.remove_from_var_group("kinematics", StepTime)
-    db.remove_from_var_group("kinematics", ["StepLength", "StepWidth"])
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    % Add to a group
-    scidb.add_to_var_group("kinematics", {StepLength(), StepWidth(), StepTime()});
-    scidb.add_to_var_group("kinematics", {'StepLength', 'StepWidth'});
-    scidb.add_to_var_group("kinematics", ["StepLength", "StepWidth"]);
-    scidb.add_to_var_group("kinematics", "CadenceValue");  % single string
-
-    % List all group names (returns cell array of strings)
-    groups = scidb.list_var_groups();
-
-    % Get variable instances in a group
-    vars = scidb.get_var_group("kinematics");
-    % vars is a cell array of BaseVariable instances
-    for i = 1:numel(vars)
-        results = vars{i}.load_all(subject=1);
-        % process each result...
-    end
-
-    % Remove from a group
-    scidb.remove_from_var_group("kinematics", "StepTime");
-    scidb.remove_from_var_group("kinematics", ["StepLength", "StepWidth"]);
-    ```
-
-Adding the same variable to the same group twice is a no-op (idempotent).
+exclude_schema(subject=1, trial=2, reason="...")   # reason required
+include_schema(subject=1, trial=2, reason="...")
+list_exclusions()                                  # -> DataFrame
+```
 
 ---
 
 ## Exceptions
 
-| Exception | Raised When |
-|-----------|------------|
-| `DatabaseNotConfiguredError` | `get_database()` called before `configure_database()` |
-| `NotRegisteredError` | Loading a variable type that has never been saved |
-| `NotFoundError` | No records match the metadata query |
-| `ReservedMetadataKeyError` | Using a reserved key (`record_id`, `id`, etc.) in metadata |
+All inherit from `SciStackError`: `DatabaseNotConfiguredError`,
+`NotRegisteredError`, `NotFoundError`, `ReservedMetadataKeyError`,
+`AmbiguousVersionError`, `AmbiguousParamError`.
+
+**See also:** [Variables](variables.md) · [Lineage](lineage.md) ·
+[Batch Processing](for-each.md)

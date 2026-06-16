@@ -268,8 +268,8 @@ class BaseVariable(metaclass=VariableMeta):
         Save data to the database as this variable type.
 
         Accepts an existing BaseVariable instance or raw data. For saving
-        ThunkOutput (lineage-tracked results), use scihist.for_each or
-        call scihist's save helpers.
+        lineage-tracked results (LineageFcnResult), use scihist.for_each or
+        scihist.save.
 
         Args:
             data: The data to save. Can be:

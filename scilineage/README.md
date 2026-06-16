@@ -9,7 +9,7 @@ SciLineage is a lightweight library for building data processing pipelines with 
 - **Automatic Lineage Tracking**: Every computation captures its inputs and function, building a complete provenance graph
 - **Input Classification**: Automatically distinguishes variable inputs from constants for accurate lineage
 - **Pluggable Caching**: Register a backend via `configure_backend()` to enable cache lookups via lineage hashes
-- **Lightweight**: Core dependency is only `canonicalhash`
+- **Lightweight**: Core dependency is only `scicanonicalhash`
 - **Type Safe**: Full type hints throughout
 
 ## Installation

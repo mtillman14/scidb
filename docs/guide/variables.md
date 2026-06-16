@@ -1,365 +1,186 @@
-# Variables
+# Defining Variables
 
-Variables are the core data type in SciStack. Every piece of data you store is wrapped in a `BaseVariable` subclass.
+<!-- Ground truth (tests/source win over prose). Verified against:
+     scidb/src/scidb/variable.py (BaseVariable.schema_version default 1; default to_db/from_db;
+       save(data, index=None, db=None, **metadata)->record_id (list when DataFrame has schema-key
+       columns); save_from_dataframe(df, data_column, metadata_columns, db=None, **common_metadata)
+       ->list[str]; load(as_df=False, version="latest", where=None, db=None, introspect=False,
+       **metadata) -> BaseVariable | list | DataFrame; _reserved_keys);
+     scidb/src/scidb/database.py:1801-1809 (loaded instance attrs: record_id, metadata,
+       content_hash, lineage_hash, branch_params); add_to_var_group/remove_from_var_group/
+       list_var_groups/get_var_group;
+     scidb/tests/test_integration.py, test_introspect.py, test_load_all_ordering.py
+       (TestData.load(version="all")), test_where.py (load(where=...)).
+     NOTE: there is NO `load_all` method and NO `include_record_id` param — use load(...)
+     with version="all"/where=/as_df=/introspect=. -->
 
-## Defining a Variable Type
+This guide covers the practical mechanics of defining, saving, loading, and
+organizing variables. For the conceptual model behind them, see
+[Variables & Storage](../concepts/variables.md).
 
-For most data types (scalars, numpy arrays, lists, dicts), **no serialization methods are needed** — SciDuck handles them natively with proper DuckDB types:
+## Define a variable type
+
+A variable is a subclass of `BaseVariable`. Set `schema_version` (it defaults to
+`1`, but declaring it makes structural versions explicit):
 
 ```python
 from scidb import BaseVariable
 
-class MyVariable(BaseVariable):
-    pass  # schema_version defaults to 1
+class StepLength(BaseVariable):
+    schema_version = 1
 ```
 
-### Optional: Custom Serialization
+Defining the class registers it; `configure_database(...)` auto-registers all
+known variable types. Bump `schema_version` whenever you change the data's
+structure so old and new records don't collide.
 
-Override `to_db()` and `from_db()` only when you need custom multi-column serialization (e.g., pandas DataFrames, domain-specific objects):
+## Native vs. custom serialization
 
-```python
-import pandas as pd
-
-class CustomVariable(BaseVariable):
-
-    def to_db(self) -> pd.DataFrame:
-        """Convert self.data to a DataFrame for storage."""
-        ...
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> Any:
-        """Convert DataFrame back to native type."""
-        ...
-```
-
-### Required Components
-
-| Component        | Purpose                                                      |
-|------------------|--------------------------------------------------------------|
-| `schema_version` | *Optional.* Integer version for schema migrations (defaults to 1) |
-| `to_db()`        | *Optional.* Instance method converting `self.data` to `pd.DataFrame` |
-| `from_db()`      | *Optional.* Class method converting `pd.DataFrame` to native type    |
-
-## Common Patterns
-
-### Native Storage (No to_db/from_db Needed)
-
-These types are handled automatically by SciDuck:
+For scalars, numpy arrays, lists, dicts, and pandas DataFrames you write **no
+serialization code** — they round-trip natively into queryable DuckDB types:
 
 ```python
-class ScalarValue(BaseVariable):
-    pass
+class ScalarValue(BaseVariable): schema_version = 1
+class ArrayValue(BaseVariable):  schema_version = 1
 
-class ArrayValue(BaseVariable):
-    pass
-
-class DictValue(BaseVariable):
-    pass
-
-# Usage
 ScalarValue.save(3.14, subject=1)
 ArrayValue.save(np.array([1, 2, 3]), subject=1)
-DictValue.save({"key": "value"}, subject=1)
 ```
 
-### Custom Serialization Examples
-
-#### 1D Arrays with Index
-
-```python
-class IndexedArray(BaseVariable):
-
-    def to_db(self) -> pd.DataFrame:
-        return pd.DataFrame({
-            "index": range(len(self.data)),
-            "value": self.data
-        })
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return df.sort_values("index")["value"].values
-```
-
-#### 2D Arrays / Matrices
+Override `to_db` / `from_db` only for a custom column layout or a domain-specific
+object. If you override one, override both:
 
 ```python
-class MatrixValue(BaseVariable):
+class RotationMatrix(BaseVariable):
+    schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
         rows, cols = self.data.shape
         return pd.DataFrame({
             "row": np.repeat(range(rows), cols),
             "col": np.tile(range(cols), rows),
-            "value": self.data.flatten()
+            "value": self.data.flatten(),
         })
 
     @classmethod
     def from_db(cls, df: pd.DataFrame) -> np.ndarray:
         df = df.sort_values(["row", "col"])
-        rows = df["row"].max() + 1
-        cols = df["col"].max() + 1
-        return df["value"].values.reshape(rows, cols)
+        return df["value"].values.reshape(df["row"].max() + 1, df["col"].max() + 1)
 ```
 
-#### DataFrames
+## Save data
+
+`save` stores a value at the coordinates given by keyword metadata and returns its
+`record_id`:
 
 ```python
-class DataFrameValue(BaseVariable):
-
-    def to_db(self) -> pd.DataFrame:
-        return self.data  # Already a DataFrame
-
-    @classmethod
-    def from_db(cls, df: pd.DataFrame) -> pd.DataFrame:
-        return df
+record_id = StepLength.save(np.array([0.65, 0.72]), subject=1, session="A")
 ```
 
-## Specialized Types via Subclassing
+A few rules:
 
-When one variable class can represent multiple logical data types, create subclasses to store each in separate tables:
+- **Reserved keys** can't be used as metadata: `record_id`, `id`, `created_at`,
+  `schema_version`, `index`, `loc`, `iloc` — using one raises
+  `ReservedMetadataKeyError`.
+- **A DataFrame with dataset-schema-key columns auto-distributes**: each row is
+  saved as its own record and `save` returns a `list` of record ids.
+- Re-saving identical data at the same coordinates returns the **same** id (it
+  dedups); different data creates a new version.
+
+### Many records from one DataFrame
+
+When each row is an independent item (a value per subject/trial), use
+`save_from_dataframe`, naming the data column and which columns are metadata:
+
+```python
+record_ids = ScalarValue.save_from_dataframe(
+    df=results_df,
+    data_column="Value",
+    metadata_columns=["subject", "trial"],
+    experiment="exp1",   # common metadata applied to every row
+)
+```
+
+## Load data
+
+`load` returns a single `BaseVariable` when one record matches, a `list` when
+several match, or a `DataFrame` with `as_df=True`. It raises `NotFoundError` when
+nothing matches. Metadata matching is partial, and a list value means "match
+any":
+
+```python
+var   = StepLength.load(subject=1, session="A")   # one match -> a variable
+many  = StepLength.load(subject=1)                # many matches -> a list
+some  = StepLength.load(session=["A", "B"])       # match-any across sessions
+frame = StepLength.load(subject=1, as_df=True)    # a DataFrame
+```
+
+Use `version=` to control which version(s) you get:
+
+```python
+StepLength.load(subject=1, session="A")                  # latest (default)
+StepLength.load(subject=1, session="A", version="all")   # every version, as a list
+StepLength.load(version=some_record_id)                  # one specific record
+```
+
+Filter by other variables' values with `where=` (see
+[Filtering & Selection](filters.md)), and pass `introspect=True` to attach
+internal fields (`.where`, `.version_mode`) or, in `as_df=True` mode, append
+introspection columns (`record_id`, `branch_params`, `content_hash`, …).
+
+## Inspect a loaded variable
+
+A loaded instance carries its value and provenance:
+
+```python
+var = StepLength.load(subject=1, session="A")
+var.data          # the native value
+var.record_id     # content-addressed id
+var.metadata      # {"subject": 1, "session": "A"}
+var.content_hash  # hash of the data content
+var.lineage_hash  # lineage hash (None if saved without lineage)
+var.branch_params # constant-variant parameters, if any
+```
+
+## Specialized types via subclassing
+
+Each `BaseVariable` subclass gets its **own table**, so subclassing is how you
+split one logical kind into separate stored types:
 
 ```python
 class TimeSeries(BaseVariable):
-    pass
+    schema_version = 1
 
-# Create specialized types - each gets its own table
-class Temperature(TimeSeries):
-    """Temperature time series data."""
-    pass  # Table: Temperature
+class Temperature(TimeSeries): pass   # own table
+class Humidity(TimeSeries): pass      # own table
 
-class Humidity(TimeSeries):
-    """Humidity time series data."""
-    pass  # Table: Humidity
-
-class Pressure(TimeSeries):
-    """Pressure time series data."""
-    pass  # Table: Pressure
+Temperature.save(temp_array, sensor=1, day="monday")
+Humidity.save(humidity_array, sensor=1, day="monday")
 ```
 
-Each subclass:
-- Inherits `to_db()` and `from_db()` from the parent (if defined)
-- Gets its own table named after the class (exact class name, e.g., `"Temperature"`)
-- Can define custom methods specific to that data type
+Subclasses inherit any custom `to_db` / `from_db` from the parent.
 
-## Instance Properties
+## Organize with variable groups
 
-After `save()` or `load()`:
-
-```python
-# Save returns the record_id
-record_id = MyVariable.save(data, subject=1)
-
-# Load returns a variable instance with populated properties
-var = MyVariable.load(subject=1)
-var.data          # The native data
-var.record_id     # Content hash (set after load)
-var.metadata      # Metadata dict (set after load)
-var.content_hash  # Hash of data content
-var.lineage_hash  # Lineage hash (None for raw data)
-```
-
-## Batch Operations: DataFrames with Multiple Records
-
-When a DataFrame contains multiple independent data items (e.g., one row per subject/trial), use `save_from_dataframe()` and `load_all(as_df=True)`:
-
-### Saving Each Row Separately
-
-```python
-# DataFrame with results for multiple subjects/trials
-#   Subject  Trial  Value
-#   1        1      0.52
-#   1        2      0.61
-#   2        1      0.48
-#   2        2      0.55
-
-class ScalarResult(BaseVariable):
-    pass
-
-# Save each row as a separate record
-record_ids = ScalarResult.save_from_dataframe(
-    df=results_df,
-    data_column="Value",
-    metadata_columns=["Subject", "Trial"],
-    experiment="exp1"  # Additional common metadata
-)
-# Creates 4 separate database records
-```
-
-### Loading Back to DataFrame
-
-```python
-# Load all records matching criteria
-df = ScalarResult.load_all(experiment="exp1", as_df=True)
-#   Subject  Trial  data
-#   1        1      0.52
-#   1        2      0.61
-#   2        1      0.48
-#   2        2      0.55
-
-# Include record_id for traceability
-df = ScalarResult.load_all(experiment="exp1", as_df=True, include_record_id=True)
-#   Subject  Trial  data   record_id
-#   1        1      0.52   abc123...
-#   ...
-```
-
-### When to Use Each Pattern
-
-| Scenario | Method |
-|----------|--------|
-| DataFrame is ONE unit of data (e.g., time series) | `MyVar.save(df, ...)` |
-| Each row is SEPARATE data (e.g., subject/trial results) | `MyVar.save_from_dataframe(df, ...)` |
-| Load single result (latest version) | `MyVar.load(...)` |
-| Load all matching as generator | `MyVar.load_all(...)` |
-| Load all matching as DataFrame | `MyVar.load_all(..., as_df=True)` |
-
-## Metadata Reflects Dataset Structure
-
-The metadata keys you use in `save()` should reflect the natural structure of your dataset. Common patterns include subject/trial designs, session-based recordings, or hierarchical experimental structures.
-
-### Example: Subject × Trial Design
-
-```python
-class TrialResult(BaseVariable):
-    pass
-
-# Save results for each subject and trial
-subjects = [1, 2, 3]
-trials = ["baseline", "treatment", "followup"]
-
-for subject in subjects:
-    for trial in trials:
-        # Process data for this subject/trial
-        result = analyze_trial(subject, trial)
-
-        # Metadata mirrors dataset structure
-        TrialResult.save(result,
-            subject=subject,
-            trial=trial,
-            experiment="exp_2024"
-        )
-
-# Later: load specific combinations
-baseline_s1 = TrialResult.load(subject=1, trial="baseline")
-
-# Iterate over all baselines (generator)
-for var in TrialResult.load_all(trial="baseline"):
-    print(var.metadata["subject"], var.data)
-```
-
-### Example: Session-Based Recordings
-
-```python
-class Recording(BaseVariable):
-    pass
-
-sessions = ["morning", "afternoon", "evening"]
-days = ["day1", "day2", "day3"]
-
-for day in days:
-    for session in sessions:
-        data = record_session(day, session)
-        Recording.save(data, day=day, session=session, device="sensor_A")
-```
-
-The key insight: your metadata structure should make it easy to query the data the way you'll need to access it later.
-
-## Reserved Metadata Keys
-
-These keys cannot be used in metadata:
-
-- `record_id` - Reserved for version hash
-- `id` - Reserved for database ID
-- `created_at` - Reserved for timestamp
-- `schema_version` - Reserved for schema version
-- `index` - Reserved for DataFrame index parameter
-- `loc` - Reserved for label-based indexing parameter
-- `iloc` - Reserved for integer-position indexing parameter
-
-Using these raises `ReservedMetadataKeyError`.
-
-## Variable Groups
-
-Variable groups let you organize variable types into named collections. Groups are stored in the database and persist across sessions.
-
-### Creating / Adding to a Group
-
-You can pass either variable classes or name strings (or a mix):
+Group related variable types into named collections that persist in the database.
+The methods live on the database handle (`from scidb import get_database`), and
+accept variable classes or name strings:
 
 ```python
 db = get_database()
 
-# Using classes
-db.add_to_var_group("kinematics", StepLength)
-db.add_to_var_group("kinematics", [StepLength, StepWidth, StepTime])
+db.add_to_var_group("kinematics", [StepLength, StepTime])   # classes…
+db.add_to_var_group("kinematics", "StepWidth")              # …or names
 
-# Using name strings
-db.add_to_var_group("kinematics", "StepLength")
-db.add_to_var_group("kinematics", ["StepLength", "StepWidth", "StepTime"])
-```
+db.list_var_groups()              # ["kinematics", …]
+db.get_var_group("kinematics")    # [<StepLength>, <StepTime>, <StepWidth>] (sorted by name)
 
-Adding the same variable to the same group twice is idempotent (no duplicates).
-
-### Listing Groups
-
-```python
-# List all group names
-groups = db.list_var_groups()
-# ["kinematics", "emg", "demographics"]
-```
-
-### Getting Variables in a Group
-
-```python
-# Get all variable classes in a group
-variables = db.get_var_group("kinematics")
-# [<class 'StepLength'>, <class 'StepTime'>, <class 'StepWidth'>]
-
-# Use them directly
-for var_class in db.get_var_group("raw_signals"):
-    for var in var_class.load_all(subject=1):
-        process(var.data)
-```
-
-The returned list is sorted alphabetically by class name.
-
-### Removing from a Group
-
-Accepts classes or strings, same as `add_to_var_group`:
-
-```python
-# Remove a single variable
 db.remove_from_var_group("kinematics", StepTime)
-
-# Remove multiple variables
-db.remove_from_var_group("kinematics", ["StepLength", "StepWidth"])
 ```
 
-### MATLAB Usage
+Adding the same variable twice is idempotent. Variable groups are also available
+from MATLAB through the `scidb.*` wrappers — see [MATLAB Setup](../matlab-setup.md).
 
-Use the `scidb.*` wrapper functions. `add_to_var_group` and `remove_from_var_group` accept a cell array of BaseVariable objects, a cell array of chars, or a string array:
-
-```matlab
-% Cell array of BaseVariable objects
-scidb.add_to_var_group("kinematics", {StepLength(), StepWidth(), StepTime()})
-
-% Cell array of chars
-scidb.add_to_var_group("kinematics", {'StepLength', 'StepWidth', 'StepTime'})
-
-% String array
-scidb.add_to_var_group("kinematics", ["StepLength", "StepWidth", "StepTime"])
-
-% Single variable
-scidb.add_to_var_group("kinematics", "StepLength")
-
-% Get returns a cell array of BaseVariable instances
-vars = scidb.get_var_group("kinematics");
-% {[StepLength], [StepTime], [StepWidth]}
-for i = 1:numel(vars)
-    data = vars{i}.load(subject=1);
-end
-
-% List group names and remove
-groups = scidb.list_var_groups();
-scidb.remove_from_var_group("kinematics", "StepTime")
-```
+**Next:** [Database & Configuration](database.md) ·
+[Batch Processing (for_each)](for_each.md) ·
+[Filtering & Selection](filters.md) · [API: Variables](../api/variables.md)

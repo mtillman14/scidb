@@ -9,19 +9,19 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRA_ARGS=("$@")
 
 PACKAGES=(
-    canonical-hash
+    scicanonicalhash
     path-gen
     scifor
-    sciduck
+    sciduckdb
     scilineage
     scidb
-    scihist-lib
+    scihist
     scidb-net
 )
 
-# sci-matlab requires a MATLAB licence; skip unless MATLAB is available.
+# scimatlab requires a MATLAB licence; skip unless MATLAB is available.
 if command -v matlab &>/dev/null; then
-    PACKAGES+=(sci-matlab)
+    PACKAGES+=(scimatlab)
 fi
 
 PASS=()

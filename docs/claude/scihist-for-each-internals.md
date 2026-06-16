@@ -621,7 +621,7 @@ What happens:
 5. **Delegate to scidb.for_each**: Called with `save=False` and the skip hook as `_pre_combo_hook`.
 
    **Inside scidb.for_each** (steps from scidb-for-each-internals.md):
-   - Loads `RawEMG` via `load_all()` → DataFrame with `__record_id`, `__branch_params`
+   - Loads `RawEMG` via `load(version="latest")` → DataFrame with `__record_id`, `__branch_params`
    - Loads `Calibration` via `Fixed` → DataFrame with fixed session="baseline" (record_id stripped)
    - `low_hz=20`, `high_hz=450` pass through as constants
    - Builds combos: `[{subject:"1", session:"A"}, ..., {subject:"2", session:"B"}]`

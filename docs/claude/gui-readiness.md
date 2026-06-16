@@ -17,8 +17,8 @@ The core GUI concept is a **git-style branching pipeline map**:
 
 ### Data browsing
 
-- `load()`, `load_all()`, `head()` with `where=` filters — a data browser can be built on these today
-- `load_all(as_df=True)` provides tabular previews
+- `load()`, `head()` with `where=` filters — a data browser can be built on these today
+- `load(as_df=True)` (or `load(version="all", as_df=True)` for full history) provides tabular previews
 
 ### Schema and data discovery
 
@@ -116,7 +116,7 @@ Explicit branch names could be offered as an optional UX enhancement (let the us
 
 | Capability                         | Status       | Notes                                                                      |
 | ---------------------------------- | ------------ | -------------------------------------------------------------------------- |
-| Data browsing (load, filter, peek) | **Ready**    | `load()`, `load_all()`, `head()`, `where=`                                 |
+| Data browsing (load, filter, peek) | **Ready**    | `load()`, `load(as_df=True)`, `head()`, `where=`                           |
 | Schema/data discovery              | **Ready**    | `distinct_schema_values/combinations()`                                    |
 | One-hop provenance                 | **Ready**    | `get_provenance()`, `get_provenance_by_schema()`                           |
 | Pipeline skeleton graph            | **Ready**    | `get_pipeline_structure()`                                                 |

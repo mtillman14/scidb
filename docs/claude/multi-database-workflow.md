@@ -24,7 +24,7 @@ db2 = configure_database("aim2.duckdb", ["subject", "session"], "aim2_pipeline.d
 db1.set_current_db()
 ```
 
-This sets `Thunk.query` and the thread-local `_local.database` to point to this instance.
+This sets the thread-local `_local.database` to point to this instance.
 
 ### `db=` Parameter on User-Facing Methods
 
@@ -38,7 +38,7 @@ RawEMG.save(data, db=db1, subject=1, trial=1)
 var = RawEMG.load(db=db2, subject=1, session="baseline")
 
 # Load all from a specific database
-df = MaxActivation.load_all(db=db1, as_df=True)
+df = MaxActivation.load(db=db1, as_df=True)
 
 # List versions in a specific database
 versions = RawEMG.list_versions(db=db1, subject=1)
@@ -76,7 +76,7 @@ class RawEMG(BaseVariable):
 class FilteredEMG(BaseVariable):
     pass
 
-@thunk
+@lineage_fcn
 def bandpass_filter(signal, low_hz, high_hz):
     return filtered_signal
 
@@ -134,8 +134,8 @@ db1 = configure_database("aim1.duckdb", ["subject", "intervention"], "aim1.db")
 db2 = configure_database("aim2.duckdb", ["subject", "session"], "aim2.db")
 
 # Load from both databases without switching globals
-aim1_df = MaxActivation.load_all(db=db1, as_df=True)
-aim2_df = MaxActivation.load_all(db=db2, as_df=True)
+aim1_df = MaxActivation.load(db=db1, as_df=True)
+aim2_df = MaxActivation.load(db=db2, as_df=True)
 
 # Merge in pandas
 aim1_df["aim"] = "aim1"

@@ -1,10 +1,13 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [project]
 name = "scipathgen"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Template-based path generation for data pipelines"
 readme = "README.md"
 license = "MIT"

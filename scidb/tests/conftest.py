@@ -15,9 +15,9 @@ sys.path.insert(0, str(_root / "src"))
 sys.path.insert(0, str(_root / "canonical-hash" / "src"))
 sys.path.insert(0, str(_root / "scilineage" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
-sys.path.insert(0, str(_root / "sciduck" / "src"))
+sys.path.insert(0, str(_root / "sciduckdb" / "src"))
 sys.path.insert(0, str(_root / "scifor" / "src"))
-sys.path.insert(0, str(_root / "scihist-lib" / "src"))
+sys.path.insert(0, str(_root / "scihist" / "src"))
 
 from scidb import BaseVariable, configure_database
 from scidb.database import _local

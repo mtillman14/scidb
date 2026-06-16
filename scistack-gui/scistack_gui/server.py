@@ -355,8 +355,8 @@ def _h_remove_library(params):
 # MATLAB support
 # ---------------------------------------------------------------------------
 
-def _find_sci_matlab_matlab_dir() -> str | None:
-    """Return the sci-matlab MATLAB package directory, or None if not found.
+def _find_scimatlab_matlab_dir() -> str | None:
+    """Return the scimatlab MATLAB package directory, or None if not found.
 
     For editable installs (``pip install -e``), the dist-info's
     ``direct_url.json`` records the project root; the Python package (and its
@@ -377,14 +377,14 @@ def _find_sci_matlab_matlab_dir() -> str | None:
     # project root.  find_spec still resolves to the right location, but
     # we check explicitly so the intent is visible in logs.
     try:
-        dist = importlib.metadata.distribution("sci_matlab")
+        dist = importlib.metadata.distribution("scimatlab")
         direct_url_text = dist.read_text("direct_url.json")
         if direct_url_text:
             info = json.loads(direct_url_text)
             if info.get("dir_info", {}).get("editable", False):
                 url = info.get("url", "")
                 logger.info(
-                    "_find_sci_matlab_matlab_dir: editable install at %s", url
+                    "_find_scimatlab_matlab_dir: editable install at %s", url
                 )
     except Exception:
         pass  # dist not found or JSON parse error — fall through to find_spec
@@ -392,17 +392,17 @@ def _find_sci_matlab_matlab_dir() -> str | None:
     # Works for both editable and regular installs: find_spec resolves to the
     # actual package __init__.py in either case.
     try:
-        spec = importlib.util.find_spec("sci_matlab")
+        spec = importlib.util.find_spec("scimatlab")
         if spec and spec.origin:
             d = Path(spec.origin).parent / "matlab"
             if d.is_dir():
-                logger.info("_find_sci_matlab_matlab_dir: found %s", d)
+                logger.info("_find_scimatlab_matlab_dir: found %s", d)
                 return str(d)
             logger.warning(
-                "_find_sci_matlab_matlab_dir: matlab/ not found at %s", d
+                "_find_scimatlab_matlab_dir: matlab/ not found at %s", d
             )
     except Exception as exc:
-        logger.warning("_find_sci_matlab_matlab_dir: find_spec failed: %s", exc)
+        logger.warning("_find_scimatlab_matlab_dir: find_spec failed: %s", exc)
 
     return None
 

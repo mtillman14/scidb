@@ -1,322 +1,145 @@
 # Batch Processing API — `for_each`
 
-`for_each` runs a function over every combination of metadata values, automatically loading inputs and saving outputs. See the [Batch Processing guide](../guide/for_each.md) for conceptual explanations and worked examples. This page is the complete API reference.
+<!-- Ground truth (source/tests win over prose). Verified against:
+     scifor/src/scifor/foreach.py for_each(fn, inputs, dry_run=False, as_table=None,
+       distribute=False, where=None, output_names=None, **metadata_iterables) -> DataFrame|None
+       (standalone: DataFrames/constants, NO outputs=, NO save);
+     scidb/src/scidb/foreach.py for_each(fn, inputs, outputs, dry_run=False, save=True,
+       as_table=None, db=None, distribute=False, where=None, introspect=False, **iterables);
+     scihist/src/scihist/foreach.py for_each(fn, inputs, outputs, dry_run=False, save=True,
+       as_table=None, db=None, distribute=False, where=None, skip_computed=True,
+       schema_filter=None, schema_level=None, **iterables);
+     wrappers: scidb Fixed/Variant/Merge/ColumnSelection/ColName/EachOf, scifor PathInput/
+       PathOutput/Col; BaseVariable.for_columns().
+     NOTE: standalone scifor takes DataFrames + NO outputs=; scidb/scihist take variable TYPES
+     + outputs=[...]. skip_computed is scihist-only. Empty list [] = all DB values. -->
+
+`for_each` runs a function over every combination of conditions. For concepts and
+examples see the [Batch Processing guide](../guide/for_each.md). The same call
+exists at three layers — pick by what you pass.
 
 ---
 
-## `for_each()`
-
-=== "Python"
-
-    ```python
-    from scidb import for_each
-
-    for_each(
-        fn,
-        inputs,
-        outputs,
-        dry_run=False,
-        save=True,
-        as_table=None,
-        distribute=False,
-        db=None,
-        **metadata_iterables,
-    )
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    scidb.for_each(fn, inputs, outputs, Name=Value, ...)
-    ```
-
-### Parameters
-
-=== "Python"
-
-    | Parameter | Type | Default | Description |
-    |-----------|------|---------|-------------|
-    | `fn` | `Callable` | — | Function to call. Works with plain functions and `Thunk`-wrapped functions. |
-    | `inputs` | `dict` | — | Maps parameter names to input specs (see Input Types below). |
-    | `outputs` | `list[type]` | — | Variable types for the outputs, matched positionally to the function's return values. |
-    | `dry_run` | `bool` | `False` | If `True`, print what would load/save without executing. |
-    | `save` | `bool` | `True` | If `False`, run the function but don't save outputs. |
-    | `as_table` | `bool \| list[str] \| None` | `None` | Convert multi-result loads to DataFrame. `True` = all inputs; list of names = only those inputs; `None` / `False` = none. |
-    | `distribute` | `bool` | `False` | Split each output by element/row and save each piece at the next-deeper schema level (1-based indexing). |
-    | `db` | `DatabaseManager \| None` | `None` | Use a specific database instead of the global one. |
-    | `**metadata_iterables` | any | — | Keyword arguments with iterables of values. Every combination is iterated (Cartesian product). Pass `[]` to use all distinct values in the database for that key. |
-
-=== "MATLAB"
-
-    | Parameter | Type | Default | Description |
-    |-----------|------|---------|-------------|
-    | `fn` | `function_handle` or `scidb.Thunk` | — | Function to call. |
-    | `inputs` | `struct` | — | Maps parameter names to input specs. Field order determines argument order to `fn`. |
-    | `outputs` | `cell array` | — | Cell array of `BaseVariable` instances for outputs. |
-    | `dry_run` | `logical` | `false` | Preview without executing. |
-    | `save` | `logical` | `true` | If `false`, run but don't save. |
-    | `preload` | `logical` | `true` | Bulk-load all inputs in one query per variable type before iterating. Faster but uses more memory. Set to `false` for very large datasets. |
-    | `as_table` | `logical \| string array \| []` | `[]` | Convert multi-result loads to MATLAB table. `true` = all inputs; string array = only named inputs; `[]` = none. |
-    | `distribute` | `logical` | `false` | Split outputs by element/row into the next-deeper schema level. |
-    | `parallel` | `logical` | `false` | 3-phase parallel execution (pure MATLAB functions only; requires Parallel Computing Toolbox for true parallelism). |
-    | `db` | `DatabaseManager \| []` | `[]` | Use a specific database instead of the global one. |
-    | `subject=...` etc. | numeric or string array | — | Metadata iterables. Cartesian product is computed. Pass empty array `[]` to use all distinct values in the database. |
-
-### Reusing metadata iterables
-
-The metadata name-value pairs (`subject=[1 2 3], trial=["A" "B"]`) can be stored in a cell array and expanded with `{:}` for reuse across multiple `for_each` calls:
-
-=== "Python"
-
-    ```python
-    meta = dict(subject=[1, 2, 3], trial=["A", "B"])
-
-    for_each(fn1, inputs1, outputs1, **meta)
-    for_each(fn2, inputs2, outputs2, **meta)
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    meta = {'subject', [1 2 3], 'trial', ["A" "B"]};
-
-    scifor.for_each(@fn1, inputs1, meta{:})
-    scifor.for_each(@fn2, inputs2, meta{:})
-    ```
-
-    You can also build the list programmatically:
-
-    ```matlab
-    meta = {};
-    meta = [meta, {'subject', [1 2 3]}];
-    meta = [meta, {'trial', ["A" "B"]}];
-    scifor.for_each(@fn, inputs, meta{:})
-    ```
-
-### Returns
-
-Nothing. Outputs are saved to the database and logged to stdout.
-
-### Console Output
-
-Every iteration prints its status:
-
-```
-[run] subject=1, session=A: bandpass_filter(signal, low_hz)
-[save] subject=1, session=A: FilteredSignal
-[skip] subject=2, session=A: failed to load signal (RawEMG): No RawEMG found...
-[run] subject=3, session=A: bandpass_filter(signal, low_hz)
-[save] subject=3, session=A: FilteredSignal
-
-[done] completed=2, skipped=1, total=3
-```
-
----
-
-## Input Types
-
-The `inputs` dict/struct accepts several types:
-
-### Variable type (loads from database)
-
-=== "Python"
-
-    ```python
-    inputs={"signal": RawEMG}
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    struct('signal', RawEMG())
-    ```
-
-Loaded with the current iteration's metadata.
-
----
-
-### `Fixed` — fixed metadata override
-
-=== "Python"
-
-    ```python
-    from scidb import Fixed
-
-    Fixed(VarType, key=value, ...)
-    ```
-
-    ```python
-    # Always load session="pre", regardless of the current session
-    inputs={"baseline": Fixed(StepLength, session="pre")}
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    scidb.Fixed(VarInstance, key=value, ...)
-    ```
-
-    ```matlab
-    struct('baseline', scidb.Fixed(StepLength(), session="pre"))
-    ```
-
-`Fixed` can wrap a variable type or a `ColumnSelection`. It cannot wrap a `Merge`.
-
-**`Fixed` constructor:**
-
-| Parameter | Description |
-|-----------|-------------|
-| `var_type` | Variable class (Python) or instance (MATLAB) to load |
-| `**fixed_metadata` | Key-value pairs that override the iteration metadata at load time |
-
----
-
-### Column selection — extract specific columns
-
-Use when your variable stores a multi-column table and you only need certain columns.
-
-=== "Python"
-
-    ```python
-    MyVar["col_name"]             # single column → numpy array
-    MyVar[["col_a", "col_b"]]    # multiple columns → DataFrame subset
-    ```
-
-    ```python
-    inputs={"x": GaitData["step_length"]}
-    inputs={"features": GaitData[["force", "moment"]]}
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    MyVar("col_name")             % single column → numeric vector
-    MyVar(["col_a", "col_b"])     % multiple columns → subtable
-    ```
-
-    ```matlab
-    struct('x', GaitData("step_length"))
-    struct('features', GaitData(["force", "moment"]))
-    ```
-
-Can be combined with `Fixed`:
-
-=== "Python"
-
-    ```python
-    Fixed(GaitData["step_length"], session="pre")
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    scidb.Fixed(GaitData("step_length"), session="pre")
-    ```
-
----
-
-### `Merge` — combine multiple variables into one table
-
-=== "Python"
-
-    ```python
-    from scidb import Merge
-
-    Merge(VarTypeA, VarTypeB, ...)
-    ```
-
-    ```python
-    inputs={"combined": Merge(KinematicData, ForceData)}
-
-    # With Fixed and column selection
-    inputs={
-        "data": Merge(
-            GaitData["force"],
-            Fixed(ParticipantInfo, session="baseline"),
-        )
-    }
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    scidb.Merge(VarInstanceA, VarInstanceB, ...)
-    ```
-
-    ```matlab
-    struct('combined', scidb.Merge(KinematicData(), ForceData()))
-
-    % With Fixed and column selection
-    struct('data', scidb.Merge(GaitData("force"), ...
-                               scidb.Fixed(ParticipantInfo(), session="baseline")))
-    ```
-
-**Rules:**
-
-- At least 2 constituents required
-- Column names must be unique across all constituents
-- All multi-row constituents must have the same number of rows; single-row values are broadcast
-- `Fixed(Merge(...), ...)` is not supported — use `Merge(Fixed(...), ...)` instead
-
----
-
-### `PathInput` — resolve file path from metadata
-
-=== "Python"
-
-    ```python
-    from scidb import PathInput
-
-    PathInput(path_template, root_folder=None)
-    ```
-
-    ```python
-    inputs={
-        "filepath": PathInput("{subject}/session_{session}.csv", root_folder="/data")
-    }
-    # subject=1, session="A" → receives Path("/data/1/session_A.csv")
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    scidb.PathInput(path_template, root_folder=root)
-    ```
-
-    ```matlab
-    struct('filepath', scidb.PathInput("{subject}/session_{session}.csv", ...
-                                       root_folder="/data"))
-    ```
-
-**Parameters:**
-
-| Parameter | Description |
-|-----------|-------------|
-| `path_template` | Format string with `{key}` placeholders matching metadata keys |
-| `root_folder` | Optional root directory. Path is resolved relative to it (or to `cwd` if `None`). |
-
-The function receives the resolved `pathlib.Path` (Python) and should handle file reading itself. The path is not loaded from the database.
-
----
-
-### Constant (plain value)
-
-Any value that is not a variable type, `Fixed`, `Merge`, or `PathInput` is treated as a constant:
-
-=== "Python"
-
-    ```python
-    inputs={"signal": RawEMG, "low_hz": 20, "high_hz": 450}
-    ```
-
-=== "MATLAB"
-
-    ```matlab
-    struct('signal', RawEMG(), 'low_hz', 20, 'high_hz', 450)
-    ```
-
-Constants are passed directly to the function as named arguments and are also stored as **version keys** in the output metadata, so you can filter by parameter value later:
+## `for_each()` — database-backed (scidb / scihist)
 
 ```python
-FilteredEMG.load(subject=1, session="A", low_hz=20, high_hz=450)
+# scidb
+for_each(fn, inputs, outputs, dry_run=False, save=True, as_table=None, db=None,
+         distribute=False, where=None, introspect=False, **metadata_iterables)
+
+# scihist (adds lineage + staleness)
+for_each(fn, inputs, outputs, dry_run=False, save=True, as_table=None, db=None,
+         distribute=False, where=None, skip_computed=True, schema_filter=None,
+         schema_level=None, **metadata_iterables) -> DataFrame | None
 ```
+
+| Parameter | Meaning |
+|---|---|
+| `fn` | the function to run per combination |
+| `inputs` | dict: param name → variable **type**, wrapper, or constant value |
+| `outputs` | list of output variable types to save results as |
+| `**metadata_iterables` | condition lists, e.g. `subject=[1, 2, 3]`; `[]` means *all values in the DB* |
+| `dry_run` | print what would load/run/save without executing |
+| `save` | if `False`, return the result DataFrame without writing |
+| `as_table` | keep schema-key columns in the input DataFrames (`True`, or a list of keys) |
+| `db` | target a specific database |
+| `distribute` | expand a vector return into deeper-level records |
+| `where` | row filter (see [Filters](filters.md)) |
+| `introspect` | *(scidb)* attach introspection columns to the result |
+| `skip_computed` | *(scihist)* skip already-current combos; default `True` |
+| `schema_filter`, `schema_level` | *(scihist)* restrict/aggregate over schema keys |
+
+=== "Python"
+    ```python
+    from scihist import for_each
+    for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 20},
+             outputs=[FilteredSignal], subject=[1, 2, 3], session=["A", "B"])
+    ```
+=== "MATLAB"
+    ```matlab
+    scidb.for_each(@bandpass, struct('signal', RawSignal(), 'low_hz', 20), ...
+        {FilteredSignal()}, subject=[1 2 3], session=["A" "B"]);
+    ```
+
+Iterating over only some schema keys aggregates the deeper levels into each call.
+
+---
+
+## `for_each()` — standalone (scifor)
+
+```python
+for_each(fn, inputs, dry_run=False, as_table=None, distribute=False, where=None,
+         output_names=None, **metadata_iterables) -> DataFrame | None
+```
+
+Operates on plain DataFrames and constants — **no** `outputs=`, nothing saved;
+returns the result table. Declare the schema first with `set_schema(...)`.
+
+```python
+from scifor import set_schema, for_each
+set_schema(["subject", "session"])
+df = for_each(analyze, inputs={"emg": data_table, "cutoff_hz": 20},
+              subject=[1, 2, 3], session=["pre", "post"])
+```
+
+---
+
+## Input wrappers
+
+Wrap a variable-type input to change what gets loaded.
+
+### `Fixed`
+```python
+Fixed(Var, **metadata)
+```
+Load this input from fixed metadata instead of the current iteration (e.g. a
+baseline): `Fixed(StepLength, session="BL")`.
+
+### `Merge`
+```python
+Merge(A, B, ...)
+```
+Inner-join several variables column-wise into one table input per iteration.
+Constituents may be `Fixed`/column selections. Has `.to_csv(path)` and
+`.as_df(where=None, **metadata)` for export (see [Browsing](../guide/browsing.md)).
+
+### Column selection { #column-selection }
+```python
+Var["col"]          # one column  -> array
+Var[["a", "b"]]     # subset      -> DataFrame
+Var.for_columns(columns=[])   # run once per column, reassembled into one output
+```
+The same indexing builds column filters (`Var["col"] != 0`) for `where=`. In
+MATLAB use the constructor form `Var("col")`.
+
+### `EachOf`
+```python
+EachOf(a, b, ...)
+```
+Declare alternatives for a parameter (variable types, constants, or `where=`
+filters). Each becomes a saved variant; multiple `EachOf` axes multiply.
+
+### `Variant`
+```python
+Variant(Var, **branch_params)
+```
+Pin an input to a specific `branch_params` variant at load time, e.g.
+`Variant(Filtered, low_hz=20)`.
+
+### `PathInput` / `PathOutput`
+- **`PathInput`** — locate *existing* files by substituting metadata into a path
+  template (discovery, regex, per-combo loading).
+- **`PathOutput`** — a pure output path template; substitutes the combo's metadata
+  (and the `for_columns` column via `{ColName}`) and passes the resolved path to
+  the function to write.
+
+---
+
+## Return value
+
+All three return a pandas DataFrame (one row per combination, metadata columns
+then outputs) — or `None` when there is nothing to return. The database-backed
+forms also save outputs unless `save=False`.
+
+**See also:** [Variables](variables.md) · [Filters](filters.md) ·
+[Database](database.md) · [Guide: Batch Processing](../guide/for_each.md)
