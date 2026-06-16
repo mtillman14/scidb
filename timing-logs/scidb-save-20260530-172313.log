@@ -1,0 +1,1142 @@
+[17:22:29.192] [INFO] configure_database: path=C:\Users\mtillman\AppData\Local\Temp\tp583d5c37_eb04_44a1_a93f_fa249e78c0b0\test.duckdb, schema_keys=['subject', 'session', 'speed', 'trial']
+[17:22:29.194] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: C:\Users\mtillman\AppData\Local\Temp\tp583d5c37_eb04_44a1_a93f_fa249e78c0b0\test.duckdb
+[17:23:03.689] [DEBUG] to_python: processing table column 1/54 "dbl_01" (class=double, size=[7000     1])
+[17:23:03.692] [DEBUG] to_python: processing table column 2/54 "dbl_02" (class=double, size=[7000     1])
+[17:23:03.695] [DEBUG] to_python: processing table column 3/54 "dbl_03" (class=double, size=[7000     1])
+[17:23:03.697] [DEBUG] to_python: processing table column 4/54 "dbl_04" (class=double, size=[7000     1])
+[17:23:03.700] [DEBUG] to_python: processing table column 5/54 "dbl_05" (class=double, size=[7000     1])
+[17:23:03.702] [DEBUG] to_python: processing table column 6/54 "dbl_06" (class=double, size=[7000     1])
+[17:23:03.705] [DEBUG] to_python: processing table column 7/54 "dbl_07" (class=double, size=[7000     1])
+[17:23:03.707] [DEBUG] to_python: processing table column 8/54 "dbl_08" (class=double, size=[7000     1])
+[17:23:03.710] [DEBUG] to_python: processing table column 9/54 "dbl_09" (class=double, size=[7000     1])
+[17:23:03.712] [DEBUG] to_python: processing table column 10/54 "dbl_10" (class=double, size=[7000     1])
+[17:23:03.714] [DEBUG] to_python: processing table column 11/54 "dbl_11" (class=double, size=[7000     1])
+[17:23:03.716] [DEBUG] to_python: processing table column 12/54 "dbl_12" (class=double, size=[7000     1])
+[17:23:03.718] [DEBUG] to_python: processing table column 13/54 "dbl_13" (class=double, size=[7000     1])
+[17:23:03.720] [DEBUG] to_python: processing table column 14/54 "dbl_14" (class=double, size=[7000     1])
+[17:23:03.723] [DEBUG] to_python: processing table column 15/54 "dbl_15" (class=double, size=[7000     1])
+[17:23:03.725] [DEBUG] to_python: processing table column 16/54 "dbl_16" (class=double, size=[7000     1])
+[17:23:03.727] [DEBUG] to_python: processing table column 17/54 "dbl_17" (class=double, size=[7000     1])
+[17:23:03.729] [DEBUG] to_python: processing table column 18/54 "dbl_18" (class=double, size=[7000     1])
+[17:23:03.731] [DEBUG] to_python: processing table column 19/54 "dbl_19" (class=double, size=[7000     1])
+[17:23:03.732] [DEBUG] to_python: processing table column 20/54 "dbl_20" (class=double, size=[7000     1])
+[17:23:03.734] [DEBUG] to_python: processing table column 21/54 "dbl_21" (class=double, size=[7000     1])
+[17:23:03.737] [DEBUG] to_python: processing table column 22/54 "dbl_22" (class=double, size=[7000     1])
+[17:23:03.739] [DEBUG] to_python: processing table column 23/54 "dbl_23" (class=double, size=[7000     1])
+[17:23:03.741] [DEBUG] to_python: processing table column 24/54 "dbl_24" (class=double, size=[7000     1])
+[17:23:03.743] [DEBUG] to_python: processing table column 25/54 "dbl_25" (class=double, size=[7000     1])
+[17:23:03.745] [DEBUG] to_python: processing table column 26/54 "dbl_26" (class=double, size=[7000     1])
+[17:23:03.747] [DEBUG] to_python: processing table column 27/54 "dbl_27" (class=double, size=[7000     1])
+[17:23:03.749] [DEBUG] to_python: processing table column 28/54 "arr_01" (class=cell, size=[7000     1])
+[17:23:03.769] [DEBUG] to_python: trying fast path for cell column "arr_01" (dtype=float64, total_len=70000)
+[17:23:03.776] [DEBUG] to_python: fast path succeeded for column "arr_01"
+[17:23:03.778] [DEBUG] to_python: processing table column 29/54 "arr_02" (class=cell, size=[7000     1])
+[17:23:03.798] [DEBUG] to_python: trying fast path for cell column "arr_02" (dtype=float64, total_len=70000)
+[17:23:03.827] [DEBUG] to_python: fast path succeeded for column "arr_02"
+[17:23:03.829] [DEBUG] to_python: processing table column 30/54 "arr_03" (class=cell, size=[7000     1])
+[17:23:03.848] [DEBUG] to_python: trying fast path for cell column "arr_03" (dtype=float64, total_len=70000)
+[17:23:03.855] [DEBUG] to_python: fast path succeeded for column "arr_03"
+[17:23:03.857] [DEBUG] to_python: processing table column 31/54 "arr_04" (class=cell, size=[7000     1])
+[17:23:03.875] [DEBUG] to_python: trying fast path for cell column "arr_04" (dtype=float64, total_len=70000)
+[17:23:03.881] [DEBUG] to_python: fast path succeeded for column "arr_04"
+[17:23:03.883] [DEBUG] to_python: processing table column 32/54 "arr_05" (class=cell, size=[7000     1])
+[17:23:03.903] [DEBUG] to_python: trying fast path for cell column "arr_05" (dtype=float64, total_len=70000)
+[17:23:03.909] [DEBUG] to_python: fast path succeeded for column "arr_05"
+[17:23:03.911] [DEBUG] to_python: processing table column 33/54 "arr_06" (class=cell, size=[7000     1])
+[17:23:03.930] [DEBUG] to_python: trying fast path for cell column "arr_06" (dtype=float64, total_len=70000)
+[17:23:03.936] [DEBUG] to_python: fast path succeeded for column "arr_06"
+[17:23:03.938] [DEBUG] to_python: processing table column 34/54 "arr_07" (class=cell, size=[7000     1])
+[17:23:03.957] [DEBUG] to_python: trying fast path for cell column "arr_07" (dtype=float64, total_len=70000)
+[17:23:03.964] [DEBUG] to_python: fast path succeeded for column "arr_07"
+[17:23:03.965] [DEBUG] to_python: processing table column 35/54 "arr_08" (class=cell, size=[7000     1])
+[17:23:03.984] [DEBUG] to_python: trying fast path for cell column "arr_08" (dtype=float64, total_len=70000)
+[17:23:03.991] [DEBUG] to_python: fast path succeeded for column "arr_08"
+[17:23:03.993] [DEBUG] to_python: processing table column 36/54 "arr_09" (class=cell, size=[7000     1])
+[17:23:04.011] [DEBUG] to_python: trying fast path for cell column "arr_09" (dtype=float64, total_len=70000)
+[17:23:04.019] [DEBUG] to_python: fast path succeeded for column "arr_09"
+[17:23:04.022] [DEBUG] to_python: processing table column 37/54 "arr_10" (class=cell, size=[7000     1])
+[17:23:04.040] [DEBUG] to_python: trying fast path for cell column "arr_10" (dtype=float64, total_len=70000)
+[17:23:04.049] [DEBUG] to_python: fast path succeeded for column "arr_10"
+[17:23:04.051] [DEBUG] to_python: processing table column 38/54 "arr_11" (class=cell, size=[7000     1])
+[17:23:04.069] [DEBUG] to_python: trying fast path for cell column "arr_11" (dtype=float64, total_len=70000)
+[17:23:04.078] [DEBUG] to_python: fast path succeeded for column "arr_11"
+[17:23:04.079] [DEBUG] to_python: processing table column 39/54 "arr_12" (class=cell, size=[7000     1])
+[17:23:04.099] [DEBUG] to_python: trying fast path for cell column "arr_12" (dtype=float64, total_len=70000)
+[17:23:04.108] [DEBUG] to_python: fast path succeeded for column "arr_12"
+[17:23:04.109] [DEBUG] to_python: processing table column 40/54 "arr_13" (class=cell, size=[7000     1])
+[17:23:04.129] [DEBUG] to_python: trying fast path for cell column "arr_13" (dtype=float64, total_len=70000)
+[17:23:04.137] [DEBUG] to_python: fast path succeeded for column "arr_13"
+[17:23:04.138] [DEBUG] to_python: processing table column 41/54 "arr_14" (class=cell, size=[7000     1])
+[17:23:04.157] [DEBUG] to_python: trying fast path for cell column "arr_14" (dtype=float64, total_len=70000)
+[17:23:04.163] [DEBUG] to_python: fast path succeeded for column "arr_14"
+[17:23:04.165] [DEBUG] to_python: processing table column 42/54 "arr_15" (class=cell, size=[7000     1])
+[17:23:04.186] [DEBUG] to_python: trying fast path for cell column "arr_15" (dtype=float64, total_len=70000)
+[17:23:04.194] [DEBUG] to_python: fast path succeeded for column "arr_15"
+[17:23:04.195] [DEBUG] to_python: processing table column 43/54 "arr_16" (class=cell, size=[7000     1])
+[17:23:04.213] [DEBUG] to_python: trying fast path for cell column "arr_16" (dtype=float64, total_len=70000)
+[17:23:04.252] [DEBUG] to_python: fast path succeeded for column "arr_16"
+[17:23:04.254] [DEBUG] to_python: processing table column 44/54 "arr_17" (class=cell, size=[7000     1])
+[17:23:04.273] [DEBUG] to_python: trying fast path for cell column "arr_17" (dtype=float64, total_len=70000)
+[17:23:04.281] [DEBUG] to_python: fast path succeeded for column "arr_17"
+[17:23:04.282] [DEBUG] to_python: processing table column 45/54 "arr_18" (class=cell, size=[7000     1])
+[17:23:04.301] [DEBUG] to_python: trying fast path for cell column "arr_18" (dtype=float64, total_len=70000)
+[17:23:04.308] [DEBUG] to_python: fast path succeeded for column "arr_18"
+[17:23:04.310] [DEBUG] to_python: processing table column 46/54 "arr_19" (class=cell, size=[7000     1])
+[17:23:04.328] [DEBUG] to_python: trying fast path for cell column "arr_19" (dtype=float64, total_len=70000)
+[17:23:04.336] [DEBUG] to_python: fast path succeeded for column "arr_19"
+[17:23:04.338] [DEBUG] to_python: processing table column 47/54 "arr_20" (class=cell, size=[7000     1])
+[17:23:04.356] [DEBUG] to_python: trying fast path for cell column "arr_20" (dtype=float64, total_len=70000)
+[17:23:04.364] [DEBUG] to_python: fast path succeeded for column "arr_20"
+[17:23:04.366] [DEBUG] to_python: processing table column 48/54 "arr_21" (class=cell, size=[7000     1])
+[17:23:04.385] [DEBUG] to_python: trying fast path for cell column "arr_21" (dtype=float64, total_len=70000)
+[17:23:04.392] [DEBUG] to_python: fast path succeeded for column "arr_21"
+[17:23:04.394] [DEBUG] to_python: processing table column 49/54 "arr_22" (class=cell, size=[7000     1])
+[17:23:04.413] [DEBUG] to_python: trying fast path for cell column "arr_22" (dtype=float64, total_len=70000)
+[17:23:04.421] [DEBUG] to_python: fast path succeeded for column "arr_22"
+[17:23:04.422] [DEBUG] to_python: processing table column 50/54 "arr_23" (class=cell, size=[7000     1])
+[17:23:04.440] [DEBUG] to_python: trying fast path for cell column "arr_23" (dtype=float64, total_len=70000)
+[17:23:04.447] [DEBUG] to_python: fast path succeeded for column "arr_23"
+[17:23:04.449] [DEBUG] to_python: processing table column 51/54 "arr_24" (class=cell, size=[7000     1])
+[17:23:04.467] [DEBUG] to_python: trying fast path for cell column "arr_24" (dtype=float64, total_len=70000)
+[17:23:04.476] [DEBUG] to_python: fast path succeeded for column "arr_24"
+[17:23:04.477] [DEBUG] to_python: processing table column 52/54 "arr_25" (class=cell, size=[7000     1])
+[17:23:04.496] [DEBUG] to_python: trying fast path for cell column "arr_25" (dtype=float64, total_len=70000)
+[17:23:04.503] [DEBUG] to_python: fast path succeeded for column "arr_25"
+[17:23:04.505] [DEBUG] to_python: processing table column 53/54 "json_01" (class=cell, size=[7000     1])
+[17:23:04.506] [DEBUG] to_python: cell column "json_01" not flattenable, using element-by-element
+[17:23:04.508] [DEBUG] to_python: converting column "json_01" element-by-element (7000 elements)
+[17:23:06.780] [DEBUG] to_python: element-by-element conversion complete for column "json_01"
+[17:23:06.782] [DEBUG] to_python: processing table column 54/54 "json_02" (class=cell, size=[7000     1])
+[17:23:06.783] [DEBUG] to_python: cell column "json_02" not flattenable, using element-by-element
+[17:23:06.785] [DEBUG] to_python: converting column "json_02" element-by-element (7000 elements)
+[17:23:08.856] [DEBUG] to_python: element-by-element conversion complete for column "json_02"
+[17:23:08.875] [INFO] [timing] save_from_table(DummyMixed): data_convert=6.373s, mode=vertcat, n=7000
+[17:23:09.256] [DEBUG] [timing] save_batch_bridge(DummyMixed): n=7000, mode=vertcat_df, split=0.370s, assembly=0.007s
+[17:23:09.260] [INFO] save_batch(DummyMixed): 7000 items, mode=dataframe, data: DataFrame 1x54 cols=['dbl_01', 'dbl_02', 'dbl_03', 'dbl_04', 'dbl_05', 'dbl_06', 'dbl_07', 'dbl_08', 'dbl_09', 'dbl_10', 'dbl_11', 'dbl_12', 'dbl_13', 'dbl_14', 'dbl_15', 'dbl_16', 'dbl_17', 'dbl_18', 'dbl_19', 'dbl_20', 'dbl_21', 'dbl_22', 'dbl_23', 'dbl_24', 'dbl_25', 'dbl_26', 'dbl_27', 'arr_01', 'arr_02', 'arr_03', 'arr_04', 'arr_05', 'arr_06', 'arr_07', 'arr_08', 'arr_09', 'arr_10', 'arr_11', 'arr_12', 'arr_13', 'arr_14', 'arr_15', 'arr_16', 'arr_17', 'arr_18', 'arr_19', 'arr_20', 'arr_21', 'arr_22', 'arr_23', 'arr_24', 'arr_25', 'json_01', 'json_02'], DuckDB columns: [dbl_01: DOUBLE, dbl_02: DOUBLE, dbl_03: DOUBLE, dbl_04: DOUBLE, dbl_05: DOUBLE, dbl_06: DOUBLE, dbl_07: DOUBLE, dbl_08: DOUBLE, dbl_09: DOUBLE, dbl_10: DOUBLE, dbl_11: DOUBLE, dbl_12: DOUBLE, dbl_13: DOUBLE, dbl_14: DOUBLE, dbl_15: DOUBLE, dbl_16: DOUBLE, dbl_17: DOUBLE, dbl_18: DOUBLE, dbl_19: DOUBLE, dbl_20: DOUBLE, dbl_21: DOUBLE, dbl_22: DOUBLE, dbl_23: DOUBLE, dbl_24: DOUBLE, dbl_25: DOUBLE, dbl_26: DOUBLE, dbl_27: DOUBLE, arr_01: DOUBLE[], arr_02: DOUBLE[], arr_03: DOUBLE[], arr_04: DOUBLE[], arr_05: DOUBLE[], arr_06: DOUBLE[], arr_07: DOUBLE[], arr_08: DOUBLE[], arr_09: DOUBLE[], arr_10: DOUBLE[], arr_11: DOUBLE[], arr_12: DOUBLE[], arr_13: DOUBLE[], arr_14: DOUBLE[], arr_15: DOUBLE[], arr_16: DOUBLE[], arr_17: DOUBLE[], arr_18: DOUBLE[], arr_19: DOUBLE[], arr_20: DOUBLE[], arr_21: DOUBLE[], arr_22: DOUBLE[], arr_23: DOUBLE[], arr_24: DOUBLE[], arr_25: DOUBLE[], json_01: JSON, json_02: JSON]
+[17:23:12.198] [INFO] [timing] save_batch(DummyMixed): 7000 items (7000 new rows, 7000 total storage rows), 7000 schemas, 2.941s
+[17:23:12.200] [DEBUG]   save_batch 1_setup                        0.022s
+[17:23:12.201] [DEBUG]   save_batch 2_split_metadata               0.032s
+[17:23:12.202] [DEBUG]   save_batch 3_schema_resolution            0.060s
+[17:23:12.203] [DEBUG]   save_batch 4_per_row_hashing              2.275s
+[17:23:12.204] [DEBUG]   save_batch 4a_canonical_hash              1.239s
+[17:23:12.206] [DEBUG]   save_batch 4b_record_id                   0.174s
+[17:23:12.207] [DEBUG]   save_batch 4c_storage_row                 0.765s
+[17:23:12.208] [DEBUG]   save_batch 4d_meta_row                    0.046s
+[17:23:12.209] [DEBUG]   save_batch 5_dedup_check                  0.143s
+[17:23:12.211] [DEBUG]   save_batch 6a_data_df_create              0.027s
+[17:23:12.212] [DEBUG]   save_batch 6b_data_insert                 0.218s
+[17:23:12.213] [DEBUG]   save_batch 6c_meta_insert                 0.044s
+[17:23:12.214] [DEBUG]   save_batch 6d_variables_upsert            0.007s
+[17:23:12.216] [DEBUG]   save_batch 6e_commit                      0.111s
+[17:23:12.217] [DEBUG]   save_batch 6_batch_inserts                0.408s
+[17:23:12.218] [DEBUG]   save_batch total                          2.941s
+[17:23:12.228] [INFO] [timing] save_batch_bridge(DummyMixed): n=7000, mode=vertcat_df, split=0.370s, total=3.349s
+[17:23:12.279] [INFO] load(DummyMixed): metadata={'subject': 1, 'session': 1, 'speed': 1, 'trial': 1}
+[17:23:12.289] [DEBUG] _find_record(DummyMixed): SQL returned 1 records, version_id=latest
+[17:23:12.291] [DEBUG] _find_record: record 33180439d8b31fd7: version_keys = {}
+[17:23:12.300] [DEBUG] _find_record(DummyMixed): 1 record(s) matched (before branch_params filter)
+[17:23:12.306] [INFO] [timing] _find_record(DummyMixed, version_id='latest'): total=0.023s, sql=0.009s (1 rows), collapse=0.010s, vk_filter=0.000s, bp_filter=0.000s, sort=0.005s, returned=1 rows
+[17:23:12.307] [INFO] load(DummyMixed): found 1 record(s)
+[17:23:12.319] [INFO] [timing] load(DummyMixed): pre-yield setup: find=0.027s, dtype_lookup=0.001s, chunks_total=0.009s (sql=0.005s, deserialize=0.004s, n_chunks=1, mode=dataframe)
+[17:23:12.321] [INFO] [timing] load(DummyMixed): TOTAL=0.041s (find=0.027s, chunks=0.009s, yield_body=0.000s for 1 records, caller_overhead~=0.004s)
+[17:23:12.324] [DEBUG] wrap_batch_bridge: found 27 object-dtype columns to check
+[17:23:12.326] [DEBUG] wrap_batch_bridge: column "arr_01" first value type: ndarray
+[17:23:12.327] [DEBUG] wrap_batch_bridge: flattening column "arr_01"...
+[17:23:12.328] [DEBUG] wrap_batch_bridge: column "arr_01" flattened: 10 total elements in 1 arrays
+[17:23:12.329] [DEBUG] wrap_batch_bridge: column "arr_02" first value type: ndarray
+[17:23:12.330] [DEBUG] wrap_batch_bridge: flattening column "arr_02"...
+[17:23:12.332] [DEBUG] wrap_batch_bridge: column "arr_02" flattened: 10 total elements in 1 arrays
+[17:23:12.333] [DEBUG] wrap_batch_bridge: column "arr_03" first value type: ndarray
+[17:23:12.334] [DEBUG] wrap_batch_bridge: flattening column "arr_03"...
+[17:23:12.336] [DEBUG] wrap_batch_bridge: column "arr_03" flattened: 10 total elements in 1 arrays
+[17:23:12.337] [DEBUG] wrap_batch_bridge: column "arr_04" first value type: ndarray
+[17:23:12.338] [DEBUG] wrap_batch_bridge: flattening column "arr_04"...
+[17:23:12.340] [DEBUG] wrap_batch_bridge: column "arr_04" flattened: 10 total elements in 1 arrays
+[17:23:12.341] [DEBUG] wrap_batch_bridge: column "arr_05" first value type: ndarray
+[17:23:12.342] [DEBUG] wrap_batch_bridge: flattening column "arr_05"...
+[17:23:12.343] [DEBUG] wrap_batch_bridge: column "arr_05" flattened: 10 total elements in 1 arrays
+[17:23:12.344] [DEBUG] wrap_batch_bridge: column "arr_06" first value type: ndarray
+[17:23:12.345] [DEBUG] wrap_batch_bridge: flattening column "arr_06"...
+[17:23:12.346] [DEBUG] wrap_batch_bridge: column "arr_06" flattened: 10 total elements in 1 arrays
+[17:23:12.347] [DEBUG] wrap_batch_bridge: column "arr_07" first value type: ndarray
+[17:23:12.348] [DEBUG] wrap_batch_bridge: flattening column "arr_07"...
+[17:23:12.349] [DEBUG] wrap_batch_bridge: column "arr_07" flattened: 10 total elements in 1 arrays
+[17:23:12.350] [DEBUG] wrap_batch_bridge: column "arr_08" first value type: ndarray
+[17:23:12.352] [DEBUG] wrap_batch_bridge: flattening column "arr_08"...
+[17:23:12.352] [DEBUG] wrap_batch_bridge: column "arr_08" flattened: 10 total elements in 1 arrays
+[17:23:12.353] [DEBUG] wrap_batch_bridge: column "arr_09" first value type: ndarray
+[17:23:12.354] [DEBUG] wrap_batch_bridge: flattening column "arr_09"...
+[17:23:12.356] [DEBUG] wrap_batch_bridge: column "arr_09" flattened: 10 total elements in 1 arrays
+[17:23:12.356] [DEBUG] wrap_batch_bridge: column "arr_10" first value type: ndarray
+[17:23:12.357] [DEBUG] wrap_batch_bridge: flattening column "arr_10"...
+[17:23:12.358] [DEBUG] wrap_batch_bridge: column "arr_10" flattened: 10 total elements in 1 arrays
+[17:23:12.359] [DEBUG] wrap_batch_bridge: column "arr_11" first value type: ndarray
+[17:23:12.360] [DEBUG] wrap_batch_bridge: flattening column "arr_11"...
+[17:23:12.361] [DEBUG] wrap_batch_bridge: column "arr_11" flattened: 10 total elements in 1 arrays
+[17:23:12.362] [DEBUG] wrap_batch_bridge: column "arr_12" first value type: ndarray
+[17:23:12.363] [DEBUG] wrap_batch_bridge: flattening column "arr_12"...
+[17:23:12.364] [DEBUG] wrap_batch_bridge: column "arr_12" flattened: 10 total elements in 1 arrays
+[17:23:12.365] [DEBUG] wrap_batch_bridge: column "arr_13" first value type: ndarray
+[17:23:12.366] [DEBUG] wrap_batch_bridge: flattening column "arr_13"...
+[17:23:12.367] [DEBUG] wrap_batch_bridge: column "arr_13" flattened: 10 total elements in 1 arrays
+[17:23:12.368] [DEBUG] wrap_batch_bridge: column "arr_14" first value type: ndarray
+[17:23:12.369] [DEBUG] wrap_batch_bridge: flattening column "arr_14"...
+[17:23:12.371] [DEBUG] wrap_batch_bridge: column "arr_14" flattened: 10 total elements in 1 arrays
+[17:23:12.372] [DEBUG] wrap_batch_bridge: column "arr_15" first value type: ndarray
+[17:23:12.373] [DEBUG] wrap_batch_bridge: flattening column "arr_15"...
+[17:23:12.374] [DEBUG] wrap_batch_bridge: column "arr_15" flattened: 10 total elements in 1 arrays
+[17:23:12.375] [DEBUG] wrap_batch_bridge: column "arr_16" first value type: ndarray
+[17:23:12.376] [DEBUG] wrap_batch_bridge: flattening column "arr_16"...
+[17:23:12.377] [DEBUG] wrap_batch_bridge: column "arr_16" flattened: 10 total elements in 1 arrays
+[17:23:12.378] [DEBUG] wrap_batch_bridge: column "arr_17" first value type: ndarray
+[17:23:12.378] [DEBUG] wrap_batch_bridge: flattening column "arr_17"...
+[17:23:12.379] [DEBUG] wrap_batch_bridge: column "arr_17" flattened: 10 total elements in 1 arrays
+[17:23:12.380] [DEBUG] wrap_batch_bridge: column "arr_18" first value type: ndarray
+[17:23:12.381] [DEBUG] wrap_batch_bridge: flattening column "arr_18"...
+[17:23:12.383] [DEBUG] wrap_batch_bridge: column "arr_18" flattened: 10 total elements in 1 arrays
+[17:23:12.384] [DEBUG] wrap_batch_bridge: column "arr_19" first value type: ndarray
+[17:23:12.385] [DEBUG] wrap_batch_bridge: flattening column "arr_19"...
+[17:23:12.386] [DEBUG] wrap_batch_bridge: column "arr_19" flattened: 10 total elements in 1 arrays
+[17:23:12.387] [DEBUG] wrap_batch_bridge: column "arr_20" first value type: ndarray
+[17:23:12.388] [DEBUG] wrap_batch_bridge: flattening column "arr_20"...
+[17:23:12.389] [DEBUG] wrap_batch_bridge: column "arr_20" flattened: 10 total elements in 1 arrays
+[17:23:12.390] [DEBUG] wrap_batch_bridge: column "arr_21" first value type: ndarray
+[17:23:12.391] [DEBUG] wrap_batch_bridge: flattening column "arr_21"...
+[17:23:12.392] [DEBUG] wrap_batch_bridge: column "arr_21" flattened: 10 total elements in 1 arrays
+[17:23:12.393] [DEBUG] wrap_batch_bridge: column "arr_22" first value type: ndarray
+[17:23:12.394] [DEBUG] wrap_batch_bridge: flattening column "arr_22"...
+[17:23:12.395] [DEBUG] wrap_batch_bridge: column "arr_22" flattened: 10 total elements in 1 arrays
+[17:23:12.396] [DEBUG] wrap_batch_bridge: column "arr_23" first value type: ndarray
+[17:23:12.396] [DEBUG] wrap_batch_bridge: flattening column "arr_23"...
+[17:23:12.397] [DEBUG] wrap_batch_bridge: column "arr_23" flattened: 10 total elements in 1 arrays
+[17:23:12.398] [DEBUG] wrap_batch_bridge: column "arr_24" first value type: ndarray
+[17:23:12.400] [DEBUG] wrap_batch_bridge: flattening column "arr_24"...
+[17:23:12.401] [DEBUG] wrap_batch_bridge: column "arr_24" flattened: 10 total elements in 1 arrays
+[17:23:12.402] [DEBUG] wrap_batch_bridge: column "arr_25" first value type: ndarray
+[17:23:12.403] [DEBUG] wrap_batch_bridge: flattening column "arr_25"...
+[17:23:12.404] [DEBUG] wrap_batch_bridge: column "arr_25" flattened: 10 total elements in 1 arrays
+[17:23:12.404] [DEBUG] wrap_batch_bridge: column "json_01" first value type: dict
+[17:23:12.405] [DEBUG] wrap_batch_bridge: column "json_01" contains dicts, serializing to JSON...
+[17:23:12.406] [DEBUG] wrap_batch_bridge: column "json_01" serialized to JSON strings
+[17:23:12.407] [DEBUG] wrap_batch_bridge: column "json_02" first value type: dict
+[17:23:12.408] [DEBUG] wrap_batch_bridge: column "json_02" contains dicts, serializing to JSON...
+[17:23:12.409] [DEBUG] wrap_batch_bridge: column "json_02" serialized to JSON strings
+[17:23:12.410] [INFO] wrap_batch_bridge: optimized 27 array columns for MATLAB transfer: ['arr_01', 'arr_02', 'arr_03', 'arr_04', 'arr_05']
+[17:23:12.412] [DEBUG] wrap_py_vars_batch: using concat_df fast path...
+[17:23:12.413] [DEBUG] convert_dataframe: got columns, converting to cell...
+[17:23:12.416] [DEBUG] convert_dataframe: 54 columns: dbl_01, dbl_02, dbl_03, dbl_04, dbl_05
+[17:23:12.418] [DEBUG] convert_dataframe: getting row count...
+[17:23:12.419] [DEBUG] convert_dataframe: py_len type = py.int, n_rows = 1
+[17:23:12.420] [DEBUG] convert_dataframe: converting DataFrame with 1 rows, 54 columns
+[17:23:12.422] [DEBUG] convert_dataframe: column 1 - getting column "dbl_01"
+[17:23:12.423] [DEBUG] convert_dataframe: column 1 - got column, getting dtype...
+[17:23:12.424] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.425] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.426] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.427] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.429] [DEBUG] convert_dataframe: column 1/54 "dbl_01" dtype=float64
+[17:23:12.429] [DEBUG] convert_dataframe: column 1 - default branch, calling to_numpy()
+[17:23:12.431] [DEBUG] convert_dataframe: column 1 - to_numpy() succeeded, calling from_python
+[17:23:12.433] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.435] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.436] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.437] [DEBUG] convert_dataframe: column 1 - from_python succeeded
+[17:23:12.439] [DEBUG] convert_dataframe: column 2 - getting column "dbl_02"
+[17:23:12.440] [DEBUG] convert_dataframe: column 2 - got column, getting dtype...
+[17:23:12.441] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.442] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.443] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.444] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.445] [DEBUG] convert_dataframe: column 2/54 "dbl_02" dtype=float64
+[17:23:12.446] [DEBUG] convert_dataframe: column 2 - default branch, calling to_numpy()
+[17:23:12.448] [DEBUG] convert_dataframe: column 2 - to_numpy() succeeded, calling from_python
+[17:23:12.449] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.451] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.452] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.453] [DEBUG] convert_dataframe: column 2 - from_python succeeded
+[17:23:12.454] [DEBUG] convert_dataframe: column 3 - getting column "dbl_03"
+[17:23:12.455] [DEBUG] convert_dataframe: column 3 - got column, getting dtype...
+[17:23:12.456] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.456] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.458] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.459] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.460] [DEBUG] convert_dataframe: column 3/54 "dbl_03" dtype=float64
+[17:23:12.461] [DEBUG] convert_dataframe: column 3 - default branch, calling to_numpy()
+[17:23:12.462] [DEBUG] convert_dataframe: column 3 - to_numpy() succeeded, calling from_python
+[17:23:12.464] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.465] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.466] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.467] [DEBUG] convert_dataframe: column 3 - from_python succeeded
+[17:23:12.468] [DEBUG] convert_dataframe: column 4 - getting column "dbl_04"
+[17:23:12.469] [DEBUG] convert_dataframe: column 4 - got column, getting dtype...
+[17:23:12.470] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.471] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.472] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.473] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.473] [DEBUG] convert_dataframe: column 4/54 "dbl_04" dtype=float64
+[17:23:12.474] [DEBUG] convert_dataframe: column 4 - default branch, calling to_numpy()
+[17:23:12.475] [DEBUG] convert_dataframe: column 4 - to_numpy() succeeded, calling from_python
+[17:23:12.477] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.478] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.479] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.480] [DEBUG] convert_dataframe: column 4 - from_python succeeded
+[17:23:12.481] [DEBUG] convert_dataframe: column 5 - getting column "dbl_05"
+[17:23:12.483] [DEBUG] convert_dataframe: column 5 - got column, getting dtype...
+[17:23:12.484] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.485] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.486] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.487] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.488] [DEBUG] convert_dataframe: column 5/54 "dbl_05" dtype=float64
+[17:23:12.489] [DEBUG] convert_dataframe: column 5 - default branch, calling to_numpy()
+[17:23:12.490] [DEBUG] convert_dataframe: column 5 - to_numpy() succeeded, calling from_python
+[17:23:12.491] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.492] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.493] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.494] [DEBUG] convert_dataframe: column 5 - from_python succeeded
+[17:23:12.495] [DEBUG] convert_dataframe: column 6 - getting column "dbl_06"
+[17:23:12.497] [DEBUG] convert_dataframe: column 6 - got column, getting dtype...
+[17:23:12.498] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.499] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.500] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.502] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.503] [DEBUG] convert_dataframe: column 6/54 "dbl_06" dtype=float64
+[17:23:12.504] [DEBUG] convert_dataframe: column 6 - default branch, calling to_numpy()
+[17:23:12.505] [DEBUG] convert_dataframe: column 6 - to_numpy() succeeded, calling from_python
+[17:23:12.506] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.507] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.508] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.509] [DEBUG] convert_dataframe: column 6 - from_python succeeded
+[17:23:12.510] [DEBUG] convert_dataframe: column 7 - getting column "dbl_07"
+[17:23:12.511] [DEBUG] convert_dataframe: column 7 - got column, getting dtype...
+[17:23:12.512] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.513] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.514] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.515] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.516] [DEBUG] convert_dataframe: column 7/54 "dbl_07" dtype=float64
+[17:23:12.518] [DEBUG] convert_dataframe: column 7 - default branch, calling to_numpy()
+[17:23:12.519] [DEBUG] convert_dataframe: column 7 - to_numpy() succeeded, calling from_python
+[17:23:12.520] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.521] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.522] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.523] [DEBUG] convert_dataframe: column 7 - from_python succeeded
+[17:23:12.524] [DEBUG] convert_dataframe: column 8 - getting column "dbl_08"
+[17:23:12.525] [DEBUG] convert_dataframe: column 8 - got column, getting dtype...
+[17:23:12.526] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.527] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.528] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.529] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.530] [DEBUG] convert_dataframe: column 8/54 "dbl_08" dtype=float64
+[17:23:12.531] [DEBUG] convert_dataframe: column 8 - default branch, calling to_numpy()
+[17:23:12.533] [DEBUG] convert_dataframe: column 8 - to_numpy() succeeded, calling from_python
+[17:23:12.534] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.535] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.536] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.538] [DEBUG] convert_dataframe: column 8 - from_python succeeded
+[17:23:12.538] [DEBUG] convert_dataframe: column 9 - getting column "dbl_09"
+[17:23:12.539] [DEBUG] convert_dataframe: column 9 - got column, getting dtype...
+[17:23:12.540] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.542] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.543] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.544] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.545] [DEBUG] convert_dataframe: column 9/54 "dbl_09" dtype=float64
+[17:23:12.546] [DEBUG] convert_dataframe: column 9 - default branch, calling to_numpy()
+[17:23:12.547] [DEBUG] convert_dataframe: column 9 - to_numpy() succeeded, calling from_python
+[17:23:12.549] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.550] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.551] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.552] [DEBUG] convert_dataframe: column 9 - from_python succeeded
+[17:23:12.553] [DEBUG] convert_dataframe: column 10 - getting column "dbl_10"
+[17:23:12.555] [DEBUG] convert_dataframe: column 10 - got column, getting dtype...
+[17:23:12.556] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.557] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.558] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.559] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.560] [DEBUG] convert_dataframe: column 10/54 "dbl_10" dtype=float64
+[17:23:12.561] [DEBUG] convert_dataframe: column 10 - default branch, calling to_numpy()
+[17:23:12.562] [DEBUG] convert_dataframe: column 10 - to_numpy() succeeded, calling from_python
+[17:23:12.563] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.565] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.567] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.568] [DEBUG] convert_dataframe: column 10 - from_python succeeded
+[17:23:12.569] [DEBUG] convert_dataframe: column 11 - getting column "dbl_11"
+[17:23:12.570] [DEBUG] convert_dataframe: column 11 - got column, getting dtype...
+[17:23:12.571] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.572] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.573] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.574] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.575] [DEBUG] convert_dataframe: column 11/54 "dbl_11" dtype=float64
+[17:23:12.576] [DEBUG] convert_dataframe: column 11 - default branch, calling to_numpy()
+[17:23:12.577] [DEBUG] convert_dataframe: column 11 - to_numpy() succeeded, calling from_python
+[17:23:12.578] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.580] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.581] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.582] [DEBUG] convert_dataframe: column 11 - from_python succeeded
+[17:23:12.583] [DEBUG] convert_dataframe: column 12 - getting column "dbl_12"
+[17:23:12.584] [DEBUG] convert_dataframe: column 12 - got column, getting dtype...
+[17:23:12.585] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.586] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.588] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.589] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.590] [DEBUG] convert_dataframe: column 12/54 "dbl_12" dtype=float64
+[17:23:12.591] [DEBUG] convert_dataframe: column 12 - default branch, calling to_numpy()
+[17:23:12.592] [DEBUG] convert_dataframe: column 12 - to_numpy() succeeded, calling from_python
+[17:23:12.594] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.595] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.596] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.598] [DEBUG] convert_dataframe: column 12 - from_python succeeded
+[17:23:12.599] [DEBUG] convert_dataframe: column 13 - getting column "dbl_13"
+[17:23:12.601] [DEBUG] convert_dataframe: column 13 - got column, getting dtype...
+[17:23:12.602] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.603] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.605] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.606] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.607] [DEBUG] convert_dataframe: column 13/54 "dbl_13" dtype=float64
+[17:23:12.608] [DEBUG] convert_dataframe: column 13 - default branch, calling to_numpy()
+[17:23:12.609] [DEBUG] convert_dataframe: column 13 - to_numpy() succeeded, calling from_python
+[17:23:12.610] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.611] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.613] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.614] [DEBUG] convert_dataframe: column 13 - from_python succeeded
+[17:23:12.615] [DEBUG] convert_dataframe: column 14 - getting column "dbl_14"
+[17:23:12.617] [DEBUG] convert_dataframe: column 14 - got column, getting dtype...
+[17:23:12.618] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.619] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.620] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.622] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.623] [DEBUG] convert_dataframe: column 14/54 "dbl_14" dtype=float64
+[17:23:12.624] [DEBUG] convert_dataframe: column 14 - default branch, calling to_numpy()
+[17:23:12.625] [DEBUG] convert_dataframe: column 14 - to_numpy() succeeded, calling from_python
+[17:23:12.626] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.627] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.629] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.630] [DEBUG] convert_dataframe: column 14 - from_python succeeded
+[17:23:12.631] [DEBUG] convert_dataframe: column 15 - getting column "dbl_15"
+[17:23:12.633] [DEBUG] convert_dataframe: column 15 - got column, getting dtype...
+[17:23:12.634] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.635] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.637] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.638] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.639] [DEBUG] convert_dataframe: column 15/54 "dbl_15" dtype=float64
+[17:23:12.640] [DEBUG] convert_dataframe: column 15 - default branch, calling to_numpy()
+[17:23:12.641] [DEBUG] convert_dataframe: column 15 - to_numpy() succeeded, calling from_python
+[17:23:12.642] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.643] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.644] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.645] [DEBUG] convert_dataframe: column 15 - from_python succeeded
+[17:23:12.646] [DEBUG] convert_dataframe: column 16 - getting column "dbl_16"
+[17:23:12.648] [DEBUG] convert_dataframe: column 16 - got column, getting dtype...
+[17:23:12.649] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.651] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.652] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.653] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.653] [DEBUG] convert_dataframe: column 16/54 "dbl_16" dtype=float64
+[17:23:12.654] [DEBUG] convert_dataframe: column 16 - default branch, calling to_numpy()
+[17:23:12.655] [DEBUG] convert_dataframe: column 16 - to_numpy() succeeded, calling from_python
+[17:23:12.656] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.657] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.658] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.660] [DEBUG] convert_dataframe: column 16 - from_python succeeded
+[17:23:12.661] [DEBUG] convert_dataframe: column 17 - getting column "dbl_17"
+[17:23:12.662] [DEBUG] convert_dataframe: column 17 - got column, getting dtype...
+[17:23:12.663] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.664] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.665] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.666] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.668] [DEBUG] convert_dataframe: column 17/54 "dbl_17" dtype=float64
+[17:23:12.669] [DEBUG] convert_dataframe: column 17 - default branch, calling to_numpy()
+[17:23:12.670] [DEBUG] convert_dataframe: column 17 - to_numpy() succeeded, calling from_python
+[17:23:12.671] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.672] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.673] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.674] [DEBUG] convert_dataframe: column 17 - from_python succeeded
+[17:23:12.675] [DEBUG] convert_dataframe: column 18 - getting column "dbl_18"
+[17:23:12.676] [DEBUG] convert_dataframe: column 18 - got column, getting dtype...
+[17:23:12.677] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.678] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.679] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.681] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.682] [DEBUG] convert_dataframe: column 18/54 "dbl_18" dtype=float64
+[17:23:12.683] [DEBUG] convert_dataframe: column 18 - default branch, calling to_numpy()
+[17:23:12.684] [DEBUG] convert_dataframe: column 18 - to_numpy() succeeded, calling from_python
+[17:23:12.686] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.687] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.688] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.689] [DEBUG] convert_dataframe: column 18 - from_python succeeded
+[17:23:12.690] [DEBUG] convert_dataframe: column 19 - getting column "dbl_19"
+[17:23:12.691] [DEBUG] convert_dataframe: column 19 - got column, getting dtype...
+[17:23:12.692] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.693] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.694] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.695] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.696] [DEBUG] convert_dataframe: column 19/54 "dbl_19" dtype=float64
+[17:23:12.697] [DEBUG] convert_dataframe: column 19 - default branch, calling to_numpy()
+[17:23:12.698] [DEBUG] convert_dataframe: column 19 - to_numpy() succeeded, calling from_python
+[17:23:12.700] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.701] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.702] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.703] [DEBUG] convert_dataframe: column 19 - from_python succeeded
+[17:23:12.704] [DEBUG] convert_dataframe: column 20 - getting column "dbl_20"
+[17:23:12.705] [DEBUG] convert_dataframe: column 20 - got column, getting dtype...
+[17:23:12.706] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.707] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.708] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.709] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.710] [DEBUG] convert_dataframe: column 20/54 "dbl_20" dtype=float64
+[17:23:12.711] [DEBUG] convert_dataframe: column 20 - default branch, calling to_numpy()
+[17:23:12.712] [DEBUG] convert_dataframe: column 20 - to_numpy() succeeded, calling from_python
+[17:23:12.714] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.715] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.717] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.718] [DEBUG] convert_dataframe: column 20 - from_python succeeded
+[17:23:12.720] [DEBUG] convert_dataframe: column 21 - getting column "dbl_21"
+[17:23:12.721] [DEBUG] convert_dataframe: column 21 - got column, getting dtype...
+[17:23:12.722] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.724] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.725] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.726] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.727] [DEBUG] convert_dataframe: column 21/54 "dbl_21" dtype=float64
+[17:23:12.728] [DEBUG] convert_dataframe: column 21 - default branch, calling to_numpy()
+[17:23:12.729] [DEBUG] convert_dataframe: column 21 - to_numpy() succeeded, calling from_python
+[17:23:12.730] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.732] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.734] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.735] [DEBUG] convert_dataframe: column 21 - from_python succeeded
+[17:23:12.736] [DEBUG] convert_dataframe: column 22 - getting column "dbl_22"
+[17:23:12.737] [DEBUG] convert_dataframe: column 22 - got column, getting dtype...
+[17:23:12.738] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.739] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.740] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.741] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.742] [DEBUG] convert_dataframe: column 22/54 "dbl_22" dtype=float64
+[17:23:12.743] [DEBUG] convert_dataframe: column 22 - default branch, calling to_numpy()
+[17:23:12.744] [DEBUG] convert_dataframe: column 22 - to_numpy() succeeded, calling from_python
+[17:23:12.745] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.746] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.747] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.748] [DEBUG] convert_dataframe: column 22 - from_python succeeded
+[17:23:12.750] [DEBUG] convert_dataframe: column 23 - getting column "dbl_23"
+[17:23:12.751] [DEBUG] convert_dataframe: column 23 - got column, getting dtype...
+[17:23:12.752] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.753] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.754] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.755] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.756] [DEBUG] convert_dataframe: column 23/54 "dbl_23" dtype=float64
+[17:23:12.757] [DEBUG] convert_dataframe: column 23 - default branch, calling to_numpy()
+[17:23:12.758] [DEBUG] convert_dataframe: column 23 - to_numpy() succeeded, calling from_python
+[17:23:12.759] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.760] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.762] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.763] [DEBUG] convert_dataframe: column 23 - from_python succeeded
+[17:23:12.765] [DEBUG] convert_dataframe: column 24 - getting column "dbl_24"
+[17:23:12.767] [DEBUG] convert_dataframe: column 24 - got column, getting dtype...
+[17:23:12.770] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.771] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.772] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.773] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.775] [DEBUG] convert_dataframe: column 24/54 "dbl_24" dtype=float64
+[17:23:12.775] [DEBUG] convert_dataframe: column 24 - default branch, calling to_numpy()
+[17:23:12.776] [DEBUG] convert_dataframe: column 24 - to_numpy() succeeded, calling from_python
+[17:23:12.778] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.779] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.780] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.781] [DEBUG] convert_dataframe: column 24 - from_python succeeded
+[17:23:12.783] [DEBUG] convert_dataframe: column 25 - getting column "dbl_25"
+[17:23:12.784] [DEBUG] convert_dataframe: column 25 - got column, getting dtype...
+[17:23:12.785] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.786] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.787] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.788] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.789] [DEBUG] convert_dataframe: column 25/54 "dbl_25" dtype=float64
+[17:23:12.790] [DEBUG] convert_dataframe: column 25 - default branch, calling to_numpy()
+[17:23:12.791] [DEBUG] convert_dataframe: column 25 - to_numpy() succeeded, calling from_python
+[17:23:12.793] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.793] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.794] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.795] [DEBUG] convert_dataframe: column 25 - from_python succeeded
+[17:23:12.796] [DEBUG] convert_dataframe: column 26 - getting column "dbl_26"
+[17:23:12.798] [DEBUG] convert_dataframe: column 26 - got column, getting dtype...
+[17:23:12.799] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.800] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.801] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.802] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.803] [DEBUG] convert_dataframe: column 26/54 "dbl_26" dtype=float64
+[17:23:12.805] [DEBUG] convert_dataframe: column 26 - default branch, calling to_numpy()
+[17:23:12.806] [DEBUG] convert_dataframe: column 26 - to_numpy() succeeded, calling from_python
+[17:23:12.807] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.808] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.809] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.810] [DEBUG] convert_dataframe: column 26 - from_python succeeded
+[17:23:12.811] [DEBUG] convert_dataframe: column 27 - getting column "dbl_27"
+[17:23:12.812] [DEBUG] convert_dataframe: column 27 - got column, getting dtype...
+[17:23:12.813] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.814] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.815] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.816] [DEBUG] convert_dataframe: converted char to string: float64
+[17:23:12.817] [DEBUG] convert_dataframe: column 27/54 "dbl_27" dtype=float64
+[17:23:12.818] [DEBUG] convert_dataframe: column 27 - default branch, calling to_numpy()
+[17:23:12.819] [DEBUG] convert_dataframe: column 27 - to_numpy() succeeded, calling from_python
+[17:23:12.821] [DEBUG] from_python: numpy array dtype=float64, shape=[1], ndim=1
+[17:23:12.822] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.823] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:12.824] [DEBUG] convert_dataframe: column 27 - from_python succeeded
+[17:23:12.825] [DEBUG] convert_dataframe: column 28 - getting column "arr_01"
+[17:23:12.826] [DEBUG] convert_dataframe: column 28 - got column, getting dtype...
+[17:23:12.827] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.828] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.829] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.830] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.831] [DEBUG] convert_dataframe: column 28/54 "arr_01" dtype=str
+[17:23:12.833] [DEBUG] convert_dataframe: column 28 - default branch, calling to_numpy()
+[17:23:12.834] [DEBUG] convert_dataframe: column 28 - to_numpy() succeeded, calling from_python
+[17:23:12.835] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.836] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.838] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.839] [DEBUG] convert_dataframe: column 28 - from_python succeeded
+[17:23:12.840] [DEBUG] convert_dataframe: column 29 - getting column "arr_02"
+[17:23:12.841] [DEBUG] convert_dataframe: column 29 - got column, getting dtype...
+[17:23:12.842] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.843] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.844] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.845] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.846] [DEBUG] convert_dataframe: column 29/54 "arr_02" dtype=str
+[17:23:12.846] [DEBUG] convert_dataframe: column 29 - default branch, calling to_numpy()
+[17:23:12.847] [DEBUG] convert_dataframe: column 29 - to_numpy() succeeded, calling from_python
+[17:23:12.849] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.850] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.852] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.853] [DEBUG] convert_dataframe: column 29 - from_python succeeded
+[17:23:12.854] [DEBUG] convert_dataframe: column 30 - getting column "arr_03"
+[17:23:12.855] [DEBUG] convert_dataframe: column 30 - got column, getting dtype...
+[17:23:12.856] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.857] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.858] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.859] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.859] [DEBUG] convert_dataframe: column 30/54 "arr_03" dtype=str
+[17:23:12.860] [DEBUG] convert_dataframe: column 30 - default branch, calling to_numpy()
+[17:23:12.861] [DEBUG] convert_dataframe: column 30 - to_numpy() succeeded, calling from_python
+[17:23:12.863] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.864] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.865] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.866] [DEBUG] convert_dataframe: column 30 - from_python succeeded
+[17:23:12.868] [DEBUG] convert_dataframe: column 31 - getting column "arr_04"
+[17:23:12.869] [DEBUG] convert_dataframe: column 31 - got column, getting dtype...
+[17:23:12.870] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.871] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.872] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.873] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.874] [DEBUG] convert_dataframe: column 31/54 "arr_04" dtype=str
+[17:23:12.875] [DEBUG] convert_dataframe: column 31 - default branch, calling to_numpy()
+[17:23:12.875] [DEBUG] convert_dataframe: column 31 - to_numpy() succeeded, calling from_python
+[17:23:12.877] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.878] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.879] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.880] [DEBUG] convert_dataframe: column 31 - from_python succeeded
+[17:23:12.881] [DEBUG] convert_dataframe: column 32 - getting column "arr_05"
+[17:23:12.882] [DEBUG] convert_dataframe: column 32 - got column, getting dtype...
+[17:23:12.884] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.885] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.886] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.887] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.888] [DEBUG] convert_dataframe: column 32/54 "arr_05" dtype=str
+[17:23:12.889] [DEBUG] convert_dataframe: column 32 - default branch, calling to_numpy()
+[17:23:12.890] [DEBUG] convert_dataframe: column 32 - to_numpy() succeeded, calling from_python
+[17:23:12.892] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.894] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.895] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.896] [DEBUG] convert_dataframe: column 32 - from_python succeeded
+[17:23:12.897] [DEBUG] convert_dataframe: column 33 - getting column "arr_06"
+[17:23:12.898] [DEBUG] convert_dataframe: column 33 - got column, getting dtype...
+[17:23:12.900] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.910] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.912] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.913] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.914] [DEBUG] convert_dataframe: column 33/54 "arr_06" dtype=str
+[17:23:12.915] [DEBUG] convert_dataframe: column 33 - default branch, calling to_numpy()
+[17:23:12.917] [DEBUG] convert_dataframe: column 33 - to_numpy() succeeded, calling from_python
+[17:23:12.919] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.920] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.921] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.922] [DEBUG] convert_dataframe: column 33 - from_python succeeded
+[17:23:12.923] [DEBUG] convert_dataframe: column 34 - getting column "arr_07"
+[17:23:12.925] [DEBUG] convert_dataframe: column 34 - got column, getting dtype...
+[17:23:12.926] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.926] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.927] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.928] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.929] [DEBUG] convert_dataframe: column 34/54 "arr_07" dtype=str
+[17:23:12.930] [DEBUG] convert_dataframe: column 34 - default branch, calling to_numpy()
+[17:23:12.932] [DEBUG] convert_dataframe: column 34 - to_numpy() succeeded, calling from_python
+[17:23:12.934] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.934] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.935] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.936] [DEBUG] convert_dataframe: column 34 - from_python succeeded
+[17:23:12.937] [DEBUG] convert_dataframe: column 35 - getting column "arr_08"
+[17:23:12.938] [DEBUG] convert_dataframe: column 35 - got column, getting dtype...
+[17:23:12.939] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.940] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.941] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.941] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.943] [DEBUG] convert_dataframe: column 35/54 "arr_08" dtype=str
+[17:23:12.944] [DEBUG] convert_dataframe: column 35 - default branch, calling to_numpy()
+[17:23:12.946] [DEBUG] convert_dataframe: column 35 - to_numpy() succeeded, calling from_python
+[17:23:12.947] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.948] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.950] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.951] [DEBUG] convert_dataframe: column 35 - from_python succeeded
+[17:23:12.952] [DEBUG] convert_dataframe: column 36 - getting column "arr_09"
+[17:23:12.953] [DEBUG] convert_dataframe: column 36 - got column, getting dtype...
+[17:23:12.954] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.955] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.956] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.957] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.958] [DEBUG] convert_dataframe: column 36/54 "arr_09" dtype=str
+[17:23:12.959] [DEBUG] convert_dataframe: column 36 - default branch, calling to_numpy()
+[17:23:12.960] [DEBUG] convert_dataframe: column 36 - to_numpy() succeeded, calling from_python
+[17:23:12.962] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.963] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.964] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.965] [DEBUG] convert_dataframe: column 36 - from_python succeeded
+[17:23:12.966] [DEBUG] convert_dataframe: column 37 - getting column "arr_10"
+[17:23:12.968] [DEBUG] convert_dataframe: column 37 - got column, getting dtype...
+[17:23:12.969] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.970] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.970] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.971] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.972] [DEBUG] convert_dataframe: column 37/54 "arr_10" dtype=str
+[17:23:12.973] [DEBUG] convert_dataframe: column 37 - default branch, calling to_numpy()
+[17:23:12.974] [DEBUG] convert_dataframe: column 37 - to_numpy() succeeded, calling from_python
+[17:23:12.975] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.977] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.978] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.979] [DEBUG] convert_dataframe: column 37 - from_python succeeded
+[17:23:12.980] [DEBUG] convert_dataframe: column 38 - getting column "arr_11"
+[17:23:12.981] [DEBUG] convert_dataframe: column 38 - got column, getting dtype...
+[17:23:12.983] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.984] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.985] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:12.986] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:12.987] [DEBUG] convert_dataframe: column 38/54 "arr_11" dtype=str
+[17:23:12.988] [DEBUG] convert_dataframe: column 38 - default branch, calling to_numpy()
+[17:23:12.989] [DEBUG] convert_dataframe: column 38 - to_numpy() succeeded, calling from_python
+[17:23:12.990] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:12.991] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:12.993] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:12.994] [DEBUG] convert_dataframe: column 38 - from_python succeeded
+[17:23:12.995] [DEBUG] convert_dataframe: column 39 - getting column "arr_12"
+[17:23:12.996] [DEBUG] convert_dataframe: column 39 - got column, getting dtype...
+[17:23:12.997] [DEBUG] convert_dataframe: got dtype object
+[17:23:12.998] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:12.999] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.000] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.001] [DEBUG] convert_dataframe: column 39/54 "arr_12" dtype=str
+[17:23:13.003] [DEBUG] convert_dataframe: column 39 - default branch, calling to_numpy()
+[17:23:13.004] [DEBUG] convert_dataframe: column 39 - to_numpy() succeeded, calling from_python
+[17:23:13.005] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.006] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.007] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.008] [DEBUG] convert_dataframe: column 39 - from_python succeeded
+[17:23:13.010] [DEBUG] convert_dataframe: column 40 - getting column "arr_13"
+[17:23:13.011] [DEBUG] convert_dataframe: column 40 - got column, getting dtype...
+[17:23:13.012] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.014] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.015] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.016] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.017] [DEBUG] convert_dataframe: column 40/54 "arr_13" dtype=str
+[17:23:13.018] [DEBUG] convert_dataframe: column 40 - default branch, calling to_numpy()
+[17:23:13.019] [DEBUG] convert_dataframe: column 40 - to_numpy() succeeded, calling from_python
+[17:23:13.020] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.021] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.023] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.023] [DEBUG] convert_dataframe: column 40 - from_python succeeded
+[17:23:13.024] [DEBUG] convert_dataframe: column 41 - getting column "arr_14"
+[17:23:13.025] [DEBUG] convert_dataframe: column 41 - got column, getting dtype...
+[17:23:13.026] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.027] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.028] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.029] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.030] [DEBUG] convert_dataframe: column 41/54 "arr_14" dtype=str
+[17:23:13.031] [DEBUG] convert_dataframe: column 41 - default branch, calling to_numpy()
+[17:23:13.033] [DEBUG] convert_dataframe: column 41 - to_numpy() succeeded, calling from_python
+[17:23:13.034] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.035] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.036] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.037] [DEBUG] convert_dataframe: column 41 - from_python succeeded
+[17:23:13.038] [DEBUG] convert_dataframe: column 42 - getting column "arr_15"
+[17:23:13.039] [DEBUG] convert_dataframe: column 42 - got column, getting dtype...
+[17:23:13.040] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.041] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.042] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.043] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.044] [DEBUG] convert_dataframe: column 42/54 "arr_15" dtype=str
+[17:23:13.045] [DEBUG] convert_dataframe: column 42 - default branch, calling to_numpy()
+[17:23:13.046] [DEBUG] convert_dataframe: column 42 - to_numpy() succeeded, calling from_python
+[17:23:13.048] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.049] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.050] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.051] [DEBUG] convert_dataframe: column 42 - from_python succeeded
+[17:23:13.052] [DEBUG] convert_dataframe: column 43 - getting column "arr_16"
+[17:23:13.054] [DEBUG] convert_dataframe: column 43 - got column, getting dtype...
+[17:23:13.055] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.056] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.057] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.058] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.059] [DEBUG] convert_dataframe: column 43/54 "arr_16" dtype=str
+[17:23:13.060] [DEBUG] convert_dataframe: column 43 - default branch, calling to_numpy()
+[17:23:13.061] [DEBUG] convert_dataframe: column 43 - to_numpy() succeeded, calling from_python
+[17:23:13.063] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.064] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.065] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.067] [DEBUG] convert_dataframe: column 43 - from_python succeeded
+[17:23:13.068] [DEBUG] convert_dataframe: column 44 - getting column "arr_17"
+[17:23:13.069] [DEBUG] convert_dataframe: column 44 - got column, getting dtype...
+[17:23:13.070] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.071] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.072] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.073] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.074] [DEBUG] convert_dataframe: column 44/54 "arr_17" dtype=str
+[17:23:13.075] [DEBUG] convert_dataframe: column 44 - default branch, calling to_numpy()
+[17:23:13.075] [DEBUG] convert_dataframe: column 44 - to_numpy() succeeded, calling from_python
+[17:23:13.077] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.078] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.079] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.080] [DEBUG] convert_dataframe: column 44 - from_python succeeded
+[17:23:13.081] [DEBUG] convert_dataframe: column 45 - getting column "arr_18"
+[17:23:13.082] [DEBUG] convert_dataframe: column 45 - got column, getting dtype...
+[17:23:13.084] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.085] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.086] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.087] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.088] [DEBUG] convert_dataframe: column 45/54 "arr_18" dtype=str
+[17:23:13.089] [DEBUG] convert_dataframe: column 45 - default branch, calling to_numpy()
+[17:23:13.090] [DEBUG] convert_dataframe: column 45 - to_numpy() succeeded, calling from_python
+[17:23:13.092] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.093] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.094] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.095] [DEBUG] convert_dataframe: column 45 - from_python succeeded
+[17:23:13.096] [DEBUG] convert_dataframe: column 46 - getting column "arr_19"
+[17:23:13.098] [DEBUG] convert_dataframe: column 46 - got column, getting dtype...
+[17:23:13.100] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.101] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.103] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.104] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.105] [DEBUG] convert_dataframe: column 46/54 "arr_19" dtype=str
+[17:23:13.107] [DEBUG] convert_dataframe: column 46 - default branch, calling to_numpy()
+[17:23:13.108] [DEBUG] convert_dataframe: column 46 - to_numpy() succeeded, calling from_python
+[17:23:13.110] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.111] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.112] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.113] [DEBUG] convert_dataframe: column 46 - from_python succeeded
+[17:23:13.115] [DEBUG] convert_dataframe: column 47 - getting column "arr_20"
+[17:23:13.118] [DEBUG] convert_dataframe: column 47 - got column, getting dtype...
+[17:23:13.119] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.121] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.122] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.123] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.124] [DEBUG] convert_dataframe: column 47/54 "arr_20" dtype=str
+[17:23:13.125] [DEBUG] convert_dataframe: column 47 - default branch, calling to_numpy()
+[17:23:13.126] [DEBUG] convert_dataframe: column 47 - to_numpy() succeeded, calling from_python
+[17:23:13.127] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.128] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.130] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.131] [DEBUG] convert_dataframe: column 47 - from_python succeeded
+[17:23:13.133] [DEBUG] convert_dataframe: column 48 - getting column "arr_21"
+[17:23:13.135] [DEBUG] convert_dataframe: column 48 - got column, getting dtype...
+[17:23:13.136] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.137] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.138] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.139] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.141] [DEBUG] convert_dataframe: column 48/54 "arr_21" dtype=str
+[17:23:13.142] [DEBUG] convert_dataframe: column 48 - default branch, calling to_numpy()
+[17:23:13.143] [DEBUG] convert_dataframe: column 48 - to_numpy() succeeded, calling from_python
+[17:23:13.144] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.145] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.147] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.148] [DEBUG] convert_dataframe: column 48 - from_python succeeded
+[17:23:13.150] [DEBUG] convert_dataframe: column 49 - getting column "arr_22"
+[17:23:13.152] [DEBUG] convert_dataframe: column 49 - got column, getting dtype...
+[17:23:13.153] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.154] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.155] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.156] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.158] [DEBUG] convert_dataframe: column 49/54 "arr_22" dtype=str
+[17:23:13.159] [DEBUG] convert_dataframe: column 49 - default branch, calling to_numpy()
+[17:23:13.160] [DEBUG] convert_dataframe: column 49 - to_numpy() succeeded, calling from_python
+[17:23:13.161] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.163] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.164] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.166] [DEBUG] convert_dataframe: column 49 - from_python succeeded
+[17:23:13.168] [DEBUG] convert_dataframe: column 50 - getting column "arr_23"
+[17:23:13.169] [DEBUG] convert_dataframe: column 50 - got column, getting dtype...
+[17:23:13.170] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.171] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.173] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.174] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.175] [DEBUG] convert_dataframe: column 50/54 "arr_23" dtype=str
+[17:23:13.177] [DEBUG] convert_dataframe: column 50 - default branch, calling to_numpy()
+[17:23:13.178] [DEBUG] convert_dataframe: column 50 - to_numpy() succeeded, calling from_python
+[17:23:13.180] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.181] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.183] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.185] [DEBUG] convert_dataframe: column 50 - from_python succeeded
+[17:23:13.186] [DEBUG] convert_dataframe: column 51 - getting column "arr_24"
+[17:23:13.187] [DEBUG] convert_dataframe: column 51 - got column, getting dtype...
+[17:23:13.188] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.190] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.191] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.192] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.193] [DEBUG] convert_dataframe: column 51/54 "arr_24" dtype=str
+[17:23:13.194] [DEBUG] convert_dataframe: column 51 - default branch, calling to_numpy()
+[17:23:13.195] [DEBUG] convert_dataframe: column 51 - to_numpy() succeeded, calling from_python
+[17:23:13.196] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.198] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.199] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.201] [DEBUG] convert_dataframe: column 51 - from_python succeeded
+[17:23:13.202] [DEBUG] convert_dataframe: column 52 - getting column "arr_25"
+[17:23:13.204] [DEBUG] convert_dataframe: column 52 - got column, getting dtype...
+[17:23:13.205] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.206] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.208] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.209] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.210] [DEBUG] convert_dataframe: column 52/54 "arr_25" dtype=str
+[17:23:13.212] [DEBUG] convert_dataframe: column 52 - default branch, calling to_numpy()
+[17:23:13.213] [DEBUG] convert_dataframe: column 52 - to_numpy() succeeded, calling from_python
+[17:23:13.216] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.218] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.220] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.220] [DEBUG] convert_dataframe: column 52 - from_python succeeded
+[17:23:13.223] [DEBUG] convert_dataframe: column 53 - getting column "json_01"
+[17:23:13.223] [DEBUG] convert_dataframe: column 53 - got column, getting dtype...
+[17:23:13.224] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.225] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.226] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.228] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.229] [DEBUG] convert_dataframe: column 53/54 "json_01" dtype=str
+[17:23:13.230] [DEBUG] convert_dataframe: column 53 - default branch, calling to_numpy()
+[17:23:13.232] [DEBUG] convert_dataframe: column 53 - to_numpy() succeeded, calling from_python
+[17:23:13.234] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.235] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.236] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.237] [DEBUG] convert_dataframe: column 53 - from_python succeeded
+[17:23:13.239] [DEBUG] convert_dataframe: column 54 - getting column "json_02"
+[17:23:13.240] [DEBUG] convert_dataframe: column 54 - got column, getting dtype...
+[17:23:13.241] [DEBUG] convert_dataframe: got dtype object
+[17:23:13.242] [DEBUG] convert_dataframe: converted dtype to py.str
+[17:23:13.243] [DEBUG] convert_dataframe: converted py.str to char
+[17:23:13.244] [DEBUG] convert_dataframe: converted char to string: str
+[17:23:13.245] [DEBUG] convert_dataframe: column 54/54 "json_02" dtype=str
+[17:23:13.246] [DEBUG] convert_dataframe: column 54 - default branch, calling to_numpy()
+[17:23:13.247] [DEBUG] convert_dataframe: column 54 - to_numpy() succeeded, calling from_python
+[17:23:13.249] [DEBUG] from_python: numpy array dtype=object, shape=[1], ndim=1
+[17:23:13.250] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.251] [DEBUG] from_python: numpy conversion complete, result class=cell size=[1  1]
+[17:23:13.252] [DEBUG] convert_dataframe: column 54 - from_python succeeded
+[17:23:13.261] [DEBUG] from_python: numpy array dtype=int64, shape=[1], ndim=1
+[17:23:13.262] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.264] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.265] [DEBUG] wrap_py_vars_batch: concat_df has 1 rows, split into 1 tables
+[17:23:13.267] [DEBUG] wrap_py_vars_batch: reconstructing flattened array columns...
+[17:23:13.270] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.272] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.273] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.275] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.277] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.278] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.279] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_01": 10 elements, 1 arrays
+[17:23:13.283] [DEBUG] wrap_py_vars_batch: column "arr_01" reconstructed successfully
+[17:23:13.286] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.287] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.288] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.290] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.291] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.292] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.293] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_02": 10 elements, 1 arrays
+[17:23:13.295] [DEBUG] wrap_py_vars_batch: column "arr_02" reconstructed successfully
+[17:23:13.296] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.297] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.299] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.301] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.302] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.303] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.304] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_03": 10 elements, 1 arrays
+[17:23:13.305] [DEBUG] wrap_py_vars_batch: column "arr_03" reconstructed successfully
+[17:23:13.307] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.308] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.310] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.311] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.313] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.314] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.315] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_04": 10 elements, 1 arrays
+[17:23:13.317] [DEBUG] wrap_py_vars_batch: column "arr_04" reconstructed successfully
+[17:23:13.318] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.320] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.321] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.323] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.324] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.325] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.326] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_05": 10 elements, 1 arrays
+[17:23:13.327] [DEBUG] wrap_py_vars_batch: column "arr_05" reconstructed successfully
+[17:23:13.328] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.330] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.331] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.333] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.334] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.336] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.337] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_06": 10 elements, 1 arrays
+[17:23:13.338] [DEBUG] wrap_py_vars_batch: column "arr_06" reconstructed successfully
+[17:23:13.339] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.340] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.341] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.343] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.344] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.345] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.346] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_07": 10 elements, 1 arrays
+[17:23:13.347] [DEBUG] wrap_py_vars_batch: column "arr_07" reconstructed successfully
+[17:23:13.348] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.350] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.352] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.353] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.354] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.356] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.357] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_08": 10 elements, 1 arrays
+[17:23:13.358] [DEBUG] wrap_py_vars_batch: column "arr_08" reconstructed successfully
+[17:23:13.360] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.361] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.362] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.364] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.365] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.367] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.369] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_09": 10 elements, 1 arrays
+[17:23:13.370] [DEBUG] wrap_py_vars_batch: column "arr_09" reconstructed successfully
+[17:23:13.372] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.373] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.374] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.375] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.377] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.378] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.379] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_10": 10 elements, 1 arrays
+[17:23:13.380] [DEBUG] wrap_py_vars_batch: column "arr_10" reconstructed successfully
+[17:23:13.383] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.384] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.385] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.387] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.388] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.389] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.390] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_11": 10 elements, 1 arrays
+[17:23:13.392] [DEBUG] wrap_py_vars_batch: column "arr_11" reconstructed successfully
+[17:23:13.393] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.395] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.396] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.398] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.400] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.401] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.402] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_12": 10 elements, 1 arrays
+[17:23:13.403] [DEBUG] wrap_py_vars_batch: column "arr_12" reconstructed successfully
+[17:23:13.405] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.406] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.407] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.409] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.410] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.411] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.412] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_13": 10 elements, 1 arrays
+[17:23:13.414] [DEBUG] wrap_py_vars_batch: column "arr_13" reconstructed successfully
+[17:23:13.416] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.418] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.419] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.421] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.421] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.422] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.423] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_14": 10 elements, 1 arrays
+[17:23:13.424] [DEBUG] wrap_py_vars_batch: column "arr_14" reconstructed successfully
+[17:23:13.426] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.428] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.429] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.432] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.434] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.435] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.436] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_15": 10 elements, 1 arrays
+[17:23:13.438] [DEBUG] wrap_py_vars_batch: column "arr_15" reconstructed successfully
+[17:23:13.440] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.442] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.443] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.445] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.446] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.448] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.450] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_16": 10 elements, 1 arrays
+[17:23:13.451] [DEBUG] wrap_py_vars_batch: column "arr_16" reconstructed successfully
+[17:23:13.453] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.454] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.456] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.458] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.459] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.461] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.463] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_17": 10 elements, 1 arrays
+[17:23:13.464] [DEBUG] wrap_py_vars_batch: column "arr_17" reconstructed successfully
+[17:23:13.467] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.468] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.470] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.472] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.473] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.474] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.476] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_18": 10 elements, 1 arrays
+[17:23:13.477] [DEBUG] wrap_py_vars_batch: column "arr_18" reconstructed successfully
+[17:23:13.479] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.480] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.482] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.484] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.486] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.487] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.488] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_19": 10 elements, 1 arrays
+[17:23:13.491] [DEBUG] wrap_py_vars_batch: column "arr_19" reconstructed successfully
+[17:23:13.493] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.494] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.496] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.498] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.500] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.502] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.503] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_20": 10 elements, 1 arrays
+[17:23:13.504] [DEBUG] wrap_py_vars_batch: column "arr_20" reconstructed successfully
+[17:23:13.506] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.507] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.508] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.510] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.511] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.512] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.513] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_21": 10 elements, 1 arrays
+[17:23:13.515] [DEBUG] wrap_py_vars_batch: column "arr_21" reconstructed successfully
+[17:23:13.517] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.518] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.519] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.521] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.522] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.523] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.524] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_22": 10 elements, 1 arrays
+[17:23:13.526] [DEBUG] wrap_py_vars_batch: column "arr_22" reconstructed successfully
+[17:23:13.527] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.528] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.530] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.532] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.533] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.534] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.535] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_23": 10 elements, 1 arrays
+[17:23:13.537] [DEBUG] wrap_py_vars_batch: column "arr_23" reconstructed successfully
+[17:23:13.539] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.540] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.541] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.543] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.544] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.545] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.546] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_24": 10 elements, 1 arrays
+[17:23:13.547] [DEBUG] wrap_py_vars_batch: column "arr_24" reconstructed successfully
+[17:23:13.548] [DEBUG] from_python: numpy array dtype=float64, shape=[10], ndim=1
+[17:23:13.550] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.551] [DEBUG] from_python: numpy conversion complete, result class=double size=[10   1]
+[17:23:13.553] [DEBUG] from_python: numpy array dtype=int32, shape=[1], ndim=1
+[17:23:13.554] [DEBUG] from_python: tolist() succeeded, converting to MATLAB...
+[17:23:13.555] [DEBUG] from_python: numpy conversion complete, result class=double size=[1  1]
+[17:23:13.556] [DEBUG] wrap_py_vars_batch: reconstructing column "arr_25": 10 elements, 1 arrays
+[17:23:13.557] [DEBUG] wrap_py_vars_batch: column "arr_25" reconstructed successfully
+[17:23:13.558] [INFO] wrap_py_vars_batch: reconstructed 25 flattened array columns
+[17:23:13.560] [DEBUG] wrap_py_vars_batch: parsing 2 JSON columns to structs...
+[17:23:13.566] [DEBUG] wrap_py_vars_batch: parsed JSON column "json_01" to structs
+[17:23:13.569] [DEBUG] wrap_py_vars_batch: parsed JSON column "json_02" to structs
+[17:23:13.571] [INFO] wrap_py_vars_batch: parsed 2 JSON columns to structs
