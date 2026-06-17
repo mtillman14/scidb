@@ -1,28 +1,27 @@
-"""SciHist: Lineage-tracked batch execution for scientific data pipelines.
+"""SciHist (deprecated) — thin shim over the consolidated scidb API.
 
-This package adds lineage tracking on top of scidb. It provides the same
-for_each() interface as scidb, but automatically wraps functions in
-LineageFcn for provenance recording.
+Lineage-tracked batch execution, the node-staleness API, and lineage-aware
+save now live in **scidb** (``scidb.for_each`` tracks lineage by default).
+This package remains only as a backward-compatible shim for existing imports
+(e.g. ``scistack-gui`` and the MATLAB ``+scihist`` bridge). Prefer importing
+from ``scidb`` directly; ``scihist`` will be removed in a future release.
 
-Example:
-    from scihist import for_each, Fixed, configure_database
-    from scilineage import lineage_fcn
-
-    configure_database("experiment.duckdb", ["subject", "session"])
-
-    @lineage_fcn
-    def process_data(raw, calibration):
-        return raw * calibration
-
-    for_each(
-        process_data,
-        inputs={"raw": RawData, "calibration": Fixed(Calibration, session="baseline")},
-        outputs=[ProcessedData],
-        subject=[1, 2, 3],
-        session=["A", "B", "C"],
-    )
+Behavioral nuances preserved by the shim:
+- ``scihist.for_each`` defaults ``skip_computed=True`` (scidb defaults False).
+- ``scihist.configure_database`` registers the DB as scilineage's cache backend.
 """
 
+import warnings as _warnings
+
+_warnings.warn(
+    "scihist is deprecated; its functionality has moved to scidb. "
+    "Import from scidb instead (e.g. `from scidb import for_each, save, "
+    "configure_database`).",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+# Core batch execution + lineage-aware save (shimmed to preserve scihist defaults)
 from .foreach import for_each, save
 from .database import configure_database, find_by_lineage
 from .state import check_combo_state, check_node_state, check_multiple_nodes_state

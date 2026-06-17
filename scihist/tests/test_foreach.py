@@ -26,12 +26,15 @@ def _make_simple_mock_db():
         def distinct_schema_combinations(self, keys):
             return []
 
-        def save_batch(self, variable_class, data_items, profile=False):
+        def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
             ids = []
             for data, meta in data_items:
                 variable_class.save(data, **meta)
                 ids.append(f"mock-id-{len(ids)}")
             return ids
+
+        def _save_lineage_rows_batch(self, items, output_type):
+            pass  # mock: lineage rows not tracked
 
     return _SimpleMockDB()
 
@@ -544,12 +547,15 @@ class TestForEachAllLevels:
                 lists = [self._values[k] for k in keys]
                 return [tuple(str(v) for v in combo) for combo in _product(*lists)]
 
-            def save_batch(self, variable_class, data_items, profile=False):
+            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)
                     ids.append(f"mock-id-{len(ids)}")
                 return ids
+
+            def _save_lineage_rows_batch(self, items, output_type):
+                pass  # mock: lineage rows not tracked
 
         return MockDB(schema_values)
 
@@ -694,12 +700,15 @@ class TestForEachDistribute:
                     return schema_values[key]
                 return []
 
-            def save_batch(self, variable_class, data_items, profile=False):
+            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)
                     ids.append(f"mock-id-{len(ids)}")
                 return ids
+
+            def _save_lineage_rows_batch(self, items, output_type):
+                pass  # mock: lineage rows not tracked
 
         return MockDB()
 
@@ -1099,12 +1108,15 @@ class TestForEachConfigKeys:
             def distinct_schema_combinations(self, keys):
                 return []
 
-            def save_batch(self, variable_class, data_items, profile=False):
+            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)
                     ids.append(f"mock-id-{len(ids)}")
                 return ids
+
+            def _save_lineage_rows_batch(self, items, output_type):
+                pass  # mock: lineage rows not tracked
 
         return MockDB()
 
@@ -1263,12 +1275,15 @@ class TestForEachSchemaFiltering:
                     return self._combos[combo_key]
                 return []
 
-            def save_batch(self, variable_class, data_items, profile=False):
+            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)
                     ids.append(f"mock-id-{len(ids)}")
                 return ids
+
+            def _save_lineage_rows_batch(self, items, output_type):
+                pass  # mock: lineage rows not tracked
 
         return MockDB(schema_values, schema_combinations, schema_keys)
 

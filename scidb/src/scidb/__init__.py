@@ -22,7 +22,9 @@ Example:
     raw = RawSignal.load(subject=1, session="A")
 """
 
-from .database import configure_database, get_database, get_user_id
+from .database import configure_database, get_database, get_user_id, find_by_lineage
+from .lineage_save import save
+from .state import check_combo_state, check_node_state, check_multiple_nodes_state
 from .log import Log
 from .exceptions import (
     AmbiguousParamError,
@@ -82,6 +84,13 @@ __all__ = [
     "configure_database",
     "get_database",
     "get_user_id",
+    # Lineage-aware save + query
+    "save",
+    "find_by_lineage",
+    # Pipeline node staleness
+    "check_combo_state",
+    "check_node_state",
+    "check_multiple_nodes_state",
     # Logging
     "Log",
     # Batch execution

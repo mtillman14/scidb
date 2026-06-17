@@ -71,6 +71,13 @@ class LineageFcn:
                            rather than returning data. Not included in hash.
         """
         self.fcn = fcn
+        # Expose the wrapped function's name so wrappers (e.g.
+        # make_tuple_unpacking_wrapper) and ForEachConfig record the real
+        # function name in version_keys/__fn rather than falling back to a
+        # generic placeholder. Without this, a plain fn auto-wrapped in
+        # LineageFcn (track_lineage path) loses its name and variant queries
+        # that filter by function_name find nothing.
+        self.__name__ = getattr(fcn, "__name__", "lineage_fcn")
         self.unpack_output = unpack_output
         self.unwrap = unwrap
         self.generates_file = generates_file

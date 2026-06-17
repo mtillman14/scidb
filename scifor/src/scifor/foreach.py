@@ -22,6 +22,7 @@ def for_each(
     distribute: bool = False,
     where=None,
     output_names: list[str] | int | None = None,
+    share_limits: "dict[str, list[str]] | None" = None,
     _all_combos: list[dict] | None = None,
     _log_fn: "Callable[[str], None] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
@@ -50,6 +51,16 @@ def for_each(
         output_names: Names for result columns. list[str] names them;
                       int N auto-names (output_1, ..., output_N);
                       None defaults to ["output"] (single output).
+        share_limits: Optional ``{input_name: [schema_keys_to_hold_fixed]}``.
+                      For each named input, computes the global numeric
+                      ``(min, max)`` extent of that input's data within each
+                      group defined by the held-fixed schema keys (spanning all
+                      other iterated keys), and injects it as a
+                      ``{input_name}_limits`` keyword argument on each call —
+                      but only if the function's signature accepts that name
+                      (or ``**kwargs``). Used so e.g. every per-trial plot within
+                      a subject shares one y-axis range
+                      (``share_limits={"signal": ["subject"]}``).
         _all_combos: Pre-built list of metadata dicts; skips itertools.product().
                      Used by DB wrappers that pre-filter schema combinations.
         **metadata_iterables: Iterables of metadata values to combine.
@@ -276,6 +287,24 @@ def for_each(
     total = len(all_combos)
     fn_name = getattr(fn, "__name__", repr(fn))
 
+    # Step 7.5: share_limits prepass — compute per-group numeric extents so all
+    # combos in a group (e.g. all trials within a subject) can share axis limits.
+    shared_limits_map: dict = {}
+    if share_limits:
+        shared_limits_map = _compute_shared_limits(
+            share_limits, data_inputs, schema_keys
+        )
+        # Param names the function will accept the *_limits kwargs under.
+        _limits_accepted = _accepted_param_names(fn)
+        if _log_fn:
+            _log_fn(
+                f"[scifor] Step 7.5: computed shared limits for "
+                f"{list(shared_limits_map.keys())} (fn accepts: "
+                f"{sorted(_limits_accepted) if _limits_accepted is not None else 'any (**kwargs)'})"
+            )
+    else:
+        _limits_accepted = None
+
     # Step 8: Print summary banner
     if _log_fn:
         _log_fn(f"[scifor] Step 8: printing summary banner for {total} iterations")
@@ -455,6 +484,16 @@ def for_each(
 
         # Merge constants into function arguments
         filtered_inputs.update(constant_inputs)
+
+        # Inject shared axis limits for this combo's group (share_limits).
+        if shared_limits_map:
+            for input_name, (group_keys, limits) in shared_limits_map.items():
+                param = f"{input_name}_limits"
+                if _limits_accepted is not None and param not in _limits_accepted:
+                    continue  # fn signature doesn't accept it and has no **kwargs
+                gkey = tuple(str(metadata.get(k, "")) for k in group_keys)
+                if gkey in limits:
+                    filtered_inputs[param] = limits[gkey]
 
         try:
             fn_t0 = time.perf_counter()
@@ -836,6 +875,100 @@ def _resolve_colnames(inputs: dict[str, Any], schema_keys: list[str]) -> dict[st
 def _is_per_combo_df(df: "pd.DataFrame", schema_keys: list[str]) -> bool:
     """True if df has at least one column that is a schema key."""
     return bool(set(df.columns) & set(schema_keys))
+
+
+def _accepted_param_names(fn) -> "set[str] | None":
+    """Return the set of keyword names ``fn`` accepts, or None if it takes **kwargs.
+
+    None means "inject anything" (the function has a ``**kwargs`` catch-all).
+    Falls back to ``__scidb_params__`` (set by scidb/scilineage wrappers) when
+    the signature can't be introspected.
+    """
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        params = getattr(fn, "__scidb_params__", None)
+        return set(params) if params is not None else set()
+    names = set()
+    for p in sig.parameters.values():
+        if p.kind == inspect.Parameter.VAR_KEYWORD:
+            return None  # **kwargs — accepts any keyword
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                      inspect.Parameter.KEYWORD_ONLY):
+            names.add(p.name)
+    return names
+
+
+def _numeric_extent(df: "pd.DataFrame") -> "tuple[float, float] | tuple[None, None]":
+    """Return (min, max) over all numeric values in df, flattening array cells.
+
+    Handles both scalar-valued cells and ndarray/list-valued cells (timeseries).
+    Returns (None, None) when no finite numeric values are present.
+    """
+    import numpy as np
+    lo = None
+    hi = None
+    for col in df.columns:
+        for val in df[col].to_numpy():
+            arr = np.asarray(val, dtype="float64").ravel() if not np.isscalar(val) \
+                else np.asarray([val], dtype="float64")
+            arr = arr[np.isfinite(arr)]
+            if arr.size == 0:
+                continue
+            cmn = float(arr.min())
+            cmx = float(arr.max())
+            lo = cmn if lo is None else min(lo, cmn)
+            hi = cmx if hi is None else max(hi, cmx)
+    if lo is None:
+        return (None, None)
+    return (lo, hi)
+
+
+def _compute_shared_limits(
+    share_limits: dict, data_inputs: dict, schema_keys: list[str]
+) -> dict:
+    """Compute per-group numeric extents for each input named in share_limits.
+
+    Returns ``{input_name: (group_keys_present, {group_key_tuple: (min, max)})}``
+    where ``group_keys_present`` is the subset of the requested held-fixed schema
+    keys actually present in the input's DataFrame, and each group spans all rows
+    sharing those key values (i.e. across every other iterated key).
+    """
+    import pandas as pd
+
+    result: dict = {}
+    for input_name, group_keys in share_limits.items():
+        var_spec = data_inputs.get(input_name)
+        if var_spec is None:
+            continue
+        df, _eff_meta, column_selection = _resolve_data_spec(var_spec, {})
+        if not isinstance(df, pd.DataFrame):
+            continue
+        data_cols = [
+            c for c in df.columns
+            if c not in schema_keys and not str(c).startswith("__")
+        ]
+        if column_selection:
+            data_cols = [c for c in data_cols if c in column_selection]
+        if not data_cols:
+            continue
+
+        present_group_keys = [k for k in group_keys if k in df.columns]
+        limits: dict = {}
+        if present_group_keys:
+            for gvals, gdf in df.groupby(present_group_keys, sort=False):
+                key = gvals if isinstance(gvals, tuple) else (gvals,)
+                gkey = tuple(str(v) for v in key)
+                mn, mx = _numeric_extent(gdf[data_cols])
+                if mn is not None:
+                    limits[gkey] = (mn, mx)
+        else:
+            mn, mx = _numeric_extent(df[data_cols])
+            if mn is not None:
+                limits[()] = (mn, mx)
+        result[input_name] = (present_group_keys, limits)
+    return result
 
 
 def _filter_df_for_combo(

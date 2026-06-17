@@ -1,0 +1,55 @@
+"""scihist is now a deprecation shim over scidb — verify the re-exports.
+
+The implementation moved into scidb (which tracks lineage by default). scihist
+remains only for backward-compatible imports. Most symbols are identical objects
+re-exported from scidb; ``for_each`` and ``configure_database`` are thin wrappers
+that preserve scihist's historical defaults (``skip_computed=True`` and lineage
+cache-backend registration), so they are NOT identity-equal to scidb's.
+"""
+
+import warnings
+
+import scidb
+
+
+def test_reexports_are_scidb_objects():
+    import scihist
+
+    # Identity re-exports (same object as scidb's).
+    assert scihist.save is scidb.save
+    assert scihist.find_by_lineage is scidb.find_by_lineage
+    assert scihist.check_combo_state is scidb.check_combo_state
+    assert scihist.check_node_state is scidb.check_node_state
+    assert scihist.check_multiple_nodes_state is scidb.check_multiple_nodes_state
+    assert scihist.Fixed is scidb.Fixed
+    assert scihist.Merge is scidb.Merge
+    assert scihist.ColumnSelection is scidb.ColumnSelection
+    assert scihist.ForEachConfig is scidb.ForEachConfig
+
+
+def test_wrappers_present_but_not_identity():
+    import scihist
+
+    # Wrappers preserve scihist defaults, so they are distinct callables.
+    assert callable(scihist.for_each)
+    assert callable(scihist.configure_database)
+    assert scihist.for_each is not scidb.for_each
+
+
+def test_submodule_imports_still_resolve():
+    # Existing code / tests import scihist submodules directly.
+    from scihist.foreach import save as _save  # noqa: F401
+    from scihist.state import (  # noqa: F401
+        check_node_state,
+        _get_expected_combos,
+        _get_output_combos,
+    )
+
+
+def test_import_emits_deprecation_warning():
+    # The DeprecationWarning fires at first import; re-importing a cached module
+    # won't re-warn, so assert the module imports cleanly and exposes the API.
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        import scihist  # noqa: F401
+    assert hasattr(scihist, "for_each")

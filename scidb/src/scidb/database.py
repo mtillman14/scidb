@@ -581,6 +581,22 @@ def get_database() -> "DatabaseManager":
     return db
 
 
+def find_by_lineage(invocation) -> list | None:
+    """Find previously computed output values by computation lineage.
+
+    Given a lineage invocation (function + inputs), looks up any matching
+    outputs in the active database's ``_lineage`` table. Folded in from the
+    former ``scihist.find_by_lineage``.
+
+    Args:
+        invocation: A lineage invocation object with ``compute_lineage_hash()``.
+
+    Returns:
+        List of output values if found, else None.
+    """
+    return get_database().find_by_lineage(invocation)
+
+
 class DatabaseManager:
     """
     Manages data storage and lineage persistence (both in DuckDB via SciDuck).
@@ -996,6 +1012,7 @@ class DatabaseManager:
         variable_class: Type[BaseVariable],
         data_items: list[tuple[Any, dict]],
         profile: bool = False,
+        lineage_hashes: "list[str | None] | None" = None,
     ) -> list[str]:
         """
         Bulk-save a list of (data_value, metadata_dict) pairs for a single variable type.
@@ -1010,6 +1027,10 @@ class DatabaseManager:
             variable_class: The BaseVariable subclass to save as
             data_items: List of (data_value, flat_metadata_dict) tuples
             profile: If True, print phase-by-phase timing summary
+            lineage_hashes: Optional per-item lineage hashes (parallel to
+                data_items) stored in the _record_metadata.lineage_hash column.
+                Used by the batched lineage save path; the corresponding
+                _lineage rows are written separately via _save_lineage_rows_batch.
 
         Returns:
             List of record_ids for each saved item (in input order)
@@ -1176,9 +1197,10 @@ class DatabaseManager:
             # Use pre-extracted branch_params (extracted before _split_metadata at line 1013)
             branch_params = all_branch_params[i]
             bp_json = json.dumps(branch_params, sort_keys=True)
+            _item_lineage_hash = lineage_hashes[i] if lineage_hashes is not None else None
             metadata_rows.append((
                 record_id, timestamp, type_name, schema_id,
-                vk_json, content_hash, None, schema_version, user_id,
+                vk_json, content_hash, _item_lineage_hash, schema_version, user_id,
                 bp_json,
             ))
             t4_meta += time.perf_counter() - _t
@@ -2128,6 +2150,50 @@ class DatabaseManager:
             [output_record_id, lh, output_type, lineage.get("function_name"),
              lineage.get("function_hash"), inputs_json, constants_json, timestamp],
         )
+
+    def _save_lineage_rows_batch(
+        self,
+        items: "list[tuple[str, dict, str | None]]",
+        output_type: str,
+    ) -> None:
+        """Bulk-insert _lineage rows for a batch of saved records.
+
+        Batched counterpart to :meth:`_save_lineage`, used by the batched
+        lineage save path. ``items`` is a list of
+        ``(output_record_id, lineage_dict, pipeline_lineage_hash)`` tuples.
+        The lineage_hash stored falls back to the record_id when no pipeline
+        hash is given, matching :meth:`_save_lineage`.
+        """
+        if not items:
+            return
+        timestamp = datetime.now().isoformat()
+        rows = []
+        for output_record_id, lineage, pipeline_lineage_hash in items:
+            lh = pipeline_lineage_hash or output_record_id
+            rows.append((
+                output_record_id, lh, output_type,
+                lineage.get("function_name"), lineage.get("function_hash"),
+                json.dumps(lineage.get("inputs", []), sort_keys=True),
+                json.dumps(lineage.get("constants", {}), sort_keys=True),
+                timestamp,
+            ))
+        self._duck._begin()
+        try:
+            self._duck.con.executemany(
+                "INSERT INTO _lineage "
+                "(output_record_id, lineage_hash, target, function_name, function_hash, "
+                " inputs, constants, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (output_record_id) DO NOTHING",
+                rows,
+            )
+            self._duck._commit()
+        except Exception:
+            try:
+                self._duck._rollback()
+            except Exception:
+                pass
+            raise
 
     def _load_with_where(
         self,
