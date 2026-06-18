@@ -5,6 +5,12 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
+[tool.hatch.version.raw-options]
+root = ".."
+
+[tool.setuptools_scm]
+search_parent_directories = true
+
 [project]
 name = "scifor"
 dynamic = ["version"]

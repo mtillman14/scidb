@@ -8,20 +8,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "Installing all SciStack packages in editable mode..."
 
 # Layer 0: no internal deps
-pip install -e $SCRIPT_DIR/scicanonicalhash
-pip install -e $SCRIPT_DIR/path-gen
-pip install -e $SCRIPT_DIR/scifor
-pip install -e $SCRIPT_DIR/sciduckdb
+python -m pip install -e "$SCRIPT_DIR/scicanonicalhash"
+python -m pip install -e "$SCRIPT_DIR/path-gen"
+python -m pip install -e "$SCRIPT_DIR/scifor"
+python -m pip install -e "$SCRIPT_DIR/sciduckdb"
 
 # Layer 1: depends on scicanonicalhash
-pip install -e $SCRIPT_DIR/scilineage
+python -m pip install -e "$SCRIPT_DIR/scilineage"
 
 # Layer 2: depends on thunk, scipathgen, scicanonicalhash, sciduckdb, scirun
-pip install -e $SCRIPT_DIR/scidb
+python -m pip install -e "$SCRIPT_DIR/scidb"
 
 # Layer 3: depends on scidb
-pip install -e $SCRIPT_DIR/scimatlab
-pip install -e $SCRIPT_DIR/scihist
-pip install -e $SCRIPT_DIR/scidb-net
+python -m pip install -e "$SCRIPT_DIR/scimatlab"
+python -m pip install -e "$SCRIPT_DIR/scihist"
+python -m pip install -e "$SCRIPT_DIR/scidb-net"
 
 echo "All packages installed in editable mode."
