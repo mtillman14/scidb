@@ -490,13 +490,17 @@ def check_node_state(
     from scidb.foreach_config import _compute_fn_hash
 
     fn_hash = _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
-    expected = provenance_query.expected_invocations_for_function(db, fn_name, fn_hash)
-    present = provenance_query.present_invocations(db._duck, set(expected))
+    expected = provenance_query.expected_invocations_for_function(
+        db, fn_name, fn_hash, inputs_fallback=inputs,
+    )
+    present = provenance_query.present_invocation_schema_pairs(
+        db._duck, {inv_id for inv_id, _sid in expected},
+    )
 
     counts: dict[str, int] = {"up_to_date": 0, "stale": 0, "missing": 0}
     combo_results: list[dict] = []
-    for inv_id, schema_id in expected.items():
-        state: ComboState = "up_to_date" if inv_id in present else "missing"
+    for inv_id, schema_id in expected:
+        state: ComboState = "up_to_date" if (inv_id, schema_id) in present else "missing"
         counts[state] += 1
         combo_results.append({
             "schema_combo": _schema_id_to_combo(db, schema_id),

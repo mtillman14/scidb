@@ -324,6 +324,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="internals/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="project/" class="md-tabs__link">
           
   
@@ -1484,7 +1506,7 @@
   <span class="md-ellipsis">
     
   
-    Lineage (Thunk System)
+    Lineage & Provenance
   
 
     
@@ -1582,6 +1604,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -1594,6 +1620,254 @@
         
         
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="internals/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="internals/scilineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage Engine (scilineage)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="internals/sciduckdb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DuckDB Layer (sciduckdb)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="internals/scicanonicalhash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Content Hashing (scicanonicalhash)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="internals/scipathgen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Path Generation (scipathgen)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="internals/scimatlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MATLAB Bridge (scimatlab)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="internals/scidb-net/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking (scidb-net)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1615,14 +1889,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1846,11 +2120,13 @@
 <h1 id="scistack">SciStack<a class="headerlink" href="#scistack" title="Permanent link">&para;</a></h1>
 <!-- Ground truth (source/tests win over prose). Verified against this session's reconciled
      pages and: scidb/__init__ (BaseVariable, configure_database, get_database, for_each);
-     scihist/__init__ (for_each, save, configure_database, lineage_fcn); scilineage (lineage_fcn
-     -> LineageFcnResult.data); scimatlab configure_database (2 args); all data + lineage in one
-     DuckDB file. NOTE: layered stack (scifor/scidb/scilineage/scihist), NOT a single-package
-     scidb; decorator is @lineage_fcn (not @thunk); configure_database takes 2 args (no SQLite
-     "pipeline.db"); persist lineage results via scihist.save, not VarClass.save. -->
+     scihist/__init__ (for_each, save, configure_database, AND re-exports lineage_fcn,
+     LineageFcn, set_schema, Fixed, ... from the layers below); scimatlab configure_database
+     (2 args); all data + lineage in one DuckDB file. NOTE: three USER-FACING layers
+     (scifor/scidb/scihist); lineage is a scihist feature (lineage_fcn is re-exported by
+     scihist, so import it from scihist — the scilineage package is internal); decorator is
+     @lineage_fcn (not @thunk); configure_database takes 2 args (no SQLite "pipeline.db");
+     persist lineage results via scihist.save, not VarClass.save. -->
 
 <p><strong>A layered framework for reproducible scientific data processing.</strong></p>
 <p>SciStack turns ordinary analysis functions into versioned, provenance-tracked,
@@ -1877,11 +2153,6 @@ the ones above it when you want more. (See
 <td>Run a function over every condition combination on plain tables — no database</td>
 </tr>
 <tr>
-<td>Provenance</td>
-<td><code>scilineage</code></td>
-<td>Record what produced each value; cache by lineage</td>
-</tr>
-<tr>
 <td>Storage</td>
 <td><code>scidb</code></td>
 <td>Typed, versioned variables in a database; DB-backed <code>for_each</code></td>
@@ -1893,30 +2164,31 @@ the ones above it when you want more. (See
 </tr>
 </tbody>
 </table>
+<p>Each layer re-exports the one below it, so the top layer (<code>scihist</code>) gives you the
+whole API from a single import.</p>
 <h2 id="quick-example">Quick example<a class="headerlink" href="#quick-example" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scidb</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseVariable</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scihist</span><span class="w"> </span><span class="kn">import</span> <span class="n">for_each</span><span class="p">,</span> <span class="n">configure_database</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># One DuckDB file holds data and lineage; declare the experiment&#39;s condition keys</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">configure_database</span><span class="p">(</span><span class="s2">&quot;experiment.duckdb&quot;</span><span class="p">,</span> <span class="p">[</span><span class="s2">&quot;subject&quot;</span><span class="p">,</span> <span class="s2">&quot;session&quot;</span><span class="p">])</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="k">class</span><span class="w"> </span><span class="nc">RawSignal</span><span class="p">(</span><span class="n">BaseVariable</span><span class="p">):</span> <span class="n">schema_version</span> <span class="o">=</span> <span class="mi">1</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="k">class</span><span class="w"> </span><span class="nc">SignalPower</span><span class="p">(</span><span class="n">BaseVariable</span><span class="p">):</span> <span class="n">schema_version</span> <span class="o">=</span> <span class="mi">1</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="c1"># A tracked function: each call records its inputs + a hash of the function</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="nd">@lineage_fcn</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="k">def</span><span class="w"> </span><span class="nf">compute_power</span><span class="p">(</span><span class="n">signal</span><span class="p">):</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">signal</span> <span class="o">**</span> <span class="mi">2</span><span class="p">))</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="c1"># Process every subject/session, loading inputs and saving outputs with lineage</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">for_each</span><span class="p">(</span><span class="n">compute_power</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;signal&quot;</span><span class="p">:</span> <span class="n">RawSignal</span><span class="p">},</span> <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">SignalPower</span><span class="p">],</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>         <span class="n">subject</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="n">session</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;A&quot;</span><span class="p">,</span> <span class="s2">&quot;B&quot;</span><span class="p">])</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="c1"># Re-run: nothing recomputes — every result is already current</span>
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">for_each</span><span class="p">(</span><span class="n">compute_power</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;signal&quot;</span><span class="p">:</span> <span class="n">RawSignal</span><span class="p">},</span> <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">SignalPower</span><span class="p">],</span>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>         <span class="n">subject</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="n">session</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;A&quot;</span><span class="p">,</span> <span class="s2">&quot;B&quot;</span><span class="p">])</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scihist</span><span class="w"> </span><span class="kn">import</span> <span class="n">for_each</span><span class="p">,</span> <span class="n">configure_database</span><span class="p">,</span> <span class="n">lineage_fcn</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># One DuckDB file holds data and lineage; declare the experiment&#39;s condition keys</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">configure_database</span><span class="p">(</span><span class="s2">&quot;experiment.duckdb&quot;</span><span class="p">,</span> <span class="p">[</span><span class="s2">&quot;subject&quot;</span><span class="p">,</span> <span class="s2">&quot;session&quot;</span><span class="p">])</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">RawSignal</span><span class="p">(</span><span class="n">BaseVariable</span><span class="p">):</span> <span class="n">schema_version</span> <span class="o">=</span> <span class="mi">1</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="k">class</span><span class="w"> </span><span class="nc">SignalPower</span><span class="p">(</span><span class="n">BaseVariable</span><span class="p">):</span> <span class="n">schema_version</span> <span class="o">=</span> <span class="mi">1</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="c1"># A tracked function: each call records its inputs + a hash of the function</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="nd">@lineage_fcn</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="k">def</span><span class="w"> </span><span class="nf">compute_power</span><span class="p">(</span><span class="n">signal</span><span class="p">):</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">signal</span> <span class="o">**</span> <span class="mi">2</span><span class="p">))</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="c1"># Process every subject/session, loading inputs and saving outputs with lineage</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="n">for_each</span><span class="p">(</span><span class="n">compute_power</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;signal&quot;</span><span class="p">:</span> <span class="n">RawSignal</span><span class="p">},</span> <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">SignalPower</span><span class="p">],</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>         <span class="n">subject</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="n">session</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;A&quot;</span><span class="p">,</span> <span class="s2">&quot;B&quot;</span><span class="p">])</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="c1"># Re-run: nothing recomputes — every result is already current</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="n">for_each</span><span class="p">(</span><span class="n">compute_power</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;signal&quot;</span><span class="p">:</span> <span class="n">RawSignal</span><span class="p">},</span> <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">SignalPower</span><span class="p">],</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>         <span class="n">subject</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="n">session</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;A&quot;</span><span class="p">,</span> <span class="s2">&quot;B&quot;</span><span class="p">])</span>
 </code></pre></div>
 <h2 id="why-scistack">Why SciStack<a class="headerlink" href="#why-scistack" title="Permanent link">&para;</a></h2>
 <table>

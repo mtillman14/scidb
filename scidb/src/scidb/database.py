@@ -708,7 +708,7 @@ class DatabaseManager:
                 function_name VARCHAR NOT NULL,
                 schema_id     INTEGER NOT NULL,
                 invocation_id VARCHAR NOT NULL,
-                PRIMARY KEY (function_name, invocation_id)
+                PRIMARY KEY (function_name, schema_id, invocation_id)
             )
         """)
 

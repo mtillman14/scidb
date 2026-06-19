@@ -326,6 +326,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../../internals/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../../project/" class="md-tabs__link">
           
   
@@ -1535,7 +1557,7 @@
   <span class="md-ellipsis">
     
   
-    Lineage (Thunk System)
+    Lineage & Provenance
   
 
     
@@ -1633,6 +1655,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -1645,6 +1671,254 @@
         
         
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../internals/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scilineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage Engine (scilineage)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/sciduckdb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DuckDB Layer (sciduckdb)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scicanonicalhash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Content Hashing (scicanonicalhash)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scipathgen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Path Generation (scipathgen)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scimatlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MATLAB Bridge (scimatlab)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scidb-net/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking (scidb-net)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1666,14 +1940,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1958,12 +2232,13 @@
 
 <p>This guide shows how to add provenance tracking to a pipeline and query it. For
 the model behind it (how lineage forms a cache key, how it survives save/reload),
-see <a href="../../concepts/lineage/">Lineage &amp; Provenance</a>. Lineage requires <code>scilineage</code>;
-the <code>scihist</code> layer wires it in automatically.</p>
+see <a href="../../concepts/lineage/">Lineage &amp; Provenance</a>. Lineage is a <code>scihist</code>
+feature — it re-exports the <code>lineage_fcn</code> decorator, so you import it from
+<code>scihist</code>.</p>
 <h2 id="add-tracking-with-lineage_fcn">Add tracking with <code>@lineage_fcn</code><a class="headerlink" href="#add-tracking-with-lineage_fcn" title="Permanent link">&para;</a></h2>
 <p>Decorate a processing function. Each call returns a <code>LineageFcnResult</code> carrying
 provenance; the value is on <code>.data</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scihist</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nd">@lineage_fcn</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">process_signal</span><span class="p">(</span><span class="n">signal</span><span class="p">,</span> <span class="n">factor</span><span class="p">):</span>
@@ -2027,7 +2302,8 @@ feeding it onward records the correct ancestry (and hits the
 <a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="n">db</span><span class="o">.</span><span class="n">has_lineage</span><span class="p">(</span><span class="n">record_id</span><span class="p">)</span>   <span class="c1"># True if this record was produced with lineage</span>
 </code></pre></div>
 <h2 id="inspect-lineage-without-saving">Inspect lineage without saving<a class="headerlink" href="#inspect-lineage-without-saving" title="Permanent link">&para;</a></h2>
-<p>To examine provenance in memory, use scilineage's extractors:</p>
+<p>To examine provenance in memory, use the lineage engine's extractors (see
+<a href="../../internals/scilineage/">Internals — scilineage</a>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">extract_lineage</span><span class="p">,</span> <span class="n">get_upstream_lineage</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">rec</span> <span class="o">=</span> <span class="n">extract_lineage</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
@@ -2041,7 +2317,7 @@ feeding it onward records the correct ancestry (and hits the
 <h2 id="wrap-existing-library-functions">Wrap existing library functions<a class="headerlink" href="#wrap-existing-library-functions" title="Permanent link">&para;</a></h2>
 <p>You don't have to own a function to track it — wrap any callable by <em>calling</em>
 <code>lineage_fcn</code> on it (with <code>unpack_output=True</code> for tuple returns):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scihist</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scipy.signal</span><span class="w"> </span><span class="kn">import</span> <span class="n">butter</span><span class="p">,</span> <span class="n">filtfilt</span>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">butter_l</span>   <span class="o">=</span> <span class="n">lineage_fcn</span><span class="p">(</span><span class="n">butter</span><span class="p">,</span> <span class="n">unpack_output</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># returns (b, a)</span>
@@ -2055,7 +2331,7 @@ import them where needed.</p>
 <h2 id="document-manual-interventions">Document manual interventions<a class="headerlink" href="#document-manual-interventions" title="Permanent link">&para;</a></h2>
 <p>When you must edit data outside the pipeline, re-enter with <code>manual()</code> so the
 correction is recorded rather than hidden:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">manual</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scidb</span><span class="w"> </span><span class="kn">import</span> <span class="n">manual</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">clean</span> <span class="o">=</span> <span class="n">manual</span><span class="p">(</span><span class="n">edited_data</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;outlier_removal&quot;</span><span class="p">,</span>
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>               <span class="n">reason</span><span class="o">=</span><span class="s2">&quot;amplitude &lt; 0.1 in trial 3 is a sensor artifact&quot;</span><span class="p">)</span>

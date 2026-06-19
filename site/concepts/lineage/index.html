@@ -326,6 +326,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../../internals/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../../project/" class="md-tabs__link">
           
   
@@ -1524,7 +1546,7 @@
   <span class="md-ellipsis">
     
   
-    Lineage (Thunk System)
+    Lineage & Provenance
   
 
     
@@ -1622,6 +1644,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -1634,6 +1660,254 @@
         
         
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../internals/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scilineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage Engine (scilineage)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/sciduckdb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DuckDB Layer (sciduckdb)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scicanonicalhash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Content Hashing (scicanonicalhash)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scipathgen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Path Generation (scipathgen)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scimatlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MATLAB Bridge (scimatlab)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scidb-net/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking (scidb-net)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1655,14 +1929,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1930,21 +2204,24 @@
        UNSAVED_RESULT/RAW_DATA/CONSTANT);
      scidb/tests/test_optional_lineage_dependency.py (HAS_LINEAGE; scidb works without
        scilineage; version_keys __fn/__fn_hash/__inputs/__constants + namespaced branch_params).
-     scilineage is Python-only and depends only on scicanonicalhash. -->
+     NOTE: lineage is a scihist feature — lineage_fcn/LineageFcn are RE-EXPORTED by scihist
+       (import from scihist); manual() is re-exported by scidb; extract_lineage/
+       get_upstream_lineage live only in the internal scilineage package. Python-only. -->
 
 <p><strong>Lineage</strong> is the record of <em>how a value was produced</em>: which function ran, what
-its inputs were, and a version stamp of the function itself. SciLineage captures
-this automatically as your code runs, building a provenance graph that doubles as
-a cache key — the same lineage means the same result, so work can be reused
-instead of repeated.</p>
-<p>This page explains the model. SciLineage is <strong>Python-only</strong> and depends only on
-<code>scicanonicalhash</code>; it is the provenance engine that
-<a href="../architecture/"><code>scihist</code></a> layers on top of <code>scidb</code>.</p>
+its inputs were, and a version stamp of the function itself. SciStack captures
+this automatically as your code runs (this is what <a href="../architecture/"><code>scihist</code></a>
+adds on top of <code>scidb</code>), building a provenance graph that doubles as a cache key —
+the same lineage means the same result, so work can be reused instead of repeated.</p>
+<p>This page explains the model. Lineage is <strong>Python-only</strong>; you reach it through
+<code>scihist</code>, which re-exports the <code>lineage_fcn</code> decorator and wraps your functions
+for you. (The engine itself is the internal <code>scilineage</code> package — see
+<a href="../../internals/scilineage/">Internals</a>.)</p>
 <h2 id="functions-that-remember-their-inputs">Functions that remember their inputs<a class="headerlink" href="#functions-that-remember-their-inputs" title="Permanent link">&para;</a></h2>
 <p>Decorate a function with <code>@lineage_fcn</code> and each call returns a
 <code>LineageFcnResult</code> instead of the raw value. The result carries both the computed
 value and the provenance of the computation:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scihist</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nd">@lineage_fcn</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">factor</span><span class="p">):</span>
@@ -1979,7 +2256,7 @@ own tracked result:</p>
 </code></pre></div>
 <h2 id="inputs-vs-constants-how-an-input-is-classified">Inputs vs. constants: how an input is classified<a class="headerlink" href="#inputs-vs-constants-how-an-input-is-classified" title="Permanent link">&para;</a></h2>
 <p>The fidelity of lineage comes from correctly distinguishing <em>what kind of thing</em>
-each input is. SciLineage classifies every input into one of five kinds:</p>
+each input is. Every input is classified into one of five kinds:</p>
 <table>
 <thead>
 <tr>
@@ -2049,7 +2326,8 @@ tomorrow — has identical provenance and cache behavior to one run end to end.<
 classified inputs, giving the stable cache key that
 <a href="../caching/">Computation Caching</a> keys on.</p>
 <h2 id="reading-the-provenance-graph">Reading the provenance graph<a class="headerlink" href="#reading-the-provenance-graph" title="Permanent link">&para;</a></h2>
-<p>Two helpers turn a result into inspectable lineage:</p>
+<p>Two helpers turn a result into inspectable lineage. They live in the lineage
+engine itself (see <a href="../../internals/scilineage/">Internals</a>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">extract_lineage</span><span class="p">,</span> <span class="n">get_upstream_lineage</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">record</span> <span class="o">=</span> <span class="n">extract_lineage</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
@@ -2067,7 +2345,7 @@ are persisted alongside saved variables.</p>
 <p>Real pipelines sometimes need an out-of-band correction — removing a sensor
 artifact, say. Rather than breaking the provenance chain, re-enter the pipeline
 with <code>manual()</code>, which records the edit as a first-class lineage step:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">manual</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scidb</span><span class="w"> </span><span class="kn">import</span> <span class="n">manual</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">corrected</span> <span class="o">=</span> <span class="n">manual</span><span class="p">(</span><span class="n">edited_data</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;outlier_removal&quot;</span><span class="p">,</span>
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>                   <span class="n">reason</span><span class="o">=</span><span class="s2">&quot;amplitude &lt; 0.1 in trial 3 is a sensor artifact&quot;</span><span class="p">)</span>
@@ -2076,12 +2354,13 @@ with <code>manual()</code>, which records the edit as a first-class lineage step
 the <code>label</code> and <code>reason</code> captured in its lineage — so the intervention is
 documented and reproducible, not a silent hand-edit.</p>
 <h2 id="where-lineage-fits-in-the-stack">Where lineage fits in the stack<a class="headerlink" href="#where-lineage-fits-in-the-stack" title="Permanent link">&para;</a></h2>
-<p>SciLineage is optional <em>below</em> <code>scihist</code>. <code>scidb</code> runs without it (guarded by a
-<code>HAS_LINEAGE</code> flag); even for plain functions it still records function and input
-identity (<code>__fn</code>, <code>__fn_hash</code>, <code>__inputs</code>, <code>__constants</code>, and namespaced
-<code>branch_params</code>) for its own version tracking. The full provenance graph and
-automatic function wrapping come from <code>scihist</code>, which decorates your functions
-for you.</p>
+<p>Lineage is what <code>scihist</code> adds on top of <code>scidb</code>. <code>scidb</code> itself runs without the
+lineage engine (guarded by a <code>HAS_LINEAGE</code> flag); even for plain functions it
+still records function and input identity (<code>__fn</code>, <code>__fn_hash</code>, <code>__inputs</code>,
+<code>__constants</code>, and namespaced <code>branch_params</code>) for its own version tracking. The
+full provenance graph and automatic function wrapping come from <code>scihist</code>, which
+decorates your functions for you. (Implementation:
+<a href="../../internals/scilineage/">Internals — scilineage</a>.)</p>
 <p><strong>Next:</strong> <a href="../caching/">Computation Caching</a> ·
 <a href="../hashing/">Versioning &amp; Content Hashing</a> · <a href="../node-states/">Node States</a> ·
 <a href="../../api/lineage/">API: Lineage</a> · <a href="../../guide/lineage/">Guide: Tracking Lineage</a></p>

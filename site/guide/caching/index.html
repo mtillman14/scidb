@@ -326,6 +326,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../../internals/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../../project/" class="md-tabs__link">
           
   
@@ -1491,7 +1513,7 @@
   <span class="md-ellipsis">
     
   
-    Lineage (Thunk System)
+    Lineage & Provenance
   
 
     
@@ -1589,6 +1611,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -1601,6 +1627,254 @@
         
         
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../internals/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scilineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage Engine (scilineage)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/sciduckdb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DuckDB Layer (sciduckdb)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scicanonicalhash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Content Hashing (scicanonicalhash)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scipathgen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Path Generation (scipathgen)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scimatlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MATLAB Bridge (scimatlab)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scidb-net/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking (scidb-net)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1622,14 +1896,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1901,23 +2175,22 @@ outputs through <code>for_each</code> or <code>scihist.save</code>.</p>
 with <code>scihist.save</code>, and re-running the same function on the same input returns
 the stored result <strong>without executing again</strong> — even after reloading the input or
 in a separate script:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scihist</span><span class="w"> </span><span class="kn">import</span> <span class="n">save</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scilineage</span><span class="w"> </span><span class="kn">import</span> <span class="n">lineage_fcn</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nd">@lineage_fcn</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">double</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;computing&quot;</span><span class="p">)</span>     <span class="c1"># prints only on the first run</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="k">return</span> <span class="n">x</span> <span class="o">*</span> <span class="mi">2</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">RawSignal</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]),</span> <span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">result</span> <span class="o">=</span> <span class="n">double</span><span class="p">(</span><span class="n">RawSignal</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="n">save</span><span class="p">(</span><span class="n">SignalOut</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>        <span class="c1"># records the result + its lineage</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="c1"># later, or in another script</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">again</span> <span class="o">=</span> <span class="n">double</span><span class="p">(</span><span class="n">RawSignal</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span>  <span class="c1"># cache hit — &quot;computing&quot; does NOT print</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">scihist</span><span class="w"> </span><span class="kn">import</span> <span class="n">save</span><span class="p">,</span> <span class="n">lineage_fcn</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nd">@lineage_fcn</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">double</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;computing&quot;</span><span class="p">)</span>     <span class="c1"># prints only on the first run</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="k">return</span> <span class="n">x</span> <span class="o">*</span> <span class="mi">2</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">RawSignal</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]),</span> <span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">result</span> <span class="o">=</span> <span class="n">double</span><span class="p">(</span><span class="n">RawSignal</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">save</span><span class="p">(</span><span class="n">SignalOut</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>        <span class="c1"># records the result + its lineage</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="c1"># later, or in another script</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">again</span> <span class="o">=</span> <span class="n">double</span><span class="p">(</span><span class="n">RawSignal</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">subject</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span>  <span class="c1"># cache hit — &quot;computing&quot; does NOT print</span>
 </code></pre></div>
-<p>This works because <code>scihist.configure_database</code> registers the database as
-scilineage's cache backend, and saved results carry the lineage hash used as the
+<p>This works because <code>scihist.configure_database</code> registers the database as the
+lineage cache backend, and saved results carry the lineage hash used as the
 lookup key.</p>
 <h2 id="what-counts-as-the-same-computation">What counts as the "same" computation<a class="headerlink" href="#what-counts-as-the-same-computation" title="Permanent link">&para;</a></h2>
 <p>A cache hit requires all of:</p>

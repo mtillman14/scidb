@@ -3376,7 +3376,7 @@ def _persist_expected_combos(
             db._duck._execute(
                 "INSERT INTO _for_each_expected "
                 "(function_name, schema_id, invocation_id) VALUES (?, ?, ?) "
-                "ON CONFLICT (function_name, invocation_id) DO NOTHING",
+                "ON CONFLICT (function_name, schema_id, invocation_id) DO NOTHING",
                 [fn_n, sid, inv_id],
             )
 

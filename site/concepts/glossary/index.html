@@ -326,6 +326,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../../internals/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../../project/" class="md-tabs__link">
           
   
@@ -1458,7 +1480,7 @@
   <span class="md-ellipsis">
     
   
-    Lineage (Thunk System)
+    Lineage & Provenance
   
 
     
@@ -1556,6 +1578,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -1568,6 +1594,254 @@
         
         
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../internals/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scilineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage Engine (scilineage)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/sciduckdb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DuckDB Layer (sciduckdb)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scicanonicalhash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Content Hashing (scicanonicalhash)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scipathgen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Path Generation (scipathgen)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scimatlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MATLAB Bridge (scimatlab)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../internals/scidb-net/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking (scidb-net)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1589,14 +1863,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1815,9 +2089,9 @@ a <code>for_each</code> input. <code>MyVar.for_columns()</code> runs the functio
 → <a href="../variables/">Variables &amp; Storage</a></p>
 <p><strong>Combo state</strong> — The per-combination classification underlying node state:
 <code>up_to_date</code>, <code>stale</code>, or <code>missing</code>. → <a href="../node-states/">Node States</a></p>
-<p><strong>configure_backend</strong> — Registers a cache backend with scilineage so lineage
-hashes can be looked up; <code>scihist</code> wires the <code>scidb</code> database in as this backend.
-→ <a href="../caching/">Computation Caching</a></p>
+<p><strong>configure_backend</strong> — Registers a cache backend with the lineage engine so
+lineage hashes can be looked up; <code>scihist</code> wires the <code>scidb</code> database in as this
+backend. → <a href="../caching/">Computation Caching</a></p>
 <p><strong>configure_database</strong> — One-call setup that opens the DuckDB database, declares
 the dataset schema keys, and auto-registers known variable types.
 → <a href="../variables/">Variables &amp; Storage</a></p>
@@ -1892,8 +2166,8 @@ chosen branch_param variant at load time. → <a href="../node-states/">Node Sta
 <code>load(version="all")</code> returns the full history; <code>load</code> defaults to the latest.
 → <a href="../variables/">Variables &amp; Storage</a></p>
 <h2 id="packages">Packages<a class="headerlink" href="#packages" title="Permanent link">&para;</a></h2>
-<p>The stack is split into single-responsibility packages (see
-<a href="../architecture/">Architecture &amp; Layers</a> for how they depend on each other):</p>
+<p>The three <strong>user-facing</strong> layers are all you import (see
+<a href="../architecture/">Architecture &amp; Layers</a> for how they stack):</p>
 <table>
 <thead>
 <tr>
@@ -1903,24 +2177,8 @@ chosen branch_param variant at load time. → <a href="../node-states/">Node Sta
 </thead>
 <tbody>
 <tr>
-<td><code>scicanonicalhash</code></td>
-<td>Deterministic content hashing and record-id generation</td>
-</tr>
-<tr>
-<td><code>sciduckdb</code></td>
-<td>DuckDB storage: one table per variable, versioning, type round-trip</td>
-</tr>
-<tr>
-<td><code>scipathgen</code></td>
-<td>Generates file paths from metadata</td>
-</tr>
-<tr>
 <td><code>scifor</code></td>
 <td>The batch-iteration engine over plain tables (no database)</td>
-</tr>
-<tr>
-<td><code>scilineage</code></td>
-<td>Provenance graph and pluggable caching (<code>@lineage_fcn</code>)</td>
 </tr>
 <tr>
 <td><code>scidb</code></td>
@@ -1928,18 +2186,14 @@ chosen branch_param variant at load time. → <a href="../node-states/">Node Sta
 </tr>
 <tr>
 <td><code>scihist</code></td>
-<td>Lineage-wrapped <code>for_each</code> + node-state / staleness</td>
-</tr>
-<tr>
-<td><code>scimatlab</code></td>
-<td>MATLAB bridge exposing <code>scifor.*</code> / <code>scidb.*</code></td>
-</tr>
-<tr>
-<td><code>scidb-net</code></td>
-<td>Optional networking / serialization layer</td>
+<td>Lineage-wrapped <code>for_each</code> + node-state / staleness (re-exports the lineage decorator)</td>
 </tr>
 </tbody>
 </table>
+<p>Everything else is an <strong>internal package</strong> you reach through those layers,
+documented under <a href="../../internals/">Internals</a>: <code>scilineage</code> (provenance
+engine), <code>sciduckdb</code> (DuckDB storage), <code>scicanonicalhash</code> (hashing), <code>scipathgen</code>
+(path generation), <code>scimatlab</code> (MATLAB bridge), and <code>scidb-net</code> (networking).</p>
 
 
 

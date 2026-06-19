@@ -360,17 +360,28 @@ def has_producing_invocation(duck, record_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Node completeness (§9c) — expected vs. present invocation membership
 # ---------------------------------------------------------------------------
-def present_invocations(duck, inv_ids) -> set:
-    """Subset of ``inv_ids`` that exist in ``_invocation``."""
+def present_invocation_schema_pairs(duck, inv_ids) -> set:
+    """``{(invocation_id, schema_id)}`` actually produced — i.e. each invocation
+    paired with the schema locations where it emitted an output record.
+
+    Granularity is per (invocation, schema_id), not per invocation, because a
+    PathInput-only function has no per-combo bindings → all its combos share one
+    invocation_id, distinguished only by the output's schema location. For
+    variable-input functions each combo already has a distinct invocation_id, so
+    this reduces to plain invocation presence.
+    """
     ids = list(inv_ids)
     if not ids:
         return set()
     placeholders = ", ".join(["?"] * len(ids))
     rows = duck._fetchall(
-        f"SELECT invocation_id FROM _invocation WHERE invocation_id IN ({placeholders})",
+        f"SELECT DISTINCT io.invocation_id, r.schema_id "
+        f"FROM _invocation_output io "
+        f"JOIN _record r ON r.record_id = io.output_record_id "
+        f"WHERE io.invocation_id IN ({placeholders})",
         ids,
     )
-    return {r[0] for r in rows}
+    return {(r[0], r[1]) for r in rows}
 
 
 def function_variant_configs(duck, fn_name: str) -> list[dict]:
@@ -431,58 +442,121 @@ def _current_records_by_schema(duck, variable_name: str) -> dict:
     return out
 
 
-def expected_invocations_for_function(db, fn_name: str, fn_hash: str) -> dict:
-    """Expected ``{invocation_id: schema_id}`` for ``fn_name`` (§9c).
+def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> None:
+    """Add expected ``(invocation_id, schema_id)`` pairs for one config × current
+    input data into ``into``. Cross-products each input param's current records at
+    every schema location where all params have data."""
+    import itertools
+    from .provenance import compute_constant_record_id, compute_invocation_id
+
+    input_types = cfg["input_types"]
+    if not input_types:
+        return  # PathInput/no-DB-input config — snapshot covers it
+    selectors = cfg["selectors"]
+    const_bindings = [
+        (p, compute_constant_record_id(v)) for p, v in cfg["constants"].items()
+    ]
+    per_param = {
+        param: _current_records_by_schema(duck, vtype)
+        for param, vtype in input_types.items()
+    }
+    common_schema = set.intersection(
+        *[set(m.keys()) for m in per_param.values()]
+    ) if per_param else set()
+    param_names = list(input_types.keys())
+    for sid in common_schema:
+        choices = [[(p, rid) for rid in per_param[p][sid]] for p in param_names]
+        for combo in itertools.product(*choices):
+            bindings = [(p, rid, selectors.get(p)) for p, rid in combo]
+            bindings += [(p, crid, None) for p, crid in const_bindings]
+            inv_id = compute_invocation_id(
+                fn_hash, cfg["as_table"], cfg["distribute"], bindings,
+            )
+            into.add((inv_id, sid))
+
+
+def config_from_inputs(inputs: dict) -> dict:
+    """Build a variant config (same shape as :func:`function_variant_configs`
+    entries) from a for_each-style ``inputs`` dict — used to predict expected
+    invocations for a function that has never run yet.
+
+    Mirrors ``ForEachConfig._get_direct_constants`` / the save path: loadable
+    specs become input_types (by class name), ColumnSelection contributes a
+    selector, PathInput/PathOutput/ColName are excluded, everything else is a
+    constant. ``as_table``/``distribute`` aren't expressible here → defaults.
+    """
+    from .foreach import _is_loadable
+    from .colname import ColName
+    from .column_selection import ColumnSelection
+    from .fixed import Fixed
+    from .provenance_save import compute_input_selectors
+    try:
+        from scifor import PathInput as _PathInput, PathOutput as _PathOutput
+    except ImportError:
+        _PathInput = _PathOutput = None
+
+    input_types: dict = {}
+    constants: dict = {}
+    for name, spec in inputs.items():
+        if _PathInput is not None and isinstance(spec, _PathInput):
+            continue
+        if _PathOutput is not None and isinstance(spec, _PathOutput):
+            continue
+        if isinstance(spec, ColName):
+            continue
+        if _is_loadable(spec):
+            vt = spec
+            if isinstance(vt, Fixed):
+                vt = vt.var_type
+            if isinstance(vt, ColumnSelection):
+                vt = vt.var_type
+            if isinstance(vt, type):
+                input_types[name] = vt.__name__
+        else:
+            constants[name] = spec
+    return {
+        "input_types": input_types,
+        "selectors": compute_input_selectors(inputs),
+        "constants": constants,
+        "as_table": [],
+        "distribute": False,
+    }
+
+
+def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
+                                      inputs_fallback: dict | None = None) -> set:
+    """Expected ``{(invocation_id, schema_id)}`` pairs for ``fn_name`` (§9c).
 
     Union of:
       * the persisted snapshot in ``_for_each_expected`` (covers PathInput-only
-        functions and combos that failed/were skipped), and
-      * a live prediction from current input data for each known variant config —
-        so input data added *after* the last run still surfaces as missing.
+        functions and combos that failed/were skipped),
+      * a live prediction from current input data for each variant config the
+        function has already been run with (so input data added *after* the last
+        run still surfaces as missing), and
+      * a live prediction from ``inputs_fallback`` when provided — lets a
+        never-run function enumerate its expected combos from its declared inputs.
 
-    Membership of these ids in ``_invocation`` is the completeness signal.
+    Each pair's presence (an output of that invocation at that schema location)
+    is the completeness signal — see :func:`present_invocation_schema_pairs`.
     """
-    from .provenance import compute_constant_record_id, compute_invocation_id
-
     duck = db._duck
-    expected: dict = {}
+    expected: set = set()
 
     # (a) persisted snapshot
     for inv_id, sid in duck._fetchall(
         "SELECT invocation_id, schema_id FROM _for_each_expected WHERE function_name = ?",
         [fn_name],
     ):
-        expected[inv_id] = sid
+        expected.add((inv_id, sid))
 
-    # (b) live prediction per variant config × current input data
+    # (b) live prediction per known variant config × current input data
     for cfg in function_variant_configs(duck, fn_name):
-        input_types = cfg["input_types"]
-        if not input_types:
-            continue  # PathInput/no-DB-input config — snapshot covers it
-        selectors = cfg["selectors"]
-        const_bindings = [
-            (p, compute_constant_record_id(v)) for p, v in cfg["constants"].items()
-        ]
-        # records per param, grouped by schema_id
-        per_param = {
-            param: _current_records_by_schema(duck, vtype)
-            for param, vtype in input_types.items()
-        }
-        # schema locations where every input param has at least one record
-        common_schema = set.intersection(
-            *[set(m.keys()) for m in per_param.values()]
-        ) if per_param else set()
-        for sid in common_schema:
-            # cross-product of each param's records at this schema location
-            import itertools
-            param_names = list(input_types.keys())
-            choices = [[(p, rid) for rid in per_param[p][sid]] for p in param_names]
-            for combo in itertools.product(*choices):
-                bindings = [(p, rid, selectors.get(p)) for p, rid in combo]
-                bindings += [(p, crid, None) for p, crid in const_bindings]
-                inv_id = compute_invocation_id(
-                    fn_hash, cfg["as_table"], cfg["distribute"], bindings,
-                )
-                expected.setdefault(inv_id, sid)
+        _predict_config_invocations(duck, fn_hash, cfg, expected)
+
+    # (c) live prediction from the declared inputs (never-run fallback)
+    if inputs_fallback:
+        _predict_config_invocations(
+            duck, fn_hash, config_from_inputs(inputs_fallback), expected,
+        )
 
     return expected

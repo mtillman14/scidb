@@ -326,6 +326,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../internals/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../project/" class="md-tabs__link">
           
   
@@ -1400,7 +1422,7 @@
   <span class="md-ellipsis">
     
   
-    Lineage (Thunk System)
+    Lineage & Provenance
   
 
     
@@ -1498,6 +1520,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -1510,6 +1536,254 @@
         
         
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../internals/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/scilineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lineage Engine (scilineage)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/sciduckdb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DuckDB Layer (sciduckdb)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/scicanonicalhash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Content Hashing (scicanonicalhash)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/scipathgen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Path Generation (scipathgen)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/scimatlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MATLAB Bridge (scimatlab)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/scidb-net/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking (scidb-net)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1531,14 +1805,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1822,10 +2096,11 @@
      NOTE: NO @thunk/Thunk/ThunkOutput/load_all — the decorator is @lineage_fcn, results are
      LineageFcnResult, and load() returns BaseVariable | list | DataFrame. -->
 
-<p>SciStack's public API spans a few packages that compose into a stack. The core
-abstractions (<code>scidb</code>) and the lineage system (<code>scilineage</code>) are surfaced together
-through the top layer (<code>scihist</code>); the same concepts are available from MATLAB via
-<code>scimatlab</code>.</p>
+<p>SciStack's public API is the three user-facing layers — <code>scifor</code>, <code>scidb</code>, and
+<code>scihist</code>. Because each layer re-exports the one below it, the top layer
+(<code>scihist</code>) surfaces the whole API — storage, batch processing, and the lineage
+decorator — from a single import. The same concepts are available from MATLAB
+through the <code>scidb.*</code> / <code>scifor.*</code> surfaces.</p>
 <h2 id="packages">Packages<a class="headerlink" href="#packages" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1837,32 +2112,25 @@ through the top layer (<code>scihist</code>); the same concepts are available fr
 </thead>
 <tbody>
 <tr>
+<td><code>scifor</code></td>
+<td>Standalone batch iteration on tables</td>
+<td><code>from scifor import ...</code> / <code>scifor.*</code></td>
+</tr>
+<tr>
 <td><code>scidb</code></td>
 <td>Variables, database, DB-backed <code>for_each</code></td>
 <td><code>from scidb import ...</code> / <code>scidb.*</code></td>
 </tr>
 <tr>
 <td><code>scihist</code></td>
-<td><code>for_each</code> + lineage + <code>save</code> (full pipeline)</td>
+<td><code>for_each</code> + lineage + <code>save</code> (full pipeline); re-exports the layers below, incl. <code>lineage_fcn</code></td>
 <td><code>from scihist import ...</code></td>
-</tr>
-<tr>
-<td><code>scilineage</code></td>
-<td><code>@lineage_fcn</code>, provenance, hashing</td>
-<td><code>from scilineage import ...</code></td>
-</tr>
-<tr>
-<td><code>scifor</code></td>
-<td>Standalone batch iteration on tables</td>
-<td><code>from scifor import ...</code></td>
-</tr>
-<tr>
-<td><code>scimatlab</code></td>
-<td>MATLAB bridge</td>
-<td><code>addpath(...)</code> then <code>scidb.*</code></td>
 </tr>
 </tbody>
 </table>
+<p>The lineage engine, hashing, DuckDB layer, and MATLAB bridge are <strong>internal
+packages</strong> reached through the three layers above — see
+<a href="../internals/">Internals</a>.</p>
 <h2 id="sections">Sections<a class="headerlink" href="#sections" title="Permanent link">&para;</a></h2>
 <h3 id="variables-basevariable"><a href="variables/">Variables (BaseVariable)</a><a class="headerlink" href="#variables-basevariable" title="Permanent link">&para;</a></h3>
 <p>The central abstraction — every stored value is a <code>BaseVariable</code> subclass.
