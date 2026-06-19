@@ -161,14 +161,23 @@ class TestCheckNodeState:
         assert result["counts"]["up_to_date"] == 2
         assert result["counts"]["missing"] == 2
 
-    def test_red_when_any_combo_stale(self, db):
+    def test_grey_when_input_changed_needs_rerun(self, db):
+        """Changed input → the combo's EXPECTED invocation_id shifts to one over
+        the new input record, which hasn't been run → node shows needs-run (grey).
+
+        Membership model (§9c): "stale" folds into needs-run rather than red — the
+        old output stays valid lineage; the node signals the current recipe hasn't
+        been run on the current input. (Combo-level staleness is still available
+        via check_combo_state.)
+        """
         _seed_raw(db)
         _run_all(db)
-        # Update one input → makes its output stale
+        # Change one input → its expected invocation is now absent.
         RawState.save(np.ones(5) * 99, subject=1, trial="A")
         result = check_node_state(process_data, [ProcessedState], db=db)
-        assert result["state"] == "red"
-        assert result["counts"]["stale"] >= 1
+        assert result["state"] == "grey"
+        assert result["counts"]["missing"] >= 1
+        assert result["counts"]["stale"] == 0
 
     def test_combos_list_has_schema_info(self, db):
         _seed_raw(db)
@@ -370,47 +379,30 @@ def test_variable_input_classification(tmp_path):
         session=["A"],
     )
 
-    # Query lineage
-    import json
-    con = db._duck.con
-    result = con.execute("""
-        SELECT inputs, constants
-        FROM _lineage
-        WHERE target = 'Filtered'
-    """).fetchone()
+    # Query provenance from the bipartite graph.
+    filt = Filtered.load(subject=1, session="A")
+    prov = db.get_provenance(Filtered, version=filt.record_id)
+    assert prov is not None, "No provenance recorded for Filtered"
+    inputs = prov["inputs"]        # variable inputs: {record_id, param_name, variable_type}
+    constants = prov["constants"]  # {param_name: value}
 
-    assert result is not None, "No lineage record found in _lineage"
-    inputs_json, constants_json = result[0], result[1]
-    inputs = json.loads(inputs_json) if isinstance(inputs_json, str) else inputs_json
-    constants = json.loads(constants_json) if isinstance(constants_json, str) else constants_json
-
-    # Assert proper classification
-    var_inputs = [i for i in inputs if i.get("name") == "signal"]
+    # Variable input 'signal' classified correctly, pointing at the saved RawEMG.
+    var_inputs = [i for i in inputs if i.get("param_name") == "signal"]
     assert len(var_inputs) == 1, f"Expected 1 variable input named 'signal', got {len(var_inputs)}"
-    assert var_inputs[0]["source_type"] == "variable", (
-        f"Expected source_type='variable', got {var_inputs[0].get('source_type')}"
-    )
-    assert var_inputs[0]["type"] == "RawEMG", (
-        f"Expected type='RawEMG', got {var_inputs[0].get('type')}"
+    assert var_inputs[0]["variable_type"] == "RawEMG", (
+        f"Expected variable_type='RawEMG', got {var_inputs[0].get('variable_type')}"
     )
     assert var_inputs[0]["record_id"] == rid_input, (
         f"Expected record_id={rid_input}, got {var_inputs[0].get('record_id')}"
     )
 
-    # Constant in constants
-    low_hz_constants = [c for c in constants if c.get("name") == "low_hz"]
-    assert len(low_hz_constants) == 1, f"Expected 1 constant 'low_hz', got {len(low_hz_constants)}"
+    # Constant 'low_hz' classified as a constant, not a variable input.
+    assert "low_hz" in constants, f"Expected 'low_hz' in constants, got {constants}"
+    assert constants["low_hz"] == 20
 
-    # NO rid_tracking entries
-    rid_tracking = [i for i in inputs if i.get("source_type") == "rid_tracking"]
-    assert len(rid_tracking) == 0, (
-        f"Expected 0 rid_tracking entries, got {len(rid_tracking)}: {rid_tracking}"
-    )
-
-    # NO variable inputs in constants (the bug we're fixing)
-    signal_in_constants = [c for c in constants if c.get("name") == "signal"]
-    assert len(signal_in_constants) == 0, (
-        f"Variable 'signal' should NOT be in constants, found {len(signal_in_constants)}"
+    # Variable 'signal' must NOT appear among constants.
+    assert "signal" not in constants, (
+        f"Variable 'signal' should NOT be in constants, found {constants}"
     )
 
 

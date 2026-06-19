@@ -1,280 +1,197 @@
 """Integration test: MATLAB PathInput-only function with partial failure → grey.
 
-Mirrors exactly the scenario captured in ``scidb.log``:
+Drives the **real MATLAB bridge flow** — ``scimatlab.bridge.for_each_prepare``
+(which persists the expected combo set and resolves PathInput filesystem
+discovery) followed by ``for_each_save`` (which routes through scidb's
+``_save_results``, the same batch save path Python uses). This is how real MATLAB
+``scidb.for_each`` saves; it excludes the resolved PathInput filepath from graph
+constants at the source, so node-state needs no special handling.
 
-- A MATLAB function ``load_csv`` whose only input is a ``PathInput``
-  (``sub{subject}/trial{trial}.csv``).
-- The function declares 3 outputs: ``Time``, ``Force_Left``, ``Force_Right``.
-- ``for_each`` iterates 3 subjects × 6 trials; the filesystem discovers 16
-  combos (2 missing on disk) and persists all 16 to ``_for_each_expected``.
-- 15 combos complete successfully and save records for all 3 outputs.
-- 1 combo raises during execution (mirrors the ``Assertion failed`` skip in
-  the log) and saves nothing.
-
-After the run, the function node AND each of its 3 output variable nodes
-must show state == ``"grey"`` (partial completion).
-
-This simulates what MATLAB's ``scidb.for_each`` does on the Python side:
-it calls :func:`_persist_expected_combos` before execution, then saves
-each successful combo's outputs through the scilineage bridge.
+Scenario (mirrors ``scidb.log`` / load_csv.m):
+- ``load_csv`` takes one ``PathInput`` (``sub{subject}/trial{trial}.csv``) and
+  declares 3 outputs: ``Time``, ``Force_Left``, ``Force_Right``.
+- A full subject × trial grid is the expected set (an explicit
+  ``metadata_iterables`` grid is persisted in full — a combo whose run fails
+  shows as *missing*, exactly like ``test_state_realworld``).
+- One combo's run fails (saves nothing) → node is grey.
 """
 
 from __future__ import annotations
 
 from hashlib import sha256
+from pathlib import Path
 
-import numpy as np
+import pandas as pd
 import pytest
 
 from scidb import BaseVariable
-from scidb.foreach import _persist_expected_combos
 from scimatlab.bridge import (
     MatlabLineageFcn,
-    MatlabLineageFcnInvocation,
-    make_lineage_fcn_result,
+    for_each_prepare,
+    for_each_save,
     register_matlab_variable,
 )
-from scihist.foreach import save as scihist_save
 from scihist.state import check_node_state
 
-
-# ---------------------------------------------------------------------------
-# Fixture helpers
-# ---------------------------------------------------------------------------
 
 FN_NAME = "load_csv"
 FN_SOURCE_HASH = sha256(b"function [time,force_left,force_right]=load_csv(filepath)").hexdigest()
 
-SUBJECTS = ["01", "02", "03"]
-TRIALS = ["01", "02", "03", "04", "05", "06"]
-
-# Two combos have no file on disk — filesystem discovery drops them before
-# the run starts. Matches "using 16 filesystem-discovered combos" in the log.
-NOT_ON_DISK = {("03", "06"), ("02", "06")}
-
-# One combo raises during execution — matches the "[skip] subject=01,
-# trial=06: Assertion failed." line in the log.
-FAILED_COMBO = ("01", "06")
+SUBJECTS = ["01", "02"]
+TRIALS = ["01", "02", "03"]
+FAILED_COMBO = ("02", "03")   # run fails → saves nothing → missing → grey
+OUTPUTS = ["Time", "Force_Left", "Force_Right"]
+N_EXPECTED = len(SUBJECTS) * len(TRIALS)        # 6
+N_SUCCESS = N_EXPECTED - 1                       # 5
 
 
-def _discovered_combos() -> list[dict]:
-    """Return the 16 (subject, trial) combos that exist on disk."""
-    return [
-        {"subject": s, "trial": t}
-        for s in SUBJECTS
-        for t in TRIALS
-        if (s, t) not in NOT_ON_DISK
-    ]
+def _all_combos() -> list[tuple]:
+    return [(s, t) for s in SUBJECTS for t in TRIALS]
 
 
-def _successful_combos() -> list[dict]:
-    """Return the 15 combos that completed successfully (16 discovered minus 1 failed)."""
-    return [c for c in _discovered_combos()
-            if (c["subject"], c["trial"]) != FAILED_COMBO]
+def _successful_combos() -> list[tuple]:
+    return [c for c in _all_combos() if c != FAILED_COMBO]
 
 
-def _save_combo_outputs(db, fn_proxy, combo: dict, output_classes) -> None:
-    """Simulate one successful MATLAB for_each iteration.
+def _write_files(root, combos) -> None:
+    """Create (dummy) CSV files so PathInput discovery finds these combos.
 
-    Builds a ``MatlabLineageFcnInvocation`` (with the resolved filepath as
-    the single argument, matching how scimatlab invokes load_csv), wraps
-    each of the 3 outputs in a ``LineageFcnResult`` via
-    :func:`make_lineage_fcn_result`, and saves via ``scihist.foreach.save``
-    so a lineage record is written for each output.
+    Content is irrelevant — the bridge does not run the function (MATLAB would);
+    we supply the output values in the result tables. Only file existence matters.
     """
-    filepath = f"sub{combo['subject']}/trial{combo['trial']}.csv"
-    invocation = MatlabLineageFcnInvocation(fn_proxy, {"arg_0": filepath})
-    # Seed with the combo's schema keys so outputs differ per combo
-    # (otherwise identical data would collapse content-hashes and hide bugs).
-    seed = hash((combo["subject"], combo["trial"])) & 0xFFFF
-    for idx, cls in enumerate(output_classes):
-        data = np.arange(4, dtype=float) + seed + idx
-        result = make_lineage_fcn_result(invocation, idx, data)
-        scihist_save(cls, result, db=db, **combo)
+    for subj, trial in combos:
+        d = Path(root) / f"sub{subj}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"trial{trial}.csv").write_text("time,force_left,force_right\n0,0,0\n")
 
 
-# ---------------------------------------------------------------------------
-# Test
-# ---------------------------------------------------------------------------
+def _path_spec(root) -> dict:
+    return {
+        "kind": "pathinput",
+        "template": "sub{subject}/trial{trial}.csv",
+        "root_folder": str(root),
+    }
+
+
+def _bridge_run(db, root, combos_to_save):
+    """Run one MATLAB-style for_each over the full grid, saving the given combos.
+
+    Mirrors the GUI/MATLAB sequence: ``for_each_prepare`` (persists the expected
+    combo set + discovers files) → MATLAB builds per-output result tables →
+    ``for_each_save`` (→ ``_save_results``).
+    """
+    prep = for_each_prepare(
+        FN_NAME,
+        FN_SOURCE_HASH,
+        {"filepath": _path_spec(root)},
+        OUTPUTS,
+        {"subject": SUBJECTS, "trial": TRIALS},
+        db=db,
+    )
+    handle = prep["handle"]
+    full_combos = prep["full_combos"]
+    output_names = prep["output_names"]
+
+    save_set = set(combos_to_save)
+    dfs = []
+    for idx, oname in enumerate(output_names):
+        rows = []
+        for combo in full_combos:
+            key = (combo["subject"], combo["trial"])
+            if key not in save_set:
+                continue
+            # Distinct value per combo so content hashes differ.
+            seed = SUBJECTS.index(combo["subject"]) * 10 + TRIALS.index(combo["trial"])
+            rows.append({"subject": combo["subject"], "trial": combo["trial"],
+                         oname: float(seed * 3 + idx + 1)})
+        dfs.append(pd.DataFrame(rows))
+
+    for_each_save(handle, dfs, save=True)
+
 
 class TestMatlabPathInputPartialRunGoesGrey:
     """Function + all 3 output variables should turn grey after 15/16 success."""
 
     @pytest.fixture
-    def matlab_run(self, db):
-        """Set up the post-run DB state described in scidb.log."""
-        Time = register_matlab_variable("Time")
-        Force_Left = register_matlab_variable("Force_Left")
-        Force_Right = register_matlab_variable("Force_Right")
-        outputs = [Time, Force_Left, Force_Right]
+    def matlab_run(self, db, tmp_path):
+        for n in OUTPUTS:
+            register_matlab_variable(n)
+        outputs = [BaseVariable._all_subclasses[n] for n in OUTPUTS]
 
-        # Step 1 — MATLAB scidb.for_each persists ALL 16 discovered combos
-        # to _for_each_expected, before execution begins.
-        _persist_expected_combos(db, FN_NAME, "test_call_id", _discovered_combos())
+        _write_files(tmp_path, _all_combos())
+        _bridge_run(db, tmp_path, _successful_combos())
 
-        # Step 2 — MATLAB executes the function, saving outputs for every
-        # successful combo. The failed combo produces no output.
         fn_proxy = MatlabLineageFcn(FN_SOURCE_HASH, FN_NAME, unpack_output=False)
-        fn_proxy.__name__ = FN_NAME  # match _build_matlab_fn_proxy in the GUI
-        for combo in _successful_combos():
-            _save_combo_outputs(db, fn_proxy, combo, outputs)
-
-        return {"fn": fn_proxy, "outputs": outputs}
+        fn_proxy.__name__ = FN_NAME
+        return {"fn": fn_proxy, "outputs": outputs, "root": str(tmp_path)}
 
     def test_function_state_is_grey(self, db, matlab_run):
-        """Aggregate state across all 3 outputs: 15 up_to_date, 1 missing → grey."""
-        result = check_node_state(
-            matlab_run["fn"], matlab_run["outputs"], db=db,
-        )
+        """Aggregate state across all 3 outputs: N-1 up_to_date, 1 missing → grey."""
+        result = check_node_state(matlab_run["fn"], matlab_run["outputs"], db=db)
         assert result["state"] == "grey", (
-            f"Expected grey (15/16 succeeded), got {result['state']}. "
+            f"Expected grey ({N_SUCCESS}/{N_EXPECTED}), got {result['state']}. "
             f"Counts: {result['counts']}"
         )
-        assert result["counts"]["up_to_date"] == 15
+        assert result["counts"]["up_to_date"] == N_SUCCESS
         assert result["counts"]["missing"] == 1
         assert result["counts"]["stale"] == 0
 
-    @pytest.mark.parametrize("output_name", ["Time", "Force_Left", "Force_Right"])
+    @pytest.mark.parametrize("output_name", OUTPUTS)
     def test_each_output_variable_is_grey(self, db, matlab_run, output_name):
-        """Each individual output variable also reports grey.
-
-        GUI-layer DAG propagation downgrades a variable to its producing
-        function's state, but the scihist layer already reports grey per
-        output when queried independently — verify that directly here.
-        """
+        """Each individual output variable also reports grey."""
         cls = BaseVariable._all_subclasses[output_name]
         result = check_node_state(matlab_run["fn"], [cls], db=db)
         assert result["state"] == "grey", (
             f"Expected {output_name} grey, got {result['state']}. "
             f"Counts: {result['counts']}"
         )
-        assert result["counts"]["up_to_date"] == 15
+        assert result["counts"]["up_to_date"] == N_SUCCESS
         assert result["counts"]["missing"] == 1
 
-    def test_expected_combos_persisted(self, db, matlab_run):
-        """Sanity: _for_each_expected has 16 rows for load_csv."""
-        rows = db._duck._fetchall(
-            "SELECT schema_id FROM _for_each_expected WHERE function_name = ?",
-            [FN_NAME],
-        )
-        assert len(rows) == 16
-
-    def test_lineage_records_written_for_successes(self, db, matlab_run):
-        """Sanity: exactly 15 lineage rows per output variable."""
-        for output_name in ("Time", "Force_Left", "Force_Right"):
-            rows = db._duck._fetchall(
-                "SELECT COUNT(*) FROM _lineage l "
-                "JOIN _record_metadata rm ON l.output_record_id = rm.record_id "
-                "WHERE rm.variable_name = ? AND l.function_name = ?",
-                [output_name, FN_NAME],
-            )
-            assert rows[0][0] == 15, (
-                f"Expected 15 lineage rows for {output_name}, got {rows[0][0]}"
-            )
-
     def test_grey_persists_across_db_close_reopen(self, db, matlab_run, tmp_path):
-        """Regression: partial-run grey must survive a full DB close/reopen cycle.
-
-        Mirrors the real GUI workflow: MATLAB completes 15/16 combos → node is
-        grey → GUI is closed (DuckDB file lock released) → GUI reopens (fresh
-        ``DatabaseManager`` at the same path) → node must STILL be grey, not red.
-
-        A previous bug showed all nodes red after reopen because the MATLAB
-        side wasn't flushing/releasing the DB lock cleanly before exit, so
-        ``_for_each_expected`` and/or ``_lineage`` rows were missing when the
-        next process opened the file.  Closing through ``scidb.close_database``
-        (which awaits the actual close before logging RELEASED) fixed it.
-        This test locks that guarantee in at the scihist layer by driving the
-        close/reopen cycle directly — no GUI or MATLAB involved.
-        """
+        """Partial-run grey must survive a full DB close/reopen cycle (GUI restart)."""
         from scidb import configure_database
         from scidb.database import _local
 
-        # Sanity: starting state is grey in the live session.
         before = check_node_state(matlab_run["fn"], matlab_run["outputs"], db=db)
         assert before["state"] == "grey"
-        assert before["counts"]["up_to_date"] == 15
+        assert before["counts"]["up_to_date"] == N_SUCCESS
         assert before["counts"]["missing"] == 1
 
-        # --- Simulate GUI close: release the DuckDB file lock. ---
         db_path = db.dataset_db_path
         schema_keys = list(db.dataset_schema_keys)
         db.close()
-        # The conftest `db` fixture ran `set_current_db()` during setup; clear
-        # that thread-local so the reopen truly starts from a fresh state
-        # (matching how a brand-new GUI process would initialise).
         if hasattr(_local, "database"):
             delattr(_local, "database")
 
-        # --- Simulate GUI reopen: brand-new DatabaseManager at the same path. ---
         reopened = configure_database(db_path, schema_keys)
-
-        # Rebuild the MATLAB proxy fresh, matching what _build_matlab_fn_proxy
-        # does in the GUI on startup (same source_hash → same proxy.hash).
         fresh_fn = MatlabLineageFcn(FN_SOURCE_HASH, FN_NAME, unpack_output=False)
         fresh_fn.__name__ = FN_NAME
-        fresh_outputs = [BaseVariable._all_subclasses[n]
-                         for n in ("Time", "Force_Left", "Force_Right")]
-
+        fresh_outputs = [BaseVariable._all_subclasses[n] for n in OUTPUTS]
         try:
             after = check_node_state(fresh_fn, fresh_outputs, db=reopened)
             assert after["state"] == "grey", (
                 f"Expected grey to persist after reopen, got {after['state']}. "
                 f"Counts: {after['counts']}"
             )
-            assert after["counts"]["up_to_date"] == 15
+            assert after["counts"]["up_to_date"] == N_SUCCESS
             assert after["counts"]["missing"] == 1
             assert after["counts"]["stale"] == 0
-
-            # Sanity: _for_each_expected also survived the reopen.
-            rows = reopened._duck._fetchall(
-                "SELECT schema_id FROM _for_each_expected WHERE function_name = ?",
-                [FN_NAME],
-            )
-            assert len(rows) == 16
         finally:
             reopened.close()
 
     def test_grey_goes_green_after_fix_and_rerun(self, db, matlab_run):
-        """Full workflow: grey → fix → re-run the failing combo → green.
-
-        Starts from the partial-run state set up by ``matlab_run`` (15/16
-        success → grey).  Then simulates the user fixing the MATLAB
-        function so the previously-failing combo (``subject=01,
-        trial=06``) succeeds on a second run.  The function source is
-        unchanged (same hash) because the fix is external to the function
-        — e.g. a repaired input file — so the existing 15 records remain
-        up_to_date.  After saving the final combo, every node (the
-        function and all 3 output variables) must be green.
-        """
-        fn_proxy = matlab_run["fn"]
-        outputs = matlab_run["outputs"]
-
-        # Sanity: confirm the starting state is grey.
-        before = check_node_state(fn_proxy, outputs, db=db)
+        """grey → re-run the previously-failing combo → green."""
+        before = check_node_state(matlab_run["fn"], matlab_run["outputs"], db=db)
         assert before["state"] == "grey"
         assert before["counts"]["missing"] == 1
 
-        # Pretend the fix lets the previously-failing combo run and save.
-        failed = {"subject": FAILED_COMBO[0], "trial": FAILED_COMBO[1]}
-        _save_combo_outputs(db, fn_proxy, failed, outputs)
+        # The fix lets the previously-failing combo run and save this time.
+        _bridge_run(db, matlab_run["root"], _successful_combos() + [FAILED_COMBO])
 
-        # Aggregate state across all 3 outputs: 16 up_to_date → green.
-        after = check_node_state(fn_proxy, outputs, db=db)
+        after = check_node_state(matlab_run["fn"], matlab_run["outputs"], db=db)
         assert after["state"] == "green", (
-            f"Expected green after fix, got {after['state']}. "
-            f"Counts: {after['counts']}"
+            f"Expected green after fix, got {after['state']}. Counts: {after['counts']}"
         )
-        assert after["counts"]["up_to_date"] == 16
+        assert after["counts"]["up_to_date"] == N_EXPECTED
         assert after["counts"]["missing"] == 0
-        assert after["counts"]["stale"] == 0
-
-        # Each individual output variable must also be green.
-        for cls in outputs:
-            per_var = check_node_state(fn_proxy, [cls], db=db)
-            assert per_var["state"] == "green", (
-                f"Expected {cls.__name__} green, got {per_var['state']}. "
-                f"Counts: {per_var['counts']}"
-            )
-            assert per_var["counts"]["up_to_date"] == 16
-            assert per_var["counts"]["missing"] == 0

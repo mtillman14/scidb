@@ -135,24 +135,38 @@ def _match_branch_param(branch_params_dict: dict, key: str, value: Any) -> bool:
     return False
 
 
-def _filter_records_by_branch_params(df, branch_params_filter: dict | None):
+def _filter_records_by_branch_params(df, branch_params_filter: dict | None, duck=None):
     """Filter a records DataFrame by a branch_params_filter dict.
 
     Shared by both load paths (``_find_record``'s no-``where`` fast path and the
     ``where=`` path that routes through ``_load_with_where``) so ``where=`` and
     branch_param pinning (``Variant``) can coexist.
 
-    For each filter key/value, a record is kept when its ``version_keys`` (checked
-    first — direct saves store non-schema kwargs there) or its ``branch_params``
-    (suffix-matched via :func:`_match_branch_param`, for for_each pipeline params)
+    Variant branch params are **derived from the bipartite graph** (the
+    accumulated upstream constants, §6) rather than read from a stored column.
+    For each filter key/value, a record is kept when its derived branch params
+    (suffix-matched via :func:`_match_branch_param`, for for_each pipeline
+    params) or its ``version_keys`` (direct saves store non-schema kwargs there)
     match.  Raises ``AmbiguousParamError`` if a bare key matches multiple
     namespaced branch params.
     """
     if not branch_params_filter or len(df) == 0:
         return df
+    from . import provenance_query
+
+    # Derive each candidate record's branch params from the graph once.
+    bp_cache: dict = {}
+
+    def _bp_for(record_id):
+        if record_id not in bp_cache:
+            bp_cache[record_id] = (
+                provenance_query.derived_branch_params(duck, record_id) if duck is not None else {}
+            )
+        return bp_cache[record_id]
+
     for key, value in branch_params_filter.items():
         def _match_row(row, k=key, v=value):
-            bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
+            bp = _bp_for(row["record_id"])
             # Check branch_params ambiguity BEFORE the version_keys shortcut:
             # a bare key that is ambiguous across pipeline steps must raise even
             # if the key also happens to appear in version_keys.
@@ -639,9 +653,9 @@ class DatabaseManager:
         # Create metadata tables for type registration (in DuckDB)
         self._ensure_meta_tables()
         self._ensure_record_metadata_table()
-        self._ensure_lineage_table()
         self._ensure_for_each_expected_table()
         self._ensure_schema_overrides_table()
+        self._ensure_provenance_tables()
 
         self._closed = False # Track connection open/closed state
 
@@ -672,47 +686,29 @@ class DatabaseManager:
                 lineage_hash VARCHAR,
                 schema_version INTEGER,
                 user_id VARCHAR,
-                branch_params JSON DEFAULT '{}',
                 excluded BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (record_id, timestamp)
             )
         """)
 
-    def _ensure_lineage_table(self):
-        """Create the _lineage table for computation provenance."""
-        self._duck._execute("""
-            CREATE TABLE IF NOT EXISTS _lineage (
-                output_record_id VARCHAR PRIMARY KEY,
-                lineage_hash     VARCHAR NOT NULL,
-                target           VARCHAR NOT NULL,
-                function_name    VARCHAR NOT NULL,
-                function_hash    VARCHAR NOT NULL,
-                inputs           JSON NOT NULL DEFAULT '[]',
-                constants        JSON NOT NULL DEFAULT '[]',
-                timestamp        VARCHAR NOT NULL
-            )
-        """)
 
     def _ensure_for_each_expected_table(self):
-        """Create the _for_each_expected table for persisting expected combos.
+        """Create the _for_each_expected table — the persisted set of expected
+        ``invocation_id``s, one row per combo a for_each run intended to produce.
 
-        PathInput-only functions have no DB-variable inputs, so
-        _get_expected_combos() cannot infer the expected set from
-        _record_metadata.  scidb.for_each writes the full expected combo
-        set here at runtime so that check_node_state can fall back to it.
-
-        ``call_id`` disambiguates rows when the same function is invoked
-        from multiple for_each() call sites (e.g. different inputs, where,
-        or constants).  Without it, function_name alone collides and the
-        second call clobbers the first's expected set.
+        Written at for_each time (before skip-filtering), so node completeness
+        (``check_node_state``) is a membership test: how many expected
+        invocation_ids are present in ``_invocation`` (§9c). This is the only way
+        to know the expected set for PathInput-only functions (no DB-variable
+        inputs to enumerate). ``invocation_id`` is config-specific, so distinct
+        call sites coexist and re-runs dedup with no call_id scoping needed.
         """
         self._duck._execute("""
             CREATE TABLE IF NOT EXISTS _for_each_expected (
                 function_name VARCHAR NOT NULL,
-                call_id       VARCHAR NOT NULL,
                 schema_id     INTEGER NOT NULL,
-                branch_params JSON DEFAULT '{}',
-                PRIMARY KEY (function_name, call_id, schema_id, branch_params)
+                invocation_id VARCHAR NOT NULL,
+                PRIMARY KEY (function_name, invocation_id)
             )
         """)
 
@@ -720,6 +716,11 @@ class DatabaseManager:
         """Create __scidb_schema_overrides for persistent schema-level exclusions."""
         from .exclusions import ensure_overrides_table
         ensure_overrides_table(self)
+
+    def _ensure_provenance_tables(self):
+        """Create the seven bipartite provenance tables (see scidb.provenance)."""
+        from .provenance import ensure_provenance_tables
+        ensure_provenance_tables(self._duck)
 
     def _create_variable_view(self, variable_class: Type[BaseVariable]):
         """Create a view joining a variable table with _schema via _record_metadata."""
@@ -729,7 +730,7 @@ class DatabaseManager:
         self._duck._execute(f"""
             CREATE OR REPLACE VIEW "{view_name}" AS
             WITH latest_meta AS (
-                SELECT record_id, schema_id, version_keys, branch_params, excluded,
+                SELECT record_id, schema_id, version_keys, excluded,
                        ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) AS rn
                 FROM _record_metadata
                 WHERE variable_name = '{view_name}'
@@ -737,7 +738,7 @@ class DatabaseManager:
             SELECT
                 t.*,
                 s.schema_level, {schema_cols},
-                lm.version_keys, lm.branch_params, lm.excluded
+                lm.version_keys, lm.excluded
             FROM "{table_name}" t
             LEFT JOIN latest_meta lm ON t.record_id = lm.record_id AND lm.rn = 1
             LEFT JOIN _schema s ON lm.schema_id = s.schema_id
@@ -787,25 +788,21 @@ class DatabaseManager:
         lineage_hash: str | None,
         schema_version: int,
         user_id: str | None,
-        branch_params: dict | None = None,
     ) -> None:
         """Insert a new audit row into _record_metadata. Always inserts (audit trail)."""
         Log.debug(f"_save_record_metadata: {variable_name}, record_id={record_id[:12]}, schema_id={schema_id}")
         vk_json = json.dumps(version_keys or {}, sort_keys=True)
-        bp_json = json.dumps(branch_params or {}, sort_keys=True)
         self._duck._execute(
             """
             INSERT INTO _record_metadata (
                 record_id, timestamp, variable_name, schema_id,
-                version_keys, content_hash, lineage_hash, schema_version, user_id,
-                branch_params
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                version_keys, content_hash, lineage_hash, schema_version, user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (record_id, timestamp) DO NOTHING
             """,
             [
                 record_id, timestamp, variable_name, schema_id,
                 vk_json, content_hash, lineage_hash, schema_version, user_id,
-                bp_json,
             ],
         )
 
@@ -1029,8 +1026,7 @@ class DatabaseManager:
             profile: If True, print phase-by-phase timing summary
             lineage_hashes: Optional per-item lineage hashes (parallel to
                 data_items) stored in the _record_metadata.lineage_hash column.
-                Used by the batched lineage save path; the corresponding
-                _lineage rows are written separately via _save_lineage_rows_batch.
+                Used by the batched lineage save path.
 
         Returns:
             List of record_ids for each saved item (in input order)
@@ -1098,16 +1094,15 @@ class DatabaseManager:
         # --- Batch schema_id resolution ---
         t1 = time.perf_counter()
         all_nested = []
-        all_branch_params = []  # Extracted before _split_metadata
         unique_schema_combos = {}  # {combo_key: schema_keys_dict}
         for data_val, flat_meta in data_items:
-            # Extract __branch_params BEFORE split (it gets its own column, not part of version_keys)
-            # This matches the behavior of individual save() at line 1785
-            branch_params_for_item = flat_meta.get("__branch_params", {})
-            all_branch_params.append(branch_params_for_item)
-
-            # Remove __branch_params from flat_meta before splitting
-            flat_meta_cleaned = {k: v for k, v in flat_meta.items() if k != "__branch_params"}
+            # Drop transient for_each bookkeeping that must not become version
+            # keys: __branch_params (now derived from the graph) and
+            # __graph_var_bindings (the bipartite edge list consumed by record_run).
+            flat_meta_cleaned = {
+                k: v for k, v in flat_meta.items()
+                if k not in ("__branch_params", "__graph_var_bindings")
+            }
             nested = self._split_metadata(flat_meta_cleaned)
             all_nested.append(nested)
             schema_keys = nested.get("schema", {})
@@ -1194,14 +1189,10 @@ class DatabaseManager:
 
             _t = time.perf_counter()
             vk_json = json.dumps(version_keys or {}, sort_keys=True)
-            # Use pre-extracted branch_params (extracted before _split_metadata at line 1013)
-            branch_params = all_branch_params[i]
-            bp_json = json.dumps(branch_params, sort_keys=True)
             _item_lineage_hash = lineage_hashes[i] if lineage_hashes is not None else None
             metadata_rows.append((
                 record_id, timestamp, type_name, schema_id,
                 vk_json, content_hash, _item_lineage_hash, schema_version, user_id,
-                bp_json,
             ))
             t4_meta += time.perf_counter() - _t
 
@@ -1301,15 +1292,23 @@ class DatabaseManager:
                 columns=[
                     "record_id", "timestamp", "variable_name", "schema_id",
                     "version_keys", "content_hash", "lineage_hash",
-                    "schema_version", "user_id", "branch_params",
+                    "schema_version", "user_id",
                 ],
             )
             self._duck.con.execute(
                 "INSERT INTO _record_metadata ("
                 "record_id, timestamp, variable_name, schema_id, "
-                "version_keys, content_hash, lineage_hash, schema_version, user_id, branch_params"
+                "version_keys, content_hash, lineage_hash, schema_version, user_id"
                 ") SELECT * FROM meta_df "
                 "ON CONFLICT (record_id, timestamp) DO NOTHING"
+            )
+            # Mirror into the bipartite entities table (_record). metadata_rows is
+            # (record_id, timestamp, type, schema_id, vk, content_hash, lineage_hash,
+            #  schema_version, user_id) — map to the _record column order.
+            from .provenance import insert_record_entities
+            insert_record_entities(
+                self._duck,
+                [(r[0], r[1], r[2], r[3], r[5], r[7], False) for r in metadata_rows],
             )
             timings["6c_meta_insert"] = time.perf_counter() - t6c
 
@@ -1528,29 +1527,12 @@ class DatabaseManager:
 
         where = " AND ".join(conditions)
 
-        if version_id == "latest":
-            # One row per (variable_name, schema_id, version_keys_stripped, branch_params) — latest only.
-            # Strip __upstream/__output_num/__lineage_fixed_rids from version_keys to collapse
-            # provenance-only variants while keeping distinct branch_params variants separate.
-            # branch_params must stay in the partition to prevent merging records that differ
-            # only by upstream pipeline parameters (e.g. two Intermediate records from
-            # smooth(Filtered(low_hz=20)) vs smooth(Filtered(low_hz=30))).
-            # Use regexp_replace to strip provenance-only keys from the JSON string.
-            vk_stripped = (
-                "regexp_replace("
-                "regexp_replace("
-                "regexp_replace("
-                "rm.version_keys, "
-                "'[,]?\"__upstream\":[^,}]+', '', 'g'), "
-                "'[,]?\"__output_num\":[^,}]+', '', 'g'), "
-                "'[,]?\"__lineage_fixed_rids\":[^,}]+', '', 'g')"
-            )
-            partition = f"rm.variable_name, rm.schema_id, {vk_stripped}, rm.branch_params"
-        else:
-            # "all": one row per distinct record_id — deduplicates re-runs of identical
-            # data while still returning multiple distinct data records at the same
-            # schema location (different content hash → different record_id).
-            partition = "rm.record_id"
+        # One row per distinct record_id at the SQL level (dedups audit re-saves
+        # of identical content). For version_id="latest" the *variant* collapse —
+        # keeping the newest record per (fn, accumulated constants) — is done in
+        # Python below using the bipartite graph, so neither version_keys nor the
+        # branch_params column is read here.
+        partition = "rm.record_id"
 
         sql = (
             f"WITH ranked AS ("
@@ -1569,39 +1551,44 @@ class DatabaseManager:
         t_sql = time.perf_counter() - _t_sql
         Log.debug(f"_find_record({type_name}): SQL returned {len(df)} records, version_id={version_id}")
 
-        # Collapse provenance-only variants when using version_id="latest".
-        # Records differing only in __upstream, __output_num, or __lineage_fixed_rids
-        # are temporal updates to the same pipeline step, not distinct variants.
+        # Collapse to the latest record per *variant* when version_id="latest".
+        # Variant identity is derived from the bipartite graph: the producing
+        # function + the accumulated upstream constants (§6). Records that differ
+        # only by which upstream record_id was consumed (i.e. input data was
+        # re-saved) share a variant and collapse to the newest. Distinct
+        # constant-variants (low_hz=20 vs 30) keep separate identities.
+        # Raw / manually saved records have no producing invocation, so they fall
+        # back to their version_keys for variant distinction (direct-save kwargs).
         t_collapse = 0.0
         rows_before_collapse = len(df)
         if version_id == "latest" and len(df) > 0:
             _t_collapse = time.perf_counter()
             from collections import defaultdict
+            from . import provenance_query
             groups = defaultdict(list)
-            # Optimized: use itertuples() instead of iterrows() (10x faster)
             for row in df.itertuples(index=True):
-                vk = json.loads(row.version_keys or "{}")
-                # Debug: log version_keys for investigation
-                Log.debug(f"_find_record: record {row.record_id}: version_keys = {vk}")
-                # Strip provenance-only keys
-                vk_stripped = {k: v for k, v in vk.items()
-                              if k not in ("__upstream", "__output_num", "__lineage_fixed_rids")}
-                # Include branch_params in the grouping key to ensure records with
-                # different upstream branch parameters are not collapsed together
-                bp = getattr(row, "branch_params", "{}")
-                group_key = (
-                    row.variable_name,
-                    row.schema_id,
-                    json.dumps(vk_stripped, sort_keys=True),
-                    bp  # Add branch_params to distinguish different branch variants
-                )
+                inv = provenance_query.producing_invocation(self._duck, row.record_id)
+                if inv is not None:
+                    bp = provenance_query.derived_branch_params(self._duck, row.record_id)
+                    # output_num keeps distinct outputs of ONE call separate
+                    # (flatten/distribute spread one call into many records that
+                    # share fn + constants); temporal re-saves share output_num
+                    # and collapse to the newest.
+                    onum = provenance_query.output_num_for(self._duck, row.record_id)
+                    variant_key = (inv[1], json.dumps(bp, sort_keys=True), onum)
+                else:
+                    vk = json.loads(row.version_keys or "{}")
+                    vk_stripped = {k: v for k, v in vk.items()
+                                   if k not in ("__upstream", "__output_num", "__lineage_fixed_rids")}
+                    variant_key = ("__raw__", json.dumps(vk_stripped, sort_keys=True), None)
+                group_key = (row.variable_name, row.schema_id, variant_key)
                 groups[group_key].append((row.timestamp, row.Index))
 
-            # Keep only the latest record per group
+            # Keep only the latest record per variant group
             keep_indices = [max(group)[1] for group in groups.values()]
             collapsed_count = len(df) - len(keep_indices)
             if collapsed_count > 0:
-                Log.debug(f"_find_record: collapsed {collapsed_count} provenance-only variant(s)")
+                Log.debug(f"_find_record: collapsed {collapsed_count} non-latest variant row(s)")
             # Apply smart sorting by schema keys (numeric or alphabetic per column)
             df = self._sort_by_schema_keys(df.loc[keep_indices])
             t_collapse = time.perf_counter() - _t_collapse
@@ -1633,7 +1620,7 @@ class DatabaseManager:
         t_bp_filter = 0.0
         if branch_params_filter and len(df) > 0:
             _t_bp = time.perf_counter()
-            df = _filter_records_by_branch_params(df, branch_params_filter)
+            df = _filter_records_by_branch_params(df, branch_params_filter, self._duck)
             t_bp_filter = time.perf_counter() - _t_bp
 
         # Apply smart sorting by schema keys before returning
@@ -1824,9 +1811,11 @@ class DatabaseManager:
         instance.metadata = flat_metadata
         instance.content_hash = content_hash
         instance.lineage_hash = lineage_hash
+        # branch_params is the accumulated upstream constants (§6), derived from
+        # the bipartite graph rather than read from a stored column.
         try:
-            bp_raw = row["branch_params"] if "branch_params" in row.index else None
-            instance.branch_params = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+            from . import provenance_query
+            instance.branch_params = provenance_query.derived_branch_params(self._duck, record_id)
         except Exception:
             instance.branch_params = {}
 
@@ -1980,6 +1969,8 @@ class DatabaseManager:
         lineage_hash: str | None = None,
         pipeline_lineage_hash: str | None = None,
         index: Any = None,
+        output_num: int = 0,
+        graph_function_hash: str | None = None,
     ) -> str:
         """
         Save a variable to the database.
@@ -2002,15 +1993,14 @@ class DatabaseManager:
         type_name = variable.__class__.__name__
         user_id = get_user_id()
 
-        # Extract __branch_params before splitting metadata (it gets its own column)
-        branch_params = None
-        if isinstance(metadata, dict) and "__branch_params" in metadata:
-            bp_raw = metadata["__branch_params"]
-            try:
-                branch_params = json.loads(bp_raw) if isinstance(bp_raw, str) else (bp_raw or {})
-            except (json.JSONDecodeError, TypeError):
-                branch_params = {}
-            metadata = {k: v for k, v in metadata.items() if k != "__branch_params"}
+        # Drop transient for_each bookkeeping that must not become version keys:
+        # __branch_params (accumulated constants, now derived from the graph) and
+        # __graph_var_bindings (the bipartite edge list consumed by record_run).
+        if isinstance(metadata, dict):
+            metadata = {
+                k: v for k, v in metadata.items()
+                if k not in ("__branch_params", "__graph_var_bindings")
+            }
 
         # Split metadata
         nested_metadata = self._split_metadata(metadata)
@@ -2094,17 +2084,20 @@ class DatabaseManager:
                 lineage_hash=lineage_hash,
                 schema_version=variable.schema_version,
                 user_id=user_id,
-                branch_params=branch_params,
             )
 
-            # Save lineage if provided
-            if lineage is not None:
-                effective_plh = pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash
-                self._save_lineage(
-                    record_id, type_name, lineage, effective_plh, user_id,
-                    schema_keys=nested_metadata.get("schema"),
-                    output_content_hash=content_hash,
-                )
+            # Mirror into the bipartite entities table (_record). Covers raw /
+            # manually saved records, which have no producing invocation.
+            from .provenance import insert_record_entity
+            insert_record_entity(
+                self._duck,
+                record_id=record_id,
+                created_at=created_at,
+                type_name=type_name,
+                schema_id=schema_id,
+                content_hash=content_hash,
+                schema_version=variable.schema_version,
+            )
 
             self._duck._commit()
             Log.debug(f"save({type_name}): transaction committed")
@@ -2117,83 +2110,24 @@ class DatabaseManager:
                 pass  # Connection may already be closed
             raise
 
-        return record_id
-
-    def _save_lineage(
-        self,
-        output_record_id: str,
-        output_type: str,
-        lineage: dict,
-        lineage_hash: str | None = None,
-        user_id: str | None = None,
-        schema_keys: dict | None = None,
-        output_content_hash: str | None = None,
-    ) -> None:
-        """Save one lineage row to DuckDB _lineage table.
-
-        Args:
-            lineage: Dict with keys 'function_name', 'function_hash',
-                     'inputs', 'constants'.
-        """
-        Log.debug(f"_save_lineage: {output_type}, fn={lineage.get('function_name')}, lineage_hash={str(lineage_hash)[:12] if lineage_hash else 'None'}")
-        lh = lineage_hash or output_record_id
-        inputs_json = json.dumps(lineage.get("inputs", []), sort_keys=True)
-        constants_json = json.dumps(lineage.get("constants", {}), sort_keys=True)
-        timestamp = datetime.now().isoformat()
-
-        self._duck._execute(
-            "INSERT INTO _lineage "
-            "(output_record_id, lineage_hash, target, function_name, function_hash, "
-            " inputs, constants, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (output_record_id) DO NOTHING",
-            [output_record_id, lh, output_type, lineage.get("function_name"),
-             lineage.get("function_hash"), inputs_json, constants_json, timestamp],
-        )
-
-    def _save_lineage_rows_batch(
-        self,
-        items: "list[tuple[str, dict, str | None]]",
-        output_type: str,
-    ) -> None:
-        """Bulk-insert _lineage rows for a batch of saved records.
-
-        Batched counterpart to :meth:`_save_lineage`, used by the batched
-        lineage save path. ``items`` is a list of
-        ``(output_record_id, lineage_dict, pipeline_lineage_hash)`` tuples.
-        The lineage_hash stored falls back to the record_id when no pipeline
-        hash is given, matching :meth:`_save_lineage`.
-        """
-        if not items:
-            return
-        timestamp = datetime.now().isoformat()
-        rows = []
-        for output_record_id, lineage, pipeline_lineage_hash in items:
-            lh = pipeline_lineage_hash or output_record_id
-            rows.append((
-                output_record_id, lh, output_type,
-                lineage.get("function_name"), lineage.get("function_hash"),
-                json.dumps(lineage.get("inputs", []), sort_keys=True),
-                json.dumps(lineage.get("constants", {}), sort_keys=True),
-                timestamp,
-            ))
-        self._duck._begin()
-        try:
-            self._duck.con.executemany(
-                "INSERT INTO _lineage "
-                "(output_record_id, lineage_hash, target, function_name, function_hash, "
-                " inputs, constants, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (output_record_id) DO NOTHING",
-                rows,
-            )
-            self._duck._commit()
-        except Exception:
+        # Write the bipartite provenance graph for this record (single-record
+        # lineage save path — MATLAB bridge, direct save with lineage). Done
+        # AFTER commit because it runs its own transaction. Additive/defensive:
+        # never fail the save on a graph error.
+        if lineage is not None:
             try:
-                self._duck._rollback()
-            except Exception:
-                pass
-            raise
+                from .provenance_save import record_run_from_lineage
+                effective_plh = pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash
+                record_run_from_lineage(
+                    self, record_id, type_name, variable.schema_version,
+                    output_num, lineage, where_clause=None, user_id=user_id,
+                    function_hash=graph_function_hash,
+                    pipeline_hash=effective_plh,
+                )
+            except Exception as e:
+                Log.error(f"save({type_name}): provenance graph write failed: {e}")
+
+        return record_id
 
     def _load_with_where(
         self,
@@ -2539,9 +2473,14 @@ class DatabaseManager:
 
         meta_dict.update(all_vk_col_names)
 
-        # Branch params column
+        # Branch params column — derived from the bipartite graph (§6) per record,
+        # not read from a stored column.
         if include_bp:
-            meta_dict["__branch_params"] = records["branch_params"].fillna("{}").values
+            from . import provenance_query
+            meta_dict["__branch_params"] = [
+                json.dumps(provenance_query.derived_branch_params(self._duck, rid))
+                for rid in records["record_id"].values
+            ]
 
         meta_df = pd.DataFrame(meta_dict)
 
@@ -2767,7 +2706,7 @@ class DatabaseManager:
             # branch_params filter as a post-step on the where-matched records.
             if branch_params_filter:
                 _n_before = len(records)
-                records = _filter_records_by_branch_params(records, branch_params_filter)
+                records = _filter_records_by_branch_params(records, branch_params_filter, self._duck)
                 Log.debug(
                     f"[load_all_as_df] {type_name}: branch_params_filter "
                     f"{branch_params_filter} kept {len(records)}/{_n_before} records"
@@ -2884,7 +2823,7 @@ class DatabaseManager:
             # branch_params filter as a post-step on the where-matched records.
             if branch_params_filter:
                 _n_before = len(records)
-                records = _filter_records_by_branch_params(records, branch_params_filter)
+                records = _filter_records_by_branch_params(records, branch_params_filter, self._duck)
                 Log.info(
                     f"load({type_name}): branch_params_filter {branch_params_filter} "
                     f"kept {len(records)}/{_n_before} records"
@@ -3062,8 +3001,12 @@ class DatabaseManager:
             instance.metadata = flat_metadata
             instance.content_hash = content_hash
             instance.lineage_hash = lineage_hash
-            bp_raw = getattr(row, "branch_params", None)
-            instance.branch_params = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+            # branch_params derived from the bipartite graph (§6), not a column.
+            try:
+                from . import provenance_query
+                instance.branch_params = provenance_query.derived_branch_params(self._duck, record_id)
+            except Exception:
+                instance.branch_params = {}
 
             n_yielded += 1
             t_yield_body += time.perf_counter() - _t_body
@@ -3116,11 +3059,12 @@ class DatabaseManager:
         except Exception:
             return []
 
+        from . import provenance_query
         results = []
         for _, row in records.iterrows():
             _, nested = self._reconstruct_metadata_from_row(row)
-            bp_raw = row.get("branch_params") if hasattr(row, 'get') else row["branch_params"]
-            bp = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+            # branch_params derived from the bipartite graph (§6), not a column.
+            bp = provenance_query.derived_branch_params(self._duck, row["record_id"])
             entry = {
                 "record_id": row["record_id"],
                 "schema": nested.get("schema", {}),
@@ -3318,21 +3262,8 @@ class DatabaseManager:
             var = next(self.load(variable_class, metadata, version_id="latest"))
             record_id = var.record_id
 
-        rows = self._duck._fetchall(
-            "SELECT function_name, function_hash, inputs, constants "
-            "FROM _lineage WHERE output_record_id = ?",
-            [record_id],
-        )
-        if not rows:
-            return None
-
-        function_name, function_hash, inputs_json, constants_json = rows[0]
-        return {
-            "function_name": function_name,
-            "function_hash": function_hash,
-            "inputs": json.loads(inputs_json),
-            "constants": json.loads(constants_json),
-        }
+        from . import provenance_query
+        return provenance_query.provenance(self._duck, record_id)
 
     def get_provenance_by_schema(self, **schema_keys) -> list[dict]:
         """
@@ -3342,34 +3273,42 @@ class DatabaseManager:
             **schema_keys: Schema key filters (e.g., subject="S01", session="1")
 
         Returns:
-            List of lineage record dicts matching the schema keys
+            List of provenance record dicts matching the schema keys, each with
+            ``output_record_id``, ``output_type``, ``function_name``,
+            ``function_hash``, ``inputs``, ``constants`` — sourced from the
+            bipartite graph (records produced by an invocation at that location).
         """
-        conditions = ["rm.lineage_hash IS NOT NULL"]
+        from . import provenance_query
+
+        conditions = []
         params: list[Any] = []
         for key, value in schema_keys.items():
             conditions.append(f's."{key}" = ?')
             params.append(_schema_str(value))
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-        where = " AND ".join(conditions)
+        # Output records produced by an invocation at this schema location.
         rows = self._duck._fetchall(
-            f"SELECT l.output_record_id, rm.variable_name, "
-            f"l.function_name, l.function_hash, l.inputs, l.constants "
-            f"FROM _lineage l "
-            f"JOIN _record_metadata rm ON l.output_record_id = rm.record_id "
-            f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-            f"WHERE {where}",
+            f"SELECT DISTINCT io.output_record_id, r.type "
+            f"FROM _invocation_output io "
+            f"JOIN _record r ON r.record_id = io.output_record_id "
+            f"LEFT JOIN _schema s ON r.schema_id = s.schema_id"
+            f"{where}",
             params,
         )
 
         results = []
-        for record_id, variable_name, function_name, function_hash, inputs_json, constants_json in rows:
+        for record_id, variable_name in rows:
+            prov = provenance_query.provenance(self._duck, record_id)
+            if prov is None:
+                continue
             results.append({
                 "output_record_id": record_id,
                 "output_type": variable_name,
-                "function_name": function_name,
-                "function_hash": function_hash,
-                "inputs": json.loads(inputs_json),
-                "constants": json.loads(constants_json),
+                "function_name": prov["function_name"],
+                "function_hash": prov["function_hash"],
+                "inputs": prov["inputs"],
+                "constants": prov["constants"],
             })
         return results
 
@@ -3385,27 +3324,8 @@ class DatabaseManager:
             List of dicts with keys: function_name, function_hash, output_type,
             input_types (list of type names)
         """
-        rows = self._duck._fetchall(
-            "SELECT DISTINCT target, function_name, function_hash, inputs FROM _lineage"
-        )
-        seen = set()
-        results = []
-        for target, function_name, function_hash, inputs_json in rows:
-            inputs = json.loads(inputs_json)
-            input_types = tuple(sorted(
-                inp.get("type", inp.get("source_function", "unknown"))
-                for inp in inputs
-            ))
-            key = (function_name, function_hash, target, input_types)
-            if key not in seen:
-                seen.add(key)
-                results.append({
-                    "function_name": function_name,
-                    "function_hash": function_hash,
-                    "output_type": target,
-                    "input_types": list(input_types),
-                })
-        return results
+        from . import provenance_query
+        return provenance_query.pipeline_structure(self._duck)
 
     def list_pipeline_variants(
         self,
@@ -3839,109 +3759,65 @@ class DatabaseManager:
                 constants     (dict),
                 depth         (int, 0 = queried record),
                 inputs        (list of {record_id, param_name, variable_type})
+
+        Reimplemented over the bipartite provenance graph (every edge is a
+        stored fact); the old branch_params-subset heuristic is gone.
         """
-        schema_col_select = ", ".join(f's."{col}"' for col in self.dataset_schema_keys)
+        from . import provenance_query
+        return provenance_query.upstream_provenance(self, record_id, max_depth)
 
-        visited: set = set()
-        result: list = []
-        queue: list = [(record_id, 0)]
+    def get_pipeline(self, record_id: str, max_depth: int = 20) -> dict:
+        """Reconstruct the full upstream pipeline DAG for ``record_id`` (§8).
 
-        while queue:
-            current_id, depth = queue.pop(0)
-            if current_id in visited or depth > max_depth:
-                continue
-            visited.add(current_id)
+        Returns ``{"nodes": [...], "edges": [...]}`` where nodes use the
+        :meth:`get_upstream_provenance` shape and edges are
+        ``{from_record_id, to_record_id, param_name}``. Provably correct —
+        every edge is a stored fact, terminating at raw data / constants.
+        """
+        from . import provenance_query
+        return provenance_query.pipeline(self, record_id, max_depth)
 
-            # Fetch this record's metadata
-            rows = self._duck._fetchdf(
-                f"SELECT rm.record_id, rm.variable_name, rm.version_keys, "
-                f"rm.branch_params, rm.schema_id, {schema_col_select} "
-                f"FROM _record_metadata rm "
-                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-                f"WHERE rm.record_id = ? "
-                f"ORDER BY rm.timestamp DESC LIMIT 1",
-                [current_id],
-            )
-            if rows.empty:
-                continue
+    def get_derived_branch_params(self, record_id: str, max_depth: int = 20) -> dict:
+        """Derive the ``{function.param: value}`` branch_params for a record (§6).
 
-            row = rows.iloc[0]
-            vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
-            bp = json.loads(row["branch_params"] or "{}") if row.get("branch_params") else {}
-            fn_name = vk.get("__fn")
-            # Handle both dict (new format) and JSON string (old format) for backward compatibility
-            if "__inputs" in vk:
-                input_types: dict = vk["__inputs"] if isinstance(vk["__inputs"], dict) else json.loads(vk["__inputs"])
-            else:
-                input_types = {}
-            if "__constants" in vk:
-                constants: dict = vk["__constants"] if isinstance(vk["__constants"], dict) else json.loads(vk["__constants"])
-            else:
-                constants = {}
+        Walks the invocation graph upward collecting constant inputs. This is
+        the exact map the old ``branch_params`` column stored, now derived.
+        """
+        from . import provenance_query
+        return provenance_query.derived_branch_params(self._duck, record_id, max_depth)
 
-            schema = {}
-            for k in self.dataset_schema_keys:
-                if k in row.index:
-                    val = row[k]
-                    if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                        schema[k] = _from_schema_str(val)
+    def get_execution_audit(self, record_id: str) -> list[dict]:
+        """List every execution that (re)produced ``record_id`` (§9b).
 
-            schema_id = int(row["schema_id"])
+        Each entry: ``{timestamp, user_id, where_clause, function_name}``,
+        oldest first. Re-runs append rows, so a changed ``where=`` filter is
+        preserved rather than lost to first-wins.
+        """
+        from . import provenance_query
+        return provenance_query.execution_audit(self._duck, record_id)
 
-            # For each input type, find the upstream record at the same schema
-            # location whose branch_params is a subset of this record's branch_params.
-            input_nodes: list = []
-            for param_name, type_name in input_types.items():
-                candidates = self._duck._fetchdf(
-                    "SELECT DISTINCT rm.record_id, rm.branch_params "
-                    "FROM _record_metadata rm "
-                    "WHERE rm.variable_name = ? AND rm.schema_id = ? "
-                    "AND COALESCE(rm.excluded, FALSE) = FALSE",
-                    [type_name, schema_id],
-                )
+    def invocation_exists(self, invocation_id: str) -> bool:
+        """True if an invocation (unique function call) is already recorded.
 
-                matched_rid = None
-                best_match_size = -1
-                for _, cand in candidates.iterrows():
-                    cand_bp = json.loads(cand["branch_params"] or "{}") if cand["branch_params"] else {}
-                    # cand_bp must be a subset of bp (every key in cand_bp matches bp)
-                    if all(bp.get(k) == v for k, v in cand_bp.items()):
-                        # Prefer the most specific match (most keys)
-                        if len(cand_bp) > best_match_size:
-                            matched_rid = cand["record_id"]
-                            best_match_size = len(cand_bp)
-
-                if matched_rid:
-                    input_nodes.append({
-                        "record_id": matched_rid,
-                        "param_name": param_name,
-                        "variable_type": type_name,
-                    })
-
-            result.append({
-                "record_id": current_id,
-                "variable_type": row["variable_name"],
-                "schema": schema,
-                "branch_params": bp,
-                "function_name": fn_name,
-                "constants": constants,
-                "depth": depth,
-                "inputs": input_nodes,
-            })
-
-            for inp in input_nodes:
-                queue.append((inp["record_id"], depth + 1))
-
-        return result
+        The §9c membership test: an invocation and its ``_invocation_output``
+        rows are written together, so *invocation present ⇒ outputs present*.
+        ``skip_computed`` and node-completeness both use this.
+        """
+        rows = self._duck._fetchall(
+            "SELECT 1 FROM _invocation WHERE invocation_id = ? LIMIT 1",
+            [invocation_id],
+        )
+        return bool(rows)
 
     def has_lineage(self, record_id: str) -> bool:
-        """Check if a variable has lineage information."""
-        rows = self._duck._fetchall(
-            "SELECT lineage_hash FROM _record_metadata "
-            "WHERE record_id = ? AND lineage_hash IS NOT NULL",
-            [record_id],
-        )
-        return len(rows) > 0 and bool(rows[0][0])
+        """Check if a record has provenance.
+
+        True if the record was produced by a recorded invocation in the
+        bipartite graph (all computed records — including ``generates_file`` —
+        now write an invocation). Raw / manually saved records return False.
+        """
+        from . import provenance_query
+        return provenance_query.has_producing_invocation(self._duck, record_id)
 
     def find_record_id(
         self,
@@ -4006,57 +3882,6 @@ class DatabaseManager:
             return None
         return latest.iloc[0]["record_id"]
 
-    def get_function_hash_for_record(self, record_id: str) -> str | None:
-        """Return the function_hash stored in _lineage for a record, or None.
-
-        Used by scihist.for_each's skip_computed check to detect whether the
-        function that produced a record has changed since it was saved.
-        """
-        rows = self._duck._fetchall(
-            "SELECT function_hash FROM _lineage WHERE output_record_id = ?",
-            [record_id],
-        )
-        return rows[0][0] if rows and rows[0][0] else None
-
-    def get_lineage_inputs(self, record_id: str) -> list[dict]:
-        """Return the list of input descriptors stored in _lineage for a record.
-
-        Each entry is a dict as written by scilineage's ClassifiedInput.to_lineage_dict().
-        Entries with ``source_type == "variable"`` carry a ``record_id`` field
-        that identifies the exact input record used when this output was saved.
-
-        Returns an empty list if no lineage row exists for the record.
-        """
-        rows = self._duck._fetchall(
-            "SELECT inputs FROM _lineage WHERE output_record_id = ?",
-            [record_id],
-        )
-        if not rows or not rows[0][0]:
-            return []
-        try:
-            return json.loads(rows[0][0])
-        except (json.JSONDecodeError, TypeError):
-            return []
-
-    def get_lineage_constants(self, record_id: str) -> list[dict]:
-        """Return the list of constant descriptors stored in _lineage for a record.
-
-        Each entry is a dict with 'name', 'value_hash', 'value_repr', 'value_type'.
-
-        Returns an empty list if no lineage row exists for the record.
-        """
-        rows = self._duck._fetchall(
-            "SELECT constants FROM _lineage WHERE output_record_id = ?",
-            [record_id],
-        )
-        if not rows or not rows[0][0]:
-            return []
-        try:
-            result = json.loads(rows[0][0])
-            return result if isinstance(result, list) else []
-        except (json.JSONDecodeError, TypeError):
-            return []
-
     def get_record_version_keys(self, record_id: str) -> dict:
         """Return the version_keys dict stored in _record_metadata for a record.
 
@@ -4112,8 +3937,9 @@ class DatabaseManager:
         """
         Find output values by pipeline lineage hash.
 
-        Low-level lookup used by scihist.find_by_lineage(). Queries
-        _record_metadata joined to _lineage for records matching the given hash.
+        Low-level lookup used by scihist.find_by_lineage(). Matches against the
+        bipartite graph: invocations carry the scilineage ``pipeline_hash``, and
+        their ``_invocation_output`` edges name the produced records.
 
         Args:
             lineage_hash: The pipeline lineage hash to look up
@@ -4122,10 +3948,11 @@ class DatabaseManager:
             List of output values if found, None otherwise
         """
         records = self._duck._fetchall(
-            "SELECT DISTINCT rm.record_id, rm.variable_name "
-            "FROM _record_metadata rm "
-            "JOIN _lineage l ON rm.record_id = l.output_record_id "
-            "WHERE l.lineage_hash = ?",
+            "SELECT DISTINCT io.output_record_id, r.type "
+            "FROM _invocation inv "
+            "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
+            "JOIN _record r ON r.record_id = io.output_record_id "
+            "WHERE inv.pipeline_hash = ?",
             [lineage_hash],
         )
         if not records:

@@ -23,6 +23,23 @@ def parse_version_keys(vk):
     return vk
 
 
+def derived_bp(db, variable_name):
+    """Derived branch_params (§6) for the latest record of a variable type.
+
+    branch_params is no longer a stored column — it is derived from the bipartite
+    provenance graph. This helper mirrors the old ``SELECT branch_params FROM
+    _record_metadata WHERE variable_name = ?`` lookup used throughout this file.
+    """
+    row = db._duck.con.execute(
+        "SELECT record_id FROM _record_metadata WHERE variable_name = ? "
+        "ORDER BY timestamp DESC LIMIT 1",
+        [variable_name],
+    ).fetchone()
+    if row is None:
+        return None
+    return db.get_derived_branch_params(row[0])
+
+
 # Test variable types
 class RawData(BaseVariable):
     schema_version = 1
@@ -109,17 +126,10 @@ class TestVersionKeysCompleteness:
             trial=[1],
         )
 
-        # Check branch_params (stored in separate column)
-        con = db._duck.con
-        result = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()
+        # branch_params derived from the bipartite graph (§6)
+        branch_params = derived_bp(db, "ProcessedData")
 
-        assert result is not None, "No ProcessedData record found"
-        branch_params_str = result[0]
-        branch_params = json.loads(branch_params_str) if isinstance(branch_params_str, str) else branch_params_str
+        assert branch_params is not None, "No ProcessedData record found"
 
         # Should NOT be empty (was bug in old implementation)
         assert branch_params != {}, "branch_params should not be empty"
@@ -192,16 +202,8 @@ class TestBranchParamsAccumulation:
             trial=[1],
         )
 
-        # Check final output's branch_params
-        con = db._duck.con
-        result = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()
-
-        branch_params_str = result[0]
-        branch_params = json.loads(branch_params_str) if isinstance(branch_params_str, str) else branch_params_str
+        # Check final output's branch_params (derived from the graph, §6)
+        branch_params = derived_bp(db, "ProcessedData")
 
         # Should contain BOTH upstream and current constants
         assert "step1.param1" in branch_params, "Missing upstream param1"
@@ -251,16 +253,8 @@ class TestBranchParamsAccumulation:
             trial=[1],
         )
 
-        # Check branch_params contains ALL upstream constants
-        con = db._duck.con
-        result = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'FinalResult'
-        """).fetchone()
-
-        branch_params_str = result[0]
-        branch_params = json.loads(branch_params_str) if isinstance(branch_params_str, str) else branch_params_str
+        # Check branch_params contains ALL upstream constants (derived, §6)
+        branch_params = derived_bp(db, "FinalResult")
 
         # Should have constants from BOTH branches plus current
         assert "process_a.alpha" in branch_params
@@ -295,7 +289,7 @@ class TestFixedInputTracking:
         # Check that output was created
         con = db._duck.con
 
-        # First verify the record exists in _record_metadata
+        # Verify the record exists, then read provenance from the graph.
         record_check = con.execute("""
             SELECT record_id
             FROM _record_metadata
@@ -303,43 +297,27 @@ class TestFixedInputTracking:
         """).fetchone()
         assert record_check is not None, "No ProcessedData record found in _record_metadata"
 
-        # Now check lineage has variable entry for Fixed input (not rid_tracking)
-        result = con.execute("""
-            SELECT inputs, constants
-            FROM _lineage
-            WHERE target = 'ProcessedData'
-        """).fetchone()
+        prov = db.get_provenance(ProcessedData, version=record_check[0])
+        assert prov is not None, "No provenance recorded for ProcessedData"
+        inputs = prov["inputs"]        # variable inputs only
+        constants = prov["constants"]  # {param_name: value}
 
-        assert result is not None, "No lineage record found in _lineage"
-        inputs_json, constants_json = result[0], result[1]
-        inputs = json.loads(inputs_json) if isinstance(inputs_json, str) else inputs_json
-        constants = json.loads(constants_json) if isinstance(constants_json, str) else constants_json
-
-        # Fixed input should be classified as variable, not constant
-        variable_entries = [
-            inp for inp in inputs
-            if inp.get("source_type") == "variable"
-        ]
-
-        # Should have ref as a variable input
-        ref_entry = next(
-            (e for e in variable_entries if e["name"] == "ref"),
-            None
+        # Fixed input 'ref' is a VARIABLE edge (pointing at the saved RawData),
+        # not a constant — Fixed inputs are real upstream records.
+        ref_entry = next((e for e in inputs if e["param_name"] == "ref"), None)
+        assert ref_entry is not None, f"Missing 'ref' variable entry. Found: {inputs}"
+        assert ref_entry.get("variable_type") == "RawData", (
+            f"Expected variable_type='RawData', got {ref_entry.get('variable_type')}"
         )
-        assert ref_entry is not None, f"Missing 'ref' variable entry. Found variables: {variable_entries}"
-        assert ref_entry.get("type") == "RawData", f"Expected type='RawData', got {ref_entry.get('type')}"
-        assert ref_entry.get("record_id") == ref_rid, f"Expected record_id={ref_rid}, got {ref_entry.get('record_id')}"
+        assert ref_entry.get("record_id") == ref_rid, (
+            f"Expected record_id={ref_rid}, got {ref_entry.get('record_id')}"
+        )
 
-        # value should be in constants (it's a literal constant)
-        value_in_constants = any(c.get("name") == "value" for c in constants)
-        assert value_in_constants, "Constant 'value' should be in constants list"
+        # value is a literal constant.
+        assert "value" in constants, f"Constant 'value' should be present, got {constants}"
 
-        # Should NOT have rid_tracking entries
-        rid_tracking_entries = [
-            inp for inp in inputs
-            if inp.get("source_type") == "rid_tracking"
-        ]
-        assert len(rid_tracking_entries) == 0, f"Should not have rid_tracking entries, found: {rid_tracking_entries}"
+        # 'ref' must NOT appear among constants.
+        assert "ref" not in constants, f"'ref' should not be a constant, got {constants}"
 
     def test_fixed_input_staleness_detection(self, db):
         """Changing a Fixed input should cause skip_computed to re-run."""
@@ -461,18 +439,21 @@ class TestVariantDiscovery:
               AND json_extract(version_keys, '$.__constants.param') = 10
         """).fetchall()
 
-        # Query via _lineage (constants is array of objects, check for param constant)
-        via_lineage = con.execute("""
-            SELECT output_record_id
-            FROM _lineage
-            WHERE target = 'ProcessedData'
-              AND CAST(constants AS VARCHAR) LIKE '%"name": "param"%'
+        # Query via the bipartite graph: ProcessedData records whose producing
+        # invocation consumed a constant bound to the 'param' slot.
+        via_graph = con.execute("""
+            SELECT DISTINCT io.output_record_id
+            FROM _invocation_output io
+            JOIN _record r ON r.record_id = io.output_record_id
+            JOIN _invocation_input ii ON ii.invocation_id = io.invocation_id
+            JOIN _constant c ON c.record_id = ii.input_record_id
+            WHERE r.type = 'ProcessedData' AND ii.param_name = 'param'
         """).fetchall()
 
         # Should find the same record both ways
         assert len(via_version_keys) == 1
-        assert len(via_lineage) == 1
-        assert via_version_keys[0][0] == via_lineage[0][0]
+        assert len(via_graph) == 1
+        assert via_version_keys[0][0] == via_graph[0][0]
 
 
 class TestComparisonWithScidb:
@@ -569,22 +550,9 @@ class TestComparisonWithScidb:
         scihist_for_each(lineage_step1, {"x": RawData, "p1": 5}, [IntermediateB], subject=[2], trial=[1])
         scihist_for_each(lineage_step2, {"y": IntermediateB, "p2": 2}, [FinalResult], subject=[2], trial=[1])
 
-        con = db._duck.con
-
-        # Get branch_params from final outputs
-        scidb_bp_str = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()[0]
-        scidb_bp = json.loads(scidb_bp_str) if isinstance(scidb_bp_str, str) else scidb_bp_str
-
-        scihist_bp_str = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'FinalResult'
-        """).fetchone()[0]
-        scihist_bp = json.loads(scihist_bp_str) if isinstance(scihist_bp_str, str) else scihist_bp_str
+        # Get branch_params from final outputs (derived from the graph, §6)
+        scidb_bp = derived_bp(db, "ProcessedData")
+        scihist_bp = derived_bp(db, "FinalResult")
 
         # Both should have accumulated upstream params
         # Note: function names differ (plain_step1 vs lineage_step1) but structure matches
@@ -654,22 +622,9 @@ class TestMultipleOutputs:
             trial=[1],
         )
 
-        con = db._duck.con
-
-        # Get branch_params from both outputs
-        bp_a_str = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'IntermediateA'
-        """).fetchone()[0]
-        bp_a = json.loads(bp_a_str) if isinstance(bp_a_str, str) else bp_a_str
-
-        bp_b_str = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'IntermediateB'
-        """).fetchone()[0]
-        bp_b = json.loads(bp_b_str) if isinstance(bp_b_str, str) else bp_b_str
+        # Get branch_params from both outputs (derived from the graph, §6)
+        bp_a = derived_bp(db, "IntermediateA")
+        bp_b = derived_bp(db, "IntermediateB")
 
         # Should be identical
         assert bp_a == bp_b
@@ -716,11 +671,12 @@ class TestGeneratesFile:
         # Should NOT have content_hash (no data)
         assert content_hash is None
 
-        # Should have lineage record
+        # Should have a producing invocation recorded in the graph.
         lineage_result = con.execute("""
-            SELECT output_record_id
-            FROM _lineage
-            WHERE target = 'ProcessedData'
+            SELECT io.output_record_id
+            FROM _invocation_output io
+            JOIN _record r ON r.record_id = io.output_record_id
+            WHERE r.type = 'ProcessedData'
         """).fetchone()
 
         assert lineage_result is not None
@@ -772,15 +728,8 @@ class TestEdgeCases:
             trial=[1],
         )
 
-        con = db._duck.con
-        result = con.execute("""
-            SELECT branch_params
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()
-
-        branch_params_str = result[0]
-        branch_params = json.loads(branch_params_str) if isinstance(branch_params_str, str) else branch_params_str
+        # branch_params derived from the bipartite graph (§6)
+        branch_params = derived_bp(db, "ProcessedData")
 
         # Should ONLY have current function's param (no upstream)
         assert len(branch_params) == 1

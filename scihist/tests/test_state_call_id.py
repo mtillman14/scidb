@@ -1,9 +1,11 @@
-"""Tests for per-call-site check_node_state via the call_id parameter.
+"""Tests for node-state across multiple for_each configs of one function.
 
-When the same function is invoked from multiple for_each() call sites, each
-site has its own call_id (a stable hash of inputs/constants/where minus
-__fn_hash).  check_node_state(call_id=X) must report only X's state, not
-the union across all sites.
+Historically this used an explicit ``call_id`` to keep call sites from blurring.
+``call_id`` is gone: each config produces config-specific ``invocation_id``s, so
+distinct call sites coexist automatically and node completeness is a pure
+invocation-membership test (§9c). These tests verify that coexistence and the
+partial-run ("you have input data not yet processed with these params")
+detection still hold through the public ``check_node_state`` API.
 """
 
 import numpy as np
@@ -11,8 +13,7 @@ import pytest
 import scifor as _scifor
 
 from scidb import BaseVariable, configure_database, for_each
-from scidb.foreach_config import ForEachConfig
-from scihist.state import check_node_state, _get_expected_combos, _get_output_combos
+from scihist.state import check_node_state
 
 
 SCHEMA = ["subject", "session"]
@@ -45,223 +46,51 @@ def _seed(db, subjects, sessions):
             RawSignal.save(np.array([1.0, 2.0, 3.0]), db=db, subject=s, session=sess)
 
 
-# ---------------------------------------------------------------------------
-# Pipeline variants exposes call_id
-# ---------------------------------------------------------------------------
+def test_two_configs_partial_each_union_is_grey(db):
+    """Two configs (different constants) each run on a subset → union grey.
 
-def test_list_pipeline_variants_includes_call_id(db):
-    _seed(db, subjects=["1"], sessions=["A"])
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 20},
-        outputs=[Filtered],
-        db=db,
-        subject=["1"],
-        session=["A"],
-    )
-
-    variants = [v for v in db.list_pipeline_variants() if v["function_name"] == "bandpass"]
-    assert len(variants) == 1
-    cid = variants[0]["call_id"]
-    assert isinstance(cid, str) and len(cid) == 16
-
-    # Independently computing it from the same config must match.
-    expected_cid = ForEachConfig(
-        fn=bandpass, inputs={"signal": RawSignal, "low_hz": 20}
-    ).to_call_id()
-    assert cid == expected_cid
-
-
-# ---------------------------------------------------------------------------
-# check_node_state per call site
-# ---------------------------------------------------------------------------
-
-def test_check_node_state_filters_by_call_id(db):
-    """Two call sites with different scopes: each shows grey due to partial-run detection.
-
-    Call site A processes session A with low_hz=20, but session B exists in input → grey.
-    Call site B processes session B with low_hz=50, but session A exists in input → grey.
-    This enables partial-run detection: you're warned if input data exists that hasn't
-    been processed with the given parameters.
+    Input: 2 subjects × 2 sessions = 4 RawSignal. low_hz=20 runs session A,
+    low_hz=50 runs session B. Each config's live-derived expected set spans all
+    4 input locations, so 4 of 8 expected invocations are present → grey.
     """
     _seed(db, subjects=["1", "2"], sessions=["A", "B"])
 
-    # Call site A: low_hz=20, session A
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 20},
-        outputs=[Filtered],
-        db=db,
-        subject=["1", "2"],
-        session=["A"],
-    )
+    for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 20},
+             outputs=[Filtered], db=db, subject=["1", "2"], session=["A"])
+    for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 50},
+             outputs=[Filtered], db=db, subject=["1", "2"], session=["B"])
 
-    # Call site B: low_hz=50, session B
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 50},
-        outputs=[Filtered],
-        db=db,
-        subject=["1", "2"],
-        session=["B"],
-    )
-
-    cid_a = ForEachConfig(
-        fn=bandpass, inputs={"signal": RawSignal, "low_hz": 20}
-    ).to_call_id()
-    cid_b = ForEachConfig(
-        fn=bandpass, inputs={"signal": RawSignal, "low_hz": 50}
-    ).to_call_id()
-    assert cid_a != cid_b
-
-    state_a = check_node_state(bandpass, [Filtered], db=db, call_id=cid_a)
-    state_b = check_node_state(bandpass, [Filtered], db=db, call_id=cid_b)
-    state_union = check_node_state(bandpass, [Filtered], db=db)
-
-    # Each call site sees ALL input data (partial-run detection).
-    # Call site A processed session A with low_hz=20, but session B exists in input.
-    assert state_a["counts"]["up_to_date"] == 2, state_a  # session A processed
-    assert state_a["counts"]["missing"] == 2, state_a      # session B not processed with low_hz=20
-    assert state_a["state"] == "grey", state_a             # partially complete
-
-    # Call site B processed session B with low_hz=50, but session A exists in input.
-    assert state_b["counts"]["up_to_date"] == 2, state_b  # session B processed
-    assert state_b["counts"]["missing"] == 2, state_b      # session A not processed with low_hz=50
-    assert state_b["state"] == "grey", state_b             # partially complete
-
-    # Union (no call_id) sees all possible input × branch_params combinations.
-    # Expected: 2 sessions × 2 subjects × 2 low_hz values = 8 combos
-    # Actual: only 4 combos processed (A×20, B×50)
-    # Missing: 4 combos (A×50, B×20)
-    assert state_union["counts"]["up_to_date"] == 4, state_union  # processed combos
-    assert state_union["counts"]["missing"] == 4, state_union      # unprocessed combos
-    assert state_union["state"] == "grey", state_union             # partially complete
+    state = check_node_state(bandpass, [Filtered], db=db)
+    assert state["counts"]["up_to_date"] == 4, state
+    assert state["counts"]["missing"] == 4, state
+    assert state["state"] == "grey", state
 
 
-def test_check_node_state_call_id_detects_missing_per_site(db):
-    """One call site fully run, another partially missing: per-site states differ."""
+def test_two_configs_fully_run_is_green(db):
+    """Both configs run over the full input grid → every expected invocation
+    present → green (the two configs coexist, neither clobbers the other)."""
+    _seed(db, subjects=["1", "2"], sessions=["A", "B"])
+
+    for low_hz in (20, 50):
+        for_each(bandpass, inputs={"signal": RawSignal, "low_hz": low_hz},
+                 outputs=[Filtered], db=db, subject=["1", "2"], session=["A", "B"])
+
+    state = check_node_state(bandpass, [Filtered], db=db)
+    # 2 configs × 4 locations = 8 expected, all present.
+    assert state["counts"]["up_to_date"] == 8, state
+    assert state["counts"]["missing"] == 0, state
+    assert state["state"] == "green", state
+
+
+def test_config_partial_run_is_grey(db):
+    """One config run on a subset of available input → grey (partial-run
+    detection: subjects 2,3 exist in input but weren't processed)."""
     _seed(db, subjects=["1", "2", "3"], sessions=["A"])
 
-    # Call site A: only run for subject 1 (subjects 2,3 will be missing)
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 20},
-        outputs=[Filtered],
-        db=db,
-        subject=["1"],
-        session=["A"],
-    )
+    for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 20},
+             outputs=[Filtered], db=db, subject=["1"], session=["A"])
 
-    # Call site B: run for subjects 1,2,3 fully
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 50},
-        outputs=[Filtered],
-        db=db,
-        subject=["1", "2", "3"],
-        session=["A"],
-    )
-
-    cid_a = ForEachConfig(
-        fn=bandpass, inputs={"signal": RawSignal, "low_hz": 20}
-    ).to_call_id()
-    cid_b = ForEachConfig(
-        fn=bandpass, inputs={"signal": RawSignal, "low_hz": 50}
-    ).to_call_id()
-
-    state_a = check_node_state(bandpass, [Filtered], db=db, call_id=cid_a)
-    state_b = check_node_state(bandpass, [Filtered], db=db, call_id=cid_b)
-
-    # Site A: 1 up_to_date.  The "missing" count depends on whether the
-    # input variable's branch_params expose only the locations that B
-    # produced — under the current branch_params model, A only knows about
-    # the schema_ids it produced for itself, so it shows 1 up_to_date and
-    # 0 missing.  The key invariant: A must NOT see B's records.
-    assert state_a["counts"]["up_to_date"] == 1
-    for combo in state_a["combos"]:
-        # No combo from site A should reference low_hz=50
-        bp = combo["branch_params"]
-        assert bp.get("bandpass.low_hz") != 50, combo
-
-    # Site B: 3 up_to_date.
-    assert state_b["counts"]["up_to_date"] == 3
-    for combo in state_b["combos"]:
-        bp = combo["branch_params"]
-        assert bp.get("bandpass.low_hz") != 20, combo
-
-
-def test_get_output_combos_filters_by_call_id(db):
-    _seed(db, subjects=["1"], sessions=["A"])
-
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 20},
-        outputs=[Filtered],
-        db=db,
-        subject=["1"],
-        session=["A"],
-    )
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 50},
-        outputs=[Filtered],
-        db=db,
-        subject=["1"],
-        session=["A"],
-    )
-
-    cid_a = ForEachConfig(fn=bandpass, inputs={"signal": RawSignal, "low_hz": 20}).to_call_id()
-
-    all_combos = _get_output_combos(db, "bandpass", [Filtered])
-    only_a = _get_output_combos(db, "bandpass", [Filtered], call_id=cid_a)
-
-    assert len(all_combos) == 2
-    assert len(only_a) == 1
-    assert only_a[0]["branch_params"].get("bandpass.low_hz") == 20
-
-
-def test_get_expected_combos_filters_for_each_expected_by_call_id(db):
-    """The PathInput fallback path on _for_each_expected respects call_id."""
-    _seed(db, subjects=["1", "2"], sessions=["A"])
-
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 20},
-        outputs=[Filtered],
-        db=db,
-        subject=["1"],
-        session=["A"],
-    )
-    for_each(
-        bandpass,
-        inputs={"signal": RawSignal, "low_hz": 50},
-        outputs=[Filtered],
-        db=db,
-        subject=["2"],
-        session=["A"],
-    )
-
-    # _for_each_expected should have 2 rows total (one per call site).
-    all_rows = db._duck._fetchall(
-        "SELECT call_id, schema_id FROM _for_each_expected WHERE function_name = ?",
-        ["bandpass"],
-    )
-    assert len(all_rows) == 2
-
-    cid_a = ForEachConfig(fn=bandpass, inputs={"signal": RawSignal, "low_hz": 20}).to_call_id()
-
-    # When call_id is provided AND scidb_variants returns nothing for that
-    # call_id (e.g., function never ran for that call site), the fallback
-    # path filters by call_id.  We trigger that by clearing _record_metadata
-    # for one call site so the variant loop misses it.
-    db._duck._execute(
-        "DELETE FROM _record_metadata WHERE variable_name = ?", ["Filtered"]
-    )
-
-    expected_a = _get_expected_combos(db, "bandpass", call_id=cid_a)
-    expected_all = _get_expected_combos(db, "bandpass")
-
-    # Scoped: only site A's row.
-    assert len(expected_a) == 1
-    # Union: both sites' rows.
-    assert len(expected_all) == 2
+    state = check_node_state(bandpass, [Filtered], db=db)
+    assert state["counts"]["up_to_date"] == 1, state
+    assert state["counts"]["missing"] == 2, state
+    assert state["state"] == "grey", state

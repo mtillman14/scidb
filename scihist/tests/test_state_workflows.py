@@ -167,8 +167,14 @@ class TestMultiStepPropagation:
         for_each(step3, inputs={"s2": WfStep2}, outputs=[WfStep3],
                  subject=[1, 2], trial=["A", "B"], db=db)
 
-    def test_stale_propagates_through_three_hops(self, db):
-        """Re-save WfRaw[1,A] → step1, step2, step3 all red for that combo."""
+    def test_root_change_greys_only_direct_consumer(self, db):
+        """Re-save WfRaw[1,A] → step1 needs-run (grey); step2/step3 stay green.
+
+        Membership model (§9c) propagates LAZILY: only step1's direct input
+        changed, so only step1 greys. step2's input (WfStep1) is unchanged until
+        step1 is re-run, so step2/step3 remain green. (The eager deep-walk that
+        reddened the whole chain is gone; staleness flows one level per re-run.)
+        """
         self._run_full_chain(db)
         assert check_node_state(step1, [WfStep1], db=db)["state"] == "green"
         assert check_node_state(step2, [WfStep2], db=db)["state"] == "green"
@@ -180,19 +186,11 @@ class TestMultiStepPropagation:
         r2 = check_node_state(step2, [WfStep2], db=db)
         r3 = check_node_state(step3, [WfStep3], db=db)
 
-        assert r1["state"] == "red"
-        assert r2["state"] == "red", (
-            f"step2 should be red — deep walk detects superseded WfRaw. "
-            f"Got {r2['state']}."
-        )
-        assert r3["state"] == "red", (
-            f"step3 should be red — 2-hop cascade from WfRaw. "
-            f"Got {r3['state']}."
-        )
-
-        for r in (r1, r2, r3):
-            assert r["counts"]["stale"] == 1
-            assert r["counts"]["up_to_date"] == 3
+        assert r1["state"] == "grey"
+        assert r1["counts"]["missing"] == 1
+        assert r1["counts"]["up_to_date"] == 3
+        assert r2["state"] == "green", f"lazy: step2 input unchanged. Got {r2['state']}."
+        assert r3["state"] == "green", f"lazy: step3 input unchanged. Got {r3['state']}."
 
     def test_midchain_fn_change_affects_only_checked_node(self, db):
         """Changing step2's code is detected only by check_node_state(step2).
@@ -214,10 +212,12 @@ class TestMultiStepPropagation:
         r3 = check_node_state(step3, [WfStep3], db=db)
 
         assert r1["state"] == "green"
-        assert r2["state"] == "red", "step2 fn hash mismatch"
+        # Edited fn → new function_hash → expected invocation_ids shift → absent
+        # → needs-run (grey), not red (§10.4).
+        assert r2["state"] == "grey", "step2 fn hash change → needs-run"
         assert r3["state"] == "green", (
             "step3's own state stays green — scihist cannot see step2_v2. "
-            "GUI layer must propagate step2's red to step3."
+            "GUI layer must propagate step2's needs-run to step3."
         )
 
     def test_new_upstream_combo_only_greys_direct_consumer(self, db):
@@ -257,8 +257,8 @@ class TestForkJoinPropagation:
                  outputs=[WfJoined],
                  subject=[1, 2], trial=["A", "B"], db=db)
 
-    def test_fork_one_upstream_taints_both_branches(self, db):
-        """Re-save WfRaw[1,A] → both fork_left and fork_right go red for that combo."""
+    def test_fork_one_upstream_greys_both_branches(self, db):
+        """Re-save WfRaw[1,A] → fork_left and fork_right each need-run for that combo."""
         self._run_fork_join(db)
         assert check_node_state(fork_left, [WfForkLeft], db=db)["state"] == "green"
         assert check_node_state(fork_right, [WfForkRight], db=db)["state"] == "green"
@@ -267,17 +267,17 @@ class TestForkJoinPropagation:
 
         rl = check_node_state(fork_left, [WfForkLeft], db=db)
         rr = check_node_state(fork_right, [WfForkRight], db=db)
-        assert rl["state"] == "red"
-        assert rr["state"] == "red"
-        assert rl["counts"]["stale"] == 1
-        assert rr["counts"]["stale"] == 1
+        assert rl["state"] == "grey"
+        assert rr["state"] == "grey"
+        assert rl["counts"]["missing"] == 1
+        assert rr["counts"]["missing"] == 1
 
-    def test_join_cascades_from_root(self, db):
-        """Re-save WfRaw[1,A] → join_sides red (deep 2-hop cascade).
+    def test_join_stays_green_when_root_changes(self, db):
+        """Re-save WfRaw[1,A] → join_sides stays green (lazy propagation).
 
-        The join's immediate inputs (WfForkLeft/Right) haven't themselves
-        been re-run, but WfRaw has been superseded. The deep lineage walk
-        reaches WfRaw through the join's ancestors.
+        The join's immediate inputs (WfForkLeft/Right) haven't been re-run, so
+        they're unchanged and the join's expected invocations are all present.
+        The needs-run signal sits at the forks until they're re-run.
         """
         self._run_fork_join(db)
         assert check_node_state(join_sides, [WfJoined], db=db)["state"] == "green"
@@ -285,20 +285,19 @@ class TestForkJoinPropagation:
         WfRaw.save(np.array([42.0] * 5), subject=1, trial="A", db=db)
 
         rj = check_node_state(join_sides, [WfJoined], db=db)
-        assert rj["state"] == "red", (
-            f"join_sides should cascade from WfRaw through fork outputs. "
+        assert rj["state"] == "green", (
+            f"lazy: join inputs unchanged until forks re-run. "
             f"Got {rj['state']} counts={rj['counts']}"
         )
-        assert rj["counts"]["stale"] == 1
 
-    def test_join_red_when_direct_input_resaved(self, db):
-        """Re-save WfForkLeft directly → join_sides red for that combo."""
+    def test_join_greys_when_direct_input_resaved(self, db):
+        """Re-save WfForkLeft directly → join_sides needs-run for that combo."""
         self._run_fork_join(db)
         WfForkLeft.save(np.array([1e6] * 5), subject=1, trial="A", db=db)
 
         rj = check_node_state(join_sides, [WfJoined], db=db)
-        assert rj["state"] == "red"
-        assert rj["counts"]["stale"] == 1
+        assert rj["state"] == "grey"
+        assert rj["counts"]["missing"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -365,16 +364,17 @@ class TestMixedInputTypes:
         assert r["counts"]["up_to_date"] == 3
         assert r["counts"]["missing"] == 1
 
-    def test_red_when_variable_input_resaved(self, db):
-        """Re-saving a Variable input → mixed fn red for affected combos."""
+    def test_grey_when_variable_input_resaved(self, db):
+        """Re-saving a Variable input → mixed fn needs-run for affected combos."""
         self._run_mixed(db)
         assert check_node_state(mixed_inputs, [WfMixedOut], db=db)["state"] == "green"
 
         WfBaseline.save(np.array([9.9] * 5), subject="01", trial="01", db=db)
 
         r = check_node_state(mixed_inputs, [WfMixedOut], db=db)
-        assert r["state"] == "red"
-        assert r["counts"]["stale"] >= 1
+        assert r["state"] == "grey"
+        assert r["counts"]["missing"] >= 1
+        assert r["counts"]["stale"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -429,9 +429,9 @@ class TestMultiOutputSingleFunction:
         assert r["counts"]["missing"] == 1
         assert r["counts"]["up_to_date"] == 3
 
-    def test_all_outputs_go_stale_together_on_input_resave(self, db):
-        """A single upstream input serves all 3 outputs — re-saving WfRaw
-        taints every output class for that combo via the shared lineage."""
+    def test_all_outputs_need_rerun_together_on_input_resave(self, db):
+        """A single upstream input serves all 3 outputs (one invocation per
+        combo) — re-saving WfRaw makes that combo's invocation need-run."""
         self._run_multi(db)
         assert check_node_state(
             multi_output, [WfMultiA, WfMultiB, WfMultiC], db=db,
@@ -442,8 +442,8 @@ class TestMultiOutputSingleFunction:
         r = check_node_state(
             multi_output, [WfMultiA, WfMultiB, WfMultiC], db=db,
         )
-        assert r["state"] == "red"
-        assert r["counts"]["stale"] == 1
+        assert r["state"] == "grey"
+        assert r["counts"]["missing"] == 1
         assert r["counts"]["up_to_date"] == 3
 
 
@@ -514,8 +514,8 @@ class TestMultipleConstantVariants:
         assert r["counts"]["missing"] == 2
 
     def test_variants_independent_under_input_resave(self, db):
-        """Re-saving WfVariantRaw[1,A] taints the combo in BOTH variants —
-        they share an upstream record. Both variants' counts["stale"] rise.
+        """Re-saving WfVariantRaw[1,A] makes the (1,A) combo need-run in BOTH
+        variants — they share the upstream record.
         """
         self._seed_raw(db)
         for scale in (2.0, 3.0):
@@ -528,13 +528,13 @@ class TestMultipleConstantVariants:
             )
         assert check_node_state(scale_raw, [WfVariantOut], db=db)["state"] == "green"
 
-        # Re-save ONE raw combo → both variants' (1, A) outputs go stale.
+        # Re-save ONE raw combo → both variants' (1, A) invocations need re-run.
         WfVariantRaw.save(np.array([99.0] * 5), subject=1, trial="A", db=db)
 
         r = check_node_state(scale_raw, [WfVariantOut], db=db)
-        assert r["state"] == "red"
-        # One superseded input × 2 variants = 2 stale combos.
-        assert r["counts"]["stale"] == 2, (
-            f"Expected 2 stale combos (one per variant), got {r['counts']}"
+        assert r["state"] == "grey"
+        # One superseded input × 2 variants = 2 needs-run combos.
+        assert r["counts"]["missing"] == 2, (
+            f"Expected 2 needs-run combos (one per variant), got {r['counts']}"
         )
         assert r["counts"]["up_to_date"] == 6

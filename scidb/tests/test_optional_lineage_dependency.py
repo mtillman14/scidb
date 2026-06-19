@@ -85,23 +85,20 @@ class TestScidbWithoutLineage:
         )
 
         # Check metadata
-        import json
         con = db._duck.con
         result = con.execute("""
-            SELECT version_keys, branch_params
+            SELECT record_id, version_keys
             FROM _record_metadata
             WHERE variable_name = 'OutputData'
         """).fetchone()
-
-        version_keys = parse_version_keys(result[0])
-        branch_params = parse_version_keys(result[1])
+        record_id = result[0]
+        version_keys = parse_version_keys(result[1])
 
         # Should have complete version_keys even without lineage
         assert "__fn" in version_keys
         assert "__fn_hash" in version_keys
         assert "__inputs" in version_keys
         assert "__constants" in version_keys
-        # NOTE: __branch_params is stored in a separate column, not in version_keys
 
         # Check content
         assert version_keys["__fn"] == "compute"
@@ -109,8 +106,8 @@ class TestScidbWithoutLineage:
         assert constants["alpha"] == 2.0
         assert constants["beta"] == 10.0
 
-        # Check branch_params in the separate column
-        assert branch_params is not None
+        # branch_params is now derived from the bipartite graph (§6), not stored.
+        branch_params = db.get_derived_branch_params(record_id)
         assert "compute.alpha" in branch_params
         assert "compute.beta" in branch_params
         assert branch_params["compute.alpha"] == 2.0
@@ -192,15 +189,17 @@ class TestLineageFcnResultDetection:
 
         assert result is not None
 
-        # Check that lineage was saved (proves delegation worked)
+        # Check that provenance was recorded (proves delegation worked):
+        # the bipartite graph has an invocation producing an OutputData record.
         con = db._duck.con
         lineage_count = con.execute("""
-            SELECT COUNT(*)
-            FROM _lineage
-            WHERE target = 'OutputData'
+            SELECT COUNT(DISTINCT io.output_record_id)
+            FROM _invocation_output io
+            JOIN _record r ON r.record_id = io.output_record_id
+            WHERE r.type = 'OutputData'
         """).fetchone()[0]
 
-        assert lineage_count == 1, "Lineage should have been saved via delegation"
+        assert lineage_count == 1, "Provenance should have been recorded via delegation"
 
         # Check metadata is complete
         import json

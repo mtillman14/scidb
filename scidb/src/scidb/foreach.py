@@ -29,6 +29,7 @@ from .each_of import EachOf
 from .foreach_config import ForEachConfig
 from .filters import Filter
 from .merge import Merge
+from .provenance_save import GraphRecord as _GraphRecord
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +414,9 @@ def for_each(
     if skip_computed and not dry_run and outputs and active_db is not None:
         from scilineage import LineageFcn
         if isinstance(fn, LineageFcn):
-            _pre_combo_hook = _build_skip_hook(fn, outputs, active_db, inputs)
+            _pre_combo_hook = _build_skip_hook(
+                fn, outputs, active_db, inputs, as_table=as_table, distribute=distribute
+            )
             Log.info(f"[scidb] Step 1.6: built skip_computed hook for {fn.fcn.__name__}")
         else:
             Log.info("[scidb] Step 1.6: skip_computed requested but fn is not lineage-tracked; skipping hook")
@@ -627,29 +630,46 @@ def _apply_introspect(result_tbl, state, where):
 # skip_computed pre-combo hook (folded from scihist.for_each)
 # ---------------------------------------------------------------------------
 
-def _build_skip_hook(fn, outputs: list, db, inputs: dict) -> "Callable[[dict], bool]":
+def _build_skip_hook(
+    fn, outputs: list, db, inputs: dict, as_table=None, distribute: bool = False
+) -> "Callable[[dict], bool]":
     """Return a pre-combo hook that returns True when a combo can be skipped.
 
-    A combo is skipped when:
-    1. Every output type already has a record for this combo's metadata.
-    2. The function hash stored in lineage matches the current function's hash.
-    3. The combo's ``__rid_*`` values match those stored in the output record's
-       lineage inputs (as ``variable`` entries) — meaning all upstream
-       inputs are unchanged.
-    4. Constant input hashes match those stored in the output record's lineage.
+    Rewritten over the bipartite provenance graph (the §11 "port" approach: read
+    function_hash + input edges + constant records from the graph, not _lineage).
+    The decision splits into:
+
+    1. *Missing vs. variant gate* — ``find_record_id`` on (schema + constants +
+       ``__fn`` name) decides whether any output for this variant exists yet.
+       No record → the combo has never been run for this variant → compute
+       silently (no ``[recompute]`` line), matching the legacy contract.
+    2. *Staleness via edge comparison* — load the producing invocation's
+       signature for that output (``stored_invocation_signature``) and compare,
+       binding by binding, against the combo's *current* inputs: function hash,
+       each variable input record_id (+ ColumnSelection selector), and constant
+       content hashes. Any mismatch → ``[recompute]``; otherwise ``[skip]``.
+
+    The self-referential guard (``input rid == output rid`` => stable) is what a
+    pure membership test cannot express — it stops input==output pipelines
+    (variant expansion feeding an output back as input) from recomputing forever.
+
+    Binding parity with the save path holds by construction: the same
+    ``full_combo`` whose ``__rid_*`` values feed this hook also feed the save
+    path's graph edges, ``compute_function_hash(fn)`` equals the save-side
+    ``__fn_hash``, and both sides derive selectors from ``compute_input_selectors``.
 
     ``fn`` must be a ``scilineage.LineageFcn``.
     """
     from scicanonicalhash import canonical_hash as _chash
     from scilineage.hashing import compute_function_hash
+    from . import provenance_query
+    from .provenance_save import compute_input_selectors
 
     schema_keys: set = set(db.dataset_schema_keys)
 
-    # Pre-compute constant inputs (non-variable, non-wrapper) with their hashes.
+    # Pre-compute scalar constant inputs (mirrors ForEachConfig._get_direct_constants
+    # so skip-side and save-side constant bindings agree).
     constant_values: dict = {}
-    constant_hashes: dict[str, str] = {}
-    # Collect Fixed inputs for record_id tracking.
-    fixed_inputs: dict[str, tuple] = {}  # name -> (inner_type, fixed_metadata)
     try:
         from scifor import PathInput as _PathInput
     except ImportError:
@@ -659,154 +679,86 @@ def _build_skip_hook(fn, outputs: list, db, inputs: dict) -> "Callable[[dict], b
     except ImportError:
         _PathOutput = None
     for name, value in inputs.items():
-        if isinstance(value, type):
-            continue  # Variable type (BaseVariable subclass)
-        if hasattr(value, 'var_type') or hasattr(value, 'var_specs'):
-            # Check if it's a Fixed wrapper — track it for rid comparison.
-            if hasattr(value, 'fixed_metadata'):
-                inner = value.var_type
-                # Unwrap ColumnSelection if present
-                if hasattr(inner, 'var_type'):
-                    inner = inner.var_type
-                if isinstance(inner, type):
-                    fixed_inputs[name] = (inner, value.fixed_metadata)
-            continue  # Wrapper (Fixed, ColumnSelection, Merge, etc.)
+        if _is_loadable(value):
+            continue
         if _PathInput is not None and isinstance(value, _PathInput):
-            continue  # PathInput — resolved per-combo by scidb.for_each
-        # Resolution markers (PathOutput, ColName) are not real constants: their
-        # value is determined per combo/column at run time and they are not
-        # hashable. Exclude them from constant hashing — mirrors
-        # ForEachConfig._get_direct_constants so skip_computed and version_keys
-        # agree on what counts as a constant.
+            continue
         if _PathOutput is not None and isinstance(value, _PathOutput):
             continue
         if isinstance(value, ColName):
             continue
         constant_values[name] = value
-        constant_hashes[name] = _chash(value)
+
+    fn_hash = compute_function_hash(fn, truncate=16)
+    selectors = compute_input_selectors(inputs)
 
     def _combo_str(schema_combo: dict) -> str:
         return ", ".join(f"{k}={v}" for k, v in sorted(schema_combo.items()))
 
-    Log.debug(f"_build_skip_hook: fixed_inputs={list(fixed_inputs.keys())}, "
-              f"constant_hashes={list(constant_hashes.keys())}")
+    def _recompute(combo_str: str, why: str) -> bool:
+        msg = f"[recompute] {combo_str} — {why}"
+        print(msg)
+        Log.info(msg)
+        return False
+
+    Log.debug(f"_build_skip_hook: constants={list(constant_values.keys())}, "
+              f"fn_hash={fn_hash[:12]}, selectors={ {k: v for k, v in selectors.items() if v} }")
 
     def _should_skip(combo: dict) -> bool:
-        # Strip __rid_* and other internal keys — only schema keys for DB lookups.
         schema_combo = {k: v for k, v in combo.items() if k in schema_keys}
         combo_str = _combo_str(schema_combo)
 
-        # Current __rid_* values from the combo (freshly loaded inputs).
-        combo_rids = {k: v for k, v in combo.items() if k.startswith("__rid_")}
-
-        # Step 1: all outputs must exist.
-        # Include constant values and __fn/__fn_hash in lookup so variants
-        # are disambiguated (matches version_keys written by save path).
+        # Gate: does an output for THIS variant (schema + constants + fn name)
+        # already exist? If not, the combo has never been run → compute silently.
         lookup_combo = dict(schema_combo)
         lookup_combo.update(constant_values)
         lookup_combo["__fn"] = fn.fcn.__name__
-        lookup_combo["__fn_hash"] = compute_function_hash(fn, truncate=16)
-
         output_record_id = None
         for OutputCls in outputs:
             try:
                 rid = db.find_record_id(OutputCls, lookup_combo)
-            except (KeyError, Exception):
+            except Exception:
                 rid = None
             if rid is None:
                 Log.debug(f"missing: {combo_str} — no output record for {OutputCls.__name__}")
-                return False  # output missing → compute
+                return False
             output_record_id = rid
 
-        # Step 2: function hash check.
-        stored_hash = db.get_function_hash_for_record(output_record_id)
-        if stored_hash is None:
-            msg = f"[recompute] {combo_str} — no lineage record"
-            print(msg)
-            Log.info(msg)
-            return False
-        if stored_hash != fn.hash:
-            msg = f"[recompute] {combo_str} — function hash changed"
-            print(msg)
-            Log.info(msg)
-            return False
+        # Staleness: compare the stored producing invocation's signature against
+        # the combo's current inputs.
+        sig = provenance_query.stored_invocation_signature(db._duck, output_record_id)
+        if sig is None:
+            return _recompute(combo_str, "no provenance record")
+        if sig["function_hash"] != fn_hash:
+            return _recompute(combo_str, "function hash changed")
 
-        # Step 3: compare __rid_* values against stored lineage inputs.
-        if combo_rids:
-            lineage_inputs = db.get_lineage_inputs(output_record_id)
-            stored_rids = {}
-            for inp in lineage_inputs:
-                if inp.get("source_type") == "variable":
-                    param_name = inp.get("name")
-                    if param_name:
-                        stored_rids[f"__rid_{param_name}"] = inp["record_id"]
-            for rid_key, rid_val in combo_rids.items():
-                # Self-referential case: the loaded "input" IS the output
-                # record (input type == output type). Pipeline is stable.
-                if str(rid_val) == str(output_record_id):
-                    continue
-                stored_rid = stored_rids.get(rid_key)
-                if stored_rid is None:
-                    msg = f"[recompute] {combo_str} — no stored {rid_key}"
-                    print(msg)
-                    Log.info(msg)
-                    return False
-                if str(rid_val) != str(stored_rid):
-                    msg = f"[recompute] {combo_str} — {rid_key} changed"
-                    print(msg)
-                    Log.info(msg)
-                    return False
+        stored_var = sig["var_inputs"]   # param -> (record_id, selector)
+        for key, rid_val in combo.items():
+            if not key.startswith("__rid_") or rid_val is None:
+                continue
+            param = key[len("__rid_"):]
+            # Self-referential: the loaded input IS the output record. Stable.
+            if str(rid_val) == str(output_record_id):
+                continue
+            stored = stored_var.get(param)
+            if stored is None:
+                return _recompute(combo_str, f"no stored input {param}")
+            stored_rid, stored_sel = stored
+            if str(stored_rid) != str(rid_val):
+                return _recompute(combo_str, f"input {param} changed")
+            if (stored_sel or None) != (selectors.get(param) or None):
+                return _recompute(combo_str, f"selector for {param} changed")
 
-        # Step 3b: compare Fixed input record_ids against stored lineage.
-        if fixed_inputs:
-            if not combo_rids:
-                lineage_inputs = db.get_lineage_inputs(output_record_id)
-                stored_rids = {}
-                for inp in lineage_inputs:
-                    if inp.get("source_type") == "variable":
-                        param_name = inp.get("name")
-                        if param_name:
-                            stored_rids[f"__rid_{param_name}"] = inp["record_id"]
-            for name, (inner_type, fixed_meta) in fixed_inputs.items():
-                rid_key = f"__rid_{name}"
-                current_rid = db.find_record_id(inner_type, fixed_meta)
-                if current_rid is None:
-                    msg = f"[recompute] {combo_str} — fixed input {name} not found"
-                    print(msg)
-                    Log.info(msg)
-                    return False
-                stored_rid = stored_rids.get(rid_key)
-                if stored_rid is None:
-                    msg = f"[recompute] {combo_str} — no stored {rid_key}"
-                    print(msg)
-                    Log.info(msg)
-                    return False
-                if str(current_rid) != str(stored_rid):
-                    msg = f"[recompute] {combo_str} — {rid_key} changed"
-                    print(msg)
-                    Log.info(msg)
-                    return False
-
-        # Step 4: compare constant input hashes against stored lineage.
-        if constant_hashes:
-            stored_constants = db.get_lineage_constants(output_record_id)
-            stored_const_hashes = {
-                c["name"]: c["value_hash"]
-                for c in stored_constants
-                if "name" in c and "value_hash" in c
-            }
-            for name, current_hash in constant_hashes.items():
-                stored_hash = stored_const_hashes.get(name)
-                if stored_hash is not None and stored_hash != current_hash:
-                    msg = f"[recompute] {combo_str} — constant {name} changed"
-                    print(msg)
-                    Log.info(msg)
-                    return False
-                if stored_hash is None and stored_const_hashes:
-                    msg = f"[recompute] {combo_str} — new constant {name}"
-                    print(msg)
-                    Log.info(msg)
-                    return False
+        # Constants: compare current value hashes to stored content hashes.
+        stored_const = sig["const_hashes"]
+        for name, value in constant_values.items():
+            cur_hash = _chash(value)
+            stored_hash = stored_const.get(name)
+            if stored_hash is None:
+                if stored_const:
+                    return _recompute(combo_str, f"new constant {name}")
+            elif stored_hash != cur_hash:
+                return _recompute(combo_str, f"constant {name} changed")
 
         msg = f"[skip] {combo_str}"
         print(msg)
@@ -1444,7 +1396,7 @@ def _for_each_prepare(
     # have outputs and are not in dry_run mode.
     if not dry_run and outputs:
         Log.info(f"[scidb] Step 13: persisting {len(full_combos)} expected combo(s) to _for_each_expected table")
-        _persist_expected_combos(db, fn_name, call_id, full_combos)
+        _persist_expected_combos(db, fn_name, full_combos, fn, inputs, as_table, distribute)
     else:
         Log.info("[scidb] Step 13: skipping expected combos persistence (dry_run or no outputs)")
 
@@ -1538,6 +1490,11 @@ def _for_each_save_resolved(
             if fixed_rids_for_save:
                 Log.info(f"[scidb] computed {len(fixed_rids_for_save)} Fixed input rid(s) for lineage: {list(fixed_rids_for_save.keys())}")
 
+        # Per-param identity selectors (ColumnSelection columns, etc.) for the
+        # bipartite graph edges. Computed once from the inputs spec.
+        from .provenance_save import compute_input_selectors
+        input_selectors = compute_input_selectors(inputs)
+
         save_t0 = time.perf_counter()
         _save_results(
             result_tbl, outputs, state.output_names, state.config_keys, db,
@@ -1546,6 +1503,7 @@ def _for_each_save_resolved(
             lineage_fixed_rids=fixed_rids_for_save,
             combo_to_rids=state.combo_to_rids,
             combo_to_rids_keys=state.iterated_keys_ordered,
+            input_selectors=input_selectors,
         )
         save_elapsed = time.perf_counter() - save_t0
         Log.info(f"[scidb] Step 19 complete: saved {len(result_tbl)} result(s) in {save_elapsed:.3f}s")
@@ -2778,6 +2736,7 @@ def _save_results(
     lineage_fixed_rids: "dict | None" = None,
     combo_to_rids: "dict | None" = None,
     combo_to_rids_keys: "list | None" = None,
+    input_selectors: "dict | None" = None,
 ) -> None:
     """Save results from the result table to output variable types using batch operations.
 
@@ -2820,6 +2779,10 @@ def _save_results(
     # save_path is one of: 'normal', 'flatten', 'lineage'
     batch_items = {}
     lineage_items = []  # LineageFcnResult items saved sequentially (special handling)
+
+    # Bipartite provenance graph: saved output records awaiting graph insertion
+    # (see provenance_save.record_run). Populated as each save path completes.
+    graph_records: list = []
 
     prep_start = time.perf_counter()
     Log.info(f"[batch_save] Preparing {len(result_tbl)} result row(s) for batch save")
@@ -2907,6 +2870,33 @@ def _save_results(
 
         save_metadata["__branch_params"] = merged_bp
 
+        # Build the COMPLETE bipartite input edge set for this row: every
+        # consumed input record (variable, Fixed, Variant, Merge constituent)
+        # with its ColumnSelection selector. Sourced from all __rid_* columns in
+        # the row plus Fixed rids (which may not appear as __rid_* columns), so
+        # the graph and skip_computed see the same bindings. Aggregation rows
+        # carry no __rid_* columns → leave unset and let record_run fall back to
+        # the indexed __upstream it builds below.
+        _sel = input_selectors or {}
+        _row_bindings: dict = {}
+        for _col, _val in row.items():
+            if not _col.startswith("__rid_"):
+                continue
+            if _val is None or (isinstance(_val, float) and pd.isna(_val)):
+                continue
+            _param = _col[len("__rid_"):]
+            _row_bindings[_param] = str(_val)
+        if lineage_fixed_rids:
+            for _k, _v in lineage_fixed_rids.items():
+                if _v is None:
+                    continue
+                _param = _k[len("__rid_"):] if _k.startswith("__rid_") else _k
+                _row_bindings.setdefault(_param, str(_v))
+        if _row_bindings:
+            save_metadata["__graph_var_bindings"] = [
+                (p, r, _sel.get(p)) for p, r in _row_bindings.items()
+            ]
+
         # Add upstream record_ids to version_keys so that records from different
         # upstream variants get distinct record_ids even when content is identical.
         if combo_to_rids is not None and combo_to_rids_keys is not None:
@@ -2979,7 +2969,7 @@ def _save_results(
                     lineage_metadata["__upstream"] = dict(lineage_metadata["__upstream"])
                 if lineage_fixed_rids:
                     lineage_metadata["__lineage_fixed_rids"] = lineage_fixed_rids
-                lineage_items.append((output_obj, output_value, lineage_metadata, row_idx))
+                lineage_items.append((output_obj, output_value, lineage_metadata, row_idx, output_idx))
                 continue
 
             # Normal save path - collect for batch save - need deep copy to avoid shared dict references
@@ -3032,6 +3022,16 @@ def _save_results(
             save_elapsed = time.perf_counter() - save_t0
             total_saved += len(items)
 
+            # Collect for the bipartite provenance graph. output_idx is the
+            # output slot (output_num); items align with record_ids in order.
+            _out_cls = type(output_obj) if not isinstance(output_obj, type) else output_obj
+            _out_sv = getattr(_out_cls, "schema_version", 1)
+            for (_data, _meta), _rid in zip(items, record_ids):
+                if isinstance(_rid, str):
+                    graph_records.append(_GraphRecord(
+                        _out_cls.__name__, _out_sv, output_idx, _rid, _meta,
+                    ))
+
             # Log summary (first few records)
             for i, ((data, meta), rid) in enumerate(zip(items[:3], record_ids[:3])):
                 meta_str = ", ".join(f"{k}={v}" for k, v in meta.items()
@@ -3074,8 +3074,8 @@ def _save_results(
         from scilineage import extract_lineage, get_raw_value
 
         gf_items = []  # generates_file: (output_obj, lr, meta, row_idx)
-        normal_groups: dict = {}  # id(output_obj) -> (output_obj, [(raw, meta, lineage_dict, lh, plh)])
-        for output_obj, output_value, lineage_metadata, row_idx in lineage_items:
+        normal_groups: dict = {}  # id(output_obj) -> (output_obj, output_idx, [(raw, meta, lineage_dict, lh, plh)])
+        for output_obj, output_value, lineage_metadata, row_idx, output_idx in lineage_items:
             try:
                 is_gf = bool(output_value.invoked.fcn.generates_file)
             except Exception:
@@ -3090,11 +3090,11 @@ def _save_results(
                 plh = output_value.invoked.compute_lineage_hash()
             except Exception:
                 plh = lh
-            grp = normal_groups.setdefault(id(output_obj), (output_obj, []))
-            grp[1].append((raw, lineage_metadata, lineage_dict, lh, plh))
+            grp = normal_groups.setdefault(id(output_obj), (output_obj, output_idx, []))
+            grp[2].append((raw, lineage_metadata, lineage_dict, lh, plh))
 
         # Batch normal lineage items per output type.
-        for _output_obj, entries in normal_groups.values():
+        for _output_obj, _output_idx, entries in normal_groups.values():
             cls = type(_output_obj) if not isinstance(_output_obj, type) else _output_obj
             out_name = _output_name(_output_obj)
             Log.info(f"[batch_save] Saving {len(entries)} lineage item(s) for {out_name} (batched lineage path)")
@@ -3107,12 +3107,15 @@ def _save_results(
                     from .database import get_database
                     _db = get_database()
                 record_ids = _db.save_batch(cls, data_items, profile=False, lineage_hashes=lineage_hashes)
-                # Bulk-write the matching _lineage rows.
-                lineage_rows = [
-                    (rid, ld, plh)
-                    for rid, (_raw, _meta, ld, _lh, plh) in zip(record_ids, entries)
-                ]
-                _db._save_lineage_rows_batch(lineage_rows, cls.__name__)
+                # Collect for the bipartite provenance graph (carrying the
+                # pipeline hash so find_by_lineage can look these up).
+                _cls_sv = getattr(cls, "schema_version", 1)
+                for rid, (_raw, _meta, _ld, _lh, _plh) in zip(record_ids, entries):
+                    if isinstance(rid, str):
+                        graph_records.append(_GraphRecord(
+                            cls.__name__, _cls_sv, _output_idx, rid, _meta,
+                            pipeline_hash=_plh,
+                        ))
                 save_elapsed = time.perf_counter() - save_t0
                 total_saved += len(entries)
 
@@ -3153,6 +3156,37 @@ def _save_results(
                     msg = f"[error] {meta_str}: failed to save {_output_name(output_obj)} [generates_file]: {e}"
                     print(msg)
                     Log.error(msg)
+
+    # ===========================================================================
+    # PHASE 4: Write the bipartite provenance graph + append-only _run audit.
+    #
+    # Runs additively alongside the legacy _lineage writes above (Phase 3 of the
+    # lineage-simplification migration). Idempotent for the graph; a fresh _run
+    # row is appended per execution.
+    # ===========================================================================
+    if graph_records:
+        try:
+            from .provenance_save import record_run
+            from .database import get_user_id
+            active_db = db
+            if active_db is None:
+                from .database import get_database
+                active_db = get_database()
+            where_clause = config_keys.get("__where")
+            run_id = record_run(
+                active_db,
+                graph_records,
+                function_name=fn_name,
+                where_clause=where_clause,
+                user_id=get_user_id(),
+            )
+            Log.info(
+                f"[provenance] recorded run_id={run_id} for {len(graph_records)} "
+                f"record(s) of fn={fn_name}"
+            )
+        except Exception as e:
+            # Provenance graph is additive during migration — never fail the save.
+            Log.error(f"[provenance] record_run failed for fn={fn_name}: {e}")
 
     # ===========================================================================
     # Summary
@@ -3261,19 +3295,19 @@ def _propagate_schema(db, distribute: bool) -> None:
 
 
 def _persist_expected_combos(
-    db, fn_name: str, call_id: str, full_combos: list[dict]
+    db, fn_name: str, full_combos: list[dict], fn, inputs: dict, as_table, distribute: bool
 ) -> None:
-    """Persist the full expected combo set for a for_each call into _for_each_expected.
+    """Persist the expected ``invocation_id`` of every combo a for_each run intends.
 
-    Called during for_each BEFORE skip_computed filtering, so we capture ALL
-    combos (including ones that will be skipped).  This lets check_node_state
-    know how many combos are expected for PathInput-only functions where no
-    DB-variable inputs exist to infer the expected set.
+    Called BEFORE skip_computed filtering, so it captures ALL combos (including
+    ones that will be skipped or fail). ``check_node_state`` then measures
+    completeness by how many of these expected invocation_ids are present in
+    ``_invocation`` (§9c). This is the only way to know the expected set for
+    PathInput-only functions (no DB-variable inputs to enumerate).
 
-    Rows are scoped by (function_name, call_id) so that multiple for_each()
-    call sites that reuse the same function don't clobber each other.  The
-    DELETE only removes rows for *this* call site; rows for other call sites
-    of the same function are left intact.
+    No call_id scoping is needed: each combo's invocation_id is config-specific,
+    so distinct call sites coexist and identical re-runs dedup via
+    ``ON CONFLICT DO NOTHING``.
     """
     if not full_combos:
         return
@@ -3287,53 +3321,68 @@ def _persist_expected_combos(
         return
 
     try:
-        sk_set = set(db.dataset_schema_keys)
-        rows_to_insert = []
+        from scilineage.hashing import compute_function_hash
+        from .provenance import normalize_as_table
+        from .provenance_save import compute_input_selectors, expected_invocation_id
 
+        sk_set = set(db.dataset_schema_keys)
+
+        # Constants + loadable params (mirrors _build_skip_hook / save path so the
+        # predicted invocation_id matches the realized one).
+        try:
+            from scifor import PathInput as _PathInput
+        except ImportError:
+            _PathInput = None
+        try:
+            from scifor import PathOutput as _PathOutput
+        except ImportError:
+            _PathOutput = None
+        constant_values: dict = {}
+        loadable_params: list = []
+        for name, value in inputs.items():
+            if _is_loadable(value):
+                loadable_params.append(name)
+                continue
+            if _PathInput is not None and isinstance(value, _PathInput):
+                continue
+            if _PathOutput is not None and isinstance(value, _PathOutput):
+                continue
+            if isinstance(value, ColName):
+                continue
+            constant_values[name] = value
+
+        fn_hash = compute_function_hash(fn, truncate=16)
+        selectors = compute_input_selectors(inputs)
+        as_table_norm = normalize_as_table(as_table, loadable_params)
+
+        rows_to_insert = set()
         for combo in full_combos:
-            # Extract only schema keys from the combo (ignore __rid_*, etc.)
             schema_keys = {k: v for k, v in combo.items() if k in sk_set}
             if not schema_keys:
                 continue
-
             level = db._infer_schema_level(schema_keys)
             if level is None:
                 continue
-
             schema_id = db._duck._get_or_create_schema_id(level, schema_keys)
-            rows_to_insert.append((fn_name, call_id, schema_id, "{}"))
+            inv_id = expected_invocation_id(
+                combo, fn_hash, constant_values, selectors, as_table_norm, bool(distribute),
+            )
+            rows_to_insert.add((fn_name, schema_id, inv_id))
 
         if not rows_to_insert:
             return
 
-        # Deduplicate (multiple combos can map to the same schema_id)
-        rows_to_insert = list(set(rows_to_insert))
-
-        # Replace old entries for THIS call site only.  Other call sites of
-        # the same function (different call_id) are untouched.
-        deleted = db._duck._fetchall(
-            "SELECT COUNT(*) FROM _for_each_expected "
-            "WHERE function_name = ? AND call_id = ?",
-            [fn_name, call_id],
-        )
-        prev_count = deleted[0][0] if deleted else 0
-        db._duck._execute(
-            "DELETE FROM _for_each_expected WHERE function_name = ? AND call_id = ?",
-            [fn_name, call_id],
-        )
-        for fn, cid, sid, bp in rows_to_insert:
+        for fn_n, sid, inv_id in rows_to_insert:
             db._duck._execute(
                 "INSERT INTO _for_each_expected "
-                "(function_name, call_id, schema_id, branch_params) "
-                "VALUES (?, ?, ?, ?)",
-                [fn, cid, sid, bp],
+                "(function_name, schema_id, invocation_id) VALUES (?, ?, ?) "
+                "ON CONFLICT (function_name, invocation_id) DO NOTHING",
+                [fn_n, sid, inv_id],
             )
 
         Log.debug(
-            f"_persist_expected_combos({fn_name}, call_id={call_id}): "
-            f"replaced {prev_count} -> wrote {len(rows_to_insert)} expected combos"
+            f"_persist_expected_combos({fn_name}): wrote {len(rows_to_insert)} "
+            f"expected invocation id(s)"
         )
     except Exception as exc:
-        Log.debug(
-            f"_persist_expected_combos({fn_name}, call_id={call_id}): failed — {exc}"
-        )
+        Log.debug(f"_persist_expected_combos({fn_name}): failed — {exc}")

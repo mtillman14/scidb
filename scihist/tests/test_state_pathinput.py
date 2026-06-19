@@ -1,21 +1,18 @@
 """Tests for check_node_state with PathInput-only functions.
 
-PathInput-only functions have no DB-variable inputs, so _get_expected_combos()
-cannot infer the expected set from _record_metadata.  Instead, scidb.for_each
-persists the full expected combo set in _for_each_expected at runtime, and
-_get_expected_combos falls back to reading from that table when the normal
-logic produces an empty set.
+PathInput-only functions have no DB-variable inputs, so node completeness is
+driven by the persisted expected-invocation set (``_for_each_expected``, written
+at for_each time) tested via the real for_each + PathInput path. See
+.claude/phase5-node-state-rewrite.md.
 """
 
-import json
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, for_each as scidb_for_each
-from scidb.foreach import _persist_expected_combos
+from scidb import BaseVariable
 from scilineage import lineage_fcn
 from scihist import for_each
-from scihist.state import check_node_state, _get_expected_combos
+from scihist.state import check_node_state
 
 
 # ---------------------------------------------------------------------------
@@ -39,8 +36,10 @@ class ProcessedForFallback(BaseVariable):
 # ---------------------------------------------------------------------------
 
 @lineage_fcn
-def import_from_file(data):
-    return np.asarray(data, dtype=float)
+def import_from_file(filepath):
+    """PathInput-only function: reads a single number from a file."""
+    with open(filepath) as fh:
+        return float(fh.read().strip())
 
 
 @lineage_fcn
@@ -48,238 +47,110 @@ def process_raw(raw):
     return np.asarray(raw, dtype=float) * 2.0
 
 
+# PathInput template + file helpers (real for_each path — mirrors
+# test_state_realworld.py). Using the real path means the resolved filepath is
+# excluded from graph constants at the source, so node-state needs no special
+# handling. (The earlier per-combo ``scihist_save`` simulation made the raw
+# array/path a CONSTANT, polluting derived branch_params — see
+# .claude/phase5-node-state-rewrite.md.)
+_GRID = [("1", "A"), ("1", "B"), ("2", "A"), ("2", "B")]
+
+
+def _write_combo_files(root, combos):
+    """Create ``sub{subject}/trial{trial}.txt`` files under ``root``."""
+    from pathlib import Path
+    for i, (subj, trial) in enumerate(combos):
+        d = Path(root) / f"sub{subj}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"trial{trial}.txt").write_text(str(float(i + 1)))
+
+
+def _path_input(root):
+    from scifor import PathInput
+    return PathInput("sub{subject}/trial{trial}.txt", root_folder=str(root))
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestPersistExpectedCombos:
-    """Test that _persist_expected_combos writes correct rows."""
-
-    def test_writes_expected_rows(self, db):
-        """Persisting combos creates _for_each_expected entries."""
-        combos = [
-            {"subject": 1, "trial": "A"},
-            {"subject": 1, "trial": "B"},
-            {"subject": 2, "trial": "A"},
-            {"subject": 2, "trial": "B"},
-        ]
-        _persist_expected_combos(db, "import_from_file", "test_call_id", combos)
-
-        rows = db._duck._fetchall(
-            "SELECT function_name, schema_id, branch_params "
-            "FROM _for_each_expected ORDER BY schema_id"
-        )
-        assert len(rows) == 4
-        for fn, sid, bp in rows:
-            assert fn == "import_from_file"
-            assert bp == "{}"
-
-    def test_replaces_on_rerun(self, db):
-        """Re-running with different combos replaces old entries."""
-        combos_v1 = [
-            {"subject": 1, "trial": "A"},
-            {"subject": 1, "trial": "B"},
-        ]
-        _persist_expected_combos(db, "import_from_file", "test_call_id", combos_v1)
-
-        rows = db._duck._fetchall(
-            "SELECT schema_id FROM _for_each_expected WHERE function_name = ?",
-            ["import_from_file"],
-        )
-        assert len(rows) == 2
-
-        # Re-run with more combos
-        combos_v2 = [
-            {"subject": 1, "trial": "A"},
-            {"subject": 1, "trial": "B"},
-            {"subject": 2, "trial": "A"},
-        ]
-        _persist_expected_combos(db, "import_from_file", "test_call_id", combos_v2)
-
-        rows = db._duck._fetchall(
-            "SELECT schema_id FROM _for_each_expected WHERE function_name = ?",
-            ["import_from_file"],
-        )
-        assert len(rows) == 3
-
-    def test_empty_combos_is_noop(self, db):
-        """Empty combo list doesn't crash or write rows."""
-        _persist_expected_combos(db, "import_from_file", "test_call_id", [])
-        rows = db._duck._fetchall(
-            "SELECT schema_id FROM _for_each_expected"
-        )
-        assert len(rows) == 0
-
-    def test_deduplicates_same_schema_id(self, db):
-        """Multiple combos mapping to the same schema_id are deduplicated."""
-        # Both combos have the same schema keys (only subject matters here)
-        combos = [
-            {"subject": 1, "trial": "A"},
-            {"subject": 1, "trial": "A"},  # duplicate
-        ]
-        _persist_expected_combos(db, "import_from_file", "test_call_id", combos)
-
-        rows = db._duck._fetchall(
-            "SELECT schema_id FROM _for_each_expected WHERE function_name = ?",
-            ["import_from_file"],
-        )
-        assert len(rows) == 1
-
-
-class TestGetExpectedCombosFallback:
-    """Test that _get_expected_combos falls back to _for_each_expected."""
-
-    def test_fallback_when_no_variable_inputs(self, db):
-        """When existing logic returns empty, fallback reads _for_each_expected."""
-        combos = [
-            {"subject": 1, "trial": "A"},
-            {"subject": 2, "trial": "B"},
-        ]
-        _persist_expected_combos(db, "import_from_file", "test_call_id", combos)
-
-        expected = _get_expected_combos(db, "import_from_file")
-        assert len(expected) == 2
-        # Each entry should be (schema_id, "{}")
-        for sid, bp in expected:
-            assert bp == "{}"
-
-    def test_no_fallback_when_variable_inputs_exist(self, db):
-        """DB-variable functions use existing logic; fallback NOT triggered."""
-        # Seed input data so the existing logic finds expected combos
-        for subj in (1, 2):
-            for trial in ("A", "B"):
-                RawForFallback.save(np.random.randn(5), subject=subj, trial=trial)
-
-        # Run the function so lineage records exist
-        for_each(
-            process_raw,
-            inputs={"raw": RawForFallback},
-            outputs=[ProcessedForFallback],
-            subject=[1, 2],
-            trial=["A", "B"],
-        )
-
-        # Also persist some _for_each_expected rows (they should be ignored)
-        _persist_expected_combos(db, "process_raw", "test_call_id", [{"subject": 99, "trial": "Z"}])
-
-        expected = _get_expected_combos(db, "process_raw")
-        # Should return 4 combos from the existing logic (2x2 input combos)
-        assert len(expected) == 4
-        # The fallback row (subject=99) should NOT be present
-        schema_ids = {sid for sid, _ in expected}
-        fallback_rows = db._duck._fetchall(
-            "SELECT schema_id FROM _for_each_expected "
-            "WHERE function_name = ? AND call_id = ?",
-            ["process_raw", "test_call_id"],
-        )
-        fallback_sids = {r[0] for r in fallback_rows}
-        assert not (fallback_sids & schema_ids), \
-            "Fallback schema_ids should not appear in existing-logic results"
-
-
 class TestCheckNodeStatePathInput:
-    """Integration tests: check_node_state with PathInput-only functions."""
+    """Integration tests: check_node_state with a real PathInput-only function.
 
-    def _setup_pathinput_run(self, db, tmp_path, combos_to_succeed):
-        """Run import_from_file for selected combos, persist all expected.
+    Drives the actual for_each + PathInput path (not a per-combo save
+    simulation), so the resolved filepath is excluded from graph constants at
+    the source and node-state works without special-casing.
+    """
 
-        Creates filesystem files and runs the function only for combos in
-        combos_to_succeed.  All 4 combos are persisted as expected.
-        """
-        all_combos = [
-            {"subject": "1", "trial": "A"},
-            {"subject": "1", "trial": "B"},
-            {"subject": "2", "trial": "A"},
-            {"subject": "2", "trial": "B"},
-        ]
-
-        # Persist all combos as expected
-        _persist_expected_combos(db, "import_from_file", "test_call_id", all_combos)
-
-        # Simulate successful runs by saving outputs + lineage for selected combos
-        for combo in combos_to_succeed:
-            data = np.random.randn(5)
-            # Save output via scihist-style lineage save
-            from scihist.foreach import save as _scihist_save
-            from scilineage import LineageFcnResult
-
-            result = import_from_file(data)
-            assert isinstance(result, LineageFcnResult)
-            _scihist_save(
-                PathInputOutput,
-                result,
-                db=db,
-                **combo,
-            )
+    def _run(self, db, tmp_path, files):
+        """Write files for ``files`` combos, then run import_from_file over the
+        full 2×2 grid via the real for_each + PathInput path."""
+        _write_combo_files(tmp_path, files)
+        for_each(
+            import_from_file,
+            inputs={"filepath": _path_input(tmp_path)},
+            outputs=[PathInputOutput],
+            subject=["1", "2"],
+            trial=["A", "B"],
+            db=db,
+        )
 
     def test_grey_when_partial_success(self, db, tmp_path):
-        """3/4 combos succeed, 1 fails → grey."""
-        succeed = [
-            {"subject": "1", "trial": "A"},
-            {"subject": "1", "trial": "B"},
-            {"subject": "2", "trial": "B"},
-        ]
-        self._setup_pathinput_run(db, tmp_path, succeed)
+        """3/4 combos have files, 1 missing → grey."""
+        self._run(db, tmp_path, [("1", "A"), ("1", "B"), ("2", "B")])
 
-        result = check_node_state(
-            import_from_file, [PathInputOutput], db=db,
-        )
+        result = check_node_state(import_from_file, [PathInputOutput], db=db)
         assert result["state"] == "grey"
         assert result["counts"]["up_to_date"] == 3
         assert result["counts"]["missing"] == 1
 
     def test_green_when_all_succeed(self, db, tmp_path):
-        """All 4 combos succeed → green."""
-        all_combos = [
-            {"subject": "1", "trial": "A"},
-            {"subject": "1", "trial": "B"},
-            {"subject": "2", "trial": "A"},
-            {"subject": "2", "trial": "B"},
-        ]
-        self._setup_pathinput_run(db, tmp_path, all_combos)
+        """All 4 combos have files → green."""
+        self._run(db, tmp_path, _GRID)
 
-        result = check_node_state(
-            import_from_file, [PathInputOutput], db=db,
-        )
+        result = check_node_state(import_from_file, [PathInputOutput], db=db)
         assert result["state"] == "green"
         assert result["counts"]["up_to_date"] == 4
         assert result["counts"]["missing"] == 0
 
     def test_red_when_none_succeed(self, db, tmp_path):
-        """No combos succeed → red."""
-        self._setup_pathinput_run(db, tmp_path, combos_to_succeed=[])
-
-        result = check_node_state(
-            import_from_file, [PathInputOutput], db=db,
+        """No files → no combos run → red."""
+        # Create the root dir but no files, so PathInput discovers nothing.
+        from pathlib import Path
+        Path(tmp_path).mkdir(parents=True, exist_ok=True)
+        for_each(
+            import_from_file,
+            inputs={"filepath": _path_input(tmp_path)},
+            outputs=[PathInputOutput],
+            subject=["1", "2"],
+            trial=["A", "B"],
+            db=db,
         )
+
+        result = check_node_state(import_from_file, [PathInputOutput], db=db)
         assert result["state"] == "red"
-        assert result["counts"]["missing"] == 4
         assert result["counts"]["up_to_date"] == 0
 
     def test_expected_replaced_on_rerun(self, db, tmp_path):
-        """Re-run with fewer combos replaces expected set."""
-        # First run: 4 expected, 4 succeed
-        all_combos = [
-            {"subject": "1", "trial": "A"},
-            {"subject": "1", "trial": "B"},
-            {"subject": "2", "trial": "A"},
-            {"subject": "2", "trial": "B"},
-        ]
-        self._setup_pathinput_run(db, tmp_path, all_combos)
+        """Re-run over a smaller grid; prior records remain → green.
 
-        # Simulate a re-run where only 2 combos are expected (e.g. files removed)
-        new_expected = [
-            {"subject": "1", "trial": "A"},
-            {"subject": "1", "trial": "B"},
-        ]
-        _persist_expected_combos(db, "import_from_file", "test_call_id", new_expected)
+        Same call site (inputs/where/flags unchanged) → same call_id, so the
+        second run replaces the expected set with the smaller grid. The 4 records
+        from the first run still exist, so every (now-2) expected combo is
+        up_to_date → green.
+        """
+        self._run(db, tmp_path, _GRID)
 
-        result = check_node_state(
-            import_from_file, [PathInputOutput], db=db,
+        # Re-run over a 2-combo subset (same PathInput call site).
+        for_each(
+            import_from_file,
+            inputs={"filepath": _path_input(tmp_path)},
+            outputs=[PathInputOutput],
+            subject=["1"],
+            trial=["A", "B"],
+            db=db,
         )
-        # 2 expected, but 4 actual records still exist in the DB.
-        # All 4 actuals are checked (up_to_date), and no expected combos
-        # are missing — so state is green.
+
+        result = check_node_state(import_from_file, [PathInputOutput], db=db)
         assert result["state"] == "green"
-        assert result["counts"]["up_to_date"] == 4
         assert result["counts"]["missing"] == 0

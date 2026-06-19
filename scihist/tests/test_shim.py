@@ -41,8 +41,8 @@ def test_submodule_imports_still_resolve():
     from scihist.foreach import save as _save  # noqa: F401
     from scihist.state import (  # noqa: F401
         check_node_state,
-        _get_expected_combos,
-        _get_output_combos,
+        check_combo_state,
+        check_multiple_nodes_state,
     )
 
 

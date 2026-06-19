@@ -1,14 +1,15 @@
 """Lineage-aware save paths for LineageFcnResult outputs.
 
 Persists a ``scilineage.LineageFcnResult`` (and the side-effect ``generates_file``
-variant) into the scidb database with full provenance: the output value plus a
-row in the normalized ``_lineage`` table and a ``lineage_hash`` on the record.
+variant) into the scidb database with full provenance: the output value plus the
+bipartite provenance graph (records ↔ invocations) written via
+``provenance_save.record_run_from_lineage``.
 
 This logic previously lived in ``scihist.foreach`` and was imported *up* into
 ``scidb.foreach`` (an inverted layer dependency). It operates entirely on scidb
-internals (``_save_record_metadata``, ``_save_lineage``, ``DatabaseManager.save``)
-plus scilineage primitives, so it belongs in scidb. ``scihist`` now re-exports
-these for backward compatibility.
+internals (``_save_record_metadata``, ``DatabaseManager.save``) plus scilineage
+primitives, so it belongs in scidb. ``scihist`` now re-exports these for
+backward compatibility.
 """
 
 import json
@@ -74,14 +75,9 @@ def _save_lineage_fcn_result(
                 schema_version=getattr(output_obj, 'schema_version', 1),
                 user_id=user_id,
             )
-            active_db._save_lineage(
-                output_record_id=generated_id,
-                output_type=output_name,
-                lineage=lineage_dict,
-                lineage_hash=pipeline_lineage_hash,
-                user_id=user_id,
-                schema_keys=nested_metadata.get("schema"),
-                output_content_hash=None,
+            _record_generates_file_graph(
+                active_db, generated_id, output_name, output_obj, data,
+                lineage_dict, user_id, pipeline_lineage_hash,
             )
             elapsed = time.time() - t0
             logger.debug("_save_lineage_fcn_result exit: output=%s, record_id=%s (generates_file), elapsed=%.3fs",
@@ -109,6 +105,8 @@ def _save_lineage_fcn_result(
             lineage=lineage_dict,
             lineage_hash=lineage_hash,
             pipeline_lineage_hash=pipeline_lineage_hash,
+            output_num=int(getattr(data, "output_num", 0) or 0),
+            graph_function_hash=_graph_fn_hash(data),
         )
         elapsed = time.time() - t0
         logger.debug("_save_lineage_fcn_result exit: output=%s, record_id=%s, elapsed=%.3fs",
@@ -215,14 +213,9 @@ def save_lineage_result(
             schema_version=getattr(output_obj, 'schema_version', 1),
             user_id=user_id,
         )
-        active_db._save_lineage(
-            output_record_id=generated_id,
-            output_type=output_name,
-            lineage=lineage_dict,
-            lineage_hash=pipeline_lineage_hash,
-            user_id=user_id,
-            schema_keys=nested_metadata.get("schema"),
-            output_content_hash=None,
+        _record_generates_file_graph(
+            active_db, generated_id, output_name, output_obj, lineage_result,
+            lineage_dict, user_id, pipeline_lineage_hash,
         )
         logger.info("[scidb] save_lineage_result: saved generates_file output, record_id=%s", generated_id[:12])
         if _Log:
@@ -245,6 +238,8 @@ def save_lineage_result(
         lineage=lineage_dict,
         lineage_hash=lineage_hash,
         pipeline_lineage_hash=pipeline_lineage_hash,
+        output_num=int(getattr(lineage_result, "output_num", 0) or 0),
+        graph_function_hash=_graph_fn_hash(lineage_result),
     )
 
     logger.info("[scidb] save_lineage_result: saved %s, record_id=%s", output_name, rid[:12] if rid else None)
@@ -288,6 +283,54 @@ def save(variable_class, data, db=None, **metadata) -> str | None:
         logger.debug("save() exit: variable=%s, record_id=%s (plain path)",
                      var_name, rid[:12] if rid else None)
         return rid
+
+
+def _record_generates_file_graph(
+    active_db, generated_id, output_name, output_obj, lineage_result,
+    lineage_dict, user_id, pipeline_hash=None,
+) -> None:
+    """Write the bipartite graph for a ``generates_file`` (side-effect) save.
+
+    These records are persisted via ``_save_record_metadata`` directly (no
+    ``db.save``), so the graph is recorded here instead. Needed so
+    ``skip_computed``, node-state, and ``find_by_lineage`` see an invocation for
+    generated outputs. Additive/defensive: never fail the save on a graph error.
+    """
+    try:
+        from .provenance_save import record_run_from_lineage
+        record_run_from_lineage(
+            active_db,
+            generated_id,
+            output_name,
+            getattr(output_obj, "schema_version", 1),
+            int(getattr(lineage_result, "output_num", 0) or 0),
+            lineage_dict,
+            where_clause=None,
+            user_id=user_id,
+            function_hash=_graph_fn_hash(lineage_result),
+            pipeline_hash=pipeline_hash,
+        )
+    except Exception:
+        logger.debug("generates_file graph write failed", exc_info=True)
+
+
+def _graph_fn_hash(lineage_result: Any) -> str | None:
+    """16-char ``compute_function_hash`` of a LineageFcnResult's function.
+
+    The bipartite graph stores ``compute_function_hash(fn, 16)`` (the same
+    ``__fn_hash`` for_each writes), so the staleness/skip read side can use one
+    hashing recipe across both save paths. ``LineageRecord.function_hash`` is
+    instead ``LineageFcn.hash`` (a different scheme), so we derive the 16-char
+    form here from the wrapped function. Returns None if unavailable (the graph
+    then falls back to the lineage dict's value).
+    """
+    try:
+        from scilineage.hashing import compute_function_hash
+        fcn = lineage_result.invoked.fcn
+        return compute_function_hash(fcn, truncate=16)
+    except Exception:
+        logger.debug("_graph_fn_hash: could not compute function hash", exc_info=True)
+        return None
 
 
 def _lineage_to_dict(lineage_record) -> dict:

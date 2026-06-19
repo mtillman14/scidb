@@ -337,8 +337,13 @@ class TestDownstreamStateAfterPartialUpstream:
         assert result["counts"]["up_to_date"] == 10
         assert result["counts"]["missing"] == 5
 
-    def test_downstream_red_when_stale_after_upstream_update(self, db):
-        """compute_peak goes red when an upstream force record is re-saved."""
+    def test_downstream_needs_rerun_when_upstream_updated(self, db):
+        """Re-saving an upstream force record → that combo's expected invocation
+        shifts to the new input record → needs-run (grey), not red.
+
+        Membership model (§9c): a changed input surfaces as needs-run for the
+        affected combo; the other 14 stay up_to_date.
+        """
         _seed_forces(db)
         for_each(
             compute_peak,
@@ -348,11 +353,13 @@ class TestDownstreamStateAfterPartialUpstream:
             trial=TRIALS,
             db=db,
         )
-        # Re-save one upstream record → makes its output stale
+        # Re-save one upstream record → its combo's expected invocation is absent.
         path = DATA_DIR / "sub01" / "trial01.csv"
         df = pd.read_csv(path)
         RwForceLeft.save(df["force_left"].values * 2.0, subject="01", trial="01", db=db)
 
         result = check_node_state(compute_peak, [RwPeakForce], db=db)
-        assert result["state"] == "red"
-        assert result["counts"]["stale"] >= 1
+        assert result["state"] == "grey"
+        assert result["counts"]["up_to_date"] == 14
+        assert result["counts"]["missing"] == 1
+        assert result["counts"]["stale"] == 0
