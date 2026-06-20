@@ -5,8 +5,10 @@ Mirrors the aim2 pipeline: a function reading CSV files iterated across
 the existing contrived tests:
 
 - Realistic dataset scale (3×5 vs 2×2)
-- Function errors mid-run for some combos → grey (not omitting combos
-  from the iteration range, but failing during execution)
+- Function errors mid-run for some combos (failing during execution, not
+  omitting combos from the iteration range). For a PathInput loader the
+  un-run combos leave no trace, so node state stays green (binary model);
+  only a never-run loader is red.
 - All combos fail → red
 - Multi-output functions (3 outputs like load_csv.m returning
   time, force_left, force_right)
@@ -18,8 +20,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from scidb import BaseVariable
-from scilineage import lineage_fcn
+from scidb import BaseVariable, pipeline
 from scifor import PathInput
 from scihist import for_each
 from scihist.state import check_node_state
@@ -50,26 +51,26 @@ class RwPeakForce(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@lineage_fcn
+@pipeline
 def load_time(filepath):
     """Python equivalent of load_csv.m — returns time column."""
     df = pd.read_csv(filepath)
     return df["time"].values
 
 
-@lineage_fcn
+@pipeline
 def load_force_left(filepath):
     df = pd.read_csv(filepath)
     return df["force_left"].values
 
 
-@lineage_fcn
+@pipeline
 def load_force_right(filepath):
     df = pd.read_csv(filepath)
     return df["force_right"].values
 
 
-@lineage_fcn
+@pipeline
 def compute_peak(force_left, force_right):
     """Downstream function: peak combined force."""
     return float(np.max(np.abs(np.asarray(force_left) + np.asarray(force_right))))
@@ -118,13 +119,14 @@ class TestCsvLoadNodeState:
         assert result["counts"]["missing"] == 0
         assert result["counts"]["stale"] == 0
 
-    def test_grey_when_one_combo_errors(self, db, tmp_path):
-        """Grey when one trial file is missing (function raises FileNotFoundError).
+    def test_green_when_one_combo_errors_loader_cannot_detect(self, db, tmp_path):
+        """A PathInput loader stays green when one combo's file is missing.
 
-        Copies all files except sub03/trial05 to tmp_path, so that combo
-        raises during execution while the other 14 succeed.  Mirrors the
-        real scenario where subject=01, trial=06 raised 'Assertion failed'
-        during MATLAB execution.
+        Copies all files except sub03/trial05, so that combo raises during
+        execution while the other 14 succeed. A loader has no DB input to
+        enumerate, so the un-run 15th combo leaves no trace — the node cannot
+        detect it and reads green. (This is the accepted limitation of the
+        binary model after dropping the persisted expected-combo snapshot.)
         """
         for subj in SUBJECTS:
             (tmp_path / f"sub{subj}").mkdir()
@@ -146,15 +148,16 @@ class TestCsvLoadNodeState:
         )
 
         result = check_node_state(load_time, [RwTime], db=db)
-        assert result["state"] == "grey", (
-            f"Expected grey (14/15 combos ran), got {result['state']}. "
+        assert result["state"] == "green", (
+            f"Loader reads green even on partial run, got {result['state']}. "
             f"Counts: {result['counts']}"
         )
         assert result["counts"]["up_to_date"] == 14
-        assert result["counts"]["missing"] == 1
+        assert result["counts"]["missing"] == 0
 
-    def test_grey_when_multiple_combos_error(self, db, tmp_path):
-        """Grey when several trial files are missing — partial completion."""
+    def test_green_when_multiple_combos_error_loader_cannot_detect(self, db, tmp_path):
+        """A PathInput loader stays green even when several files are missing —
+        the un-run combos leave no trace to count as missing."""
         missing = {("01", "03"), ("02", "04"), ("03", "01")}
         for subj in SUBJECTS:
             (tmp_path / f"sub{subj}").mkdir()
@@ -176,12 +179,13 @@ class TestCsvLoadNodeState:
         )
 
         result = check_node_state(load_time, [RwTime], db=db)
-        assert result["state"] == "grey"
+        assert result["state"] == "green"
         assert result["counts"]["up_to_date"] == 12
-        assert result["counts"]["missing"] == 3
+        assert result["counts"]["missing"] == 0
 
     def test_red_when_all_combos_error(self, db, tmp_path):
-        """Red when no files exist — every combo raises FileNotFoundError."""
+        """Red when no files exist — every combo raises, nothing is saved, so the
+        loader has no realized invocations at all."""
         # tmp_path is empty — all 15 combos will fail
         for subj in SUBJECTS:
             (tmp_path / f"sub{subj}").mkdir()
@@ -199,7 +203,7 @@ class TestCsvLoadNodeState:
         result = check_node_state(load_time, [RwTime], db=db)
         assert result["state"] == "red"
         assert result["counts"]["up_to_date"] == 0
-        assert result["counts"]["missing"] == 15
+        assert result["counts"]["missing"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -210,9 +214,10 @@ class TestMultiOutputNodeState:
     """check_node_state with separate functions for each of load_csv.m's 3 outputs.
 
     load_csv.m returns [time, force_left, force_right].  In Python we model
-    this as three separate @lineage_fcn functions, one per output.  The state
-    of each output type is independent — if one function's combo fails, only
-    that output goes grey.
+    this as three separate @pipeline functions, one per output.  The state
+    of each output type is independent. These are PathInput loaders, so a
+    partial run is invisible to node state (stays green); only a never-run
+    loader is red.
     """
 
     def test_green_all_three_outputs_after_full_run(self, db):
@@ -241,8 +246,10 @@ class TestMultiOutputNodeState:
         assert left_result["counts"]["up_to_date"] == 15
         assert right_result["counts"]["up_to_date"] == 15
 
-    def test_grey_one_output_when_partial_failure(self, db, tmp_path):
-        """When one file is missing, its output is grey while others are green."""
+    def test_green_one_output_when_partial_failure_loader_cannot_detect(self, db, tmp_path):
+        """When one file is missing, the loader outputs still read green — a
+        PathInput loader cannot detect the un-run combo (no DB input to
+        enumerate), so partial completion is invisible to node state."""
         missing = {("02", "03")}
         for subj in SUBJECTS:
             (tmp_path / f"sub{subj}").mkdir()
@@ -274,10 +281,10 @@ class TestMultiOutputNodeState:
         left_result = check_node_state(load_force_left, [RwForceLeft], db=db)
         right_result = check_node_state(load_force_right, [RwForceRight], db=db)
 
-        assert left_result["state"] == "grey"
-        assert right_result["state"] == "grey"
+        assert left_result["state"] == "green"
+        assert right_result["state"] == "green"
         assert left_result["counts"]["up_to_date"] == 14
-        assert left_result["counts"]["missing"] == 1
+        assert left_result["counts"]["missing"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -288,9 +295,9 @@ class TestDownstreamStateAfterPartialUpstream:
     """check_node_state for a downstream function when upstream has missing combos.
 
     compute_peak(force_left, force_right) depends on RwForceLeft and
-    RwForceRight.  If those are only partially populated, compute_peak
-    can only run for the combos that exist — its own state is green for
-    what it ran, but the GUI propagates upstream grey down to it.
+    RwForceRight.  When new upstream combos exist that it has not processed,
+    its own state is red (those expected invocations are missing). Any further
+    propagation of upstream needs-run state is the GUI layer's concern.
     """
 
     def test_downstream_green_for_available_combos(self, db):
@@ -308,13 +315,13 @@ class TestDownstreamStateAfterPartialUpstream:
         assert result["state"] == "green"
         assert result["counts"]["up_to_date"] == 15
 
-    def test_downstream_grey_when_upstream_partially_seeded(self, db):
-        """compute_peak is grey when upstream only covers 2 of 3 subjects.
+    def test_downstream_red_when_upstream_partially_seeded(self, db):
+        """compute_peak is red when upstream only covers 2 of 3 subjects.
 
         Only sub01 and sub02 have force data seeded; sub03 data is absent.
         compute_peak ran for what was available (10 combos).  Expected
         combos are inferred from available RwForceLeft records, so 5
-        sub03 combos are missing.
+        sub03 combos are missing → red (binary model).
         """
         _seed_forces(db, subjects=["01", "02"])  # sub03 intentionally absent
         for_each(
@@ -330,8 +337,8 @@ class TestDownstreamStateAfterPartialUpstream:
         _seed_forces(db, subjects=["03"])
 
         result = check_node_state(compute_peak, [RwPeakForce], db=db)
-        assert result["state"] == "grey", (
-            f"Expected grey (sub03 force data added after run), "
+        assert result["state"] == "red", (
+            f"Expected red (sub03 force data added after run), "
             f"got {result['state']}. Counts: {result['counts']}"
         )
         assert result["counts"]["up_to_date"] == 10
@@ -339,10 +346,12 @@ class TestDownstreamStateAfterPartialUpstream:
 
     def test_downstream_needs_rerun_when_upstream_updated(self, db):
         """Re-saving an upstream force record → that combo's expected invocation
-        shifts to the new input record → needs-run (grey), not red.
+        shifts to the new input record → needs-run (red).
 
         Membership model (§9c): a changed input surfaces as needs-run for the
-        affected combo; the other 14 stay up_to_date.
+        affected combo; the other 14 stay up_to_date, but any missing makes the
+        node red (binary model). The superseded old input is NOT counted (latest-
+        record selection), so up_to_date is 14, not 15.
         """
         _seed_forces(db)
         for_each(
@@ -359,7 +368,7 @@ class TestDownstreamStateAfterPartialUpstream:
         RwForceLeft.save(df["force_left"].values * 2.0, subject="01", trial="01", db=db)
 
         result = check_node_state(compute_peak, [RwPeakForce], db=db)
-        assert result["state"] == "grey"
+        assert result["state"] == "red"
         assert result["counts"]["up_to_date"] == 14
         assert result["counts"]["missing"] == 1
         assert result["counts"]["stale"] == 0

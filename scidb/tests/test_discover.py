@@ -109,14 +109,14 @@ class TestDiscoverModule:
         assert "fix_vars.variables" in by_module
         assert len(by_module["fix_vars.variables"].variables) == 1
 
-    def test_finds_lineage_fcn(self, project_factory):
+    def test_finds_pipeline_fcn(self, project_factory):
         root = project_factory(
             package_name="fix_fns",
             files={
                 "functions.py": """
-                    from scilineage import lineage_fcn
+                    from scidb import pipeline
 
-                    @lineage_fcn
+                    @pipeline
                     def preprocess(x):
                         return x + 1
                 """,
@@ -125,7 +125,7 @@ class TestDiscoverModule:
         result = scan_project(root)
         all_fns = [f for m in result.project_code.modules for f in m.functions]
         assert len(all_fns) == 1
-        assert all_fns[0].fcn.__name__ == "preprocess"
+        assert all_fns[0].__name__ == "preprocess"
 
     def test_finds_constants(self, project_factory):
         root = project_factory(
@@ -173,14 +173,14 @@ class TestDiscoverModule:
         names = [v.__name__ for v in all_vars]
         assert names == ["RawSignal"]  # exactly once, in variables.py
 
-    def test_ignores_reexports_of_lineage_fcn(self, project_factory):
+    def test_ignores_reexports_of_pipeline_fcn(self, project_factory):
         root = project_factory(
             package_name="fix_fn_reexport",
             files={
                 "functions.py": """
-                    from scilineage import lineage_fcn
+                    from scidb import pipeline
 
-                    @lineage_fcn
+                    @pipeline
                     def preprocess(x):
                         return x + 1
                 """,
@@ -229,13 +229,13 @@ class TestScanProject:
                         schema_version = 1
                 """,
                 "functions.py": """
-                    from scilineage import lineage_fcn
+                    from scidb import pipeline
 
-                    @lineage_fcn
+                    @pipeline
                     def preprocess(x):
                         return x
 
-                    @lineage_fcn
+                    @pipeline
                     def analyze(x):
                         return x
                 """,
@@ -745,12 +745,12 @@ class TestMixedModuleExports:
             files={
                 "everything.py": """
                     from scidb import BaseVariable, constant
-                    from scilineage import lineage_fcn
+                    from scidb import pipeline
 
                     class MixedVar(BaseVariable):
                         schema_version = 1
 
-                    @lineage_fcn
+                    @pipeline
                     def mixed_fn(x):
                         return x
 
@@ -766,7 +766,7 @@ class TestMixedModuleExports:
         assert len(mod.variables) == 1
         assert mod.variables[0].__name__ == "MixedVar"
         assert len(mod.functions) == 1
-        assert mod.functions[0].fcn.__name__ == "mixed_fn"
+        assert mod.functions[0].__name__ == "mixed_fn"
         assert len(mod.constants) == 1
         assert mod.constants[0][0] == "MIXED_CONST"
 

@@ -36,9 +36,13 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONSTANT_TYPE",
+    "PATHINPUT_TYPE",
+    "SAVE_FUNCTION_NAME",
     "compute_constant_record_id",
     "constant_record_id_from_hash",
     "compute_invocation_id",
+    "compute_pathinput_record_id",
+    "compute_save_invocation_id",
     "compute_output_record_id",
     "generate_run_id",
     "normalize_as_table",
@@ -52,6 +56,23 @@ __all__ = [
 # Sentinel ``type`` value for constant records in ``_record``. Constants have
 # no schema_id (schema-global) and no producing invocation.
 CONSTANT_TYPE = "__constant__"
+
+# Sentinel ``type`` for a *PathInput spec* input record. A PathInput resolves to a
+# per-combo filepath (deliberately NOT in the graph), but its SPEC (template +
+# root_folder) is config-level and recorded as a distinctly-typed input edge so
+# the GUI/variant queries can surface it. Treated like a constant everywhere edges
+# are bucketed into variables/constants, and EXCLUDED from ``invocation_id`` (so it
+# does not perturb computation identity).
+PATHINPUT_TYPE = "__pathinput__"
+
+# Sentinel ``function_name`` for a *synthetic save invocation* — the activity row
+# that anchors a direct ``.save(..., kw=v)`` call's non-schema kwargs as constant
+# inputs (so they become graph-derivable branch params instead of living in
+# ``version_keys``). Not a real pipeline function: queries that enumerate pipeline
+# nodes / function variants must exclude ``function_name = SAVE_FUNCTION_NAME``.
+# (``_invocation.function_name``/``function_hash`` are NOT NULL, so we use a
+# sentinel string rather than NULL.)
+SAVE_FUNCTION_NAME = "__save__"
 
 # All record_ids (variables, constants, outputs) are 16 hex chars so they join
 # uniformly across the bipartite graph. Matches scicanonicalhash.generate_record_id.
@@ -134,6 +155,27 @@ def compute_invocation_id(
         function_hash, sorted(as_table or []), bool(distribute), len(bindings), inv_id,
     )
     return inv_id
+
+
+def compute_pathinput_record_id(spec: str) -> str:
+    """Content-addressed id for a PathInput-spec input record (see
+    :data:`PATHINPUT_TYPE`). Keyed on the spec string (``PathInput.to_key()``),
+    so the same template+root_folder maps to one record."""
+    return _sha16(PATHINPUT_TYPE, f"spec:{spec}")
+
+
+def compute_save_invocation_id(output_record_id: str) -> str:
+    """Content-addressed id for a *synthetic save invocation* (see
+    :data:`SAVE_FUNCTION_NAME`).
+
+    Keyed 1:1 by the saved record's id (not by the kwargs) so that two different
+    variables saved at the same schema with the same kwarg, and re-saves of the
+    same record, never collide on ``invocation_id`` / ``_invocation_output`` PK.
+    Idempotent: identical content → same ``output_record_id`` → same id → ON
+    CONFLICT DO NOTHING. The kwargs still ride on the constant input edges, so
+    ``derived_branch_params`` recovers them.
+    """
+    return _sha16(SAVE_FUNCTION_NAME, output_record_id)
 
 
 def compute_output_record_id(
@@ -288,18 +330,13 @@ def ensure_provenance_tables(duck) -> None:
     # Activities: one row per UNIQUE function call (content-addressed).
     # as_table/distribute are identity-bearing and stored as queryable columns.
     # where is NOT here — it is batch-level (see _run).
-    # pipeline_hash is scilineage's compute_lineage_hash() for this call (fn hash
-    # + classified inputs, output_num-independent). One per invocation; backs the
-    # public find_by_lineage() lookup. Distinct from invocation_id (which is the
-    # graph's own content hash over fn_hash + input record bindings).
     duck._execute("""
         CREATE TABLE IF NOT EXISTS _invocation (
             invocation_id VARCHAR PRIMARY KEY,
             function_name VARCHAR NOT NULL,
             function_hash VARCHAR NOT NULL,
             as_table      VARCHAR[],
-            distribute    BOOLEAN DEFAULT FALSE,
-            pipeline_hash VARCHAR
+            distribute    BOOLEAN DEFAULT FALSE
         )
     """)
 
@@ -360,15 +397,6 @@ def ensure_provenance_tables(duck) -> None:
         if "selector" not in cols:
             duck._execute("ALTER TABLE _invocation_input ADD COLUMN selector VARCHAR")
             logger.debug("ensure_provenance_tables: added selector column to _invocation_input")
-        inv_cols = {
-            r[0] for r in duck._fetchall(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = '_invocation'"
-            )
-        }
-        if "pipeline_hash" not in inv_cols:
-            duck._execute("ALTER TABLE _invocation ADD COLUMN pipeline_hash VARCHAR")
-            logger.debug("ensure_provenance_tables: added pipeline_hash column to _invocation")
     except Exception:
         logger.debug("ensure_provenance_tables: column backfill check skipped", exc_info=True)
 

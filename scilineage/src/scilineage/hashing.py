@@ -61,9 +61,7 @@ def _is_user_defined(fn: Any) -> bool:
 
 
 def _unwrap(ref: Any) -> Any:
-    """Peel LineageFcn wrappers and ``functools.wraps`` decorator layers."""
-    if hasattr(ref, "fcn"):
-        ref = ref.fcn
+    """Peel ``functools.wraps`` decorator layers to reach the original function."""
     seen_ids: set[int] = set()
     while hasattr(ref, "__wrapped__"):
         if id(ref) in seen_ids:

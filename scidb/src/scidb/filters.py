@@ -75,10 +75,11 @@ class Filter(ABC):
 
     @abstractmethod
     def to_key(self) -> str:
-        """Return a canonical string representation for use as a version key.
+        """Return a canonical string representation of this filter.
 
-        Used to serialize filter configs into _record_metadata.version_keys
-        so that different where= configurations produce distinct version groups.
+        Used as the ``where=`` provenance key: for_each records it on the
+        producing run (``_run.where_clause``) so different where= configurations
+        are distinguishable, and ``_load_with_where`` matches against it.
         """
         ...
 
@@ -151,7 +152,7 @@ def _resolve_variable_schema_ids(
         WITH ranked AS (
             SELECT rm.schema_id,
                    ROW_NUMBER() OVER (
-                       PARTITION BY rm.variable_name, rm.schema_id, rm.version_keys
+                       PARTITION BY rm.variable_name, rm.schema_id
                        ORDER BY rm.timestamp DESC
                    ) AS rn,
                    t.*
@@ -186,7 +187,7 @@ def _get_all_schema_ids_for_variable(
         WITH ranked AS (
             SELECT rm.schema_id,
                    ROW_NUMBER() OVER (
-                       PARTITION BY rm.variable_name, rm.schema_id, rm.version_keys
+                       PARTITION BY rm.variable_name, rm.schema_id
                        ORDER BY rm.timestamp DESC
                    ) AS rn
             FROM _record_metadata rm
@@ -701,7 +702,7 @@ class RawFilter(Filter):
                 WITH ranked AS (
                     SELECT rm.schema_id,
                            ROW_NUMBER() OVER (
-                               PARTITION BY rm.variable_name, rm.schema_id, rm.version_keys
+                               PARTITION BY rm.variable_name, rm.schema_id
                                ORDER BY rm.timestamp DESC
                            ) AS rn,
                            t.*,

@@ -65,9 +65,9 @@ def _inject_orphan(db, type_name, subject, distribute=None):
     ).hexdigest()[:10]
     duck.con.execute(
         "INSERT INTO _record_metadata "
-        "(record_id, variable_name, schema_id, version_keys, content_hash, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-        [phantom_rid, type_name, schema_id, "{}", "deadbeef" * 2],
+        "(record_id, variable_name, schema_id, content_hash, timestamp) "
+        "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        [phantom_rid, type_name, schema_id, "deadbeef" * 2],
     )
     return phantom_rid
 

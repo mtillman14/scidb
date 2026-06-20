@@ -22,7 +22,7 @@ Example:
     raw = RawSignal.load(subject=1, session="A")
 """
 
-from .database import configure_database, get_database, get_user_id, find_by_lineage
+from .database import configure_database, get_database, get_user_id
 from .lineage_save import save
 from .state import check_combo_state, check_node_state, check_multiple_nodes_state
 from .log import Log
@@ -45,6 +45,7 @@ from .column_selection import ColumnSelection
 from .colname import ColName
 from .each_of import EachOf
 from .foreach_config import ForEachConfig
+from .pipeline import pipeline
 
 # From scifor (Layer 1)
 from scifor import Col, set_schema, get_schema, PathInput, PathOutput
@@ -62,8 +63,6 @@ from .discover import (
     scan_package,
     scan_project,
 )
-
-from scilineage import manual
 
 __version__ = "0.1.0"
 
@@ -84,9 +83,8 @@ __all__ = [
     "configure_database",
     "get_database",
     "get_user_id",
-    # Lineage-aware save + query
+    # Save
     "save",
-    "find_by_lineage",
     # Pipeline node staleness
     "check_combo_state",
     "check_node_state",
@@ -95,6 +93,7 @@ __all__ = [
     "Log",
     # Batch execution
     "for_each",
+    "pipeline",
     "Fixed",
     "Variant",
     "Merge",

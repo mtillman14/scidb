@@ -13,14 +13,6 @@ import scifor as _scifor
 from scifor import for_each as _scifor_for_each
 from scifor.pathinput import PathInput
 
-# Conditional import for lineage support (optional dependency)
-try:
-    from scilineage import LineageFcnResult
-    HAS_LINEAGE = True
-except ImportError:
-    LineageFcnResult = None
-    HAS_LINEAGE = False
-
 from .colname import ColName
 from .column_selection import ColumnSelection
 from .fixed import Fixed
@@ -238,11 +230,9 @@ def for_each(
                     result DataFrame: _record_id_{param} and _branch_params_{param}
                     per DB-backed input, plus _call_id, _config_keys, _where on
                     every row. Does not affect saved outputs.
-        track_lineage: If True (default), auto-wrap a plain ``fn`` in
-                    ``scilineage.LineageFcn`` so provenance (function hash, input
-                    record_ids, constants) is recorded. Pass False to run ``fn``
-                    untracked (the legacy direct-scidb behavior). Folded in from
-                    the former ``scihist.for_each``.
+        track_lineage: If True (default), record provenance (function hash, input
+                    record_ids, constants) into the bipartite graph from the
+                    inputs ``fn`` consumes. Pass False to run ``fn`` untracked.
         skip_computed: If True, skip combos whose outputs already exist and whose
                     full upstream provenance graph is unchanged (function hash,
                     input record_ids, constant hashes). Default False. Requires a
@@ -377,7 +367,7 @@ def for_each(
     # VARCHAR record. Combo metadata injection is enabled so plot functions may
     # accept schema keys (subject, trial, …) as kwargs (e.g. for titles).
     _orig_fn_name = getattr(fn, "__name__", "")
-    if _orig_fn_name.startswith("plot_") and not getattr(fn, "__lineage_wrapper__", False):
+    if _orig_fn_name.startswith("plot_"):
         from scifor import PathOutput
         _path_param = next(
             (name for name, v in inputs.items() if isinstance(v, PathOutput)), None
@@ -395,31 +385,27 @@ def for_each(
             f"figure saved to PathOutput input '{_path_param}', path stored as record"
         )
 
-    # --- Step 1.6: Lineage tracking + skip_computed (folded from scihist) ---
-    # Wrap a plain fn in LineageFcn so provenance is recorded; the existing
-    # Step-2 wrapper block below then chooses the tuple/raw-value wrapper
-    # (correctly handling for_columns). Skipped if fn is already lineage-wrapped
-    # (e.g. the legacy scihist shim pre-wraps before delegating here).
-    if track_lineage and HAS_LINEAGE and not getattr(fn, "__lineage_wrapper__", False):
-        from scilineage import LineageFcn
-        if not isinstance(fn, LineageFcn):
-            fn = LineageFcn(fn)
-            Log.info(f"[scidb] Step 1.6: track_lineage auto-wrapped {fn.fcn.__name__} in LineageFcn (hash={fn.hash[:12]})")
-        if getattr(fn, "generates_file", False):
-            _inject_combo_metadata = True
-            Log.info("[scidb] Step 1.6: generates_file=True → combo metadata injection enabled")
+    # --- Step 1.6: generates_file detection + skip_computed ---
+    # No function wrapping: plain functions flow straight through to scifor, which
+    # spreads tuple returns natively. Provenance is built from input bindings at
+    # save time (the bipartite graph); Step 16 reconstructs BaseVariable inputs.
+    # ``generates_file`` is read from the @pipeline marker and drives combo-
+    # metadata injection + a graph-native lineage-only save (see _save_results).
+    from .pipeline import GENERATES_FILE_ATTR
+    _is_generates_file = bool(getattr(fn, GENERATES_FILE_ATTR, None)) or bool(
+        getattr(fn, "generates_file", False)
+    )
+    if _is_generates_file:
+        _inject_combo_metadata = True
+        Log.info("[scidb] Step 1.6: generates_file=True → combo metadata injection + lineage-only save")
 
-    # Build the skip_computed pre-combo hook while fn is still the LineageFcn
-    # (before the Step-2 block wraps it). Requires a DB and lineage tracking.
+    # Build the skip_computed pre-combo hook on the plain function (its
+    # function_hash + input bindings are the graph identity; no wrapper needed).
     if skip_computed and not dry_run and outputs and active_db is not None:
-        from scilineage import LineageFcn
-        if isinstance(fn, LineageFcn):
-            _pre_combo_hook = _build_skip_hook(
-                fn, outputs, active_db, inputs, as_table=as_table, distribute=distribute
-            )
-            Log.info(f"[scidb] Step 1.6: built skip_computed hook for {fn.fcn.__name__}")
-        else:
-            Log.info("[scidb] Step 1.6: skip_computed requested but fn is not lineage-tracked; skipping hook")
+        _pre_combo_hook = _build_skip_hook(
+            fn, outputs, active_db, inputs, as_table=as_table, distribute=distribute
+        )
+        Log.info(f"[scidb] Step 1.6: built skip_computed hook for {getattr(fn, '__name__', repr(fn))}")
 
     # --- Step 1.5: Resolve for_columns (iterate-mode ColumnSelection) inputs ---
     # Expand empty columns ([] / all) -> all data columns and validate the shared column
@@ -430,27 +416,10 @@ def for_each(
         _iterate_column_selection(s) is not None for s in inputs.values()
     )
 
-    # Wrap lineage functions to unpack tuple returns when needed.
-    # Skip if already wrapped (scihist.for_each pre-wraps before delegating here).
-    if HAS_LINEAGE and not getattr(fn, '__lineage_wrapper__', False):
-        if _has_for_columns or distribute:
-            # Output-decomposing modes (for_columns, distribute) split one call's
-            # output into multiple records; per-record LineageFcnResults cannot
-            # flow through that reassembly, so collapse to raw values (combined-
-            # call lineage — upstream provenance is still recorded at save time
-            # from the input record_ids).
-            fn = _make_raw_value_wrapper(fn)
-            Log.info("[scidb] wrapped function in raw-value wrapper (for_columns/distribute)")
-        else:
-            try:
-                # Default: unpack tuple returns, but also collapse DataFrame
-                # returns to raw so scifor's flatten mode (which spreads a
-                # returned DataFrame's rows into separate records) still works —
-                # per-row lineage does not apply to a flattened output.
-                fn = _make_lineage_unpacking_wrapper(fn)
-                Log.info("[scidb] wrapped function in lineage unpacking wrapper (flatten-safe)")
-            except ImportError:
-                pass  # scilineage not available
+    # No output wrapping: scifor spreads tuple returns across outputs natively and
+    # flatten/distribute consume the raw return directly. (The former LineageFcn
+    # tuple-unpacking / raw-value wrappers existed only to collapse
+    # LineageFcnResults, which no longer exist.)
 
     fn_name = getattr(fn, "__name__", repr(fn))
     Log.info(f"===== for_each({fn_name}) start =====")
@@ -473,20 +442,20 @@ def for_each(
     if state is None:
         return None
 
-    # --- Step 16: Wrap fn to resolve PerComboLoader/PerComboLoaderMerge inputs per-combo,
-    #     inject combo metadata (for generates_file functions), and/or
-    #     reconstruct BaseVariable objects (for LineageFcn). ---
+    # --- Step 16: Wrap fn to resolve PerComboLoader/PerComboLoaderMerge inputs
+    #     per-combo, normalize variable inputs to raw data, and/or inject combo
+    #     metadata (for generates_file functions). ---
     _per_combo = {k: v for k, v in state.loaded_inputs.items()
                   if isinstance(v, (PerComboLoader, PerComboLoaderMerge))}
-    _is_lineage_wrapper = getattr(fn, '__lineage_wrapper__', False)
-    if _per_combo or _inject_combo_metadata or _is_lineage_wrapper:
+    _has_variable_inputs = any(_is_loadable(v) for v in inputs.values())
+    if _per_combo or _inject_combo_metadata or _has_variable_inputs:
         wrap_reasons = []
         if _per_combo:
             wrap_reasons.append(f"{len(_per_combo)} PerComboLoader input(s)")
         if _inject_combo_metadata:
             wrap_reasons.append("generates_file metadata injection")
-        if _is_lineage_wrapper:
-            wrap_reasons.append("LineageFcn variable reconstruction")
+        if _has_variable_inputs:
+            wrap_reasons.append("variable input normalization")
         Log.info(f"[scidb] Step 16: wrapping function for {', '.join(wrap_reasons)}")
         _ordered_combos = state.full_combos
         _call_idx = [0]
@@ -494,8 +463,6 @@ def for_each(
         _loaded_inputs_ref = state.loaded_inputs
 
         # Get function parameters to check which metadata keys it accepts.
-        # For scihist functions, the wrapper stores the original function's
-        # parameters in __scidb_params__. Otherwise try to get the signature.
         _fn_params = None
         if _inject_combo_metadata:
             if hasattr(_orig_fn, '__scidb_params__'):
@@ -523,9 +490,10 @@ def for_each(
                 else:
                     resolved[k] = v
 
-            # Reconstruct BaseVariable objects for LineageFcn
-            if getattr(_orig_fn, '__lineage_wrapper__', False):
-                resolved = _reconstruct_variable_inputs(
+            # Normalize variable inputs to their raw data (DataFrame → array,
+            # dict structure restored) — the form the function expects.
+            if _has_variable_inputs:
+                resolved = _normalize_variable_inputs(
                     resolved, current_combo, inputs, _loaded_inputs_ref
                 )
 
@@ -580,13 +548,8 @@ def for_each(
         save=save,
         db=db,
         lineage_fixed_rids=_lineage_fixed_rids,
+        generates_file=_is_generates_file,
     )
-
-    # Unwrap LineageFcnResult outputs in the returned table so callers receive
-    # raw values (matching the untracked path). The save path above already
-    # extracted lineage + raw data; the wrappers must not leak to the caller.
-    if track_lineage and result_tbl is not None and not result_tbl.empty:
-        result_tbl = _unwrap_lineage_results(result_tbl, state.output_names)
 
     if introspect and result_tbl is not None and not result_tbl.empty:
         result_tbl = _apply_introspect(result_tbl, state, where)
@@ -630,6 +593,41 @@ def _apply_introspect(result_tbl, state, where):
 # skip_computed pre-combo hook (folded from scihist.for_each)
 # ---------------------------------------------------------------------------
 
+def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_hashes):
+    """Latest output record of ``type_name`` at ``schema_combo`` produced by an
+    invocation of ``fn_name`` whose constants match ``target_const_hashes``
+    (``{param: canonical_hash(value)}``), or None.
+
+    Graph-precise variant lookup for the skip gate: filters by producing function
+    (so a re-saved raw input at the same location is not mistaken for the output)
+    and by constant hashes (so distinct constant variants are disambiguated).
+    """
+    from .database import _schema_str
+    from . import provenance_query
+
+    schema_keys = set(db.dataset_schema_keys)
+    conds = ["inv.function_name = ?", "r.type = ?", "COALESCE(rm.excluded, FALSE) = FALSE"]
+    params: list = [fn_name, type_name]
+    for k, v in schema_combo.items():
+        if k in schema_keys:
+            conds.append(f's."{k}" = ?')
+            params.append(_schema_str(v))
+    rows = db._duck._fetchall(
+        "SELECT io.output_record_id FROM _invocation inv "
+        "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
+        "JOIN _record r ON r.record_id = io.output_record_id "
+        "JOIN _record_metadata rm ON rm.record_id = io.output_record_id "
+        "JOIN _schema s ON r.schema_id = s.schema_id "
+        f"WHERE {' AND '.join(conds)} ORDER BY rm.timestamp DESC",
+        params,
+    )
+    for (rid,) in rows:
+        sig = provenance_query.stored_invocation_signature(db._duck, rid)
+        if sig is not None and sig.get("const_hashes", {}) == target_const_hashes:
+            return rid
+    return None
+
+
 def _build_skip_hook(
     fn, outputs: list, db, inputs: dict, as_table=None, distribute: bool = False
 ) -> "Callable[[dict], bool]":
@@ -658,7 +656,8 @@ def _build_skip_hook(
     path's graph edges, ``compute_function_hash(fn)`` equals the save-side
     ``__fn_hash``, and both sides derive selectors from ``compute_input_selectors``.
 
-    ``fn`` must be a ``scilineage.LineageFcn``.
+    ``fn`` is a plain pipeline function; its identity comes from
+    ``compute_function_hash(fn)`` (the same hash for_each writes to the graph).
     """
     from scicanonicalhash import canonical_hash as _chash
     from scilineage.hashing import compute_function_hash
@@ -690,6 +689,8 @@ def _build_skip_hook(
         constant_values[name] = value
 
     fn_hash = compute_function_hash(fn, truncate=16)
+    # Plain function name (``.fcn`` peel kept only for any legacy wrapped input).
+    fn_name = getattr(getattr(fn, "fcn", fn), "__name__", None) or repr(fn)
     selectors = compute_input_selectors(inputs)
 
     def _combo_str(schema_combo: dict) -> str:
@@ -708,17 +709,19 @@ def _build_skip_hook(
         schema_combo = {k: v for k, v in combo.items() if k in schema_keys}
         combo_str = _combo_str(schema_combo)
 
-        # Gate: does an output for THIS variant (schema + constants + fn name)
-        # already exist? If not, the combo has never been run → compute silently.
-        lookup_combo = dict(schema_combo)
-        lookup_combo.update(constant_values)
-        lookup_combo["__fn"] = fn.fcn.__name__
+        # Gate: does an output for THIS variant already exist? Find the latest
+        # output record of OutputCls at this schema location whose PRODUCING
+        # invocation is ``fn`` with matching constants (graph-precise). Filtering
+        # by producing function is essential for input==output (self-referential)
+        # pipelines: a re-saved raw input at the same location must NOT be mistaken
+        # for the fn's output (it has no producing invocation → would force a
+        # spurious recompute).
+        target_const_hashes = {n: _chash(v) for n, v in constant_values.items()}
         output_record_id = None
         for OutputCls in outputs:
-            try:
-                rid = db.find_record_id(OutputCls, lookup_combo)
-            except Exception:
-                rid = None
+            rid = _find_skip_gate_record(
+                db, OutputCls.__name__, schema_combo, fn_name, target_const_hashes,
+            )
             if rid is None:
                 Log.debug(f"missing: {combo_str} — no output record for {OutputCls.__name__}")
                 return False
@@ -1092,7 +1095,11 @@ def _for_each_prepare(
     else:
         Log.info("[scidb] Step 9: skipping combo pre-filtering (no empty list resolution or PathInput detected)")
 
-    # Step 9.5: Schema exclusions — add override hash to version_keys and filter combos.
+    # Step 9.5: Schema exclusions — filter out excluded combos.
+    # (No override-hash cache key needed: the bipartite graph invalidates
+    # precisely — an aggregation's invocation_id includes its input record_ids,
+    # so changing which combos are excluded changes the input set and forces a
+    # recompute; unaffected outputs correctly skip.)
     _exclusion_db = db or resolved_db
     if _exclusion_db is None:
         try:
@@ -1102,10 +1109,7 @@ def _for_each_prepare(
             _exclusion_db = None
 
     if _exclusion_db is not None:
-        from .exclusions import get_schema_overrides_hash, filter_excluded_combos
-        _overrides_hash = get_schema_overrides_hash(_exclusion_db)
-        config_keys["__schema_overrides_hash"] = _overrides_hash
-        Log.info(f"[scidb] Step 9.5: schema overrides hash = {_overrides_hash}")
+        from .exclusions import filter_excluded_combos
 
         if all_combos is not None:
             _before = len(all_combos)
@@ -1390,16 +1394,6 @@ def _for_each_prepare(
         else:
             Log.debug(f"{len(full_combos)} combos (no rid expansion needed)")
 
-    # Step 13: Persist the full expected combo set BEFORE skip_computed filtering,
-    # so check_node_state knows all combos that should exist (including
-    # ones that failed or were skipped).  Only needed when we actually
-    # have outputs and are not in dry_run mode.
-    if not dry_run and outputs:
-        Log.info(f"[scidb] Step 13: persisting {len(full_combos)} expected combo(s) to _for_each_expected table")
-        _persist_expected_combos(db, fn_name, full_combos, fn, inputs, as_table, distribute)
-    else:
-        Log.info("[scidb] Step 13: skipping expected combos persistence (dry_run or no outputs)")
-
     # Step 14: Apply pre-combo hook (e.g. skip_computed from scihist): filter out any
     # combos where the hook returns True.
     if _pre_combo_hook is not None:
@@ -1464,6 +1458,7 @@ def _for_each_save_resolved(
     save: bool,
     db,
     lineage_fixed_rids,
+    generates_file: bool = False,
 ):
     """Run scidb.for_each's Step 18 (schema restore) and Step 19 (save).
 
@@ -1482,13 +1477,13 @@ def _for_each_save_resolved(
     # Step 19: Save results
     if save and outputs and not result_tbl.empty:
         Log.info(f"[scidb] Step 19: saving {len(result_tbl)} result row(s) for {len(outputs)} output(s)")
-        # Compute Fixed input rids for lineage tracking if not provided
+        # Compute Fixed input rids for the bipartite graph edges if not provided
+        # (Fixed inputs contribute __graph_var_bindings just like variable inputs).
         fixed_rids_for_save = lineage_fixed_rids
-        if fixed_rids_for_save is None and HAS_LINEAGE:
-            # Only compute if we might save LineageFcnResult objects
+        if fixed_rids_for_save is None:
             fixed_rids_for_save = _compute_fixed_input_rids(inputs, db)
             if fixed_rids_for_save:
-                Log.info(f"[scidb] computed {len(fixed_rids_for_save)} Fixed input rid(s) for lineage: {list(fixed_rids_for_save.keys())}")
+                Log.info(f"[scidb] computed {len(fixed_rids_for_save)} Fixed input rid(s) for graph: {list(fixed_rids_for_save.keys())}")
 
         # Per-param identity selectors (ColumnSelection columns, etc.) for the
         # bipartite graph edges. Computed once from the inputs spec.
@@ -1504,6 +1499,7 @@ def _for_each_save_resolved(
             combo_to_rids=state.combo_to_rids,
             combo_to_rids_keys=state.iterated_keys_ordered,
             input_selectors=input_selectors,
+            generates_file=generates_file,
         )
         save_elapsed = time.perf_counter() - save_t0
         Log.info(f"[scidb] Step 19 complete: saved {len(result_tbl)} result(s) in {save_elapsed:.3f}s")
@@ -1517,55 +1513,31 @@ def _for_each_save_resolved(
     return result_tbl
 
 
-def _unwrap_lineage_results(result_tbl, output_names: list):
-    """Replace LineageFcnResult cells in the output columns with their raw value.
-
-    When ``track_lineage`` wraps fn in LineageFcn, scifor collects
-    ``LineageFcnResult`` objects into the result table. The save path extracts
-    lineage + raw data from them, but the returned DataFrame must expose raw
-    values to the caller (matching the untracked path), so downstream code can
-    sort/compare/``float()`` the outputs. No-op when there are no wrappers.
-    """
-    if not HAS_LINEAGE or result_tbl is None or result_tbl.empty:
-        return result_tbl
-    from scilineage.core import LineageFcnResult
-    from scilineage.lineage import get_raw_value
-
-    for name in output_names:
-        if name not in result_tbl.columns:
-            continue
-        col = result_tbl[name]
-        if not col.map(lambda v: isinstance(v, LineageFcnResult)).any():
-            continue
-        result_tbl[name] = [
-            get_raw_value(v) if isinstance(v, LineageFcnResult) else v
-            for v in col
-        ]
-    return result_tbl
-
-
-def _reconstruct_variable_inputs(
+def _normalize_variable_inputs(
     resolved: dict,
     current_combo: dict,
     inputs: dict,
     loaded_inputs: "dict | None" = None,
 ) -> dict:
-    """Reconstruct BaseVariable objects for variable inputs.
+    """Normalize variable inputs to the raw data the function expects.
 
-    After scifor extracts raw data, reconstruct BaseVariable objects
-    with metadata so LineageFcn can classify them correctly.
+    scifor extracts data from the spread DataFrames; this normalizes each
+    variable param to its clean raw value — pulling the data column out of a
+    1-row DataFrame and restoring the dict structure for multi-column
+    (dict-of-arrays) variables (scifor's _extract_data strips the dict wrapper
+    when there is exactly one data column). Non-variable params pass through.
+
+    This is the value the function previously received as ``BaseVariable.data``
+    after LineageFcn unwrapped its reconstructed input — now produced directly.
 
     Args:
         resolved: Dict of param_name → raw_data from scifor
         current_combo: Combo dict with __rid_* → record_id + schema keys
         inputs: Original inputs dict with param_name → variable_class or Fixed()
         loaded_inputs: The spread DataFrames from _for_each_prepare (state.loaded_inputs).
-            Used to restore dict structure for multi-column (dict-of-arrays) variables:
-            scifor's _extract_data strips the dict wrapper when there is exactly one data
-            column, so we re-read the row from the spread DataFrame directly.
 
     Returns:
-        Dict with BaseVariable objects for variable inputs, raw data for others
+        Dict with normalized raw data for variable inputs, pass-through for others
     """
     import pandas as pd
     reconstructed = {}
@@ -1638,14 +1610,10 @@ def _reconstruct_variable_inputs(
                         row = df_input[mask].iloc[0]
                         data_value = {col: row[col] for col in data_cols}
 
-        # Reconstruct BaseVariable
-        var = variable_class(data_value)
-        var.record_id = str(current_combo[rid_key])
-
-        # Set metadata from combo (schema keys only)
-        var.metadata = {k: v for k, v in current_combo.items() if not k.startswith("__")}
-
-        reconstructed[param_name] = var
+        # Pass the normalized raw data (DataFrame → array, dict structure
+        # restored for multi-column variables) — exactly the value the function
+        # used to receive as ``BaseVariable.data`` after LineageFcn unwrapped it.
+        reconstructed[param_name] = data_value
 
     return reconstructed
 
@@ -2235,34 +2203,6 @@ def _get_loadable_class_from_spec(spec: Any) -> Any:
     return None
 
 
-def _make_raw_value_wrapper(fn: Any) -> Any:
-    """Wrap fn so LineageFcnResult returns collapse to their raw value.
-
-    Used for for_columns iteration: per-column results are reassembled into one
-    wide DataFrame, which cannot hold per-column lineage objects. Upstream
-    provenance for the combined output is still recorded at save time from the
-    input record_ids.
-    """
-    try:
-        from scilineage.lineage import get_raw_value
-        from scilineage.core import LineageFcnResult
-    except Exception:
-        get_raw_value = None
-        LineageFcnResult = ()
-
-    def wrapped(*args, **kwargs):
-        result = fn(*args, **kwargs)
-        if get_raw_value is not None and isinstance(result, LineageFcnResult):
-            return get_raw_value(result)
-        return result
-
-    wrapped.__name__ = getattr(fn, "__name__", "for_columns_fn")
-    # Propagate .fcn so compute_function_hash unwraps to the original user
-    # function — keeping save-time and skip_computed check-time __fn_hash equal.
-    wrapped.fcn = fn.fcn if hasattr(fn, "fcn") else fn
-    return wrapped
-
-
 def _make_plot_wrapper(fn: Any, path_param: str) -> Any:
     """Wrap a plotting (``plot_``) function so it saves its Figure and returns a path.
 
@@ -2306,51 +2246,6 @@ def _make_plot_wrapper(fn: Any, path_param: str) -> Any:
             f"a matplotlib Figure or a path; got {type(result).__name__}."
         )
 
-    return wrapped
-
-
-def _make_lineage_unpacking_wrapper(fn: Any) -> Any:
-    """Default track_lineage wrapper: tuple-unpack + flatten-safe.
-
-    Wraps ``scilineage.make_tuple_unpacking_wrapper`` and additionally collapses
-    DataFrame-valued ``LineageFcnResult`` returns to the raw DataFrame. scifor's
-    flatten mode spreads a returned DataFrame's rows into separate records;
-    per-row lineage does not apply to a flattened output, so collapsing keeps
-    flatten working under ``track_lineage=True`` (combined-call provenance is
-    still recorded at save time from the input record_ids). Non-DataFrame
-    returns (scalars, arrays, dicts) keep their LineageFcnResult so lineage is
-    tracked normally.
-    """
-    import pandas as pd
-    from scilineage import make_tuple_unpacking_wrapper
-    from scilineage.lineage import get_raw_value
-    from scilineage.core import LineageFcnResult
-
-    tu = make_tuple_unpacking_wrapper(fn)
-
-    def _collapse_if_dataframe(value):
-        if isinstance(value, LineageFcnResult):
-            raw = get_raw_value(value)
-            if isinstance(raw, pd.DataFrame):
-                return raw
-        return value
-
-    def wrapped(*args, **kwargs):
-        result = tu(*args, **kwargs)
-        if isinstance(result, tuple):
-            collapsed = tuple(_collapse_if_dataframe(r) for r in result)
-            return collapsed
-        return _collapse_if_dataframe(result)
-
-    wrapped.__name__ = getattr(fn, "__name__", "lineage_fcn")
-    # Preserve markers scidb relies on (variable reconstruction, metadata injection).
-    wrapped.__lineage_wrapper__ = getattr(tu, "__lineage_wrapper__", True)
-    if hasattr(tu, "__scidb_params__"):
-        wrapped.__scidb_params__ = tu.__scidb_params__
-    # Propagate .fcn so compute_function_hash unwraps to the original user
-    # function — keeping save-time and skip_computed check-time __fn_hash equal.
-    if hasattr(tu, "fcn"):
-        wrapped.fcn = tu.fcn
     return wrapped
 
 
@@ -2737,6 +2632,7 @@ def _save_results(
     combo_to_rids: "dict | None" = None,
     combo_to_rids_keys: "list | None" = None,
     input_selectors: "dict | None" = None,
+    generates_file: bool = False,
 ) -> None:
     """Save results from the result table to output variable types using batch operations.
 
@@ -2776,9 +2672,11 @@ def _save_results(
     # PHASE 1: Collect all (data, metadata) items for batch saving
     # ===========================================================================
     # Structure: {(output_idx, save_path): [(data, metadata), ...]}
-    # save_path is one of: 'normal', 'flatten', 'lineage'
+    # save_path is one of: 'normal', 'flatten'
     batch_items = {}
-    lineage_items = []  # LineageFcnResult items saved sequentially (special handling)
+    # generates_file outputs: lineage-only (no data row). Collected as
+    # (output_obj, output_idx, save_metadata) and written graph-natively below.
+    generated_items: list = []
 
     # Bipartite provenance graph: saved output records awaiting graph insertion
     # (see provenance_save.record_run). Populated as each save path completes.
@@ -2959,17 +2857,17 @@ def _save_results(
 
             output_value = row[output_name]
 
-            # Detect LineageFcnResult and handle separately (cannot batch these)
-            if HAS_LINEAGE and isinstance(output_value, LineageFcnResult):
-                lineage_metadata = dict(save_metadata)
-                # Deep copy nested dicts
-                if "__branch_params" in lineage_metadata:
-                    lineage_metadata["__branch_params"] = dict(lineage_metadata["__branch_params"])
-                if "__upstream" in lineage_metadata and isinstance(lineage_metadata["__upstream"], dict):
-                    lineage_metadata["__upstream"] = dict(lineage_metadata["__upstream"])
-                if lineage_fixed_rids:
-                    lineage_metadata["__lineage_fixed_rids"] = lineage_fixed_rids
-                lineage_items.append((output_obj, output_value, lineage_metadata, row_idx, output_idx))
+            # generates_file output: side-effect function (writes a file, returns
+            # no storable data). Save lineage-only — graph + metadata, no data
+            # row — keyed generated:{invocation_id}. The function's return value
+            # is intentionally discarded.
+            if generates_file:
+                gen_meta = dict(save_metadata)
+                if "__branch_params" in gen_meta:
+                    gen_meta["__branch_params"] = dict(gen_meta["__branch_params"])
+                if "__upstream" in gen_meta and isinstance(gen_meta["__upstream"], dict):
+                    gen_meta["__upstream"] = dict(gen_meta["__upstream"])
+                generated_items.append((output_obj, output_idx, gen_meta))
                 continue
 
             # Normal save path - collect for batch save - need deep copy to avoid shared dict references
@@ -2986,7 +2884,7 @@ def _save_results(
 
     prep_elapsed = time.perf_counter() - prep_start
     Log.info(f"[batch_save] Preparation complete in {prep_elapsed:.3f}s: "
-             f"{len(batch_items)} batch group(s), {len(lineage_items)} lineage item(s)")
+             f"{len(batch_items)} batch group(s), {len(generated_items)} generates_file item(s)")
 
     # ===========================================================================
     # PHASE 2: Execute batch saves
@@ -3062,100 +2960,54 @@ def _save_results(
                 Log.error(msg)
 
     # ===========================================================================
-    # PHASE 3: Handle lineage items.
-    #
-    # Normal lineage items (have data) are batched per output type via
-    # save_batch (carrying per-item lineage_hash) + a bulk _lineage insert, so
-    # the batch-save speedup survives track_lineage=True. generates_file items
-    # are lineage-only (no data, "generated:" record_id) and stay sequential.
+    # PHASE 3: generates_file outputs — lineage-only save (graph + metadata, no
+    # data row), keyed ``generated:{invocation_id}``. Built entirely from each
+    # row's save_metadata bindings; the function's return value is discarded.
     # ===========================================================================
-    if lineage_items:
-        from .lineage_save import save_lineage_result, _lineage_to_dict
-        from scilineage import extract_lineage, get_raw_value
+    if generated_items:
+        from datetime import datetime
+        from .provenance_save import invocation_id_for_meta
+        from .provenance import insert_record_entity
+        from .database import get_user_id
 
-        gf_items = []  # generates_file: (output_obj, lr, meta, row_idx)
-        normal_groups: dict = {}  # id(output_obj) -> (output_obj, output_idx, [(raw, meta, lineage_dict, lh, plh)])
-        for output_obj, output_value, lineage_metadata, row_idx, output_idx in lineage_items:
+        _db = db
+        if _db is None:
+            from .database import get_database
+            _db = get_database()
+        _user = get_user_id()
+        Log.info(f"[batch_save] Saving {len(generated_items)} generates_file item(s) (lineage-only)")
+        for output_obj, output_idx, gen_meta in generated_items:
             try:
-                is_gf = bool(output_value.invoked.fcn.generates_file)
-            except Exception:
-                is_gf = False
-            if is_gf:
-                gf_items.append((output_obj, output_value, lineage_metadata, row_idx))
-                continue
-            raw = get_raw_value(output_value)
-            lineage_dict = _lineage_to_dict(extract_lineage(output_value))
-            lh = getattr(output_value, "hash", None)
-            try:
-                plh = output_value.invoked.compute_lineage_hash()
-            except Exception:
-                plh = lh
-            grp = normal_groups.setdefault(id(output_obj), (output_obj, output_idx, []))
-            grp[2].append((raw, lineage_metadata, lineage_dict, lh, plh))
-
-        # Batch normal lineage items per output type.
-        for _output_obj, _output_idx, entries in normal_groups.values():
-            cls = type(_output_obj) if not isinstance(_output_obj, type) else _output_obj
-            out_name = _output_name(_output_obj)
-            Log.info(f"[batch_save] Saving {len(entries)} lineage item(s) for {out_name} (batched lineage path)")
-            data_items = [(raw, meta) for (raw, meta, _ld, _lh, _plh) in entries]
-            lineage_hashes = [lh for (_raw, _meta, _ld, lh, _plh) in entries]
-            try:
-                save_t0 = time.perf_counter()
-                _db = db
-                if _db is None:
-                    from .database import get_database
-                    _db = get_database()
-                record_ids = _db.save_batch(cls, data_items, profile=False, lineage_hashes=lineage_hashes)
-                # Collect for the bipartite provenance graph (carrying the
-                # pipeline hash so find_by_lineage can look these up).
-                _cls_sv = getattr(cls, "schema_version", 1)
-                for rid, (_raw, _meta, _ld, _lh, _plh) in zip(record_ids, entries):
-                    if isinstance(rid, str):
-                        graph_records.append(_GraphRecord(
-                            cls.__name__, _cls_sv, _output_idx, rid, _meta,
-                            pipeline_hash=_plh,
-                        ))
-                save_elapsed = time.perf_counter() - save_t0
-                total_saved += len(entries)
-
-                for i, (rid, (_raw, meta, _ld, _lh, _plh)) in enumerate(zip(record_ids[:3], entries[:3])):
-                    meta_str = ", ".join(f"{k}={v}" for k, v in meta.items() if not k.startswith("__"))
-                    rid_short = rid[:12] if isinstance(rid, str) else str(rid)
-                    msg = f"[save] {meta_str}: {out_name} -> record_id={rid_short} [lineage]"
-                    if i == 0:
-                        print(msg)
-                    Log.info(msg)
-                if len(entries) > 3:
-                    Log.info(f"[save] ... and {len(entries) - 3} more lineage record(s)")
-                Log.info(f"[batch_save] Completed {len(entries)} lineage save(s) for {out_name} in {save_elapsed:.3f}s "
-                         f"({len(entries)/save_elapsed:.1f} records/s)")
+                cls = output_obj if isinstance(output_obj, type) else type(output_obj)
+                out_name = cls.__name__
+                sv = getattr(cls, "schema_version", 1)
+                generated_id = f"generated:{invocation_id_for_meta(gen_meta)}"
+                schema_keys = {k: v for k, v in gen_meta.items() if k in schema_keys_set}
+                schema_level = _db._infer_schema_level(schema_keys)
+                schema_id = (
+                    _db._duck._get_or_create_schema_id(schema_level, schema_keys)
+                    if schema_level is not None and schema_keys else 0
+                )
+                ts = datetime.now().isoformat()
+                # The generated record's producing invocation (written by record_run
+                # in PHASE 4) carries the function identity, so the graph-based
+                # skip_computed gate finds it — no version_keys needed.
+                _db._save_record_metadata(
+                    record_id=generated_id, timestamp=ts, variable_name=out_name,
+                    schema_id=schema_id, content_hash=None,
+                    schema_version=sv, user_id=_user,
+                )
+                insert_record_entity(
+                    _db._duck, record_id=generated_id, created_at=ts,
+                    type_name=out_name, schema_id=schema_id,
+                    content_hash=None, schema_version=sv,
+                )
+                graph_records.append(_GraphRecord(out_name, sv, output_idx, generated_id, gen_meta))
+                total_saved += 1
+                meta_str = ", ".join(f"{k}={v}" for k, v in gen_meta.items() if not k.startswith("__"))
+                Log.info(f"[save] {meta_str}: {out_name} -> {generated_id[:20]} [generates_file]")
             except Exception as e:
-                Log.error(f"[batch_save] Failed batched lineage save for {out_name}: {e}")
-                for (_raw, meta, _ld, _lh, _plh) in entries[:3]:
-                    meta_str = ", ".join(f"{k}={v}" for k, v in meta.items() if not k.startswith("__"))
-                    print(f"[error] {meta_str}: failed to save {out_name} [lineage]: {e}")
-                    Log.error(f"[error] {meta_str}: failed to save {out_name} [lineage]: {e}")
-
-        # generates_file items: lineage-only, save sequentially.
-        if gf_items:
-            Log.info(f"[batch_save] Saving {len(gf_items)} generates_file lineage item(s) sequentially")
-            for output_obj, output_value, lineage_metadata, row_idx in gf_items:
-                try:
-                    rid = save_lineage_result(output_obj, output_value, lineage_metadata, db)
-                    total_saved += 1
-                    meta_str = ", ".join(f"{k}={v}" for k, v in lineage_metadata.items()
-                                         if not k.startswith("__"))
-                    rid_short = rid[:12] if isinstance(rid, str) else str(rid)
-                    msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} [generates_file]"
-                    print(msg)
-                    Log.info(msg)
-                except Exception as e:
-                    meta_str = ", ".join(f"{k}={v}" for k, v in lineage_metadata.items()
-                                         if not k.startswith("__"))
-                    msg = f"[error] {meta_str}: failed to save {_output_name(output_obj)} [generates_file]: {e}"
-                    print(msg)
-                    Log.error(msg)
+                Log.error(f"[error] failed generates_file save for {_output_name(output_obj)}: {e}")
 
     # ===========================================================================
     # PHASE 4: Write the bipartite provenance graph + append-only _run audit.
@@ -3292,97 +3144,3 @@ def _propagate_schema(db, distribute: bool) -> None:
             "but no database is available. Either pass db= to for_each or "
             "call configure_database() first."
         )
-
-
-def _persist_expected_combos(
-    db, fn_name: str, full_combos: list[dict], fn, inputs: dict, as_table, distribute: bool
-) -> None:
-    """Persist the expected ``invocation_id`` of every combo a for_each run intends.
-
-    Called BEFORE skip_computed filtering, so it captures ALL combos (including
-    ones that will be skipped or fail). ``check_node_state`` then measures
-    completeness by how many of these expected invocation_ids are present in
-    ``_invocation`` (§9c). This is the only way to know the expected set for
-    PathInput-only functions (no DB-variable inputs to enumerate).
-
-    No call_id scoping is needed: each combo's invocation_id is config-specific,
-    so distinct call sites coexist and identical re-runs dedup via
-    ``ON CONFLICT DO NOTHING``.
-    """
-    if not full_combos:
-        return
-
-    try:
-        if db is None:
-            from .database import get_database
-            db = get_database()
-    except Exception:
-        Log.debug("_persist_expected_combos: no database available, skipping")
-        return
-
-    try:
-        from scilineage.hashing import compute_function_hash
-        from .provenance import normalize_as_table
-        from .provenance_save import compute_input_selectors, expected_invocation_id
-
-        sk_set = set(db.dataset_schema_keys)
-
-        # Constants + loadable params (mirrors _build_skip_hook / save path so the
-        # predicted invocation_id matches the realized one).
-        try:
-            from scifor import PathInput as _PathInput
-        except ImportError:
-            _PathInput = None
-        try:
-            from scifor import PathOutput as _PathOutput
-        except ImportError:
-            _PathOutput = None
-        constant_values: dict = {}
-        loadable_params: list = []
-        for name, value in inputs.items():
-            if _is_loadable(value):
-                loadable_params.append(name)
-                continue
-            if _PathInput is not None and isinstance(value, _PathInput):
-                continue
-            if _PathOutput is not None and isinstance(value, _PathOutput):
-                continue
-            if isinstance(value, ColName):
-                continue
-            constant_values[name] = value
-
-        fn_hash = compute_function_hash(fn, truncate=16)
-        selectors = compute_input_selectors(inputs)
-        as_table_norm = normalize_as_table(as_table, loadable_params)
-
-        rows_to_insert = set()
-        for combo in full_combos:
-            schema_keys = {k: v for k, v in combo.items() if k in sk_set}
-            if not schema_keys:
-                continue
-            level = db._infer_schema_level(schema_keys)
-            if level is None:
-                continue
-            schema_id = db._duck._get_or_create_schema_id(level, schema_keys)
-            inv_id = expected_invocation_id(
-                combo, fn_hash, constant_values, selectors, as_table_norm, bool(distribute),
-            )
-            rows_to_insert.add((fn_name, schema_id, inv_id))
-
-        if not rows_to_insert:
-            return
-
-        for fn_n, sid, inv_id in rows_to_insert:
-            db._duck._execute(
-                "INSERT INTO _for_each_expected "
-                "(function_name, schema_id, invocation_id) VALUES (?, ?, ?) "
-                "ON CONFLICT (function_name, schema_id, invocation_id) DO NOTHING",
-                [fn_n, sid, inv_id],
-            )
-
-        Log.debug(
-            f"_persist_expected_combos({fn_name}): wrote {len(rows_to_insert)} "
-            f"expected invocation id(s)"
-        )
-    except Exception as exc:
-        Log.debug(f"_persist_expected_combos({fn_name}): failed — {exc}")

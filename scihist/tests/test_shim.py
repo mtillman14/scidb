@@ -17,7 +17,6 @@ def test_reexports_are_scidb_objects():
 
     # Identity re-exports (same object as scidb's).
     assert scihist.save is scidb.save
-    assert scihist.find_by_lineage is scidb.find_by_lineage
     assert scihist.check_combo_state is scidb.check_combo_state
     assert scihist.check_node_state is scidb.check_node_state
     assert scihist.check_multiple_nodes_state is scidb.check_multiple_nodes_state

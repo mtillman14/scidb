@@ -117,17 +117,24 @@ def _match_branch_param(branch_params_dict: dict, key: str, value: Any) -> bool:
     """Match a single branch_params filter key/value against a branch_params dict.
 
     1. Exact match (covers bare dynamic names and namespaced constant names).
-    2. Suffix match for bare constant names (e.g. "low_hz" → "bandpass_filter.low_hz").
-    Raises AmbiguousParamError if the bare name matches multiple namespaced keys.
+    2. Suffix match for bare constant names (e.g. "low_hz" → "bandpass_filter.low_hz",
+       and direct-save kwargs → "__save__.run").
+    A list/tuple ``value`` means membership (``stored in value``). Raises
+    AmbiguousParamError if the bare name matches multiple namespaced keys.
     """
+    def _vmatch(stored) -> bool:
+        if isinstance(value, (list, tuple)):
+            return stored in value
+        return stored == value
+
     # Exact match
     if key in branch_params_dict:
-        return branch_params_dict[key] == value
+        return _vmatch(branch_params_dict[key])
     # Suffix match
     suffix = f".{key}"
     hits = [(k, v) for k, v in branch_params_dict.items() if k.endswith(suffix)]
     if len(hits) == 1:
-        return hits[0][1] == value
+        return _vmatch(hits[0][1])
     if len(hits) > 1:
         raise AmbiguousParamError(
             f"'{key}' matches multiple branch params: {[h[0] for h in hits]}"
@@ -143,12 +150,12 @@ def _filter_records_by_branch_params(df, branch_params_filter: dict | None, duck
     branch_param pinning (``Variant``) can coexist.
 
     Variant branch params are **derived from the bipartite graph** (the
-    accumulated upstream constants, §6) rather than read from a stored column.
-    For each filter key/value, a record is kept when its derived branch params
-    (suffix-matched via :func:`_match_branch_param`, for for_each pipeline
-    params) or its ``version_keys`` (direct saves store non-schema kwargs there)
-    match.  Raises ``AmbiguousParamError`` if a bare key matches multiple
-    namespaced branch params.
+    accumulated upstream constants, §6) — including direct-save non-schema kwargs,
+    which P0 anchors as constants on a synthetic save invocation (namespaced
+    ``__save__.<kwarg>``). For each filter key/value a record is kept when its
+    derived branch params match (exact or bare-suffix via
+    :func:`_match_branch_param`). Raises ``AmbiguousParamError`` if a bare key
+    matches multiple namespaced branch params.
     """
     if not branch_params_filter or len(df) == 0:
         return df
@@ -166,23 +173,7 @@ def _filter_records_by_branch_params(df, branch_params_filter: dict | None, duck
 
     for key, value in branch_params_filter.items():
         def _match_row(row, k=key, v=value):
-            bp = _bp_for(row["record_id"])
-            # Check branch_params ambiguity BEFORE the version_keys shortcut:
-            # a bare key that is ambiguous across pipeline steps must raise even
-            # if the key also happens to appear in version_keys.
-            if k not in bp:
-                suffix = f".{k}"
-                hits = [bk for bk in bp if bk.endswith(suffix)]
-                if len(hits) > 1:
-                    raise AmbiguousParamError(
-                        f"'{k}' matches multiple branch params: {hits}"
-                    )
-            vk = json.loads(row["version_keys"] or "{}") if row.get("version_keys") else {}
-            if k in vk:
-                if isinstance(v, (list, tuple)):
-                    return vk[k] in v
-                return vk[k] == v
-            return _match_branch_param(bp, k, v)
+            return _match_branch_param(_bp_for(row["record_id"]), k, v)
         df = df[df.apply(_match_row, axis=1)]
     return df
 
@@ -463,69 +454,6 @@ def get_user_id() -> str | None:
     return os.environ.get("SCIDB_USER_ID")
 
 
-def _build_lineage_version_keys(result: Any) -> dict:
-    """
-    Build _record_metadata version_keys from a LineageFcnResult.
-
-    Produces the same ``__fn`` / ``__fn_hash`` / ``__inputs`` / ``__constants``
-    format that ``for_each`` writes, so ``list_pipeline_variants()`` and the
-    GUI pipeline graph work without changes.
-
-    Three kinds of inputs are recognised:
-    - ``LineageFcnResult`` with ``_scidb_variable_type`` tag: upstream result
-      that was saved before this call — type name comes from the tag.
-    - ``BaseVariable`` instance: a loaded (saved) variable passed directly —
-      type name comes from ``type(input_val).__name__``.  Works regardless of
-      save order since the type is intrinsic to the object.
-    - Everything else: treated as a constant.
-    """
-    import hashlib
-    import inspect as _inspect
-
-    try:
-        from scilineage.core import LineageFcnResult
-    except ImportError:
-        return {}
-
-    fn = result.invoked.fcn.fcn
-    fn_name = fn.__name__
-
-    try:
-        src = _inspect.getsource(fn)
-    except (OSError, TypeError):
-        src = fn_name
-    fn_hash = hashlib.sha256(src.encode()).hexdigest()[:16]
-
-    input_types: dict = {}   # param_name → BaseVariable type name
-    constants: dict = {}     # param_name → scalar value
-
-    for param_name, input_val in result.invoked.inputs.items():
-        if isinstance(input_val, LineageFcnResult):
-            vtype = getattr(input_val, "_scidb_variable_type", None)
-            if vtype:
-                input_types[param_name] = vtype
-            # No tag → upstream was never saved; skip the edge silently
-        elif isinstance(input_val, BaseVariable):
-            # Loaded variable passed directly — type is always available
-            input_types[param_name] = type(input_val).__name__
-        else:
-            constants[param_name] = input_val
-
-    keys: dict = {"__fn": fn_name, "__fn_hash": fn_hash}
-    # Record the output's position in the function's signature (0-based). The GUI
-    # uses this to map class names back to MATLAB param names for handle labels.
-    output_num = getattr(result, "output_num", None)
-    if output_num is not None:
-        keys["__output_num"] = int(output_num)
-    if input_types:
-        keys["__inputs"] = json.dumps(input_types, sort_keys=True)
-    if constants:
-        keys["__constants"] = json.dumps(
-            {k: str(v) for k, v in sorted(constants.items())},
-        )
-    return keys
-
-
 def configure_database(
     dataset_db_path: str | Path,
     dataset_schema_keys: list[str],
@@ -595,22 +523,6 @@ def get_database() -> "DatabaseManager":
     return db
 
 
-def find_by_lineage(invocation) -> list | None:
-    """Find previously computed output values by computation lineage.
-
-    Given a lineage invocation (function + inputs), looks up any matching
-    outputs in the active database's ``_lineage`` table. Folded in from the
-    former ``scihist.find_by_lineage``.
-
-    Args:
-        invocation: A lineage invocation object with ``compute_lineage_hash()``.
-
-    Returns:
-        List of output values if found, else None.
-    """
-    return get_database().find_by_lineage(invocation)
-
-
 class DatabaseManager:
     """
     Manages data storage and lineage persistence (both in DuckDB via SciDuck).
@@ -653,7 +565,6 @@ class DatabaseManager:
         # Create metadata tables for type registration (in DuckDB)
         self._ensure_meta_tables()
         self._ensure_record_metadata_table()
-        self._ensure_for_each_expected_table()
         self._ensure_schema_overrides_table()
         self._ensure_provenance_tables()
 
@@ -681,9 +592,7 @@ class DatabaseManager:
                 timestamp VARCHAR NOT NULL,
                 variable_name VARCHAR NOT NULL,
                 schema_id INTEGER NOT NULL,
-                version_keys JSON DEFAULT '{}',
                 content_hash VARCHAR,
-                lineage_hash VARCHAR,
                 schema_version INTEGER,
                 user_id VARCHAR,
                 excluded BOOLEAN DEFAULT FALSE,
@@ -691,26 +600,6 @@ class DatabaseManager:
             )
         """)
 
-
-    def _ensure_for_each_expected_table(self):
-        """Create the _for_each_expected table — the persisted set of expected
-        ``invocation_id``s, one row per combo a for_each run intended to produce.
-
-        Written at for_each time (before skip-filtering), so node completeness
-        (``check_node_state``) is a membership test: how many expected
-        invocation_ids are present in ``_invocation`` (§9c). This is the only way
-        to know the expected set for PathInput-only functions (no DB-variable
-        inputs to enumerate). ``invocation_id`` is config-specific, so distinct
-        call sites coexist and re-runs dedup with no call_id scoping needed.
-        """
-        self._duck._execute("""
-            CREATE TABLE IF NOT EXISTS _for_each_expected (
-                function_name VARCHAR NOT NULL,
-                schema_id     INTEGER NOT NULL,
-                invocation_id VARCHAR NOT NULL,
-                PRIMARY KEY (function_name, schema_id, invocation_id)
-            )
-        """)
 
     def _ensure_schema_overrides_table(self):
         """Create __scidb_schema_overrides for persistent schema-level exclusions."""
@@ -730,7 +619,7 @@ class DatabaseManager:
         self._duck._execute(f"""
             CREATE OR REPLACE VIEW "{view_name}" AS
             WITH latest_meta AS (
-                SELECT record_id, schema_id, version_keys, excluded,
+                SELECT record_id, schema_id, excluded,
                        ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) AS rn
                 FROM _record_metadata
                 WHERE variable_name = '{view_name}'
@@ -738,7 +627,7 @@ class DatabaseManager:
             SELECT
                 t.*,
                 s.schema_level, {schema_cols},
-                lm.version_keys, lm.excluded
+                lm.excluded
             FROM "{table_name}" t
             LEFT JOIN latest_meta lm ON t.record_id = lm.record_id AND lm.rn = 1
             LEFT JOIN _schema s ON lm.schema_id = s.schema_id
@@ -783,26 +672,23 @@ class DatabaseManager:
         timestamp: str,
         variable_name: str,
         schema_id: int,
-        version_keys: dict | None,
         content_hash: str | None,
-        lineage_hash: str | None,
         schema_version: int,
         user_id: str | None,
     ) -> None:
         """Insert a new audit row into _record_metadata. Always inserts (audit trail)."""
         Log.debug(f"_save_record_metadata: {variable_name}, record_id={record_id[:12]}, schema_id={schema_id}")
-        vk_json = json.dumps(version_keys or {}, sort_keys=True)
         self._duck._execute(
             """
             INSERT INTO _record_metadata (
                 record_id, timestamp, variable_name, schema_id,
-                version_keys, content_hash, lineage_hash, schema_version, user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                content_hash, schema_version, user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (record_id, timestamp) DO NOTHING
             """,
             [
                 record_id, timestamp, variable_name, schema_id,
-                vk_json, content_hash, lineage_hash, schema_version, user_id,
+                content_hash, schema_version, user_id,
             ],
         )
 
@@ -1009,7 +895,6 @@ class DatabaseManager:
         variable_class: Type[BaseVariable],
         data_items: list[tuple[Any, dict]],
         profile: bool = False,
-        lineage_hashes: "list[str | None] | None" = None,
     ) -> list[str]:
         """
         Bulk-save a list of (data_value, metadata_dict) pairs for a single variable type.
@@ -1024,9 +909,6 @@ class DatabaseManager:
             variable_class: The BaseVariable subclass to save as
             data_items: List of (data_value, flat_metadata_dict) tuples
             profile: If True, print phase-by-phase timing summary
-            lineage_hashes: Optional per-item lineage hashes (parallel to
-                data_items) stored in the _record_metadata.lineage_hash column.
-                Used by the batched lineage save path.
 
         Returns:
             List of record_ids for each saved item (in input order)
@@ -1147,7 +1029,6 @@ class DatabaseManager:
         for i, (data_val, flat_meta) in enumerate(data_items):
             nested = all_nested[i]
             schema_keys = nested.get("schema", {})
-            version_keys = nested.get("version", {})
             schema_level = self._infer_schema_level(schema_keys)
 
             if schema_level is not None and schema_keys:
@@ -1188,11 +1069,9 @@ class DatabaseManager:
             t4_storage += time.perf_counter() - _t
 
             _t = time.perf_counter()
-            vk_json = json.dumps(version_keys or {}, sort_keys=True)
-            _item_lineage_hash = lineage_hashes[i] if lineage_hashes is not None else None
             metadata_rows.append((
                 record_id, timestamp, type_name, schema_id,
-                vk_json, content_hash, _item_lineage_hash, schema_version, user_id,
+                content_hash, schema_version, user_id,
             ))
             t4_meta += time.perf_counter() - _t
 
@@ -1291,24 +1170,23 @@ class DatabaseManager:
                 metadata_rows,
                 columns=[
                     "record_id", "timestamp", "variable_name", "schema_id",
-                    "version_keys", "content_hash", "lineage_hash",
-                    "schema_version", "user_id",
+                    "content_hash", "schema_version", "user_id",
                 ],
             )
             self._duck.con.execute(
                 "INSERT INTO _record_metadata ("
                 "record_id, timestamp, variable_name, schema_id, "
-                "version_keys, content_hash, lineage_hash, schema_version, user_id"
+                "content_hash, schema_version, user_id"
                 ") SELECT * FROM meta_df "
                 "ON CONFLICT (record_id, timestamp) DO NOTHING"
             )
             # Mirror into the bipartite entities table (_record). metadata_rows is
-            # (record_id, timestamp, type, schema_id, vk, content_hash, lineage_hash,
-            #  schema_version, user_id) — map to the _record column order.
+            # (record_id, timestamp, type, schema_id, content_hash, schema_version,
+            #  user_id) — map to the _record column order.
             from .provenance import insert_record_entities
             insert_record_entities(
                 self._duck,
-                [(r[0], r[1], r[2], r[3], r[5], r[7], False) for r in metadata_rows],
+                [(r[0], r[1], r[2], r[3], r[4], r[5], False) for r in metadata_rows],
             )
             timings["6c_meta_insert"] = time.perf_counter() - t6c
 
@@ -1450,21 +1328,24 @@ class DatabaseManager:
 
         Supports two modes:
         - By record_id: direct primary key lookup (with JOINs for full row data)
-        - By metadata: filter by schema keys via JOIN with _schema, optionally
-          filter by version_keys JSON, order by timestamp DESC
+        - By metadata: filter by schema keys via JOIN with _schema, then match
+          non-schema metadata + branch_params against the bipartite graph,
+          order by timestamp DESC
 
         version_id controls which versions are returned:
         - "all" (default): no version filtering (return every version)
-        - "latest": only the latest row per (variable_name, schema_id, version_keys)
+        - "latest": only the latest row per (variable_name, schema_id, variant),
+          where the variant is graph-derived (producing function + accumulated
+          constants)
         - any other string: treated as a record_id for direct lookup
 
         branch_params_filter: optional dict of branch_params key/value filters
         include_excluded: if False (default), skip records with excluded=TRUE
 
-        Schema key values and version key values may be lists, interpreted as
+        Schema key values and filter values may be lists, interpreted as
         "match any" (SQL IN / Python in).
 
-        Returns a DataFrame of matching rows including schema columns and version_keys.
+        Returns a DataFrame of matching rows including schema columns.
         """
         # Build schema column SELECT list
         schema_col_select = ", ".join(
@@ -1577,10 +1458,11 @@ class DatabaseManager:
                     onum = provenance_query.output_num_for(self._duck, row.record_id)
                     variant_key = (inv[1], json.dumps(bp, sort_keys=True), onum)
                 else:
-                    vk = json.loads(row.version_keys or "{}")
-                    vk_stripped = {k: v for k, v in vk.items()
-                                   if k not in ("__upstream", "__output_num", "__lineage_fixed_rids")}
-                    variant_key = ("__raw__", json.dumps(vk_stripped, sort_keys=True), None)
+                    # No producing invocation → a plain raw save. (Any non-schema
+                    # save kwargs are anchored on a synthetic __save__ invocation,
+                    # so those take the graph branch above.) All such records at a
+                    # (variable, schema) location are one variant → collapse to newest.
+                    variant_key = ("__raw__", None)
                 group_key = (row.variable_name, row.schema_id, variant_key)
                 groups[group_key].append((row.timestamp, row.Index))
 
@@ -1593,34 +1475,19 @@ class DatabaseManager:
             df = self._sort_by_schema_keys(df.loc[keep_indices])
             t_collapse = time.perf_counter() - _t_collapse
 
-        # Filter by version keys via Python-side JSON parsing (lists → in)
-        # Optimized: parse JSON once per row instead of once per key per row
         t_vk_filter = 0.0
-        if version_keys and len(df) > 0:
-            _t_vk = time.perf_counter()
-            # Parse all version_keys JSON once (vectorized)
-            df['_vk_parsed'] = df["version_keys"].apply(
-                lambda vk: json.loads(vk) if vk is not None and isinstance(vk, str) else {}
-            )
-            for key, value in version_keys.items():
-                if isinstance(value, (list, tuple)):
-                    mask = df['_vk_parsed'].apply(lambda vk, k=key, vals=value: vk.get(k) in vals)
-                else:
-                    mask = df['_vk_parsed'].apply(lambda vk, k=key, v=value: vk.get(k) == v)
-                df = df[mask]
-            # Clean up temporary column
-            df = df.drop(columns=['_vk_parsed'])
-            t_vk_filter = time.perf_counter() - _t_vk
 
-        Log.debug(f"_find_record({type_name}): {len(df)} record(s) matched (before branch_params filter)")
-
-        # Filter by branch_params_filter via Python-side matching.
-        # Checks version_keys first (direct saves store non-schema kwargs there),
-        # then falls back to branch_params suffix matching (for_each pipeline params).
+        # Filter by non-schema metadata. Both the "version" portion of the
+        # metadata (non-schema kwargs passed plainly, e.g. find_record_id(C,
+        # {subject:1, low_hz:20})) and an explicit ``branch_params_filter`` are
+        # matched against graph-derived branch params (constants on the producing
+        # invocation — incl. direct-save kwargs via the synthetic __save__
+        # invocation), with bare-name suffix matching.
+        combined_bp = {**version_keys, **(branch_params_filter or {})}
         t_bp_filter = 0.0
-        if branch_params_filter and len(df) > 0:
+        if combined_bp and len(df) > 0:
             _t_bp = time.perf_counter()
-            df = _filter_records_by_branch_params(df, branch_params_filter, self._duck)
+            df = _filter_records_by_branch_params(df, combined_bp, self._duck)
             t_bp_filter = time.perf_counter() - _t_bp
 
         # Apply smart sorting by schema keys before returning
@@ -1640,10 +1507,13 @@ class DatabaseManager:
 
     def _reconstruct_metadata_from_row(self, row: pd.Series) -> tuple[dict, dict]:
         """
-        Reconstruct flat and nested metadata from a JOINed row.
+        Reconstruct flat and nested metadata for a record.
 
-        The row contains schema columns from _schema and version_keys from
-        _variables, which together form the complete metadata.
+        Schema keys come from the JOINed _schema columns; the non-schema
+        "version" portion is the record's direct-save kwargs, derived from the
+        bipartite graph (the synthetic ``__save__`` invocation's constants —
+        see :func:`provenance_query.derived_branch_params`). Internal pipeline
+        markers (``__fn`` etc.) are not user metadata and are not exposed.
 
         Returns (flat_metadata, nested_metadata).
         """
@@ -1654,10 +1524,14 @@ class DatabaseManager:
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
                     schema[key] = _from_schema_str(val)
 
-        vk_raw = row.get("version_keys")
+        # Direct-save kwargs: __save__.<kwarg> entries in derived branch params.
         version = {}
-        if vk_raw is not None and isinstance(vk_raw, str):
-            version = json.loads(vk_raw)
+        rid = row.get("record_id")
+        if rid is not None:
+            from . import provenance_query
+            for k, v in provenance_query.derived_branch_params(self._duck, rid).items():
+                if k.startswith("__save__."):
+                    version[k[len("__save__."):]] = v
 
         nested_metadata = {"schema": schema, "version": version}
         flat_metadata = {}
@@ -1728,10 +1602,6 @@ class DatabaseManager:
         table_name = type_name + "_data"
         record_id = row["record_id"]
         content_hash = row["content_hash"]
-        lineage_hash = row["lineage_hash"]
-        # Normalize NaN to None (DuckDB may return NaN for NULL in some contexts)
-        if lineage_hash is not None and not isinstance(lineage_hash, str):
-            lineage_hash = None
         flat_metadata, nested_metadata = self._reconstruct_metadata_from_row(row)
 
         # Get dtype from _variables to determine deserialization path
@@ -1810,7 +1680,6 @@ class DatabaseManager:
         instance.record_id = record_id
         instance.metadata = flat_metadata
         instance.content_hash = content_hash
-        instance.lineage_hash = lineage_hash
         # branch_params is the accumulated upstream constants (§6), derived from
         # the bipartite graph rather than read from a stored column.
         try:
@@ -1892,9 +1761,7 @@ class DatabaseManager:
         """
         Save data as a variable.
 
-        Accepts a BaseVariable instance (which may carry a lineage_hash) or
-        raw data. For lineage-tracked saves, use scihist.save() which wraps
-        this method.
+        Accepts a BaseVariable instance or raw data.
 
         Args:
             variable_class: The BaseVariable subclass to save as
@@ -1909,54 +1776,13 @@ class DatabaseManager:
         user_keys = {k: v for k, v in metadata.items() if not k.startswith("__")}
         Log.info(f"save_variable({type_name}): metadata={user_keys}")
 
-        lineage_hash = None
-        lineage_dict = None
-        pipeline_version_keys: dict = {}
-
-        try:
-            from scilineage.core import LineageFcnResult
-            from scilineage.lineage import extract_lineage
-            if isinstance(data, LineageFcnResult):
-                # Use the invocation hash (not the result hash) so that
-                # find_by_lineage(invocation) can look it up via compute_lineage_hash()
-                lineage_hash = data.invoked.hash
-                lineage_dict = extract_lineage(data).to_dict()
-
-                # Build version_keys in the same format as for_each() so that
-                # list_pipeline_variants() and the GUI can see this function.
-                pipeline_version_keys = _build_lineage_version_keys(data)
-
-                # Tag the result object with its variable type name.  Downstream
-                # saves that receive this result as an input can then read the tag
-                # to populate __inputs in their own version_keys.
-                try:
-                    data._scidb_variable_type = variable_class.__name__
-                except (AttributeError, TypeError):
-                    pass
-
-                data = data.data
-        except ImportError:
-            pass
-
-        if isinstance(data, BaseVariable):
-            raw_data = data.data
-            lineage_hash = data.lineage_hash
-        else:
-            raw_data = data
+        raw_data = data.data if isinstance(data, BaseVariable) else data
 
         instance = variable_class(raw_data)
-
-        # Merge pipeline version_keys (from @lineage_fcn) into metadata so that
-        # _split_metadata puts them in version_keys → _record_metadata.
-        save_metadata = {**metadata, **pipeline_version_keys} if pipeline_version_keys else metadata
-
-        record_id = self.save(
-            instance, save_metadata, lineage=lineage_dict, lineage_hash=lineage_hash, index=index,
-        )
+        record_id = self.save(instance, metadata, index=index)
 
         instance.record_id = record_id
         instance.metadata = metadata
-        instance.lineage_hash = lineage_hash
 
         Log.info(f"save_variable({type_name}): saved -> record_id={record_id[:12]}")
         return record_id
@@ -1965,12 +1791,7 @@ class DatabaseManager:
         self,
         variable: BaseVariable,
         metadata: dict,
-        lineage: dict | None = None,
-        lineage_hash: str | None = None,
-        pipeline_lineage_hash: str | None = None,
         index: Any = None,
-        output_num: int = 0,
-        graph_function_hash: str | None = None,
     ) -> str:
         """
         Save a variable to the database.
@@ -1978,12 +1799,6 @@ class DatabaseManager:
         Args:
             variable: The variable instance to save
             metadata: Addressing metadata (flat dict)
-            lineage: Optional lineage dict with keys 'function_name', 'function_hash',
-                'inputs', 'constants'
-            lineage_hash: Optional pre-computed lineage hash (stored in DuckDB
-                for input classification when this variable is reused later)
-            pipeline_lineage_hash: Optional pre-computed lineage hash for cache
-                lookup. If None, falls back to lineage_hash.
             index: Optional index to set on the DataFrame
 
         Returns:
@@ -2079,9 +1894,7 @@ class DatabaseManager:
                 timestamp=created_at,
                 variable_name=type_name,
                 schema_id=schema_id,
-                version_keys=version_keys,
                 content_hash=content_hash,
-                lineage_hash=lineage_hash,
                 schema_version=variable.schema_version,
                 user_id=user_id,
             )
@@ -2099,6 +1912,18 @@ class DatabaseManager:
                 schema_version=variable.schema_version,
             )
 
+            # A save carrying non-schema kwargs: anchor those kwargs in the graph
+            # as a synthetic save invocation so they are graph-derivable branch
+            # params (the variant role formerly held by the version_keys column).
+            if version_keys:
+                save_kwargs = {
+                    k: v for k, v in version_keys.items()
+                    if not str(k).startswith("__")
+                }
+                if save_kwargs:
+                    from .provenance_save import record_direct_save
+                    record_direct_save(self._duck, record_id, save_kwargs, created_at)
+
             self._duck._commit()
             Log.debug(f"save({type_name}): transaction committed")
 
@@ -2110,23 +1935,6 @@ class DatabaseManager:
                 pass  # Connection may already be closed
             raise
 
-        # Write the bipartite provenance graph for this record (single-record
-        # lineage save path — MATLAB bridge, direct save with lineage). Done
-        # AFTER commit because it runs its own transaction. Additive/defensive:
-        # never fail the save on a graph error.
-        if lineage is not None:
-            try:
-                from .provenance_save import record_run_from_lineage
-                effective_plh = pipeline_lineage_hash if pipeline_lineage_hash is not None else lineage_hash
-                record_run_from_lineage(
-                    self, record_id, type_name, variable.schema_version,
-                    output_num, lineage, where_clause=None, user_id=user_id,
-                    function_hash=graph_function_hash,
-                    pipeline_hash=effective_plh,
-                )
-            except Exception as e:
-                Log.error(f"save({type_name}): provenance graph write failed: {e}")
-
         return record_id
 
     def _load_with_where(
@@ -2137,13 +1945,14 @@ class DatabaseManager:
         where,
         version_id: str = "latest",
     ):
-        """Load records using where= filter with version_keys-first strategy.
+        """Load records using where= filter with a provenance-first strategy.
 
         When data was saved via for_each with a where= condition, the filter
-        string is stored as a ``__where`` version key. This method first tries
-        to match records by that version key. If no records are found (e.g. data
-        was saved directly without for_each), it falls back to schema-level
-        filtering via ``where.resolve()``.
+        string is recorded on the producing run (``_run.where_clause``). This
+        method first tries to match records by that provenance (graph-derived,
+        per :func:`provenance_query.record_where_clauses`). If no records are
+        found (e.g. data was saved directly without for_each), it falls back to
+        schema-level filtering via ``where.resolve()``.
 
         Returns:
             A pandas DataFrame of matching record rows.
@@ -2193,15 +2002,19 @@ class DatabaseManager:
             f"where_key={where_key!r}"
         )
         if where_key:
-            stored_keys = records_all["version_keys"].apply(
-                lambda vk: json.loads(vk or "{}").get("__where", "")
-            ).unique().tolist()
+            # A record's ``__where`` is the where_clause of its producing run,
+            # read from the bipartite graph (record → invocation → run).
+            from . import provenance_query
+            wc_map = provenance_query.record_where_clauses(
+                self._duck, records_all["record_id"].tolist()
+            )
             Log.debug(
-                f"[_load_with_where] {type_name}: Strategy 1 stored __where values: {stored_keys}"
+                f"[_load_with_where] {type_name}: Strategy 1 stored __where values: "
+                f"{sorted({w for s in wc_map.values() for w in s if w})}"
             )
             records = records_all[
-                records_all["version_keys"].apply(
-                    lambda vk: json.loads(vk or "{}").get("__where") == where_key
+                records_all["record_id"].apply(
+                    lambda rid: where_key in wc_map.get(rid, set())
                 )
             ].copy()
             Log.debug(
@@ -2434,44 +2247,28 @@ class DatabaseManager:
                         else None
                     ).values
 
-        # Version keys: parse once per row, then expand into individual columns.
-        vk_series = records["version_keys"].apply(
-            lambda vk: json.loads(vk) if isinstance(vk, str) and vk else {}
-        )
+        # Non-schema metadata columns: a record's direct-save kwargs, derived
+        # from the graph (the synthetic ``__save__`` invocation's constants).
+        # Internal pipeline markers (__fn etc.) and fn sweep-constants are not
+        # exposed here — the latter appear in the ``__branch_params`` column below.
+        from . import provenance_query as _pq
+        per_row_kwargs: list[dict] = []
+        kwarg_col_names: dict[str, list] = {}
+        for rid in records["record_id"].values:
+            kw = {
+                k[len("__save__."):]: v
+                for k, v in _pq.derived_branch_params(self._duck, rid).items()
+                if k.startswith("__save__.")
+            }
+            per_row_kwargs.append(kw)
+            for name in kw:
+                if name not in kwarg_col_names:
+                    kwarg_col_names[name] = [None] * len(records)
+        for i, kw in enumerate(per_row_kwargs):
+            for name, val in kw.items():
+                kwarg_col_names[name][i] = val
 
-        # Collect which version-key column names to expose in the output.
-        all_vk_col_names: dict[str, list] = {}  # name -> [value_or_None per row]
-        const_keys_per_row: list[set] = []
-        for vk in vk_series:
-            ck_val = vk.get("__constants", {})
-            if isinstance(ck_val, str):
-                try:
-                    ck_val = json.loads(ck_val)
-                except Exception:
-                    ck_val = {}
-            const_keys = set(ck_val.keys()) if ck_val else set()
-            const_keys_per_row.append(const_keys)
-
-            for k in vk:
-                if layout == "spread":
-                    # Mirror _stringify_meta: drop __ keys and constant param names
-                    if not k.startswith("__") and k not in const_keys:
-                        if k not in all_vk_col_names:
-                            all_vk_col_names[k] = [None] * len(records)
-                else:
-                    # Packed: expose all version_keys (current BaseVariable behaviour)
-                    if k not in all_vk_col_names:
-                        all_vk_col_names[k] = [None] * len(records)
-
-        for i, (vk, ck) in enumerate(zip(vk_series, const_keys_per_row)):
-            for col_name in all_vk_col_names:
-                if layout == "spread":
-                    if not col_name.startswith("__") and col_name not in ck:
-                        all_vk_col_names[col_name][i] = vk.get(col_name)
-                else:
-                    all_vk_col_names[col_name][i] = vk.get(col_name)
-
-        meta_dict.update(all_vk_col_names)
+        meta_dict.update(kwarg_col_names)
 
         # Branch params column — derived from the bipartite graph (§6) per record,
         # not read from a stored column.
@@ -2983,30 +2780,30 @@ class DatabaseManager:
 
             data_value = data_lookup[record_id]
             content_hash = row.content_hash
-            lineage_hash = row.lineage_hash
-            if lineage_hash is not None and not isinstance(lineage_hash, str):
-                lineage_hash = None
 
             flat_metadata = {}
             for sk in schema_keys:
                 val = getattr(row, sk, None)
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
                     flat_metadata[sk] = _from_schema_str(val)
-            vk_raw = getattr(row, "version_keys", None)
-            if vk_raw is not None and isinstance(vk_raw, str):
-                flat_metadata.update(json.loads(vk_raw))
+
+            # branch_params + direct-save kwargs derived from the bipartite graph
+            # (§6), not a column. __save__.<kwarg> entries are the record's
+            # non-schema save metadata.
+            try:
+                from . import provenance_query
+                bp = provenance_query.derived_branch_params(self._duck, record_id)
+            except Exception:
+                bp = {}
+            for k, v in bp.items():
+                if k.startswith("__save__."):
+                    flat_metadata[k[len("__save__."):]] = v
 
             instance = variable_class(data_value)
             instance.record_id = record_id
             instance.metadata = flat_metadata
             instance.content_hash = content_hash
-            instance.lineage_hash = lineage_hash
-            # branch_params derived from the bipartite graph (§6), not a column.
-            try:
-                from . import provenance_query
-                instance.branch_params = provenance_query.derived_branch_params(self._duck, record_id)
-            except Exception:
-                instance.branch_params = {}
+            instance.branch_params = bp
 
             n_yielded += 1
             t_yield_body += time.perf_counter() - _t_body
@@ -3338,8 +3135,7 @@ class DatabaseManager:
         combination — a "branch" of the pipeline. Two for_each runs on the
         same function with different constants produce two separate entries.
 
-        Uses version_keys metadata stored by for_each; does not require the
-        scilineage tracking system.
+        Derived entirely from the bipartite provenance graph (no version_keys).
 
         Args:
             output_type: Optional variable type name to filter results
@@ -3354,66 +3150,11 @@ class DatabaseManager:
                                cosmetic source edits to the fn body),
                 input_types   (dict: param_name → type_name),
                 constants     (dict: param_name → value),
-                output_num    (int | None: 0-based position in the fn signature;
-                               None for legacy records written before __output_num
-                               was added),
+                output_num    (int | None: 0-based position in the fn signature),
                 record_count  (int: distinct records for this variant)
         """
-        from .foreach_config import call_id_from_version_keys
-
-        sql = "SELECT variable_name, version_keys, record_id FROM _record_metadata"
-        params: list = []
-        if output_type is not None:
-            sql += " WHERE variable_name = ?"
-            params = [output_type]
-
-        rows = self._duck._fetchall(sql, params)
-
-        # Group by (variable_name, version_keys_without___upstream) in Python.
-        # __upstream encodes which upstream variant was used (for record_id uniqueness)
-        # but should not split pipeline-level grouping — two for_each calls with the
-        # same (fn, constants) are the same pipeline step regardless of upstream.
-        from collections import defaultdict
-        group_record_ids: dict = defaultdict(set)
-        group_info: dict = {}
-
-        for variable_name, version_keys_json, record_id in rows:
-            vk = json.loads(version_keys_json or "{}") if version_keys_json else {}
-            fn_name = vk.get("__fn")
-            if not fn_name:
-                continue  # Raw .save() record — no function, skip
-
-            inputs_raw = vk.get("__inputs", "{}")
-            constants_raw = vk.get("__constants", "{}")
-            input_types = (
-                json.loads(inputs_raw) if isinstance(inputs_raw, str) else (inputs_raw or {})
-            )
-            constants = (
-                json.loads(constants_raw) if isinstance(constants_raw, str) else (constants_raw or {})
-            )
-
-            # Strip __upstream for pipeline-level grouping
-            vk_for_group = {k: v for k, v in vk.items() if k != "__upstream"}
-            group_key = (variable_name, json.dumps(vk_for_group, sort_keys=True))
-
-            group_record_ids[group_key].add(record_id)
-            if group_key not in group_info:
-                output_num = vk.get("__output_num")
-                group_info[group_key] = {
-                    "function_name": fn_name,
-                    "output_type": variable_name,
-                    "call_id": call_id_from_version_keys(vk),
-                    "input_types": input_types,
-                    "constants": constants,
-                    "output_num": output_num,
-                }
-
-        results = []
-        for group_key, record_ids in group_record_ids.items():
-            info = group_info[group_key]
-            results.append({**info, "record_count": len(record_ids)})
-
-        return results
+        from . import provenance_query
+        return provenance_query.pipeline_variants(self._duck, output_type)
 
     def get_aggregated_variants(
         self,
@@ -3735,14 +3476,9 @@ class DatabaseManager:
         """
         Traverse the full upstream provenance chain for a record.
 
-        Walks backwards through the pipeline: for each record, inspects its
-        version_keys (__fn, __inputs) to determine what variable types it was
-        derived from, then finds those upstream records at the same schema
-        location using branch_params subset matching (the upstream record's
-        branch_params must be a subset of the current record's branch_params).
-
-        Does not require the scilineage tracking system; uses version_keys
-        and branch_params metadata stored by for_each.
+        Walks backwards through the pipeline over the bipartite provenance graph:
+        each record's producing invocation names its input records directly, so
+        the chain is followed by stored edges (no metadata heuristics).
 
         Args:
             record_id: The record_id to trace backwards from.
@@ -3830,13 +3566,12 @@ class DatabaseManager:
 
         Args:
             variable_class: The BaseVariable subclass to look up.
-            metadata: Flat dict of schema keys (and optionally version keys).
+            metadata: Flat dict of schema keys (and optionally non-schema kwargs,
+                matched as branch params against the graph).
             branch_params_filter: Optional namespaced branch_params dict
-                (e.g. ``{"bandpass_filter.low_hz": 20}``) used for variant
-                disambiguation via suffix matching.  Do NOT merge these into
-                ``metadata`` — they must go through the branch_params path so
-                that namespaced keys like ``fn.param`` match their un-namespaced
-                counterparts stored in ``version_keys``.
+                (e.g. ``{"bandpass_filter.low_hz": 20}``) for variant
+                disambiguation via suffix matching against graph-derived branch
+                params (the producing invocation's constants).
 
         Returns None if no matching record exists.
         """
@@ -3853,53 +3588,40 @@ class DatabaseManager:
 
     def get_latest_record_id_for_variant(self, used_record_id: str) -> str | None:
         """Given a record_id, find the most recently saved record that shares the
-        same (variable_name, schema_id, version_keys).
+        same ``(variable_name, schema_id, producing-variant)``.
 
         This is the "current latest" for that specific variable variant —
-        the same record that load(..., version_id="latest") would return.
-        Returns None if the record no longer exists.
+        the same record that ``load(..., version_id="latest")`` would return.
+        The variant is derived from the bipartite graph (the producing
+        invocation's constants, or ``None`` for raw records — see
+        :func:`provenance_query._producing_variant_key`), so direct-save kwargs
+        (anchored as graph constants) distinguish variants too. Returns None if
+        the record no longer exists.
         """
-        rows = self._duck._fetchdf(
-            "SELECT variable_name, schema_id, version_keys "
-            "FROM _record_metadata WHERE record_id = ? LIMIT 1",
+        from . import provenance_query
+
+        rows = self._duck._fetchall(
+            "SELECT variable_name, schema_id FROM _record_metadata WHERE record_id = ? LIMIT 1",
             [used_record_id],
         )
-        if rows.empty:
+        if not rows:
             return None
+        vn, sid = rows[0][0], rows[0][1]
 
-        vn = rows.iloc[0]["variable_name"]
-        sid = int(rows.iloc[0]["schema_id"])
-        vk = rows.iloc[0]["version_keys"]
+        target_variant = provenance_query._producing_variant_key(self._duck, used_record_id)
 
-        latest = self._duck._fetchdf(
+        # Candidates at the same (variable_name, schema_id), newest first.
+        candidates = self._duck._fetchall(
             "SELECT record_id FROM _record_metadata "
-            "WHERE variable_name = ? AND schema_id = ? AND version_keys IS NOT DISTINCT FROM ? "
+            "WHERE variable_name = ? AND schema_id IS NOT DISTINCT FROM ? "
             "AND COALESCE(excluded, FALSE) = FALSE "
-            "ORDER BY timestamp DESC LIMIT 1",
-            [vn, sid, vk],
+            "ORDER BY timestamp DESC",
+            [vn, sid],
         )
-        if latest.empty:
-            return None
-        return latest.iloc[0]["record_id"]
-
-    def get_record_version_keys(self, record_id: str) -> dict:
-        """Return the version_keys dict stored in _record_metadata for a record.
-
-        Used by scihist.for_each's skip_computed check to compare __rid_*
-        values between the current combo and the stored output record.
-
-        Returns an empty dict if the record doesn't exist or has no version_keys.
-        """
-        rows = self._duck._fetchall(
-            "SELECT version_keys FROM _record_metadata WHERE record_id = ? LIMIT 1",
-            [record_id],
-        )
-        if not rows or not rows[0][0]:
-            return {}
-        try:
-            return json.loads(rows[0][0])
-        except (json.JSONDecodeError, TypeError):
-            return {}
+        for (rid,) in candidates:
+            if provenance_query._producing_variant_key(self._duck, rid) == target_variant:
+                return rid
+        return None
 
     # -------------------------------------------------------------------------
     # Export Methods
@@ -3932,75 +3654,6 @@ class DatabaseManager:
         combined.to_csv(path, index=False)
 
         return len(results)
-
-    def find_by_lineage_hash(self, lineage_hash: str) -> list | None:
-        """
-        Find output values by pipeline lineage hash.
-
-        Low-level lookup used by scihist.find_by_lineage(). Matches against the
-        bipartite graph: invocations carry the scilineage ``pipeline_hash``, and
-        their ``_invocation_output`` edges name the produced records.
-
-        Args:
-            lineage_hash: The pipeline lineage hash to look up
-
-        Returns:
-            List of output values if found, None otherwise
-        """
-        records = self._duck._fetchall(
-            "SELECT DISTINCT io.output_record_id, r.type "
-            "FROM _invocation inv "
-            "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
-            "JOIN _record r ON r.record_id = io.output_record_id "
-            "WHERE inv.pipeline_hash = ?",
-            [lineage_hash],
-        )
-        if not records:
-            return None
-
-        results = []
-        has_generated = False
-        for record_id, variable_name in records:
-            # Track generated entries (lineage-only, no data stored)
-            if record_id.startswith("generated:"):
-                has_generated = True
-                continue
-
-            var_class = self._get_variable_class(variable_name)
-            if var_class is None:
-                return None
-
-            try:
-                # Load data from DuckDB
-                var = next(self.load(var_class, {}, version_id=record_id))
-                results.append(var.data)
-            except (KeyError, NotFoundError):
-                # Record not found
-                return None
-
-        if results:
-            return results
-        if has_generated:
-            return [None]
-        return None
-
-    def find_by_lineage(self, invocation) -> list | None:
-        """
-        Find output values by a lineage invocation object.
-
-        Computes the lineage hash from the invocation and delegates to
-        find_by_lineage_hash. Accepts any invocation with a
-        compute_lineage_hash() method (e.g. LineageFcnInvocation,
-        MatlabLineageFcnInvocation).
-
-        Args:
-            invocation: An invocation object with compute_lineage_hash()
-
-        Returns:
-            List of output values if found, None otherwise
-        """
-        lineage_hash = invocation.compute_lineage_hash()
-        return self.find_by_lineage_hash(lineage_hash)
 
     def _get_variable_class(self, type_name: str):
         """Get a variable class by name (class name, not table name)."""

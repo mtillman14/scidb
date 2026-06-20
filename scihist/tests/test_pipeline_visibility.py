@@ -1,19 +1,17 @@
-"""Regression tests: scihist outputs must be visible to list_pipeline_variants().
+"""Regression tests: for_each outputs must be visible to list_pipeline_variants().
 
-After scihist.for_each saves a LineageFcnResult, the record's version_keys
-must include __fn and __fn_hash so that db.list_pipeline_variants() can
-discover them — exactly as scidb.for_each already does for plain functions.
+After for_each saves a computed record, the provenance graph must record the
+producing function so that db.list_pipeline_variants() can discover it.
 
-Without this, the GUI shows scihist output variables as green (up-to-date)
-even when some combos are missing, because the pipeline graph never learns
-about the function that produced them.
+Without this, the GUI shows output variables as green (up-to-date) even when
+some combos are missing, because the pipeline graph never learns about the
+function that produced them.
 """
 
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, Fixed
-from scilineage import lineage_fcn
+from scidb import BaseVariable, Fixed, pipeline
 from scihist import for_each
 
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
@@ -56,7 +54,7 @@ class TestListPipelineVariantsVisibility:
 
     def test_single_output_visible(self, db):
         """After scihist.for_each, list_pipeline_variants finds the function."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -70,7 +68,7 @@ class TestListPipelineVariantsVisibility:
 
     def test_output_type_correct(self, db):
         """The variant's output_type matches the output variable class."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -84,7 +82,7 @@ class TestListPipelineVariantsVisibility:
 
     def test_record_count_matches(self, db):
         """Variant record_count should match the number of saved combos."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -99,12 +97,12 @@ class TestListPipelineVariantsVisibility:
         assert total == 3
 
     def test_multiple_functions_both_visible(self, db):
-        """Two different lineage_fcns produce two separate variants."""
-        @lineage_fcn
+        """Two different pipeline functions produce two separate variants."""
+        @pipeline
         def step1(x):
             return x + 1
 
-        @lineage_fcn
+        @pipeline
         def step2(y):
             return y * 2
 
@@ -121,7 +119,7 @@ class TestListPipelineVariantsVisibility:
 
     def test_constant_variants_visible(self, db):
         """Different constant values produce distinct variants."""
-        @lineage_fcn
+        @pipeline
         def scale(x, factor):
             return x * factor
 
@@ -138,7 +136,7 @@ class TestListPipelineVariantsVisibility:
 
     def test_generates_file_visible(self, db):
         """generates_file=True functions should also be visible."""
-        @lineage_fcn(generates_file=True)
+        @pipeline(generates_file=True)
         def make_plot(data, subject, trial):
             return None
 
@@ -160,7 +158,7 @@ class TestSkipComputedWithFnVersionKeys:
 
     def test_skip_works_after_fn_version_keys_added(self, db, capsys):
         """Records with __fn in version_keys are found by skip_computed lookup."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -178,7 +176,7 @@ class TestSkipComputedWithFnVersionKeys:
 
     def test_skip_works_with_constants(self, db, capsys):
         """skip_computed correctly finds records when constants + __fn are in version_keys."""
-        @lineage_fcn
+        @pipeline
         def scale(x, factor):
             return x * factor
 
@@ -197,7 +195,7 @@ class TestSkipComputedWithFnVersionKeys:
         """Changing upstream data still triggers recompute (not broken by __fn in lookup)."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2
@@ -222,11 +220,11 @@ class TestSkipComputedWithFnVersionKeys:
         so the combo is treated as missing (computed, not skipped)."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def process_v1(x):
             return x * 2
 
-        @lineage_fcn
+        @pipeline
         def process_v2(x):
             call_count[0] += 1
             return x * 3
@@ -245,7 +243,7 @@ class TestSkipComputedWithFnVersionKeys:
 
     def test_load_still_works_with_schema_keys_only(self, db):
         """BaseVariable.load(subject=1, trial=1) returns correct data despite __fn in version_keys."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -260,7 +258,7 @@ class TestSkipComputedWithFnVersionKeys:
         """With 3 subjects, changing one still correctly skips the other two."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2

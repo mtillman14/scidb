@@ -46,12 +46,13 @@ def _seed(db, subjects, sessions):
             RawSignal.save(np.array([1.0, 2.0, 3.0]), db=db, subject=s, session=sess)
 
 
-def test_two_configs_partial_each_union_is_grey(db):
-    """Two configs (different constants) each run on a subset → union grey.
+def test_two_configs_partial_each_union_is_red(db):
+    """Two configs (different constants) each run on a subset → union red.
 
     Input: 2 subjects × 2 sessions = 4 RawSignal. low_hz=20 runs session A,
     low_hz=50 runs session B. Each config's live-derived expected set spans all
-    4 input locations, so 4 of 8 expected invocations are present → grey.
+    4 input locations, so 4 of 8 expected invocations are present → any missing
+    makes the node red (binary model — no grey).
     """
     _seed(db, subjects=["1", "2"], sessions=["A", "B"])
 
@@ -63,7 +64,7 @@ def test_two_configs_partial_each_union_is_grey(db):
     state = check_node_state(bandpass, [Filtered], db=db)
     assert state["counts"]["up_to_date"] == 4, state
     assert state["counts"]["missing"] == 4, state
-    assert state["state"] == "grey", state
+    assert state["state"] == "red", state
 
 
 def test_two_configs_fully_run_is_green(db):
@@ -82,9 +83,9 @@ def test_two_configs_fully_run_is_green(db):
     assert state["state"] == "green", state
 
 
-def test_config_partial_run_is_grey(db):
-    """One config run on a subset of available input → grey (partial-run
-    detection: subjects 2,3 exist in input but weren't processed)."""
+def test_config_partial_run_is_red(db):
+    """One config run on a subset of available input → red (partial-run
+    detection: subjects 2,3 exist in input but weren't processed → missing)."""
     _seed(db, subjects=["1", "2", "3"], sessions=["A"])
 
     for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 20},
@@ -93,4 +94,4 @@ def test_config_partial_run_is_grey(db):
     state = check_node_state(bandpass, [Filtered], db=db)
     assert state["counts"]["up_to_date"] == 1, state
     assert state["counts"]["missing"] == 2, state
-    assert state["state"] == "grey", state
+    assert state["state"] == "red", state

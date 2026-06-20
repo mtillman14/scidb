@@ -1,36 +1,17 @@
 """Python bridge for MATLAB-SciStack integration.
 
-Provides proxy classes that satisfy the duck-typing contracts of
-scilineage's LineageFcn, LineageFcnInvocation, and LineageFcnResult classes.
-This allows MATLAB functions to participate fully in the lineage / caching
-system without any changes to existing Python packages.
+Runs scidb's ``for_each`` prepare/save phases on behalf of MATLAB (so MATLAB
+pipelines share the exact Python save path + bipartite provenance graph), and
+provides :class:`MatlabLineageFcn` — a lightweight MATLAB function handle for
+``scidb.check_node_state`` node coloring.
 
-The key insight is that every Python function that touches these objects
-uses duck-typing (attribute access), not isinstance checks on LineageFcn or
-LineageFcnInvocation.  LineageFcnResult *is* instantiated directly from
-scilineage, so isinstance checks in save_variable() pass naturally.
-
-Duck-typing contracts satisfied
--------------------------------
-MatlabLineageFcn provides:
-    .hash            str   (64-char hex, same algorithm as LineageFcn.__init__)
-    .fcn.__name__    str   (used by extract_lineage)
-    .unpack_output   bool
-    .unwrap          bool
-    .invocations     tuple
-
-MatlabLineageFcnInvocation provides:
-    .fcn             MatlabLineageFcn
-    .inputs          dict[str, Any]
-    .outputs         tuple
-    .unwrap          bool
-    .hash            property -> compute_lineage_hash()
-    .compute_lineage_hash()  str  (reuses classify_inputs from scilineage)
+(The former per-call lineage/cache machinery — ``MatlabLineageFcnInvocation``,
+``make_lineage_fcn_result``, the rerun cache — was removed with the
+``@lineage_fcn`` → ``@pipeline`` migration. Real MATLAB ``for_each`` always went
+through the batch save path, which is unaffected.)
 """
 
 from hashlib import sha256
-
-from scilineage.inputs import classify_inputs
 
 STRING_REPR_DELIMITER = "-"
 
@@ -58,24 +39,27 @@ def _describe_value(val):
 
 
 class _FunctionProxy:
-    """Minimal proxy so that ``inv.fcn.fcn.__name__`` works in extract_lineage."""
+    """Minimal holder so ``MatlabLineageFcn().fcn.__name__`` yields the function name."""
 
     def __init__(self, name: str):
         self.__name__ = name
 
 
 class MatlabLineageFcn:
-    """Proxy for a MATLAB function in the scilineage system.
+    """A MATLAB function handle for node-state queries.
 
-    Satisfies the same duck-typing contract as ``scilineage.core.LineageFcn``
-    for every consumer that reads ``.hash``, ``.fcn.__name__``, etc.
+    A lightweight identity object: the function name (via ``.fcn.__name__``)
+    plus a content ``.hash`` derived from the MATLAB source hash and the
+    multi-output flag. Passed to ``scidb.check_node_state`` so a MATLAB pipeline
+    function can be colored in the GUI. (It is not a lineage wrapper — there is
+    no per-call invocation/result machinery anymore.)
 
     Parameters
     ----------
     source_hash : str
         SHA-256 hex digest of the MATLAB function source code.
     function_name : str
-        Human-readable function name (used in lineage records).
+        Human-readable function name.
     unpack_output : bool
         Whether the function returns multiple outputs.
     """
@@ -88,49 +72,8 @@ class MatlabLineageFcn:
     ):
         self.fcn = _FunctionProxy(function_name)
         self.unpack_output = unpack_output
-        self.unwrap = True
-        self.invocations: tuple = ()
-
-        # Same algorithm as LineageFcn.__init__
         string_repr = f"{source_hash}{STRING_REPR_DELIMITER}{unpack_output}"
         self.hash: str = sha256(string_repr.encode()).hexdigest()
-        self.generates_file = False
-
-
-class MatlabLineageFcnInvocation:
-    """Proxy for a specific MATLAB function invocation.
-
-    Satisfies the same duck-typing contract as
-    ``scilineage.core.LineageFcnInvocation``. Reuses ``classify_inputs``
-    and the lineage-hash algorithm from scilineage so that cache lookups
-    and lineage extraction work unchanged.
-
-    Parameters
-    ----------
-    matlab_lineage_fcn : MatlabLineageFcn
-        The parent lineage function (function identity).
-    inputs : dict
-        Mapping of argument names (``"arg_0"``, ``"arg_1"``, ...) to
-        Python-side values (BaseVariable instances, LineageFcnResults, or
-        plain scalars/arrays).
-    """
-
-    def __init__(self, matlab_lineage_fcn: MatlabLineageFcn, inputs: dict):
-        self.fcn = matlab_lineage_fcn
-        self.inputs: dict = dict(inputs)
-        self.outputs: tuple = ()
-        self.unwrap = True
-
-    def compute_lineage_hash(self) -> str:
-        """Compute lineage hash — identical algorithm to LineageFcnInvocation."""
-        classified = classify_inputs(self.inputs)
-        input_tuples = [c.to_cache_tuple() for c in classified]
-        hash_input = f"{self.fcn.hash}{STRING_REPR_DELIMITER}{input_tuples}"
-        return sha256(hash_input.encode()).hexdigest()
-
-    @property
-    def hash(self) -> str:
-        return self.compute_lineage_hash()
 
 
 # ---------------------------------------------------------------------------
@@ -1297,36 +1240,6 @@ def convert_nested_dicts_to_json(py_list):
         return None
 
 
-def check_cache(invocation: MatlabLineageFcnInvocation):
-    """Check if a computation is already cached.
-
-    Returns
-    -------
-    list or None
-        List of cached output values (raw data), or None on miss.
-    """
-    from scilineage.backend import _get_backend
-
-    _backend = _get_backend()
-    if _backend is not None:
-        try:
-            return _backend.find_by_lineage(invocation)
-        except Exception:
-            pass
-    return None
-
-
-def make_lineage_fcn_result(invocation: MatlabLineageFcnInvocation, output_num: int, data):
-    """Create a real LineageFcnResult backed by a MatlabLineageFcnInvocation.
-
-    The returned object is a genuine ``scilineage.core.LineageFcnResult``
-    instance, so ``isinstance`` checks in ``save_variable`` pass.
-    """
-    from scilineage.core import LineageFcnResult
-
-    return LineageFcnResult(invocation, output_num, True, data)
-
-
 def register_matlab_variable(type_name: str, schema_version: int = 1):
     """Create a Python surrogate BaseVariable subclass for a MATLAB type.
 
@@ -1536,7 +1449,6 @@ def wrap_batch_bridge(py_vars_list):
         batch_id       : int   — handle for get_batch_data_item (non-scalar only)
         record_ids     : str   — newline-joined
         content_hashes : str   — newline-joined
-        lineage_hashes : str   — newline-joined ('' for None)
         json_meta      : str   — JSON array of metadata dicts
         scalar_data    : numpy.ndarray (optional) — present when all data are scalars
     """
@@ -1548,7 +1460,6 @@ def wrap_batch_bridge(py_vars_list):
 
     record_ids = []
     content_hashes = []
-    lineage_hashes = []
     meta_dicts = []
     branch_params_list = []
     data = []
@@ -1556,8 +1467,6 @@ def wrap_batch_bridge(py_vars_list):
     for v in py_vars:
         record_ids.append(v.record_id or '')
         content_hashes.append(v.content_hash or '')
-        lh = v.lineage_hash
-        lineage_hashes.append(lh if lh is not None else '')
         meta = v.metadata
         meta_dicts.append(dict(meta) if meta is not None else {})
         branch_params_list.append(json.dumps(v.branch_params or {}))
@@ -1572,7 +1481,6 @@ def wrap_batch_bridge(py_vars_list):
         'batch_id': batch_id,
         'record_ids': '\n'.join(record_ids),
         'content_hashes': '\n'.join(content_hashes),
-        'lineage_hashes': '\n'.join(lineage_hashes),
         'json_meta': json.dumps(meta_dicts),
         'json_branch_params': '\n'.join(branch_params_list),
     }

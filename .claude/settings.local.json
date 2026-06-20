@@ -77,7 +77,9 @@
       "Bash(sed -n '1,25p' scifor/README.md)",
       "Bash([ -f \"$d/pyproject.toml\" ])",
       "Bash(awk '/^\\\\[tool\\\\./{p=1} p' scicanonicalhash/pyproject.toml)",
-      "Bash(awk '/^\\\\[tool\\\\.ruff/{p=1} p&&/^\\\\[/&&!/ruff/&&NR>1{if\\(seen\\)exit} {if\\(/^\\\\[tool\\\\.ruff/\\)seen=1; if\\(seen\\)print}' path-gen/pyproject.toml)"
+      "Bash(awk '/^\\\\[tool\\\\.ruff/{p=1} p&&/^\\\\[/&&!/ruff/&&NR>1{if\\(seen\\)exit} {if\\(/^\\\\[tool\\\\.ruff/\\)seen=1; if\\(seen\\)print}' path-gen/pyproject.toml)",
+      "Bash(awk '/class TestListPipelineVariants/,/^class [A-Z].*:/' scidb/tests/test_branch_params.py)",
+      "Bash(cd *)"
     ]
   }
 }

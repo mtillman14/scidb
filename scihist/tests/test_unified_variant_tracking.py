@@ -8,8 +8,7 @@ import json
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, Fixed
-from scilineage import lineage_fcn
+from scidb import BaseVariable, Fixed, pipeline
 from scihist import for_each as scihist_for_each
 import scidb
 
@@ -65,8 +64,8 @@ class TestVersionKeysCompleteness:
     """Test that scihist outputs have complete version_keys."""
 
     def test_scihist_has_all_version_keys(self, db):
-        """scihist outputs should have __fn, __fn_hash, __inputs, and __constants."""
-        @lineage_fcn
+        """scihist outputs record function + inputs + constants in the graph."""
+        @pipeline
         def process(x, threshold):
             return x * threshold
 
@@ -82,37 +81,23 @@ class TestVersionKeysCompleteness:
             trial=[1],
         )
 
-        # Check saved metadata
-        con = db._duck.con
-        result = con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()
+        # Provenance comes from the bipartite graph, not a version_keys column.
+        prov = db.get_provenance(ProcessedData, subject=1, trial=1)
+        assert prov is not None, "No ProcessedData provenance found"
 
-        assert result is not None, "No ProcessedData record found"
-        version_keys = parse_version_keys(result[0])
+        assert prov["function_name"] == "process"
+        assert len(prov["function_hash"]) == 16, "Function hash should be 16 chars"
 
-        # Verify all required keys present
-        assert "__fn" in version_keys, "Missing __fn"
-        assert "__fn_hash" in version_keys, "Missing __fn_hash"
-        assert "__inputs" in version_keys, "Missing __inputs"
-        assert "__constants" in version_keys, "Missing __constants"
+        input_params = {i["param_name"] for i in prov["inputs"]}
+        assert "x" in input_params, f"Input 'x' not in {input_params}"
 
-        # Verify content
-        assert version_keys["__fn"] == "process"
-        assert len(version_keys["__fn_hash"]) == 16, "Function hash should be 16 chars"
-
-        inputs = version_keys["__inputs"]
-        assert "x" in inputs, "Input 'x' not in __inputs"
-
-        constants = version_keys["__constants"]
-        assert "threshold" in constants, "Constant 'threshold' not in __constants"
+        constants = prov["constants"]
+        assert "threshold" in constants, "Constant 'threshold' not recorded"
         assert constants["threshold"] == 2.0
 
     def test_scihist_has_populated_branch_params(self, db):
         """scihist outputs should have non-empty branch_params."""
-        @lineage_fcn
+        @pipeline
         def scale(x, factor):
             return x * factor
 
@@ -139,8 +124,8 @@ class TestVersionKeysCompleteness:
         assert branch_params["scale.factor"] == 3.0
 
     def test_multiple_constants_in_version_keys(self, db):
-        """All constants should appear in __constants."""
-        @lineage_fcn
+        """All constants should be recorded on the producing invocation."""
+        @pipeline
         def compute(x, alpha, beta, gamma):
             return x * alpha + beta * gamma
 
@@ -154,15 +139,7 @@ class TestVersionKeysCompleteness:
             trial=[1],
         )
 
-        con = db._duck.con
-        result = con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()
-
-        version_keys = parse_version_keys(result[0])
-        constants = version_keys["__constants"]
+        constants = db.get_provenance(ProcessedData, subject=1, trial=1)["constants"]
 
         assert len(constants) == 3
         assert constants["alpha"] == 0.5
@@ -175,11 +152,11 @@ class TestBranchParamsAccumulation:
 
     def test_branch_params_accumulate_across_pipeline(self, db):
         """Downstream branch_params should include upstream constants."""
-        @lineage_fcn
+        @pipeline
         def step1(x, param1):
             return x + param1
 
-        @lineage_fcn
+        @pipeline
         def step2(y, param2):
             return y * param2
 
@@ -213,15 +190,15 @@ class TestBranchParamsAccumulation:
 
     def test_branch_params_multiple_inputs(self, db):
         """branch_params should merge from all upstream inputs."""
-        @lineage_fcn
+        @pipeline
         def process_a(x, alpha):
             return x * alpha
 
-        @lineage_fcn
+        @pipeline
         def process_b(x, beta):
             return x + beta
 
-        @lineage_fcn
+        @pipeline
         def combine(a, b, gamma):
             return a + b + gamma
 
@@ -270,7 +247,7 @@ class TestFixedInputTracking:
 
     def test_fixed_input_in_lineage(self, db):
         """Fixed inputs should appear in _lineage.inputs as variable entries (not constants)."""
-        @lineage_fcn
+        @pipeline
         def process(ref, value):
             return ref + value
 
@@ -323,7 +300,7 @@ class TestFixedInputTracking:
         """Changing a Fixed input should cause skip_computed to re-run."""
         call_count = 0
 
-        @lineage_fcn
+        @pipeline
         def use_fixed(ref, multiplier):
             nonlocal call_count
             call_count += 1
@@ -372,7 +349,7 @@ class TestVariantDiscovery:
 
     def test_multiple_constant_variants(self, db):
         """Different constant values should create distinct variants."""
-        @lineage_fcn
+        @pipeline
         def scale(x, factor):
             return x * factor
 
@@ -398,24 +375,14 @@ class TestVariantDiscovery:
 
         assert count == 3, f"Expected 3 variants, found {count}"
 
-        # Check that each has different __constants
-        results = con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchall()
-
-        factors = []
-        for (version_keys,) in results:
-            version_keys = parse_version_keys(version_keys)
-            constants = version_keys["__constants"]
-            factors.append(constants["factor"])
-
-        assert sorted(factors) == [1.0, 2.0, 3.0]
+        # Each variant has a distinct 'factor' constant (graph-derived).
+        variants = db.list_pipeline_variants(output_type="ProcessedData")
+        factors = sorted(v["constants"]["factor"] for v in variants)
+        assert factors == [1.0, 2.0, 3.0]
 
     def test_variant_query_consistency(self, db):
-        """Variants should be queryable via version_keys OR _lineage."""
-        @lineage_fcn
+        """Variants are queryable via the bipartite graph (constant input edges)."""
+        @pipeline
         def compute(x, param):
             return x + param
 
@@ -431,16 +398,8 @@ class TestVariantDiscovery:
 
         con = db._duck.con
 
-        # Query via version_keys.__constants (use proper json_extract with JSON type)
-        via_version_keys = con.execute("""
-            SELECT record_id
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-              AND json_extract(version_keys, '$.__constants.param') = 10
-        """).fetchall()
-
-        # Query via the bipartite graph: ProcessedData records whose producing
-        # invocation consumed a constant bound to the 'param' slot.
+        # ProcessedData records whose producing invocation consumed a constant
+        # bound to the 'param' slot.
         via_graph = con.execute("""
             SELECT DISTINCT io.output_record_id
             FROM _invocation_output io
@@ -449,11 +408,11 @@ class TestVariantDiscovery:
             JOIN _constant c ON c.record_id = ii.input_record_id
             WHERE r.type = 'ProcessedData' AND ii.param_name = 'param'
         """).fetchall()
-
-        # Should find the same record both ways
-        assert len(via_version_keys) == 1
         assert len(via_graph) == 1
-        assert via_version_keys[0][0] == via_graph[0][0]
+
+        # And the constant value is recoverable as a branch param.
+        prov = db.get_provenance(ProcessedData, subject=1, trial=1)
+        assert prov["constants"]["param"] == 10
 
 
 class TestComparisonWithScidb:
@@ -466,7 +425,7 @@ class TestComparisonWithScidb:
             return x * threshold
 
         # Lineage function for scihist
-        @lineage_fcn
+        @pipeline
         def lineage_process(x, threshold):
             return x * threshold
 
@@ -491,36 +450,18 @@ class TestComparisonWithScidb:
             trial=[1],
         )
 
-        con = db._duck.con
+        # Provenance from the graph for both paths.
+        scidb_prov = db.get_provenance(IntermediateA, subject=1, trial=1)
+        scihist_prov = db.get_provenance(IntermediateB, subject=2, trial=1)
 
-        # Get metadata from both
-        scidb_meta = parse_version_keys(con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'IntermediateA'
-        """).fetchone()[0])
+        # Both should record function + inputs + constants identically in shape.
+        for prov in (scidb_prov, scihist_prov):
+            assert prov["function_name"]
+            assert len(prov["function_hash"]) == 16
+            assert {i["param_name"] for i in prov["inputs"]} == {"x"}
 
-        scihist_meta = parse_version_keys(con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'IntermediateB'
-        """).fetchone()[0])
-
-        # Both should have same structure (version_keys)
-        assert set(scidb_meta.keys()) == set(scihist_meta.keys()), \
-            "Metadata keys should match"
-
-        # Both should have complete version_keys
-        for meta in [scidb_meta, scihist_meta]:
-            assert "__fn" in meta
-            assert "__fn_hash" in meta
-            assert "__inputs" in meta
-            assert "__constants" in meta
-
-        # Constants should match
-        scidb_constants = scidb_meta["__constants"]
-        scihist_constants = scihist_meta["__constants"]
-        assert scidb_constants == scihist_constants
+        # Constants should match (same threshold value).
+        assert scidb_prov["constants"] == scihist_prov["constants"]
 
     def test_branch_params_structure_matches_scidb(self, db):
         """branch_params structure should match between scidb and scihist."""
@@ -531,11 +472,11 @@ class TestComparisonWithScidb:
         def plain_step2(y, p2):
             return y * p2
 
-        @lineage_fcn
+        @pipeline
         def lineage_step1(x, p1):
             return x + p1
 
-        @lineage_fcn
+        @pipeline
         def lineage_step2(y, p2):
             return y * p2
 
@@ -570,7 +511,7 @@ class TestMultipleOutputs:
 
     def test_multiple_outputs_all_have_metadata(self, db):
         """All outputs should have complete metadata."""
-        @lineage_fcn
+        @pipeline
         def split_process(x, factor):
             return x * factor, x + factor
 
@@ -584,31 +525,18 @@ class TestMultipleOutputs:
             trial=[1],
         )
 
-        con = db._duck.con
-
-        # Both outputs should exist
-        for var_name in ["ProcessedData", "FinalResult"]:
-            result = con.execute("""
-                SELECT version_keys
-                FROM _record_metadata
-                WHERE variable_name = ?
-            """, [var_name]).fetchone()
-
-            assert result is not None, f"Missing output {var_name}"
-            version_keys = parse_version_keys(result[0])
-
-            # Check complete metadata
-            assert "__fn" in version_keys
-            assert "__fn_hash" in version_keys
-            assert "__inputs" in version_keys
-            assert "__constants" in version_keys
-
-            constants = version_keys["__constants"]
-            assert constants["factor"] == 5
+        # Both outputs should have complete graph provenance.
+        for var_cls in (ProcessedData, FinalResult):
+            prov = db.get_provenance(var_cls, subject=1, trial=1)
+            assert prov is not None, f"Missing output {var_cls.__name__}"
+            assert prov["function_name"] == "split_process"
+            assert len(prov["function_hash"]) == 16
+            assert {i["param_name"] for i in prov["inputs"]} == {"x"}
+            assert prov["constants"]["factor"] == 5
 
     def test_multiple_outputs_same_branch_params(self, db):
         """All outputs from same call should have identical branch_params."""
-        @lineage_fcn
+        @pipeline
         def dual_output(x, alpha, beta):
             return x * alpha, x + beta
 
@@ -634,8 +562,11 @@ class TestGeneratesFile:
     """Test that generates_file functions work correctly."""
 
     def test_generates_file_has_metadata(self, db):
-        """generates_file outputs should have version_keys even without data."""
-        @lineage_fcn(generates_file=True)
+        """generates_file outputs are recorded lineage-only (no data row), with
+        their function + constants captured in the bipartite graph."""
+        from scidb import provenance_query
+
+        @pipeline(generates_file=True)
         def export_data(x, filename):
             # Side-effect only, no return value
             pass
@@ -652,34 +583,28 @@ class TestGeneratesFile:
 
         con = db._duck.con
 
-        # Should have metadata even though no data was saved
+        # A record is created even though no data was saved.
         result = con.execute("""
-            SELECT version_keys, content_hash
+            SELECT record_id, content_hash
             FROM _record_metadata
             WHERE variable_name = 'ProcessedData'
         """).fetchone()
 
         assert result is not None, "generates_file should create record"
-        version_keys, content_hash = result
-        version_keys = parse_version_keys(version_keys)
+        record_id, content_hash = result
 
-        # Should have complete version_keys
-        assert "__fn" in version_keys
-        assert "__fn_hash" in version_keys
-        assert "__constants" in version_keys
-
-        # Should NOT have content_hash (no data)
+        # No data → no content_hash, and it is a lineage-only "generated:" record.
         assert content_hash is None
+        assert record_id.startswith("generated:")
 
-        # Should have a producing invocation recorded in the graph.
-        lineage_result = con.execute("""
-            SELECT io.output_record_id
-            FROM _invocation_output io
-            JOIN _record r ON r.record_id = io.output_record_id
-            WHERE r.type = 'ProcessedData'
-        """).fetchone()
+        # The producing invocation carries the function identity, and the
+        # PathInput/filename rides as a graph constant → branch param.
+        inv = provenance_query.producing_invocation(db._duck, record_id)
+        assert inv is not None, "generates_file output must have a producing invocation"
+        assert inv[1] == "export_data"
 
-        assert lineage_result is not None
+        branch_params = provenance_query.derived_branch_params(db._duck, record_id)
+        assert branch_params.get("export_data.filename") == "output.csv", branch_params
 
 
 class TestEdgeCases:
@@ -687,7 +612,7 @@ class TestEdgeCases:
 
     def test_no_constants(self, db):
         """Function with only variable inputs should have empty __constants."""
-        @lineage_fcn
+        @pipeline
         def identity(x):
             return x
 
@@ -701,20 +626,13 @@ class TestEdgeCases:
             trial=[1],
         )
 
-        con = db._duck.con
-        result = con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()
-
-        version_keys = parse_version_keys(result[0])
-        constants = version_keys["__constants"]
-        assert constants == {}
+        # No constants recorded on the producing invocation.
+        prov = db.get_provenance(ProcessedData, subject=1, trial=1)
+        assert prov["constants"] == {}
 
     def test_empty_branch_params_first_stage(self, db):
         """First pipeline stage should have only current function's params."""
-        @lineage_fcn
+        @pipeline
         def first_stage(x, alpha):
             return x * alpha
 
@@ -737,7 +655,7 @@ class TestEdgeCases:
 
     def test_dry_run_no_save(self, db):
         """dry_run should not save any outputs."""
-        @lineage_fcn
+        @pipeline
         def compute(x, value):
             return x + value
 
@@ -763,8 +681,10 @@ class TestEdgeCases:
         assert count == 0, "dry_run should not save outputs"
 
     def test_where_clause_metadata(self, db):
-        """where clause should appear in version_keys.__where."""
-        @lineage_fcn
+        """The where= filter is recorded on the producing run (graph)."""
+        from scidb import provenance_query
+
+        @pipeline
         def filter_process(x, threshold):
             return x * threshold
 
@@ -780,16 +700,11 @@ class TestEdgeCases:
             where="subject == 1",
         )
 
-        con = db._duck.con
-        result = con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()
-
-        version_keys = parse_version_keys(result[0])
-        assert "__where" in version_keys
-        assert version_keys["__where"] == "subject == 1"
+        rid = db._duck.con.execute(
+            "SELECT record_id FROM _record_metadata WHERE variable_name = 'ProcessedData'"
+        ).fetchone()[0]
+        wcs = provenance_query.record_where_clauses(db._duck, [rid]).get(rid, set())
+        assert "subject == 1" in wcs
 
 
 class TestSkipComputed:
@@ -799,7 +714,7 @@ class TestSkipComputed:
         """skip_computed should work based on __constants in version_keys."""
         call_count = 0
 
-        @lineage_fcn
+        @pipeline
         def expensive(x, param):
             nonlocal call_count
             call_count += 1
@@ -845,7 +760,7 @@ class TestSkipComputed:
         RawData.save(np.array([5]), subject=1, trial=1)
 
         # First version of function
-        @lineage_fcn
+        @pipeline
         def version1(x, factor):
             return x * factor  # Simple multiply
 
@@ -858,16 +773,10 @@ class TestSkipComputed:
             skip_computed=True,
         )
 
-        # Get function hash
         con = db._duck.con
-        hash1 = parse_version_keys(con.execute("""
-            SELECT version_keys
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
-        """).fetchone()[0])["__fn_hash"]
 
         # Second version with different implementation
-        @lineage_fcn
+        @pipeline
         def version1(x, factor):
             return x * factor + 1  # Changed implementation
 

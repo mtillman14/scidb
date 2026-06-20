@@ -6,7 +6,7 @@ Walks a project's ``src/{project}/`` tree and all packages listed in
 collects the pipeline-relevant exports of each module:
 
 * :class:`BaseVariable` subclasses (via ``issubclass`` check)
-* :class:`scilineage.LineageFcn` instances (the return type of ``@lineage_fcn``)
+* ``@pipeline``-tagged plain functions (pipeline steps)
 * :class:`Constant` instances (wrapped via :func:`constant`)
 
 The scan imports modules for real — it never parses source text — so the
@@ -50,6 +50,7 @@ else:  # pragma: no cover
         import tomli as tomllib  # type: ignore[no-redef]
 
 from .constant import Constant
+from .pipeline import is_pipeline_function
 from .variable import BaseVariable
 
 logger = logging.getLogger(__name__)
@@ -125,22 +126,13 @@ class DiscoveryResult:
 # ---------------------------------------------------------------------------
 # Per-module scanner
 # ---------------------------------------------------------------------------
-def _lineage_fcn_type() -> type | None:
-    """Return the ``LineageFcn`` type if scilineage is installed, else None."""
-    try:
-        from scilineage import LineageFcn  # type: ignore
-    except Exception:
-        return None
-    return LineageFcn
-
-
 def discover_module(module: ModuleType) -> ModuleExports:
     """
     Scan a single already-imported module for scistack-relevant exports.
 
-    A BaseVariable subclass or LineageFcn is only attributed to ``module``
-    if it was *defined* there — re-exports (e.g. ``from .other import X``)
-    are filtered out by comparing ``__module__``. This prevents the same
+    A BaseVariable subclass or ``@pipeline`` function is only attributed to
+    ``module`` if it was *defined* there — re-exports (e.g. ``from .other import
+    X``) are filtered out by comparing ``__module__``. This prevents the same
     object from being listed twice in the project panel.
 
     ``Constant`` instances don't have a ``__module__`` attribute we can
@@ -150,7 +142,6 @@ def discover_module(module: ModuleType) -> ModuleExports:
     """
     module_name = module.__name__
     exports = ModuleExports(module_name=module_name)
-    LineageFcn = _lineage_fcn_type()
 
     for name, obj in vars(module).items():
         if name.startswith("_"):
@@ -162,10 +153,9 @@ def discover_module(module: ModuleType) -> ModuleExports:
                 exports.variables.append(obj)
             continue
 
-        # --- LineageFcn instances ---
-        if LineageFcn is not None and isinstance(obj, LineageFcn):
-            fn = getattr(obj, "fcn", None)
-            if fn is not None and getattr(fn, "__module__", None) == module_name:
+        # --- @pipeline-tagged plain functions ---
+        if is_pipeline_function(obj):
+            if getattr(obj, "__module__", None) == module_name:
                 exports.functions.append(obj)
             continue
 

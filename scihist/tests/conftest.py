@@ -23,14 +23,12 @@ DEFAULT_TEST_SCHEMA_KEYS = ["subject", "trial"]
 
 @pytest.fixture
 def db(tmp_path):
-    """Provide a fresh configured database with cache backend registered."""
+    """Provide a fresh configured database."""
     from scihist import configure_database
     db_path = tmp_path / "test_db.duckdb"
     db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
     yield db
     db.close()
-    from scilineage import _clear_backend
-    _clear_backend()
     from scidb.database import _local
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
@@ -39,12 +37,9 @@ def db(tmp_path):
 @pytest.fixture(autouse=True)
 def clear_global_state():
     """Clear global state before and after each test."""
-    from scilineage import _clear_backend
     from scidb.database import _local
-    _clear_backend()
     if hasattr(_local, 'database'):
         delattr(_local, 'database')
     yield
-    _clear_backend()
     if hasattr(_local, 'database'):
         delattr(_local, 'database')

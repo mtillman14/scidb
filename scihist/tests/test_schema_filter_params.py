@@ -4,9 +4,8 @@ import numpy as np
 import pytest
 import scifor as _scifor
 
-from scidb import BaseVariable, configure_database
+from scidb import BaseVariable, configure_database, pipeline
 from scihist import for_each
-from scilineage import lineage_fcn
 
 
 SCHEMA = ["subject", "session", "trial"]
@@ -37,7 +36,7 @@ class ProcessedData(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@lineage_fcn
+@pipeline
 def process(raw_data, threshold):
     return raw_data * threshold
 

@@ -23,7 +23,7 @@ _warnings.warn(
 
 # Core batch execution + lineage-aware save (shimmed to preserve scihist defaults)
 from .foreach import for_each, save
-from .database import configure_database, find_by_lineage
+from .database import configure_database
 from .state import check_combo_state, check_node_state, check_multiple_nodes_state
 
 # Re-export DB wrappers from scidb
@@ -32,8 +32,8 @@ from scidb import Fixed, Merge, ColumnSelection, ForEachConfig
 # Re-export scifor helpers
 from scifor import Col, set_schema, get_schema, PathInput
 
-# Re-export scilineage system
-from scilineage import lineage_fcn, LineageFcn, LineageFcnResult, LineageFcnInvocation
+# Re-export the pipeline-step marker (replaces the removed @lineage_fcn).
+from scidb import pipeline
 
 __version__ = "0.1.0"
 
@@ -43,8 +43,6 @@ __all__ = [
     "save",
     # Configuration
     "configure_database",
-    # Lineage query
-    "find_by_lineage",
     # Node staleness
     "check_combo_state",
     "check_node_state",
@@ -59,9 +57,6 @@ __all__ = [
     "Col",
     "set_schema",
     "get_schema",
-    # Lineage system
-    "lineage_fcn",
-    "LineageFcn",
-    "LineageFcnResult",
-    "LineageFcnInvocation",
+    # Pipeline marker
+    "pipeline",
 ]

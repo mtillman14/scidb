@@ -16,7 +16,7 @@ import ast
 import logging
 
 from .database import _from_schema_str
-from .provenance import CONSTANT_TYPE
+from .provenance import CONSTANT_TYPE, PATHINPUT_TYPE, SAVE_FUNCTION_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,8 @@ def invocation_inputs(duck, invocation_id: str):
     var_inputs = []
     constants = {}
     for param_name, in_rid, rtype, value_repr in rows:
+        if rtype == PATHINPUT_TYPE:
+            continue  # PathInput spec — not a variable nor a sweep constant
         if rtype == CONSTANT_TYPE:
             constants[param_name] = _safe_literal(value_repr)
         else:
@@ -92,6 +94,23 @@ def invocation_inputs(duck, invocation_id: str):
             })
     var_inputs.sort(key=lambda d: (d["param_name"], d["record_id"]))
     return var_inputs, constants
+
+
+def invocation_path_inputs(duck, invocation_id: str) -> dict[str, str]:
+    """``{param_name: spec_json_str}`` for an invocation's PathInput inputs.
+
+    The spec string is ``PathInput.to_key()`` (JSON: template, root_folder, …),
+    stored as a distinctly-typed (:data:`PATHINPUT_TYPE`) input record.
+    """
+    rows = duck._fetchall(
+        "SELECT ii.param_name, c.value_repr "
+        "FROM _invocation_input ii "
+        "JOIN _record r ON r.record_id = ii.input_record_id "
+        "JOIN _constant c ON c.record_id = ii.input_record_id "
+        "WHERE ii.invocation_id = ? AND r.type = ?",
+        [invocation_id, PATHINPUT_TYPE],
+    )
+    return {param: spec for param, spec in rows}
 
 
 def stored_invocation_signature(duck, record_id: str):
@@ -118,6 +137,8 @@ def stored_invocation_signature(duck, record_id: str):
     var_inputs: dict[str, tuple] = {}
     const_hashes: dict[str, str] = {}
     for param, in_rid, selector, rtype, chash in rows:
+        if rtype == PATHINPUT_TYPE:
+            continue  # PathInput spec — excluded from identity / staleness
         if rtype == CONSTANT_TYPE:
             const_hashes[param] = chash
         else:
@@ -206,7 +227,7 @@ def upstream_provenance(db, record_id: str, max_depth: int = 20) -> list[dict]:
         visited.add(rid)
 
         node = _fetch_record_node(duck, rid, schema_keys)
-        if node is None or node["type"] == CONSTANT_TYPE:
+        if node is None or node["type"] in (CONSTANT_TYPE, PATHINPUT_TYPE):
             continue
 
         inv = producing_invocation(duck, rid)
@@ -312,8 +333,12 @@ def pipeline_structure(duck) -> list[dict]:
     Describes how variable *types* flow through functions, independent of data
     instances or schema locations.
     """
+    # Exclude synthetic save invocations — they anchor direct-save kwargs, not
+    # pipeline functions, and must not appear as nodes in the structure.
     inv_rows = duck._fetchall(
-        "SELECT invocation_id, function_name, function_hash FROM _invocation"
+        "SELECT invocation_id, function_name, function_hash FROM _invocation "
+        "WHERE function_name != ?",
+        [SAVE_FUNCTION_NAME],
     )
     seen: set = set()
     results: list = []
@@ -330,8 +355,8 @@ def pipeline_structure(duck) -> list[dict]:
             r[0] for r in duck._fetchall(
                 "SELECT r.type FROM _invocation_input ii "
                 "JOIN _record r ON r.record_id = ii.input_record_id "
-                "WHERE ii.invocation_id = ? AND r.type != ?",
-                [inv_id, CONSTANT_TYPE],
+                "WHERE ii.invocation_id = ? AND r.type NOT IN (?, ?)",
+                [inv_id, CONSTANT_TYPE, PATHINPUT_TYPE],
             )
         ))
         for out_type in out_types:
@@ -355,6 +380,33 @@ def has_producing_invocation(duck, record_id: str) -> bool:
         [record_id],
     )
     return bool(rows)
+
+
+def record_where_clauses(duck, record_ids) -> dict[str, set]:
+    """``{record_id: {where_clause, ...}}`` — the ``where=`` filter string(s) of
+    the run(s) that produced each record (graph-derived replacement for the old
+    ``version_keys["__where"]``).
+
+    A record's producing invocation links to ``_run`` rows via ``_run_invocation``;
+    ``_run.where_clause`` is the same string for_each stored as ``__where``. Raw
+    records (no producing invocation) get no entry.
+    """
+    ids = [r for r in dict.fromkeys(record_ids)]
+    if not ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(ids))
+    rows = duck._fetchall(
+        f"SELECT io.output_record_id, run.where_clause "
+        f"FROM _invocation_output io "
+        f"JOIN _run_invocation ri ON ri.invocation_id = io.invocation_id "
+        f"JOIN _run run ON run.run_id = ri.run_id "
+        f"WHERE io.output_record_id IN ({placeholders})",
+        ids,
+    )
+    out: dict[str, set] = {}
+    for rid, wc in rows:
+        out.setdefault(rid, set()).add(wc)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -428,16 +480,143 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
     return list(configs.values())
 
 
+def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
+    """Distinct pipeline step variants, derived from the graph.
+
+    Graph-native replacement for the old ``version_keys``-grouped
+    ``list_pipeline_variants``. A variant is one ``(output_type, function_name,
+    input_types, constants, output_num)`` combination — config-level
+    (fn-hash- and instance-independent). Synthetic ``__save__`` invocations are
+    excluded (they are not pipeline steps).
+
+    Each dict: ``function_name``, ``output_type``, ``call_id`` (reusing
+    ``call_id_from_version_keys`` over the reconstructed config signature, so it
+    matches the forward ``ForEachConfig.to_call_id`` for plain inputs),
+    ``input_types`` (param→type), ``constants`` (param→typed value),
+    ``output_num`` (int|None), ``record_count`` (distinct output records).
+    """
+    from .foreach_config import call_id_from_version_keys
+
+    inv_rows = duck._fetchall(
+        "SELECT invocation_id, function_name, as_table, distribute FROM _invocation "
+        "WHERE function_name != ?",
+        [SAVE_FUNCTION_NAME],
+    )
+
+    groups: dict = {}        # group_key -> info dict
+    group_records: dict = {}  # group_key -> set(output_record_id)
+
+    for inv_id, fn_name, as_table, distribute in inv_rows:
+        var_inputs, constants = invocation_inputs(duck, inv_id)
+        input_types = {i["param_name"]: i["variable_type"] for i in var_inputs}
+        # PathInput specs ride in input_types as their to_key() JSON string —
+        # preserves the legacy contract (get_aggregated_variants parses them) and
+        # call_id parity (forward to_call_id includes them in __inputs).
+        input_types.update(invocation_path_inputs(duck, inv_id))
+        at = sorted(as_table) if as_table else []
+
+        # where (config-level): the run(s) that produced this invocation.
+        where_rows = duck._fetchall(
+            "SELECT r.where_clause FROM _run_invocation ri "
+            "JOIN _run r ON r.run_id = ri.run_id "
+            "WHERE ri.invocation_id = ? AND r.where_clause IS NOT NULL LIMIT 1",
+            [inv_id],
+        )
+        where_clause = where_rows[0][0] if where_rows else None
+
+        out_rows = duck._fetchall(
+            "SELECT io.output_num, io.output_record_id, rec.type "
+            "FROM _invocation_output io JOIN _record rec ON rec.record_id = io.output_record_id "
+            "WHERE io.invocation_id = ?",
+            [inv_id],
+        )
+        for output_num, out_rid, out_type in out_rows:
+            if output_type is not None and out_type != output_type:
+                continue
+            gkey = (
+                out_type, fn_name,
+                tuple(sorted(input_types.items())),
+                tuple(sorted((k, repr(v)) for k, v in constants.items())),
+                output_num,
+                where_clause, tuple(at), bool(distribute),
+            )
+            if gkey not in groups:
+                vk: dict = {"__fn": fn_name}
+                if input_types:
+                    vk["__inputs"] = input_types
+                vk["__constants"] = constants
+                if where_clause is not None:
+                    vk["__where"] = where_clause
+                if distribute:
+                    vk["__distribute"] = True
+                if at:
+                    vk["__as_table"] = at
+                groups[gkey] = {
+                    "function_name": fn_name,
+                    "output_type": out_type,
+                    "call_id": call_id_from_version_keys(vk),
+                    "input_types": input_types,
+                    "constants": constants,
+                    "output_num": output_num,
+                }
+                group_records[gkey] = set()
+            group_records[gkey].add(out_rid)
+
+    return [
+        {**groups[gkey], "record_count": len(group_records[gkey])}
+        for gkey in groups
+    ]
+
+
+def _producing_variant_key(duck, record_id: str):
+    """A hashable key for the producing *variant* of a record: the constant
+    bindings (sweep params) of its producing invocation, or ``None`` for raw
+    records (no producing invocation).
+
+    Re-saves and re-runs under the same constant config share a key (one is the
+    superseding version of the other); genuinely different variants — the same
+    type produced with different constants at the same schema — get different
+    keys and so coexist. Input record_ids are deliberately excluded: re-running
+    on a changed upstream input is the *same* variant, just newer.
+    """
+    inv = producing_invocation(duck, record_id)
+    if inv is None:
+        return None
+    inv_id = inv[0]
+    _var_inputs, constants = invocation_inputs(duck, inv_id)
+    return tuple(sorted((k, repr(v)) for k, v in constants.items()))
+
+
 def _current_records_by_schema(duck, variable_name: str) -> dict:
-    """``{schema_id: [record_id, ...]}`` for the latest non-excluded records of a
-    variable type (one per distinct producing variant / raw save)."""
+    """``{schema_id: [record_id, ...]}`` for the *current* records of a variable
+    type — the latest non-excluded record per ``(schema location, producing
+    variant)``.
+
+    A re-save creates a new record_id at the same ``(schema, variant)``; only the
+    newest is current. Superseded records MUST NOT be enumerated: each one would
+    otherwise contribute a stale invocation to the expected set (inflating
+    ``counts`` and, in the re-save-before-first-run edge case, producing a false
+    "missing" → false red). Distinct variants at one schema are kept separately —
+    they are concurrently valid.
+
+    Note: resolves each record's producing variant via the graph (two extra
+    queries per record). Fine at current scale; a candidate for a single-query
+    optimization later.
+    """
     rows = duck._fetchall(
-        "SELECT record_id, schema_id FROM _record_metadata "
+        "SELECT record_id, schema_id, timestamp FROM _record_metadata "
         "WHERE variable_name = ? AND COALESCE(excluded, FALSE) = FALSE",
         [variable_name],
     )
+    # Latest record per (schema_id, producing-variant key).
+    best: dict = {}  # (schema_id, variant_key) -> (timestamp, record_id)
+    for rid, sid, ts in rows:
+        key = (sid, _producing_variant_key(duck, rid))
+        prev = best.get(key)
+        if prev is None or ts > prev[0]:
+            best[key] = (ts, rid)
     out: dict = {}
-    for rid, sid in rows:
+    for (sid, _vkey), (_ts, rid) in best.items():
         out.setdefault(sid, []).append(rid)
     return out
 
@@ -451,7 +630,7 @@ def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> Non
 
     input_types = cfg["input_types"]
     if not input_types:
-        return  # PathInput/no-DB-input config — snapshot covers it
+        return  # PathInput/no-DB-input config — realized_inputless_invocations covers it
     selectors = cfg["selectors"]
     const_bindings = [
         (p, compute_constant_record_id(v)) for p, v in cfg["constants"].items()
@@ -523,13 +702,52 @@ def config_from_inputs(inputs: dict) -> dict:
     }
 
 
+def realized_inputless_invocations(duck, fn_name: str) -> set:
+    """``{(invocation_id, schema_id)}`` for invocations of ``fn_name`` that have
+    **no variable inputs** (only constants, or nothing) — i.e. PathInput-only
+    loaders and similar source nodes.
+
+    These have no DB input data to predict an expected set from, so their
+    *realized* output locations ARE their expected set: present == expected →
+    the node reports green when run, red when never run (a partially-run loader
+    still reads green — there is no live source for the combos that *should*
+    exist but were never produced).
+
+    Pure structural read from the graph — no invocation_id recomputation, so no
+    predicted-vs-realized drift.
+    """
+    out: set = set()
+    for (inv_id,) in duck._fetchall(
+        "SELECT invocation_id FROM _invocation WHERE function_name = ?",
+        [fn_name],
+    ):
+        has_var_input = duck._fetchall(
+            "SELECT 1 FROM _invocation_input ii "
+            "JOIN _record r ON r.record_id = ii.input_record_id "
+            "WHERE ii.invocation_id = ? AND r.type NOT IN (?, ?) LIMIT 1",
+            [inv_id, CONSTANT_TYPE, PATHINPUT_TYPE],
+        )
+        if has_var_input:
+            continue  # has variable inputs → live prediction handles it
+        for (sid,) in duck._fetchall(
+            "SELECT DISTINCT r.schema_id FROM _invocation_output io "
+            "JOIN _record r ON r.record_id = io.output_record_id "
+            "WHERE io.invocation_id = ?",
+            [inv_id],
+        ):
+            out.add((inv_id, sid))
+    return out
+
+
 def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
                                       inputs_fallback: dict | None = None) -> set:
     """Expected ``{(invocation_id, schema_id)}`` pairs for ``fn_name`` (§9c).
 
-    Union of:
-      * the persisted snapshot in ``_for_each_expected`` (covers PathInput-only
-        functions and combos that failed/were skipped),
+    Derived live from the graph (no persisted snapshot — see the removal of
+    ``_for_each_expected``). Union of:
+      * the realized inputless invocations of the function (zero-DB-input loaders
+        whose expected set is exactly what they have produced — see
+        :func:`realized_inputless_invocations`),
       * a live prediction from current input data for each variant config the
         function has already been run with (so input data added *after* the last
         run still surfaces as missing), and
@@ -538,16 +756,18 @@ def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
 
     Each pair's presence (an output of that invocation at that schema location)
     is the completeness signal — see :func:`present_invocation_schema_pairs`.
+
+    Note: a zero-input function (e.g. a PathInput-only loader) has no input data
+    to enumerate, so it contributes only the invocations it has already realized.
+    Such a node therefore reports **green** (run, even partially) or **red**
+    (never run) — there is no live source for the set of combos it *should*
+    produce, so un-run combos cannot be detected.
     """
     duck = db._duck
     expected: set = set()
 
-    # (a) persisted snapshot
-    for inv_id, sid in duck._fetchall(
-        "SELECT invocation_id, schema_id FROM _for_each_expected WHERE function_name = ?",
-        [fn_name],
-    ):
-        expected.add((inv_id, sid))
+    # (a) realized inputless invocations (PathInput-only loaders, etc.)
+    expected |= realized_inputless_invocations(duck, fn_name)
 
     # (b) live prediction per known variant config × current input data
     for cfg in function_variant_configs(duck, fn_name):

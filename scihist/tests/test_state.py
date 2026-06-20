@@ -3,8 +3,7 @@
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, for_each as scidb_for_each
-from scilineage import lineage_fcn
+from scidb import BaseVariable, for_each as scidb_for_each, pipeline
 from scihist import for_each
 from scihist.state import check_combo_state, check_node_state
 
@@ -27,11 +26,11 @@ class SecondaryState(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@lineage_fcn
+@pipeline
 def process_data(raw):
     return np.asarray(raw, dtype=float) * 2.0
 
-@lineage_fcn
+@pipeline
 def second_step(processed):
     return np.asarray(processed, dtype=float) + 1.0
 
@@ -98,7 +97,7 @@ class TestCheckComboState:
         _seed_raw(db)
         _run_all(db)
 
-        @lineage_fcn
+        @pipeline
         def process_data_v2(raw):  # different bytecode → different hash
             return np.asarray(raw, dtype=float) * 3.0
 
@@ -146,9 +145,9 @@ class TestCheckNodeState:
         assert result["counts"]["missing"] == 0
         assert result["counts"]["stale"] == 0
 
-    def test_grey_when_partial_run(self, db):
+    def test_red_when_partial_run(self, db):
         _seed_raw(db)
-        # Only run for subject=1 → 2 of 4 combos executed
+        # Only run for subject=1 → 2 of 4 combos executed → any missing → red
         for_each(
             process_data,
             inputs={"raw": RawState},
@@ -157,25 +156,25 @@ class TestCheckNodeState:
             trial=["A", "B"],
         )
         result = check_node_state(process_data, [ProcessedState], db=db)
-        assert result["state"] == "grey"
+        assert result["state"] == "red"
         assert result["counts"]["up_to_date"] == 2
         assert result["counts"]["missing"] == 2
 
-    def test_grey_when_input_changed_needs_rerun(self, db):
+    def test_red_when_input_changed_needs_rerun(self, db):
         """Changed input → the combo's EXPECTED invocation_id shifts to one over
-        the new input record, which hasn't been run → node shows needs-run (grey).
+        the new input record, which hasn't been run → node shows needs-run (red).
 
-        Membership model (§9c): "stale" folds into needs-run rather than red — the
-        old output stays valid lineage; the node signals the current recipe hasn't
-        been run on the current input. (Combo-level staleness is still available
-        via check_combo_state.)
+        Membership model (§9c): "stale" folds into needs-run — the old output
+        stays valid lineage; the node signals the current recipe hasn't been run
+        on the current input. Any missing invocation makes the node red (binary
+        model). (Combo-level staleness is still available via check_combo_state.)
         """
         _seed_raw(db)
         _run_all(db)
         # Change one input → its expected invocation is now absent.
         RawState.save(np.ones(5) * 99, subject=1, trial="A")
         result = check_node_state(process_data, [ProcessedState], db=db)
-        assert result["state"] == "grey"
+        assert result["state"] == "red"
         assert result["counts"]["missing"] >= 1
         assert result["counts"]["stale"] == 0
 
@@ -215,9 +214,9 @@ class TestCheckNodeState:
             subject=[1],
             trial=["A", "B"],
         )
-        # process_data: grey (2 of 4 combos)
+        # process_data: red (only 2 of 4 combos run → 2 missing)
         upstream = check_node_state(process_data, [ProcessedState], db=db)
-        assert upstream["state"] == "grey"
+        assert upstream["state"] == "red"
 
         # second_step own state: green (ran for all available ProcessedState)
         # Note: scihist.check_node_state does NOT propagate upstream staleness —
@@ -365,8 +364,8 @@ def test_variable_input_classification(tmp_path):
     sig = RawEMG(np.random.randn(100))
     rid_input = RawEMG.save(sig, subject=1, session="A")
 
-    # Process with lineage function
-    @lineage_fcn
+    # Process with pipeline function
+    @pipeline
     def bandpass(signal, low_hz):
         return signal
 
@@ -426,10 +425,10 @@ class TestCheckMultipleNodesState:
 
         result = check_multiple_nodes_state(nodes, db=db)
 
-        # process_data has been run (partially) → should be grey or green
+        # process_data has been run (partially) → red under the binary model
         process_state = result.get("fn__process_data__")
         assert process_state is not None
-        assert process_state["state"] in ("green", "grey", "red")
+        assert process_state["state"] in ("green", "red")
         assert "counts" in process_state
 
         # second_step has not been run → should be red
@@ -461,7 +460,7 @@ class TestCheckMultipleNodesState:
         node_id = f"fn__process_data__{call_id}" if call_id else "fn__process_data__"
         assert node_id in result
         # Should be green since we ran all combos
-        assert result[node_id]["state"] in ("green", "grey")
+        assert result[node_id]["state"] == "green"
 
     def test_multiple_nodes_with_fn_registry(self, db):
         """Test using fn_registry to lookup functions by name."""

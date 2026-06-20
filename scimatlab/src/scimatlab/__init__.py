@@ -1,9 +1,8 @@
 """MATLAB bridge for SciStack.
 
-Provides proxy classes that satisfy the duck-typing contracts of
-scilineage's LineageFcn/LineageFcnInvocation/LineageFcnResult, allowing
-MATLAB functions to participate in the SciStack lineage system without
-modifying any existing Python packages.
+Runs scidb's ``for_each`` on behalf of MATLAB and provides
+:class:`MatlabLineageFcn`, a lightweight MATLAB function handle for
+``scidb.check_node_state`` node coloring.
 
 Usage from MATLAB (via py. interface):
     py.scimatlab.bridge.MatlabLineageFcn(source_hash, 'my_func', false)
@@ -11,18 +10,12 @@ Usage from MATLAB (via py. interface):
 
 from .bridge import (
     MatlabLineageFcn,
-    MatlabLineageFcnInvocation,
-    check_cache,
-    make_lineage_fcn_result,
     register_matlab_variable,
     get_surrogate_class,
 )
 
 __all__ = [
     "MatlabLineageFcn",
-    "MatlabLineageFcnInvocation",
-    "check_cache",
-    "make_lineage_fcn_result",
     "register_matlab_variable",
     "get_surrogate_class",
 ]

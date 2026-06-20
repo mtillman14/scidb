@@ -117,5 +117,39 @@ The graph stores ALL constants identically — a sweep (`low_hz=20`) and a per-c
 resolved value (a PathInput filepath that scilineage classifies as a constant) are
 indistinguishable structurally. The old `branch_params` column could tell them
 apart (for_each only wrote explicit scalar `inputs`). This is why **node
-completeness must NOT use branch_params combo-matching** — it uses the §9c
-invocation-membership test instead. See `node-state-bipartite.md`.
+completeness must NOT use branch_params combo-matching** — it uses the
+invocation-membership test below.
+
+## Node state (`state.py::check_node_state`) — binary, graph-derived
+
+Node state is **binary: `green` | `red`** (grey/partial was removed). A node is
+green iff it has expected work AND every expected invocation is present in
+`_invocation`; red otherwise (never run, partial run, an input re-saved but not
+re-run, or the function edited — any missing expected invocation reds the node).
+
+There is **no persisted expected set**. `_for_each_expected` (a snapshot of
+predicted invocation_ids written at for_each time) was deleted — it stored a
+*predicted* id that had to equal a *separately realized* one, a drift hazard.
+`expected_invocations_for_function` now derives the expected `{(invocation_id,
+schema_id)}` set live (`provenance_query.py`):
+
+1. `realized_inputless_invocations` — invocations with no variable-input edges
+   (PathInput-only loaders) → their realized output schema locations. By
+   construction expected == present, so a run loader is green and a never-run
+   loader red. A **partially-run loader reads green** — with no DB input to
+   enumerate, the un-run combos leave no trace (accepted limitation).
+2. live prediction over current input data for each variant config the function
+   has run with (`_predict_config_invocations`), plus a declared-inputs fallback.
+   Safe because it shares the one hash fn — `_compute_fn_hash` ==
+   `compute_function_hash(fn,16)` == the graph's stored `function_hash`.
+
+`_current_records_by_schema` returns the **latest** record per `(schema_id,
+producing-variant)` (variant = the producing invocation's constants, or raw),
+so superseded inputs are not enumerated — keeping counts exact and avoiding a
+false-red when an input is re-saved before the function's first run.
+
+`check_combo_state` (the per-combo deep API, returning
+`up_to_date`/`stale`/`missing`) is a separate, unchanged surface.
+
+Note: `scistack-gui` keeps its own grey-based DAG-propagation run-state model on
+top of this binary own-state; aligning it is a GUI-layer decision.

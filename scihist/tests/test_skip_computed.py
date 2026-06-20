@@ -14,8 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scidb import BaseVariable, Fixed
-from scilineage import lineage_fcn
+from scidb import BaseVariable, Fixed, pipeline
 from scihist import for_each
 
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
@@ -71,7 +70,7 @@ class TestSkipComputedBasic:
         """No prior output → hook returns False → function runs."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2
@@ -85,7 +84,7 @@ class TestSkipComputedBasic:
 
     def test_second_run_skips_when_nothing_changed(self, db, capsys):
         """Identical state on second call → [skip] printed, output unchanged."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -106,7 +105,7 @@ class TestSkipComputedBasic:
 
     def test_skip_computed_false_bypasses_hook(self, db, capsys):
         """skip_computed=False: combo is never filtered → no [skip] line."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -124,7 +123,7 @@ class TestSkipComputedBasic:
         """Output written via raw .save() has no _lineage row → recompute."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2
@@ -141,7 +140,7 @@ class TestSkipComputedBasic:
 
     def test_multiple_subjects_all_skip(self, db, capsys):
         """Three subjects, nothing changed → three [skip] lines."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -161,7 +160,7 @@ class TestSkipComputedBasic:
 
     def test_skip_then_rerun_after_change(self, db, capsys):
         """Skip → input changes → recompute → skip again on third run."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -196,7 +195,7 @@ class TestSkipComputedInputChanges:
         """Resaving input with different data → new record_id → [recompute]."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2
@@ -221,7 +220,7 @@ class TestSkipComputedInputChanges:
         """Same content resaved → same record_id (content-addressed) → skip."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2
@@ -248,7 +247,7 @@ class TestSkipComputedInputChanges:
         """When subject=2's input changes, only that combo shows [recompute]."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2
@@ -277,7 +276,7 @@ class TestSkipComputedInputChanges:
         """Scalar float input: change triggers recompute."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def increment(x):
             call_count[0] += 1
             return float(x) + 1.0
@@ -299,7 +298,7 @@ class TestSkipComputedInputChanges:
         """Dict-of-arrays data type: content change detected correctly."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def process_dict(x):
             call_count[0] += 1
             return {"vals": x["vals"] * 2}
@@ -320,7 +319,7 @@ class TestSkipComputedInputChanges:
 
     def test_dict_of_arrays_unchanged_skips(self, db, capsys):
         """Dict-of-arrays: same content → skip."""
-        @lineage_fcn
+        @pipeline
         def process_dict(x):
             return {"vals": x["vals"] * 2}
 
@@ -348,11 +347,11 @@ class TestSkipComputedFunctionChanges:
         (different __fn in version_keys) → function runs (not skipped)."""
         call_count_v2 = [0]
 
-        @lineage_fcn
+        @pipeline
         def process_v1(x):
             return x * 2
 
-        @lineage_fcn
+        @pipeline
         def process_v2(x):
             call_count_v2[0] += 1
             return x * 3  # deliberately different
@@ -373,7 +372,7 @@ class TestSkipComputedFunctionChanges:
 
     def test_same_function_object_skips(self, db, capsys):
         """Using the exact same function object on rerun → skip."""
-        @lineage_fcn
+        @pipeline
         def process(x):
             return x * 2
 
@@ -398,11 +397,11 @@ class TestSkipComputedDeepPipeline:
 
     def test_unchanged_two_step_pipeline_both_skip(self, db, capsys):
         """Two-step pipeline with no changes: both steps skip."""
-        @lineage_fcn
+        @pipeline
         def step1(x):
             return x + 1
 
-        @lineage_fcn
+        @pipeline
         def step2(y):
             return y * 2
 
@@ -427,12 +426,12 @@ class TestSkipComputedDeepPipeline:
         step1_calls = [0]
         step2_calls = [0]
 
-        @lineage_fcn
+        @pipeline
         def step1(x):
             step1_calls[0] += 1
             return x + 1
 
-        @lineage_fcn
+        @pipeline
         def step2(y):
             step2_calls[0] += 1
             return y * 2
@@ -465,11 +464,11 @@ class TestSkipComputedDeepPipeline:
 
     def test_step1_skip_does_not_change_step2_decision(self, db, capsys):
         """If step1 skips (nothing changed), step2 also correctly skips."""
-        @lineage_fcn
+        @pipeline
         def step1(x):
             return x + 1
 
-        @lineage_fcn
+        @pipeline
         def step2(y):
             return y * 2
 
@@ -493,15 +492,15 @@ class TestSkipComputedDeepPipeline:
 
     def test_three_step_pipeline_middle_change(self, db, capsys):
         """Three-step pipeline: changing middle output triggers step3 recompute."""
-        @lineage_fcn
+        @pipeline
         def step1(x):
             return x + 1
 
-        @lineage_fcn
+        @pipeline
         def step2(y):
             return y * 2
 
-        @lineage_fcn
+        @pipeline
         def step3(z):
             return z - 1
 
@@ -540,7 +539,7 @@ class TestSkipComputedConstants:
         """factor=2 and factor=3 are separate pipeline branches; each skips."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def scale(x, factor):
             call_count[0] += 1
             return x * factor
@@ -568,7 +567,7 @@ class TestSkipComputedConstants:
         """A constant value with no prior output always computes (no output yet)."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def scale(x, factor):
             call_count[0] += 1
             return x * factor
@@ -590,7 +589,7 @@ class TestSkipComputedConstants:
         """Input change affects all constant variants of the downstream function."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def scale(x, factor):
             call_count[0] += 1
             return x * factor
@@ -624,7 +623,7 @@ class TestSkipComputedFixed:
 
     def test_fixed_input_unchanged_skips(self, db, capsys):
         """Fixed input at a specific schema location: unchanged → skip."""
-        @lineage_fcn
+        @pipeline
         def subtract_baseline(signal, baseline):
             return signal - baseline
 
@@ -654,7 +653,7 @@ class TestSkipComputedFixed:
         """Fixed input resaved with new data → recompute."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def subtract_baseline(signal, baseline):
             call_count[0] += 1
             return signal - baseline
@@ -692,7 +691,7 @@ class TestSkipComputedFixed:
         """Signal changes while fixed baseline stays the same → recompute."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def subtract_baseline(signal, baseline):
             call_count[0] += 1
             return signal - baseline
@@ -731,7 +730,7 @@ class TestSkipComputedMultipleSchemaKeys:
 
     def test_full_grid_all_skip(self, db, capsys):
         """2×2 subject/trial grid: all four combos skip when unchanged."""
-        @lineage_fcn
+        @pipeline
         def double(x):
             return x * 2
 
@@ -754,7 +753,7 @@ class TestSkipComputedMultipleSchemaKeys:
         """Only subject=2, trial=2 input changes → only that combo recomputes."""
         call_count = [0]
 
-        @lineage_fcn
+        @pipeline
         def double(x):
             call_count[0] += 1
             return x * 2

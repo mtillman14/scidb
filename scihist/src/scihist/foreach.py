@@ -11,12 +11,7 @@ scihist.for_each contract.
 """
 
 from scidb.foreach import for_each as _scidb_for_each
-from scidb.lineage_save import (  # noqa: F401 — re-exported for back-compat
-    save,
-    save_lineage_result,
-    _save_lineage_fcn_result,
-    _lineage_to_dict,
-)
+from scidb.lineage_save import save  # noqa: F401 — re-exported for back-compat
 
 
 def for_each(*args, skip_computed: bool = True, **kwargs):

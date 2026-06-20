@@ -89,54 +89,15 @@ classdef LineageFcn < handle
                 py_inputs{key} = scidb.internal.to_python_input(args{i});
             end
 
-            % --- Step 2: Create invocation & check cache ---
+            % --- Step 2: Create invocation & execute ---
+            % (The rerun cache was removed; the function always executes.)
             py_inv = py.scimatlab.bridge.MatlabLineageFcnInvocation( ...
                 obj.py_fcn, py_inputs);
 
-            cached = py.scimatlab.bridge.check_cache(py_inv);
-
-            if ~isa(cached, 'py.NoneType') && ~isempty(cached)
-                % --- Cache HIT ---
-                out = wrap_cached(obj, py_inv, cached, n_out);
-            else
-                % --- Cache MISS: execute in MATLAB ---
-                out = execute_and_wrap(obj, py_inv, args, n_out);
-            end
+            out = execute_and_wrap(obj, py_inv, args, n_out);
 
             for i = 1:numel(out)
                 varargout{i} = out{i};
-            end
-        end
-
-        function out = wrap_cached(obj, py_inv, cached, n_out)
-        %WRAP_CACHED  Convert cached Python values to MATLAB LineageFcnResults.
-
-            cached_cell = cell(cached);
-            n = numel(cached_cell);
-
-            if obj.unpack_output
-                out = cell(1, n);
-                for i = 1:n
-                    py_result = py.scimatlab.bridge.make_lineage_fcn_result( ...
-                        py_inv, int64(i - 1), cached_cell{i});
-                    out{i} = scidb.LineageFcnResult( ...
-                        scidb.internal.from_python(cached_cell{i}), py_result);
-                end
-            elseif n_out > 1
-                % Caller requested multiple outputs — return one per requested output.
-                out = cell(1, n_out);
-                for i = 1:n_out
-                    idx = min(i, n);
-                    py_result = py.scimatlab.bridge.make_lineage_fcn_result( ...
-                        py_inv, int64(i - 1), cached_cell{idx});
-                    out{i} = scidb.LineageFcnResult( ...
-                        scidb.internal.from_python(cached_cell{idx}), py_result);
-                end
-            else
-                py_result = py.scimatlab.bridge.make_lineage_fcn_result( ...
-                    py_inv, int64(0), cached_cell{1});
-                out = {scidb.LineageFcnResult( ...
-                    scidb.internal.from_python(cached_cell{1}), py_result)};
             end
         end
 

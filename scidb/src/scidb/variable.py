@@ -194,7 +194,6 @@ class BaseVariable(metaclass=VariableMeta):
         self.record_id: str | None = None
         self.metadata: dict | None = None
         self.content_hash: str | None = None
-        self.lineage_hash: str | None = None
         self.branch_params: dict = {}
 
     def to_db(self) -> pd.DataFrame:
@@ -267,9 +266,8 @@ class BaseVariable(metaclass=VariableMeta):
         """
         Save data to the database as this variable type.
 
-        Accepts an existing BaseVariable instance or raw data. For saving
-        lineage-tracked results (LineageFcnResult), use scihist.for_each or
-        scihist.save.
+        Accepts an existing BaseVariable instance or raw data. For
+        provenance-tracked pipeline outputs, use ``for_each``.
 
         Args:
             data: The data to save. Can be:

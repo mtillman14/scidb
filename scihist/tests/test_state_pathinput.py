@@ -1,16 +1,24 @@
 """Tests for check_node_state with PathInput-only functions.
 
-PathInput-only functions have no DB-variable inputs, so node completeness is
-driven by the persisted expected-invocation set (``_for_each_expected``, written
-at for_each time) tested via the real for_each + PathInput path. See
-.claude/phase5-node-state-rewrite.md.
+PathInput-only functions have **no DB-variable inputs**, so there is no live
+source for the set of combos they *should* produce (the filesystem state at
+for_each time is gone by query time, and nothing in the DB enumerates it). The
+persisted ``_for_each_expected`` snapshot that used to supply this was removed
+(it stored a predicted invocation_id that had to equal a separately-realized one
+— a drift hazard; see
+.claude/remove-for-each-expected-and-trim-record-metadata.md).
+
+Consequence — the contract these tests pin: a PathInput-only loader's expected
+set is exactly the invocations it has **realized**. So it reports **green** when
+it has run (any combos) and **red** when it never has. It can NEVER report grey:
+a partially-run loader looks green, because the combos that were never run leave
+no trace to count as missing.
 """
 
 import numpy as np
 import pytest
 
-from scidb import BaseVariable
-from scilineage import lineage_fcn
+from scidb import BaseVariable, pipeline
 from scihist import for_each
 from scihist.state import check_node_state
 
@@ -23,36 +31,21 @@ class PathInputOutput(BaseVariable):
     schema_version = 1
 
 
-class RawForFallback(BaseVariable):
-    schema_version = 1
-
-
-class ProcessedForFallback(BaseVariable):
-    schema_version = 1
-
-
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@lineage_fcn
+@pipeline
 def import_from_file(filepath):
     """PathInput-only function: reads a single number from a file."""
     with open(filepath) as fh:
         return float(fh.read().strip())
 
 
-@lineage_fcn
-def process_raw(raw):
-    return np.asarray(raw, dtype=float) * 2.0
-
-
-# PathInput template + file helpers (real for_each path — mirrors
-# test_state_realworld.py). Using the real path means the resolved filepath is
-# excluded from graph constants at the source, so node-state needs no special
-# handling. (The earlier per-combo ``scihist_save`` simulation made the raw
-# array/path a CONSTANT, polluting derived branch_params — see
-# .claude/phase5-node-state-rewrite.md.)
+# PathInput template + file helpers (real for_each path). Using the real path
+# means the resolved filepath is excluded from graph constants at the source, so
+# the loader's invocations have no variable-input edges and node-state treats
+# them as inputless (realized == expected).
 _GRID = [("1", "A"), ("1", "B"), ("2", "A"), ("2", "B")]
 
 
@@ -78,8 +71,8 @@ class TestCheckNodeStatePathInput:
     """Integration tests: check_node_state with a real PathInput-only function.
 
     Drives the actual for_each + PathInput path (not a per-combo save
-    simulation), so the resolved filepath is excluded from graph constants at
-    the source and node-state works without special-casing.
+    simulation). The loader's expected set is its realized invocations, so it is
+    green-when-run / red-when-not, never grey.
     """
 
     def _run(self, db, tmp_path, files):
@@ -95,15 +88,6 @@ class TestCheckNodeStatePathInput:
             db=db,
         )
 
-    def test_grey_when_partial_success(self, db, tmp_path):
-        """3/4 combos have files, 1 missing → grey."""
-        self._run(db, tmp_path, [("1", "A"), ("1", "B"), ("2", "B")])
-
-        result = check_node_state(import_from_file, [PathInputOutput], db=db)
-        assert result["state"] == "grey"
-        assert result["counts"]["up_to_date"] == 3
-        assert result["counts"]["missing"] == 1
-
     def test_green_when_all_succeed(self, db, tmp_path):
         """All 4 combos have files → green."""
         self._run(db, tmp_path, _GRID)
@@ -113,9 +97,20 @@ class TestCheckNodeStatePathInput:
         assert result["counts"]["up_to_date"] == 4
         assert result["counts"]["missing"] == 0
 
+    def test_green_when_partial_success(self, db, tmp_path):
+        """3/4 combos have files → still green (a loader cannot detect the
+        un-run 4th combo: it left no trace, so there is nothing to count as
+        missing). This is the accepted limitation of dropping the persisted
+        expected-combo snapshot."""
+        self._run(db, tmp_path, [("1", "A"), ("1", "B"), ("2", "B")])
+
+        result = check_node_state(import_from_file, [PathInputOutput], db=db)
+        assert result["state"] == "green"
+        assert result["counts"]["up_to_date"] == 3
+        assert result["counts"]["missing"] == 0
+
     def test_red_when_none_succeed(self, db, tmp_path):
-        """No files → no combos run → red."""
-        # Create the root dir but no files, so PathInput discovers nothing.
+        """No files → no combos run → no realized invocations → red."""
         from pathlib import Path
         Path(tmp_path).mkdir(parents=True, exist_ok=True)
         for_each(
@@ -131,17 +126,16 @@ class TestCheckNodeStatePathInput:
         assert result["state"] == "red"
         assert result["counts"]["up_to_date"] == 0
 
-    def test_expected_replaced_on_rerun(self, db, tmp_path):
+    def test_rerun_over_subset_stays_green(self, db, tmp_path):
         """Re-run over a smaller grid; prior records remain → green.
 
-        Same call site (inputs/where/flags unchanged) → same call_id, so the
-        second run replaces the expected set with the smaller grid. The 4 records
-        from the first run still exist, so every (now-2) expected combo is
-        up_to_date → green.
+        The 4 records from the first run still exist as realized invocations, so
+        the loader's expected set (its realized invocations) is fully present →
+        green, regardless of the second, smaller run.
         """
         self._run(db, tmp_path, _GRID)
 
-        # Re-run over a 2-combo subset (same PathInput call site).
+        # Re-run over a 2-combo subset.
         for_each(
             import_from_file,
             inputs={"filepath": _path_input(tmp_path)},

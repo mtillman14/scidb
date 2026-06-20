@@ -22,7 +22,7 @@ Typical usage::
     from scidb import check_node_state
 
     result = check_node_state(bandpass_filter, outputs=[FilteredSignal])
-    print(result["state"])    # "green" | "grey" | "red"
+    print(result["state"])    # "green" | "red"
     for combo in result["combos"]:
         print(combo["schema_combo"], combo["state"])
 """
@@ -34,7 +34,11 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 ComboState = Literal["up_to_date", "stale", "missing"]
-NodeState = Literal["green", "grey", "red"]
+# Node state is BINARY: a node is either fully computed-and-current ("green") or
+# needs attention ("red"). "grey"/partial was removed — "needs attention" is one
+# state regardless of whether the node never ran, ran partially, has a re-saved
+# input, or had its function edited.
+NodeState = Literal["green", "red"]
 
 
 def check_combo_state(
@@ -62,15 +66,9 @@ def check_combo_state(
                            updated or function code changed).
         ``"missing"``     — no output record exists for this combo.
     """
-    from scilineage import LineageFcn
-    from scidb.foreach_config import _compute_fn_hash
-
     if db is None:
         from scidb.database import get_database
         db = get_database()
-
-    if not hasattr(fn, 'hash'):
-        fn = LineageFcn(fn)
 
     combo_str = _combo_str(schema_combo, branch_params)
 
@@ -79,7 +77,6 @@ def check_combo_state(
     # through the suffix-matching path rather than the version_keys filter,
     # which would fail because version_keys stores un-namespaced param names.
     output_record_id = None
-    output_timestamp = None
     for OutputCls in outputs:
         rid = db.find_record_id(OutputCls, schema_combo, branch_params_filter=branch_params or None)
         if rid is None:
@@ -87,23 +84,15 @@ def check_combo_state(
             return "missing"
         output_record_id = rid
 
-    # Fetch the output record's timestamp (needed for fallback path).
-    ts_rows = db._duck._fetchall(
-        "SELECT timestamp FROM _record_metadata WHERE record_id = ? "
-        "ORDER BY timestamp DESC LIMIT 1",
-        [output_record_id],
-    )
-    output_timestamp = ts_rows[0][0] if ts_rows else None
-
-    # --- Priority 1: bipartite-graph check (records produced by for_each) ---
+    # Staleness over the bipartite provenance graph (records produced by
+    # for_each). A record with no producing invocation is raw/manual — there is
+    # no function or input to be stale against, so it is up_to_date.
     from . import provenance_query
     sig = provenance_query.stored_invocation_signature(db._duck, output_record_id)
-    if sig is not None:
-        return _check_via_graph(fn, db, output_record_id, sig, combo_str)
-
-    # --- Priority 2: version_keys __fn_hash fallback (legacy / manual records) ---
-    return _check_via_fn_hash(fn, db, output_record_id, output_timestamp,
-                               schema_combo, combo_str)
+    if sig is None:
+        logger.debug("up_to_date: %s — raw record (no producing invocation)", combo_str)
+        return "up_to_date"
+    return _check_via_graph(fn, db, output_record_id, sig, combo_str)
 
 
 def _check_via_graph(fn, db, output_record_id: str, sig: dict,
@@ -126,17 +115,19 @@ def _check_via_graph(fn, db, output_record_id: str, sig: dict,
       (only ``fn`` itself is passed in). The GUI DAG walk handles that, or the
       user re-runs the changed ancestor (creating a new record_id that cascades).
     """
-    from scilineage import LineageFcn
     from scidb.foreach_config import _compute_fn_hash
 
     # Function's own code changed since the output was saved? (Python only.)
     # The graph stores ``function_hash`` = compute_function_hash(fn, 16) (the
-    # ``__fn_hash`` the save path writes), so compare against the same recipe —
-    # NOT LineageFcn.hash, which is a sha256 of a different string.
+    # ``__fn_hash`` the save path writes), so compare against the same recipe.
+    # Trust the hash only for plain Python functions: a MATLAB handle brings its
+    # own ``.hash`` from a different hashing pipeline, so a mismatch there is not
+    # reliable evidence of a code change (see .claude/defer-function-hash-staleness.md).
+    trusts_hash = not hasattr(fn, "hash")
     stored_hash = sig.get("function_hash")
     current_hash = _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
     if stored_hash is not None and stored_hash != current_hash:
-        if isinstance(fn, LineageFcn):
+        if trusts_hash:
             logger.debug(
                 "stale: %s — function hash changed: stored=%s current=%s",
                 combo_str, stored_hash[:12], current_hash[:12],
@@ -213,110 +204,6 @@ def _has_superseded_ancestor(db, record_id: str, combo_str: str,
     return False
 
 
-def _check_via_fn_hash(fn, db, output_record_id: str, output_timestamp: str | None,
-                        schema_combo: dict, combo_str: str) -> ComboState:
-    """Staleness check using __fn_hash from version_keys + record_id/timestamp for inputs.
-
-    Used when the output was saved via scidb.for_each (no lineage record).
-
-    Input freshness priority:
-    1. __upstream record_ids (preferred): exact record_id comparison per variant,
-       avoids false "stale" when new records are added for a *different* constant
-       variant of the same input type.
-    2. Timestamp comparison (fallback): used only when __upstream is absent.
-       This is less precise — it compares against the MAX timestamp across ALL
-       records of the input type at the schema_id, regardless of variant.
-    """
-    from scidb.foreach_config import _compute_fn_hash
-
-    # Read version_keys from the output record.
-    vk_rows = db._duck._fetchall(
-        "SELECT version_keys FROM _record_metadata WHERE record_id = ? LIMIT 1",
-        [output_record_id],
-    )
-    if not vk_rows:
-        logger.debug("stale: %s — could not read version_keys", combo_str)
-        return "stale"
-
-    vk = json.loads(vk_rows[0][0] or "{}") if vk_rows[0][0] else {}
-    stored_fn_hash = vk.get("__fn_hash")
-
-    # a. Function hash check.
-    if stored_fn_hash is None:
-        # Pre-Phase-0 record: no hash stored, cannot verify function identity.
-        logger.warning(
-            "up_to_date (unverified): %s — no __fn_hash in version_keys "
-            "(record predates Phase 0; function staleness cannot be checked)",
-            combo_str,
-        )
-    else:
-        current_hash = _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
-        if stored_fn_hash != current_hash:
-            logger.debug("stale: %s — function hash changed (__fn_hash)", combo_str)
-            return "stale"
-
-    # b. Input freshness via __upstream record_ids (preferred path).
-    # __upstream stores the exact record_ids of the inputs that were used.
-    # get_latest_record_id_for_variant checks whether a newer record now exists
-    # for the same (variable_name, schema_id, version_keys) — i.e., the same
-    # variant.  This is variant-precise: records added for a different constant
-    # variant of the same type do not trigger staleness here.
-    upstream_raw = vk.get("__upstream")
-    if upstream_raw:
-        upstream: dict = json.loads(upstream_raw) if isinstance(upstream_raw, str) else (upstream_raw or {})
-        for rid_col, used_rid in upstream.items():
-            if not used_rid:
-                continue
-            current_rid = db.get_latest_record_id_for_variant(used_rid)
-            if current_rid != used_rid:
-                logger.debug(
-                    "stale: %s — upstream %s updated (was %s, now %s)",
-                    combo_str, rid_col, used_rid, current_rid,
-                )
-                return "stale"
-        logger.debug("up_to_date: %s (__fn_hash + __upstream record_ids)", combo_str)
-        return "up_to_date"
-
-    # c. Fallback: timestamp comparison when __upstream is absent.
-    # For each input variable type referenced in __inputs, find the latest
-    # record at the same schema_id. If that record was saved after the output,
-    # the output is stale.  Note: this is variant-unaware and may produce false
-    # positives when multiple variants of the same input type exist.
-    if output_timestamp is None:
-        logger.debug("up_to_date (unverified): %s — no output timestamp available", combo_str)
-        return "up_to_date"
-
-    inputs_raw = vk.get("__inputs", "{}")
-    input_types_map: dict = json.loads(inputs_raw) if isinstance(inputs_raw, str) else {}
-
-    schema_id_rows = db._duck._fetchall(
-        "SELECT schema_id FROM _record_metadata WHERE record_id = ? LIMIT 1",
-        [output_record_id],
-    )
-    if not schema_id_rows:
-        return "up_to_date"
-    output_schema_id = schema_id_rows[0][0]
-
-    for itype in input_types_map.values():
-        latest_ts_rows = db._duck._fetchall(
-            "SELECT MAX(timestamp) FROM _record_metadata "
-            "WHERE variable_name = ? AND schema_id = ? AND excluded = FALSE",
-            [itype, output_schema_id],
-        )
-        if not latest_ts_rows or latest_ts_rows[0][0] is None:
-            continue
-        latest_input_ts = latest_ts_rows[0][0]
-        if latest_input_ts > output_timestamp:
-            logger.debug(
-                "stale: %s — upstream %s re-saved after output (timestamp fallback)",
-                combo_str, itype,
-            )
-            return "stale"
-
-    logger.debug("up_to_date: %s (__fn_hash + timestamp)", combo_str)
-    return "up_to_date"
-
-
 def check_multiple_nodes_state(
     nodes: list[dict],
     fn_registry: dict | None = None,
@@ -340,7 +227,7 @@ def check_multiple_nodes_state(
     Returns:
         Dict mapping node_id (``fn__{fn_name}__{call_id}``) to state result:
         {
-            "state": "green" | "grey" | "red",
+            "state": "green" | "red",
             "counts": {"up_to_date": N, "stale": N, "missing": N},
         }
 
@@ -460,11 +347,13 @@ def check_node_state(
         A dict with keys:
 
         ``"state"`` (:data:`NodeState`)
-            Overall node state:
+            Overall node state (binary):
 
-            - ``"green"``  — every expected combo is up_to_date.
-            - ``"grey"``   — some combos up_to_date, some missing (partially run).
-            - ``"red"``    — never run, or any combo is stale.
+            - ``"green"`` — the node has expected work and every expected combo
+              is present (fully computed and current).
+            - ``"red"``   — anything else: never run, partially run, an input was
+              re-saved but not re-run, or the function was edited. Any missing
+              expected invocation makes the whole node red.
 
         ``"combos"`` (list of dict)
             Per-combo breakdown.  Each entry has:
@@ -480,8 +369,13 @@ def check_node_state(
     fn_name = getattr(fn, "__name__", None) or type(fn).__name__
 
     # Node completeness = invocation membership (§9c). Expected invocation_ids
-    # come from the persisted snapshot (_for_each_expected) unioned with a live
-    # prediction over current input data; "present" = those in _invocation.
+    # are derived LIVE from current input data over each variant config the
+    # function has run with (plus the declared-inputs fallback); "present" =
+    # those in _invocation. There is no persisted snapshot — `_for_each_expected`
+    # was removed because the predicted-vs-realized id pair was a drift hazard.
+    # Consequence: a zero-input function (PathInput-only loader) has no live
+    # source for its expected set, so a partially-run loader still reads green
+    # (the un-run combos leave no trace); it is red only when never run.
     # "stale" collapses into "missing": a changed input or edited function shifts
     # the EXPECTED id, so the old one drops out of the expected set and the new
     # (absent) one shows as needs-run (see §9c / §10.4). The legacy ``call_id``
@@ -508,16 +402,14 @@ def check_node_state(
             "state": state,
         })
 
-    # --- Aggregate to node state ---
-    if not combo_results:
-        # Function never run and no input data exists yet.
-        overall: NodeState = "red"
-    elif counts["missing"] > 0 and counts["up_to_date"] == 0:
-        overall = "red"
-    elif counts["missing"] > 0:
-        overall = "grey"
+    # --- Aggregate to node state (binary: green | red) ---
+    # green iff the node has expected work AND all of it is present; red otherwise
+    # (never run / no input data, partially run, input re-saved but not re-run, or
+    # edited function — all leave >=1 expected invocation missing).
+    if combo_results and counts["missing"] == 0:
+        overall: NodeState = "green"
     else:
-        overall = "green"
+        overall = "red"
 
     logger.debug(
         "node %s: %s (up_to_date=%d, missing=%d)",

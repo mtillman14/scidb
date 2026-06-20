@@ -134,10 +134,9 @@ class ForEachConfig:
         constants, where, distribute, and as_table settings produce the
         same call_id even if the function body was reformatted between runs.
 
-        Used to disambiguate ``_for_each_expected`` rows when the same
-        function is invoked from multiple call sites — without this,
-        function_name alone collides and the second call's expected combos
-        clobber the first's.
+        Used to disambiguate records produced by the same function invoked
+        from multiple call sites — without this, function_name alone collides
+        when distinguishing one call site's output from another's.
         """
         return call_id_from_version_keys(self.to_version_keys())
 
