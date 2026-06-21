@@ -24,7 +24,12 @@ _warnings.warn(
 # Core batch execution + lineage-aware save (shimmed to preserve scihist defaults)
 from .foreach import for_each, save
 from .database import configure_database
-from .state import check_combo_state, check_node_state, check_multiple_nodes_state
+from .state import (
+    check_combo_state,
+    check_node_state,
+    check_multiple_nodes_state,
+    check_pathinput_node_state,
+)
 
 # Re-export DB wrappers from scidb
 from scidb import Fixed, Merge, ColumnSelection, ForEachConfig
@@ -46,6 +51,7 @@ __all__ = [
     # Node staleness
     "check_combo_state",
     "check_node_state",
+    "check_pathinput_node_state",
     "check_multiple_nodes_state",
     # DB wrappers
     "Fixed",

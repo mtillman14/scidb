@@ -77,9 +77,10 @@ class Filter(ABC):
     def to_key(self) -> str:
         """Return a canonical string representation of this filter.
 
-        Used as the ``where=`` provenance key: for_each records it on the
-        producing run (``_run.where_clause``) so different where= configurations
-        are distinguishable, and ``_load_with_where`` matches against it.
+        for_each records this string on the producing run (``_run.where_clause``)
+        for **visual inspection only** — no matching logic reads it. Variant
+        selection is semantic (by the consumed input schema_id set); see
+        ``DatabaseManager._load_with_where`` (§10 where= redesign).
         """
         ...
 
@@ -146,20 +147,21 @@ def _resolve_variable_schema_ids(
     Returns:
         Set of schema_ids where the condition is satisfied.
     """
-    # Build a "latest version" query over the filter variable's data table,
-    # joined with _record_metadata to get schema_id.
+    # Build a "latest version" query over the filter variable's data table.
+    # schema_id/type come from the _record entity; recency from the save-event log.
     sql = f"""
         WITH ranked AS (
-            SELECT rm.schema_id,
+            SELECT r.schema_id,
                    ROW_NUMBER() OVER (
-                       PARTITION BY rm.variable_name, rm.schema_id
-                       ORDER BY rm.timestamp DESC
+                       PARTITION BY r.type, r.schema_id
+                       ORDER BY rs.timestamp DESC
                    ) AS rn,
                    t.*
-            FROM _record_metadata rm
+            FROM _record_save rs
+            JOIN _record r ON r.record_id = rs.record_id
             JOIN "{filter_table_name}" t
-                ON t.record_id = rm.record_id
-            WHERE rm.variable_name = ?
+                ON t.record_id = rs.record_id
+            WHERE r.type = ?
         )
         SELECT DISTINCT schema_id
         FROM ranked
@@ -183,18 +185,9 @@ def _get_all_schema_ids_for_variable(
 
     Uses latest-version-per-parameter-set semantics.
     """
-    sql = """
-        WITH ranked AS (
-            SELECT rm.schema_id,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY rm.variable_name, rm.schema_id
-                       ORDER BY rm.timestamp DESC
-                   ) AS rn
-            FROM _record_metadata rm
-            WHERE rm.variable_name = ?
-        )
-        SELECT DISTINCT schema_id FROM ranked WHERE rn = 1
-    """
+    # Distinct schema locations that have at least one record of this type — read
+    # straight from the content-addressed _record entity (one row per record_id).
+    sql = "SELECT DISTINCT schema_id FROM _record WHERE type = ? AND schema_id IS NOT NULL"
     rows = db._duck._fetchall(sql, [table_name.removesuffix("_data")])
     return {int(row[0]) for row in rows}
 
@@ -664,7 +657,7 @@ class RawFilter(Filter):
     """Raw SQL escape hatch.
 
     The SQL fragment is appended to the WHERE clause of the query against the
-    target variable's data table (joined with _record_metadata and _schema).
+    target variable's data table (joined with _record_save / _record and _schema).
 
     Example:
         raw_sql('"Side" = \\'L\\'')
@@ -700,19 +693,20 @@ class RawFilter(Filter):
             # Join with _schema to make schema keys available in the WHERE clause
             query = f"""
                 WITH ranked AS (
-                    SELECT rm.schema_id,
+                    SELECT r.schema_id,
                            ROW_NUMBER() OVER (
-                               PARTITION BY rm.variable_name, rm.schema_id
-                               ORDER BY rm.timestamp DESC
+                               PARTITION BY r.type, r.schema_id
+                               ORDER BY rs.timestamp DESC
                            ) AS rn,
                            t.*,
                            s.*
-                    FROM _record_metadata rm
+                    FROM _record_save rs
+                    JOIN _record r ON r.record_id = rs.record_id
                     JOIN "{target_table_name}" t
-                        ON t.record_id = rm.record_id
+                        ON t.record_id = rs.record_id
                     LEFT JOIN _schema s
-                        ON s.schema_id = rm.schema_id
-                    WHERE rm.variable_name = ?
+                        ON s.schema_id = r.schema_id
+                    WHERE r.type = ?
                 )
                 SELECT DISTINCT schema_id
                 FROM ranked

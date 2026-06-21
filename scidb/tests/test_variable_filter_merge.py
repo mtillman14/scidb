@@ -31,7 +31,7 @@ from pathlib import Path
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root / "src"))
 
-from scidb import BaseVariable, configure_database, for_each
+from scidb import BaseVariable, configure_database, for_each, branch_param, Variant
 from scidb.foreach import Merge
 
 
@@ -382,14 +382,14 @@ class TestValidateFilterCoverageOverride:
 
 
 # ===========================================================================
-# Multiple for_each-computed variants of the SAME variable, distinguished only
-# by their stored ``__where`` provenance key.
+# Multiple for_each-computed variants of the SAME variable at the SAME schema
+# locations, distinguished by their producing invocation's constant (``factor``).
 #
-# Regression for: Merge constituents must select the single variant matching
-# the load-time where= (via _load_with_where Strategy 1 / __where provenance),
-# exactly like a direct .load(where=...).  Previously the Merge path resolved
-# where= down to schema_ids only (_PreresolvedFilter), so every variant sharing
-# the same schema keys leaked through — N rows per schema-key combo instead of 1.
+# Regression for: a Merge constituent pinned with Variant(..., factor=v) must
+# select the single matching variant — not every variant sharing the same schema
+# keys. (Previously this was driven by the where= provenance string; §10's where=
+# redesign makes variant identity semantic — by consumed inputs — so a constant,
+# applied via branch_param/Variant, is what distinguishes same-input variants.)
 # ===========================================================================
 
 class Measure(BaseVariable):
@@ -403,17 +403,7 @@ class Partner(BaseVariable):
 
 
 class Derived(BaseVariable):
-    """Trial-level output computed by for_each in multiple where= variants."""
-    schema_version = 1
-
-
-class FlagU(BaseVariable):
-    """Trial-level flag, value "U" at every combo (an all-pass filter)."""
-    schema_version = 1
-
-
-class FlagA(BaseVariable):
-    """Trial-level flag, value "A" at every combo (an all-pass filter)."""
+    """Trial-level output computed by for_each in two constant (factor) variants."""
     schema_version = 1
 
 
@@ -426,13 +416,16 @@ def _derive(signal, factor):
 def variant_merge_db(tmp_path):
     """DB with two ``Derived`` variants over the same [subject, trial] combos.
 
-    Both ``FlagU=="U"`` and ``FlagA=="A"`` pass every combo, so running for_each
-    twice (once under each where=) produces two ``Derived`` records per combo
-    that differ only by the stored ``__where`` key (and the ``factor`` constant,
-    which makes their values distinguishable):
+    Running for_each twice with a different ``factor`` constant produces two
+    ``Derived`` records per combo that coexist as distinct variants (distinguished
+    by their producing invocation's constant, i.e. ``derived_branch_params``):
 
-        variant "FlagU == 'U'" : factor=1   → Derived == Measure
-        variant "FlagA == 'A'" : factor=100 → Derived == Measure * 100
+        variant factor=1   → Derived == Measure
+        variant factor=100 → Derived == Measure * 100
+
+    (Under the §10 where= redesign, two variants that consumed the *same* inputs are
+    the same variant — so a constant, not a same-input where= filter, is what makes
+    these two distinct. Selection is therefore by ``factor`` branch_param.)
 
     Partner is a single-variant trial-level variable used as the Merge partner.
     """
@@ -441,41 +434,33 @@ def variant_merge_db(tmp_path):
         for trial in (1, 2):
             Measure.save(float(subj * 10 + trial), subject=subj, trial=trial)
             Partner.save(float(subj), subject=subj, trial=trial)
-            FlagU.save("U", subject=subj, trial=trial)
-            FlagA.save("A", subject=subj, trial=trial)
 
-    # Variant 1: __where = "FlagU == 'U'"
-    for_each(
-        _derive,
-        inputs={"signal": Measure, "factor": 1},
-        outputs=[Derived],
-        subject=[1, 2], trial=[1, 2],
-        where=FlagU == "U",
-    )
-    # Variant 2: __where = "FlagA == 'A'" (same combos, different values)
-    for_each(
-        _derive,
-        inputs={"signal": Measure, "factor": 100},
-        outputs=[Derived],
-        subject=[1, 2], trial=[1, 2],
-        where=FlagA == "A",
-    )
+    for factor in (1, 100):
+        for_each(
+            _derive,
+            inputs={"signal": Measure, "factor": factor},
+            outputs=[Derived],
+            subject=[1, 2], trial=[1, 2],
+        )
     yield db
     db.close()
 
 
-class TestMergeSelectsVariantByProvenance:
+class TestMergeSelectsVariantByBranchParam:
 
     def test_direct_load_selects_one_variant(self, variant_merge_db):
-        """Baseline: direct .load(where=FlagU=="U") returns one record per combo."""
-        records = Derived.load(where=FlagU == "U")
+        """Direct .load() pinned to factor=1 returns one record per combo.
+
+        branch_param(...) builds the namespaced dict; unpack it into the load
+        kwargs (non-schema kwargs become the branch_params filter)."""
+        records = Derived.load(**branch_param("_derive", factor=1))
         assert len(records) == 4, (
             f"Expected 4 records (one variant × 4 combos), got {len(records)}"
         )
 
-    def test_merge_applies_where_provenance(self, variant_merge_db):
-        """Merge(Partner, Derived) under where=FlagU=="U" must keep only the
-        matching ``Derived`` variant — 4 rows, not 8."""
+    def test_merge_pins_one_variant(self, variant_merge_db):
+        """Merge(Partner, Variant(Derived, factor=1)) keeps only the factor=1
+        ``Derived`` variant — 4 rows, not 8."""
         captured = []
 
         def collect(inputVal):
@@ -484,10 +469,9 @@ class TestMergeSelectsVariantByProvenance:
 
         for_each(
             collect,
-            inputs={"inputVal": Merge(Partner, Derived)},
+            inputs={"inputVal": Merge(Partner, Variant(Derived, fn="_derive", factor=1))},
             outputs=[Derived],
             as_table=True,
-            where=FlagU == "U",
             save=False,
         )
 
@@ -495,7 +479,7 @@ class TestMergeSelectsVariantByProvenance:
         tbl = captured[0]
         assert len(tbl) == 4, (
             f"Expected 4 rows (one Derived variant × 4 combos); got {len(tbl)} "
-            "— the other variant leaked through (provenance filter not applied)."
+            "— the other variant leaked through (branch_param pin not applied)."
         )
         # The kept variant is factor=1 (Derived == Measure), all values < 100.
         if "Derived" in tbl.columns:
@@ -504,9 +488,9 @@ class TestMergeSelectsVariantByProvenance:
                 f"factor=100 variant leaked into the merged table: {vals}"
             )
 
-    def test_merge_selects_other_variant(self, variant_merge_db):
-        """Loading the same Merge under where=FlagA=="A" selects the OTHER
-        variant (factor=100), proving provenance — not schema keys — drives it."""
+    def test_merge_pins_other_variant(self, variant_merge_db):
+        """Pinning the Derived constituent to factor=100 selects the OTHER variant,
+        proving the constant — not schema keys — drives selection."""
         captured = []
 
         def collect(inputVal):
@@ -515,10 +499,9 @@ class TestMergeSelectsVariantByProvenance:
 
         for_each(
             collect,
-            inputs={"inputVal": Merge(Partner, Derived)},
+            inputs={"inputVal": Merge(Partner, Variant(Derived, fn="_derive", factor=100))},
             outputs=[Derived],
             as_table=True,
-            where=FlagA == "A",
             save=False,
         )
 
@@ -528,5 +511,5 @@ class TestMergeSelectsVariantByProvenance:
         if "Derived" in tbl.columns:
             vals = [float(v) for v in tbl["Derived"]]
             assert all(v >= 100 for v in vals), (
-                f"factor=1 variant leaked into the FlagA merged table: {vals}"
+                f"factor=1 variant leaked into the factor=100 merged table: {vals}"
             )

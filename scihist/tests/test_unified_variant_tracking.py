@@ -4,7 +4,6 @@ Tests that scihist.for_each outputs have complete version_keys and branch_params
 matching scidb.for_each structure, eliminating the dual variant tracking system.
 """
 
-import json
 import numpy as np
 import pytest
 
@@ -15,23 +14,17 @@ import scidb
 from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 
-def parse_version_keys(vk):
-    """Parse version_keys from database (handles both dict and JSON string)."""
-    if isinstance(vk, str):
-        return json.loads(vk)
-    return vk
-
-
 def derived_bp(db, variable_name):
     """Derived branch_params (§6) for the latest record of a variable type.
 
     branch_params is no longer a stored column — it is derived from the bipartite
-    provenance graph. This helper mirrors the old ``SELECT branch_params FROM
-    _record_metadata WHERE variable_name = ?`` lookup used throughout this file.
+    provenance graph. This helper looks up the latest record for a variable type
+    (recency from the _record_save log, type from the _record entity).
     """
     row = db._duck.con.execute(
-        "SELECT record_id FROM _record_metadata WHERE variable_name = ? "
-        "ORDER BY timestamp DESC LIMIT 1",
+        "SELECT rm.record_id FROM _record_save rm "
+        "JOIN _record r ON r.record_id = rm.record_id "
+        "WHERE r.type = ? ORDER BY rm.timestamp DESC LIMIT 1",
         [variable_name],
     ).fetchone()
     if row is None:
@@ -269,10 +262,10 @@ class TestFixedInputTracking:
         # Verify the record exists, then read provenance from the graph.
         record_check = con.execute("""
             SELECT record_id
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
+            FROM _record
+            WHERE type = 'ProcessedData'
         """).fetchone()
-        assert record_check is not None, "No ProcessedData record found in _record_metadata"
+        assert record_check is not None, "No ProcessedData record found in _record"
 
         prov = db.get_provenance(ProcessedData, version=record_check[0])
         assert prov is not None, "No provenance recorded for ProcessedData"
@@ -369,8 +362,8 @@ class TestVariantDiscovery:
         con = db._duck.con
         count = con.execute("""
             SELECT COUNT(DISTINCT record_id)
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
+            FROM _record
+            WHERE type = 'ProcessedData'
         """).fetchone()[0]
 
         assert count == 3, f"Expected 3 variants, found {count}"
@@ -586,8 +579,8 @@ class TestGeneratesFile:
         # A record is created even though no data was saved.
         result = con.execute("""
             SELECT record_id, content_hash
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
+            FROM _record
+            WHERE type = 'ProcessedData'
         """).fetchone()
 
         assert result is not None, "generates_file should create record"
@@ -674,15 +667,15 @@ class TestEdgeCases:
         con = db._duck.con
         count = con.execute("""
             SELECT COUNT(*)
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
+            FROM _record
+            WHERE type = 'ProcessedData'
         """).fetchone()[0]
 
         assert count == 0, "dry_run should not save outputs"
 
     def test_where_clause_metadata(self, db):
-        """The where= filter is recorded on the producing run (graph)."""
-        from scidb import provenance_query
+        """The where= filter string is recorded on the producing run for visual
+        inspection only (no matching logic reads it — see §10 where= redesign)."""
 
         @pipeline
         def filter_process(x, threshold):
@@ -701,9 +694,18 @@ class TestEdgeCases:
         )
 
         rid = db._duck.con.execute(
-            "SELECT record_id FROM _record_metadata WHERE variable_name = 'ProcessedData'"
+            "SELECT record_id FROM _record WHERE type = 'ProcessedData'"
         ).fetchone()[0]
-        wcs = provenance_query.record_where_clauses(db._duck, [rid]).get(rid, set())
+        # where_clause survives only as a display column on _run.
+        wcs = {
+            r[0] for r in db._duck.con.execute(
+                "SELECT DISTINCT run.where_clause FROM _run run "
+                "JOIN _run_invocation ri ON ri.run_id = run.run_id "
+                "JOIN _invocation_output io ON io.invocation_id = ri.invocation_id "
+                "WHERE io.output_record_id = ?",
+                [rid],
+            ).fetchall()
+        }
         assert "subject == 1" in wcs
 
 
@@ -792,8 +794,8 @@ class TestSkipComputed:
         # Should have created new record with different hash
         count = con.execute("""
             SELECT COUNT(*)
-            FROM _record_metadata
-            WHERE variable_name = 'ProcessedData'
+            FROM _record
+            WHERE type = 'ProcessedData'
         """).fetchone()[0]
 
         assert count == 2, "Changed function should create new variant"

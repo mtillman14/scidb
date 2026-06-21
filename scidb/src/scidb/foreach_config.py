@@ -34,11 +34,16 @@ def _compute_fn_hash(fn: Callable) -> str:
 # ``__fn_hash`` is intentionally excluded too, so cosmetic source edits to
 # the function body don't fork the call site (see ForEachConfig.to_call_id
 # docstring for rationale).
+#
+# ``__where`` is also excluded: a where= filter's only effect on the computation
+# is the surviving input set (already folded into invocation_id / ``__inputs``);
+# the where_clause string itself is display-only (§10 where= redesign), so two
+# call sites differing only by where= share a call_id. (``to_version_keys`` still
+# emits ``__where`` because for_each writes it to ``_run.where_clause`` for display.)
 _CALL_ID_INCLUDED_KEYS = (
     "__fn",
     "__inputs",
     "__constants",
-    "__where",
     "__distribute",
     "__as_table",
 )
@@ -48,8 +53,8 @@ def call_id_from_version_keys(version_keys: dict) -> str:
     """Compute a 16-hex-char call_id from any version_keys dict.
 
     Used by both ``ForEachConfig.to_call_id()`` (forward path, before save)
-    and ``list_pipeline_variants()`` (reverse path, reading from
-    ``_record_metadata``) so the call_id of a freshly built config matches
+    and ``list_pipeline_variants()`` (reverse path, reconstructing the config
+    from the bipartite graph) so the call_id of a freshly built config matches
     the call_id derived from records it eventually wrote.
 
     Uses a strict allow-list of canonical config keys, ignoring any
@@ -92,7 +97,8 @@ class ForEachConfig:
         """Return dict of config keys to merge into save_metadata.
 
         All values are plain Python objects (dicts, strings, bools, lists).
-        The final JSON encoding is done by _save_record_metadata.
+        Consumed in-memory to build save_metadata / the call_id (no longer a
+        stored column).
         """
         keys = {}
         keys["__fn"] = getattr(self.fn, "__name__", repr(self.fn))
@@ -166,8 +172,8 @@ class ForEachConfig:
         Only includes loadable inputs (variable types, Fixed, ColumnSelection,
         Merge) — constants are already included in save_metadata directly.
 
-        Returns a dict (not JSON string) so it can be included in version_keys
-        which will be JSON-encoded once by _save_record_metadata.
+        Returns a dict (not JSON string) so it can be carried in the in-memory
+        config keys that build save_metadata.
         """
         from .foreach import _is_loadable
 

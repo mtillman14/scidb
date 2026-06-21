@@ -79,30 +79,6 @@ def _from_schema_str(value):
     return value
 
 
-def _where_key_from_filter(where_for_key) -> str | None:
-    """Derive the ``__where`` provenance key string for a (variable-level)
-    filter, or None when there is nothing to key on.
-
-    This is the single source of truth for how a where= filter maps to the
-    ``__where`` version key that for_each stores alongside computed records.
-    Both ``DatabaseManager._load_with_where`` (direct .load()) and the Merge
-    constituent loader in ``foreach.py`` call it so the two paths select the
-    same stored variant. ``where_for_key`` is expected to be the variable-level
-    portion only (SchemaKey filters split off by the caller).
-    """
-    from .filters import RawFilter
-
-    if isinstance(where_for_key, str):
-        return where_for_key
-    if isinstance(where_for_key, RawFilter) and hasattr(where_for_key, "_original_str"):
-        return where_for_key._original_str
-    if where_for_key is not None and hasattr(where_for_key, "to_key"):
-        return where_for_key.to_key()
-    if where_for_key is not None:
-        return str(where_for_key)
-    return None
-
-
 from sciduckdb import (
     SciDuck,
     _infer_duckdb_type, _python_to_storage, _storage_to_python,
@@ -564,7 +540,7 @@ class DatabaseManager:
 
         # Create metadata tables for type registration (in DuckDB)
         self._ensure_meta_tables()
-        self._ensure_record_metadata_table()
+        self._ensure_record_save_table()
         self._ensure_schema_overrides_table()
         self._ensure_provenance_tables()
 
@@ -584,18 +560,23 @@ class DatabaseManager:
             )
         """)
 
-    def _ensure_record_metadata_table(self):
-        """Create the _record_metadata side table for record-level metadata."""
+    def _ensure_record_save_table(self):
+        """Create ``_record_save`` — the append-only **save-event audit log**.
+
+        One row per save event ``(record_id, timestamp)``; ``user_id`` is the only
+        per-event payload. Everything else about a record (its type/variable_name,
+        schema_id, content_hash, schema_version, and the mutable ``excluded`` flag)
+        lives on the content-addressed ``_record`` entity row and is obtained by
+        joining on ``record_id``. The only thing this table uniquely provides is
+        **per-save recency** for the "latest" variant collapse (``_record`` is
+        inserted ``ON CONFLICT DO NOTHING`` so its ``created_at`` is frozen at the
+        first save and cannot track re-saves).
+        """
         self._duck._execute("""
-            CREATE TABLE IF NOT EXISTS _record_metadata (
+            CREATE TABLE IF NOT EXISTS _record_save (
                 record_id VARCHAR NOT NULL,
                 timestamp VARCHAR NOT NULL,
-                variable_name VARCHAR NOT NULL,
-                schema_id INTEGER NOT NULL,
-                content_hash VARCHAR,
-                schema_version INTEGER,
                 user_id VARCHAR,
-                excluded BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (record_id, timestamp)
             )
         """)
@@ -612,25 +593,24 @@ class DatabaseManager:
         ensure_provenance_tables(self._duck)
 
     def _create_variable_view(self, variable_class: Type[BaseVariable]):
-        """Create a view joining a variable table with _schema via _record_metadata."""
+        """Create a view joining a variable table with _schema via _record.
+
+        ``schema_id`` and the mutable ``excluded`` flag now come straight from the
+        content-addressed ``_record`` entity (one row per record_id), so no
+        latest-by-timestamp CTE over the save-event log is needed.
+        """
         table_name = variable_class.table_name()
         view_name = variable_class.view_name()
         schema_cols = ", ".join(f's."{col}"' for col in self.dataset_schema_keys)
         self._duck._execute(f"""
             CREATE OR REPLACE VIEW "{view_name}" AS
-            WITH latest_meta AS (
-                SELECT record_id, schema_id, excluded,
-                       ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) AS rn
-                FROM _record_metadata
-                WHERE variable_name = '{view_name}'
-            )
             SELECT
                 t.*,
                 s.schema_level, {schema_cols},
-                lm.excluded
+                r.excluded
             FROM "{table_name}" t
-            LEFT JOIN latest_meta lm ON t.record_id = lm.record_id AND lm.rn = 1
-            LEFT JOIN _schema s ON lm.schema_id = s.schema_id
+            LEFT JOIN _record r ON t.record_id = r.record_id
+            LEFT JOIN _schema s ON r.schema_id = s.schema_id
         """)
 
     def _split_metadata(self, flat_metadata: dict) -> dict:
@@ -666,30 +646,25 @@ class DatabaseManager:
                 level = key
         return level
 
-    def _save_record_metadata(
+    def _save_record_event(
         self,
         record_id: str,
         timestamp: str,
-        variable_name: str,
-        schema_id: int,
-        content_hash: str | None,
-        schema_version: int,
         user_id: str | None,
     ) -> None:
-        """Insert a new audit row into _record_metadata. Always inserts (audit trail)."""
-        Log.debug(f"_save_record_metadata: {variable_name}, record_id={record_id[:12]}, schema_id={schema_id}")
+        """Append a save-event row to ``_record_save``. Always inserts (audit trail).
+
+        The record's type/schema/content metadata is carried by the ``_record``
+        entity row (written alongside by the caller), not here.
+        """
+        Log.debug(f"_save_record_event: record_id={record_id[:12]}, timestamp={timestamp}")
         self._duck._execute(
             """
-            INSERT INTO _record_metadata (
-                record_id, timestamp, variable_name, schema_id,
-                content_hash, schema_version, user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO _record_save (record_id, timestamp, user_id)
+            VALUES (?, ?, ?)
             ON CONFLICT (record_id, timestamp) DO NOTHING
             """,
-            [
-                record_id, timestamp, variable_name, schema_id,
-                content_hash, schema_version, user_id,
-            ],
+            [record_id, timestamp, user_id],
         )
 
     def _save_columnar(
@@ -903,7 +878,7 @@ class DatabaseManager:
         operations using DataFrame-based inserts for speed.
 
         Data is deduplicated by record_id (same content → same record_id → stored once).
-        Every call inserts a new (record_id, timestamp) row in _record_metadata for audit.
+        Every call appends a (record_id, timestamp) save-event row to _record_save.
 
         Args:
             variable_class: The BaseVariable subclass to save as
@@ -1013,7 +988,7 @@ class DatabaseManager:
         timestamp = datetime.now().isoformat()
         record_ids = []
         data_table_rows = []   # (record_id, ...data_cols)
-        metadata_rows = []     # tuples for _record_metadata
+        metadata_rows = []     # (rid,ts,type,schema_id,content_hash,sv,user) → _record_save + _record
 
         t4_hash = 0.0
         t4_record_id = 0.0
@@ -1164,25 +1139,22 @@ class DatabaseManager:
                 timings["6a_data_df_create"] = time.perf_counter() - t6a
                 timings["6b_data_insert"] = 0.0
 
-            # Always insert metadata rows (audit trail — every execution logged)
+            # Append save-event rows (audit trail — every execution logged).
+            # metadata_rows is (record_id, timestamp, variable_name, schema_id,
+            # content_hash, schema_version, user_id); _record_save keeps only the
+            # (record_id, timestamp, user_id) save-event columns.
             t6c = time.perf_counter()
-            meta_df = pd.DataFrame(
-                metadata_rows,
-                columns=[
-                    "record_id", "timestamp", "variable_name", "schema_id",
-                    "content_hash", "schema_version", "user_id",
-                ],
+            save_df = pd.DataFrame(
+                [(r[0], r[1], r[6]) for r in metadata_rows],
+                columns=["record_id", "timestamp", "user_id"],
             )
             self._duck.con.execute(
-                "INSERT INTO _record_metadata ("
-                "record_id, timestamp, variable_name, schema_id, "
-                "content_hash, schema_version, user_id"
-                ") SELECT * FROM meta_df "
+                "INSERT INTO _record_save (record_id, timestamp, user_id) "
+                "SELECT * FROM save_df "
                 "ON CONFLICT (record_id, timestamp) DO NOTHING"
             )
-            # Mirror into the bipartite entities table (_record). metadata_rows is
-            # (record_id, timestamp, type, schema_id, content_hash, schema_version,
-            #  user_id) — map to the _record column order.
+            # The type/schema/content metadata lives on the bipartite entities table
+            # (_record); map metadata_rows to the _record column order.
             from .provenance import insert_record_entities
             insert_record_entities(
                 self._duck,
@@ -1309,7 +1281,7 @@ class DatabaseManager:
     def _any_records_exist(self, type_name: str) -> bool:
         """Return True if any records of this type have ever been saved."""
         rows = self._duck._fetchall(
-            "SELECT 1 FROM _record_metadata WHERE variable_name = ? LIMIT 1",
+            "SELECT 1 FROM _record WHERE type = ? LIMIT 1",
             [type_name],
         )
         return len(rows) > 0
@@ -1324,7 +1296,7 @@ class DatabaseManager:
         include_excluded: bool = False,
     ) -> pd.DataFrame:
         """
-        Query _record_metadata to find matching records.
+        Query the _record_save log (joined to _record) to find matching records.
 
         Supports two modes:
         - By record_id: direct primary key lookup (with JOINs for full row data)
@@ -1352,14 +1324,28 @@ class DatabaseManager:
             f's."{col}"' for col in self.dataset_schema_keys
         )
 
-        excluded_clause = "" if include_excluded else " AND COALESCE(rm.excluded, FALSE) = FALSE"
+        # The save-event log (_record_save, one row per (record_id, timestamp))
+        # joined to the _record entity (one row per record_id) for the
+        # type/schema/content/excluded columns the log no longer stores. Aliased
+        # back to the legacy column names so downstream row access is unchanged.
+        meta_select = (
+            "rm.record_id, rm.timestamp, rm.user_id, "
+            "r.type AS variable_name, r.schema_id, r.content_hash, "
+            "r.schema_version, r.excluded"
+        )
+        meta_from = (
+            "FROM _record_save rm "
+            "JOIN _record r ON r.record_id = rm.record_id "
+            "LEFT JOIN _schema s ON r.schema_id = s.schema_id "
+        )
+
+        excluded_clause = "" if include_excluded else " AND COALESCE(r.excluded, FALSE) = FALSE"
 
         if record_id is not None:
             sql = (
-                f"SELECT rm.*, {schema_col_select} "
-                f"FROM _record_metadata rm "
-                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-                f"WHERE rm.record_id = ? AND rm.variable_name = ?{excluded_clause}"
+                f"SELECT {meta_select}, {schema_col_select} "
+                f"{meta_from}"
+                f"WHERE rm.record_id = ? AND r.type = ?{excluded_clause}"
             )
             df = self._duck._fetchdf(sql, [record_id, type_name])
             return self._sort_by_schema_keys(df)
@@ -1368,10 +1354,9 @@ class DatabaseManager:
         if version_id not in ("latest", "all"):
             Log.info(f"_find_record({type_name}): treating version_id={version_id!r} as record_id")
             sql = (
-                f"SELECT rm.*, {schema_col_select} "
-                f"FROM _record_metadata rm "
-                f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
-                f"WHERE rm.record_id = ? AND rm.variable_name = ?{excluded_clause}"
+                f"SELECT {meta_select}, {schema_col_select} "
+                f"{meta_from}"
+                f"WHERE rm.record_id = ? AND r.type = ?{excluded_clause}"
             )
             df = self._duck._fetchdf(sql, [version_id, type_name])
             return self._sort_by_schema_keys(df)
@@ -1380,12 +1365,12 @@ class DatabaseManager:
         schema_keys = nested_metadata.get("schema", {}) if nested_metadata else {}
         version_keys = nested_metadata.get("version", {}) if nested_metadata else {}
 
-        conditions = ["rm.variable_name = ?"]
+        conditions = ["r.type = ?"]
         params: list[Any] = [type_name]
 
         # Exclude excluded variants by default
         if not include_excluded:
-            conditions.append("COALESCE(rm.excluded, FALSE) = FALSE")
+            conditions.append("COALESCE(r.excluded, FALSE) = FALSE")
 
         # Filter schema keys via _schema columns in SQL (lists → IN)
         for key, value in schema_keys.items():
@@ -1417,13 +1402,12 @@ class DatabaseManager:
 
         sql = (
             f"WITH ranked AS ("
-            f"SELECT rm.*, {schema_col_select}, "
+            f"SELECT {meta_select}, {schema_col_select}, "
             f"ROW_NUMBER() OVER ("
             f"PARTITION BY {partition} "
             f"ORDER BY rm.timestamp DESC"
             f") as rn "
-            f"FROM _record_metadata rm "
-            f"LEFT JOIN _schema s ON rm.schema_id = s.schema_id "
+            f"{meta_from}"
             f"WHERE {where}"
             f") SELECT * FROM ranked WHERE rn = 1"
         )
@@ -1438,8 +1422,9 @@ class DatabaseManager:
         # only by which upstream record_id was consumed (i.e. input data was
         # re-saved) share a variant and collapse to the newest. Distinct
         # constant-variants (low_hz=20 vs 30) keep separate identities.
-        # Raw / manually saved records have no producing invocation, so they fall
-        # back to their version_keys for variant distinction (direct-save kwargs).
+        # Raw / manually saved records have no producing invocation; any non-schema
+        # save kwargs are anchored on a synthetic __save__ invocation, so those take
+        # the graph branch and only true raw saves fall into the "__raw__" variant.
         t_collapse = 0.0
         rows_before_collapse = len(df)
         if version_id == "latest" and len(df) > 0:
@@ -1592,7 +1577,7 @@ class DatabaseManager:
         iloc: Any = None,
     ) -> BaseVariable:
         """
-        Load a variable instance given a row from _record_metadata.
+        Load a variable instance given a _find_record row (save log joined to _record).
 
         Determines native vs custom deserialization from _variables.dtype,
         loads data from the data table by record_id, and constructs the
@@ -1889,13 +1874,9 @@ class DatabaseManager:
                     schema_level=schema_level, schema_keys=schema_keys,
                 )
 
-            self._save_record_metadata(
+            self._save_record_event(
                 record_id=record_id,
                 timestamp=created_at,
-                variable_name=type_name,
-                schema_id=schema_id,
-                content_hash=content_hash,
-                schema_version=variable.schema_version,
                 user_id=user_id,
             )
 
@@ -1945,129 +1926,96 @@ class DatabaseManager:
         where,
         version_id: str = "latest",
     ):
-        """Load records using where= filter with a provenance-first strategy.
+        """Load records using where= with **semantic** variant matching.
 
-        When data was saved via for_each with a where= condition, the filter
-        string is recorded on the producing run (``_run.where_clause``). This
-        method first tries to match records by that provenance (graph-derived,
-        per :func:`provenance_query.record_where_clauses`). If no records are
-        found (e.g. data was saved directly without for_each), it falls back to
-        schema-level filtering via ``where.resolve()``.
+        ``where=`` is a *variant/computation* selector: its variable-level portion
+        identifies which computed variant to return by the **schema_id set it
+        resolves to now** (§10 "where= redesign"). Any SchemaKey portion is a *row*
+        selector applied on top. The producing run's ``where_clause`` STRING is
+        never read here — it survives only for visual inspection (get_execution_audit).
+
+        Matching rule (subset + raw fallback), which collapses the old Strategy 1
+        (provenance) and Strategy 2 (schema fallback) into one mechanism:
+          - a record **with** a producing invocation matches iff every input
+            schema_id that invocation consumed is within the resolved variant set
+            ``S_var`` (an aggregation consumed all of ``S_var``; a per-combo output
+            consumed a single location in it);
+          - a record with **no** producing invocation (raw/direct save) matches iff
+            its own schema_id ∈ ``S_var``.
+        The result is then intersected with the SchemaKey / pre-resolved row set.
 
         Returns:
             A pandas DataFrame of matching record rows.
 
         Raises:
-            NotFoundError: If no records match either strategy.
+            NotFoundError: If no records match.
         """
         type_name = variable_class.__name__
 
         from .filters import Filter, split_schema_key_filters
+        from . import provenance_query
 
-        # Split SchemaKey filters from variable-level filters.
-        # SchemaKey filters select rows by schema column values (e.g. session IN [...])
-        # and act as post-selectors on already-computed data.  Variable-level filters
-        # (e.g. UAStartFoot == 'U') identify which computation variant to return via
-        # the stored __where version key.  Mixing them into the same to_key() string
-        # prevents Strategy 1 from matching records that were computed without the
-        # schema-key constraint.
-        sk_filter = None
-        where_for_key = where  # portion used to derive the __where lookup key
-        if isinstance(where, Filter):
+        # Separate the variant role (variable-level filter → S_var) from the row
+        # role (SchemaKey portion, or a Merge constituent's pre-resolved id set).
+        # ``variant_validate_coverage`` is False for Merge constituents (the merge
+        # path validates coverage once over the merged result, not per constituent).
+        variant_validate_coverage = True
+        if getattr(where, "_restrict_to_resolved_ids", False):
+            # Merge constituent: variant filter carried explicitly; resolve() is the
+            # pre-resolved row restriction (full filter, variable-level AND SchemaKey).
+            var_filter = getattr(where, "_variable_filter", None)
+            row_ids = where.resolve(self, variable_class, table_name)
+            variant_validate_coverage = False
+        elif isinstance(where, Filter):
             sk_filter, var_filter = split_schema_key_filters(where)
-            if sk_filter is not None:
-                where_for_key = var_filter  # None when where is purely SchemaKey
+            row_ids = (
+                sk_filter.resolve(self, variable_class, table_name)
+                if sk_filter is not None else None
+            )
+        elif where is None or hasattr(where, "resolve"):
+            var_filter, row_ids = where, None
+        else:
+            raise TypeError(
+                f"load(where=...) expects a Filter (e.g. Var=='x', raw_sql(...)); "
+                f"got {type(where).__name__}."
+            )
 
-        # Compute __where key from the variable-level portion only
-        augmented = dict(metadata)
-        _where_key = _where_key_from_filter(where_for_key)
-        if _where_key:
-            augmented["__where"] = _where_key
-        # (where_for_key is None / empty → purely SchemaKey filter; no __where key needed)
-
-        # Optimization: fetch records WITHOUT __where filter first, then apply it in Python
-        # This avoids fetching 14k+ records twice (once with __where, once without)
         nested_base = self._split_metadata(metadata)
         records_all = self._find_record(type_name, nested_metadata=nested_base, version_id=version_id)
-
         if len(records_all) == 0:
-            raise NotFoundError(
-                f"No {type_name} found matching metadata: {metadata}"
-            )
+            raise NotFoundError(f"No {type_name} found matching metadata: {metadata}")
 
-        # Strategy 1: match by __where version key (fast path for for_each-computed data)
-        where_key = augmented.get("__where")
-        Log.debug(
-            f"[_load_with_where] {type_name}: records_all={len(records_all)}, "
-            f"where_key={where_key!r}"
-        )
-        if where_key:
-            # A record's ``__where`` is the where_clause of its producing run,
-            # read from the bipartite graph (record → invocation → run).
-            from . import provenance_query
-            wc_map = provenance_query.record_where_clauses(
+        records = records_all
+
+        # --- Variant match (semantic) on the variable-level portion ---
+        if var_filter is not None:
+            s_var = frozenset(var_filter.resolve(
+                self, variable_class, table_name,
+                validate_coverage=variant_validate_coverage,
+            ))
+            consumed_map = provenance_query.consumed_input_schema_ids(
                 self._duck, records_all["record_id"].tolist()
             )
+
+            def _variant_match(row, _s=s_var, _c=consumed_map):
+                consumed = _c.get(row["record_id"])
+                if consumed is not None:
+                    return consumed <= _s            # subset: every consumed loc ∈ S_var
+                return row["schema_id"] in _s        # raw/direct-save fallback
+
+            records = records_all[records_all.apply(_variant_match, axis=1)]
             Log.debug(
-                f"[_load_with_where] {type_name}: Strategy 1 stored __where values: "
-                f"{sorted({w for s in wc_map.values() for w in s if w})}"
-            )
-            records = records_all[
-                records_all["record_id"].apply(
-                    lambda rid: where_key in wc_map.get(rid, set())
-                )
-            ].copy()
-            Log.debug(
-                f"[_load_with_where] {type_name}: Strategy 1 matched {len(records)} records"
-            )
-            if len(records) > 0:
-                # Apply a schema-id row selector on top of the provenance match:
-                #  - a structural SchemaKey filter (direct .load(where=schema_key(...) & ...)),
-                #    or
-                #  - a pre-resolved id set: a Merge constituent receives a
-                #    _PreresolvedFilter whose resolve() already encodes the full
-                #    filter (variable-level AND SchemaKey).  It is not a structural
-                #    SchemaKey node, so split_schema_key_filters() leaves sk_filter
-                #    None; the _restrict_to_resolved_ids marker tells us to apply
-                #    resolve() here instead.  Without this, a constituent matched by
-                #    __where provenance would return every schema_id sharing that
-                #    variant, ignoring the SchemaKey restriction.
-                allowed_ids = None
-                if sk_filter is not None:
-                    allowed_ids = sk_filter.resolve(self, variable_class, table_name)
-                elif getattr(where, "_restrict_to_resolved_ids", False):
-                    allowed_ids = where.resolve(self, variable_class, table_name)
-                if allowed_ids is not None:
-                    _before = len(records)
-                    records = records[records["schema_id"].isin(allowed_ids)]
-                    Log.debug(
-                        f"[_load_with_where] {type_name}: Strategy 1 schema-id "
-                        f"restriction {_before} -> {len(records)} records "
-                        f"({len(allowed_ids)} allowed schema_ids)"
-                    )
-                if len(records) > 0:
-                    return records
-                raise NotFoundError(
-                    f"No {type_name} found matching metadata: {metadata} "
-                    f"with the given schema key filter."
-                )
-            Log.debug(
-                f"[_load_with_where] {type_name}: Strategy 1 found no match — "
-                f"falling through to Strategy 2"
+                f"[_load_with_where] {type_name}: variant match kept {len(records)} "
+                f"of {len(records_all)} records (|S_var|={len(s_var)})"
             )
 
-        # Strategy 2: fallback to schema-level filtering (backward compat)
-        # Reuse records_all instead of re-fetching!
-        records = records_all
-        if len(records) > 0:
-            allowed_schema_ids = where.resolve(self, variable_class, table_name)
+        # --- Row restriction (SchemaKey portion / pre-resolved Merge ids) ---
+        if row_ids is not None:
+            _before = len(records)
+            records = records[records["schema_id"].isin(row_ids)]
             Log.debug(
-                f"[_load_with_where] {type_name}: Strategy 2 resolved "
-                f"{len(allowed_schema_ids)} schema_ids"
-            )
-            records = records[records["schema_id"].isin(allowed_schema_ids)]
-            Log.debug(
-                f"[_load_with_where] {type_name}: Strategy 2 returning {len(records)} records"
+                f"[_load_with_where] {type_name}: row restriction {_before} -> "
+                f"{len(records)} records ({len(row_ids)} allowed schema_ids)"
             )
 
         if len(records) == 0:
@@ -2075,7 +2023,6 @@ class DatabaseManager:
                 f"No {type_name} found matching metadata: {metadata} "
                 f"with the given where= filter."
             )
-
         return records
 
 
@@ -2281,10 +2228,10 @@ class DatabaseManager:
 
         meta_df = pd.DataFrame(meta_dict)
 
-        # Detect and warn about orphaned records: present in _record_metadata but
-        # absent from the data table.  These arise when a save partially failed or
-        # when a record was written to _record_metadata without a corresponding data
-        # row (e.g. a buggy prior for_each run with an unexpected schema key).
+        # Detect and warn about orphaned records: present in the save log / _record
+        # but absent from the data table.  These arise when a save partially failed
+        # or when a record was logged without a corresponding data row (e.g. a buggy
+        # prior for_each run with an unexpected schema key).
         # Using an inner join below excludes them; we surface a warning so users can
         # investigate the root cause in their database.
         type_name = variable_class.__name__
@@ -2295,7 +2242,7 @@ class DatabaseManager:
             sample = sorted(orphaned)[:3]
             Log.warn(
                 f"load_all_as_df({type_name}): {len(orphaned)} record(s) exist in "
-                f"_record_metadata but have no data in {type_name}_data — "
+                f"the save log but have no data in {type_name}_data — "
                 f"excluding from results. Sample IDs: {sample}"
                 f"{'...' if len(orphaned) > 3 else ''}. "
                 f"This usually means a previous save partially failed or used an "
@@ -2577,11 +2524,12 @@ class DatabaseManager:
             metadata: Flat metadata dict
             version_id: Which versions to return:
                 - "all" (default): return every version
-                - "latest": return only the latest version per (schema_id, version_keys)
+                - "latest": return only the latest version per (schema_id, variant)
                 - any other string: treated as a specific record_id
-            where: Optional Filter for restricting which records are loaded.
-                First tries version_keys filtering (__where), then falls back
-                to schema-level filtering for backward compatibility.
+            where: Optional Filter selecting the computation *variant* by the
+                schema_id set its variable-level portion resolves to (semantic
+                matching by consumed inputs); any SchemaKey portion further
+                restricts rows. See ``_load_with_where``.
             branch_params_filter: Optional dict of branch_params key/value filters.
 
         Yields:
@@ -2603,7 +2551,7 @@ class DatabaseManager:
             if len(records) == 0:
                 raise NotFoundError(f"No data found with record_id '{version_id}'")
         elif where is not None:
-            # where= specified: first try version_keys filtering (__where)
+            # where= specified: semantic variant match + row restriction
             try:
                 records = self._load_with_where(
                     variable_class, metadata, table_name, where,
@@ -2939,7 +2887,7 @@ class DatabaseManager:
         if isinstance(record_id_or_type, str):
             # Direct record_id provided - exclude just that one
             self._duck._execute(
-                "UPDATE _record_metadata SET excluded = TRUE WHERE record_id = ?",
+                "UPDATE _record SET excluded = TRUE WHERE record_id = ?",
                 [record_id_or_type],
             )
             return 1
@@ -2968,7 +2916,7 @@ class DatabaseManager:
         record_ids = records["record_id"].tolist()
         for rid in record_ids:
             self._duck._execute(
-                "UPDATE _record_metadata SET excluded = TRUE WHERE record_id = ?",
+                "UPDATE _record SET excluded = TRUE WHERE record_id = ?",
                 [rid],
             )
 
@@ -3000,7 +2948,7 @@ class DatabaseManager:
         if isinstance(record_id_or_type, str):
             # Direct record_id provided - include just that one
             self._duck._execute(
-                "UPDATE _record_metadata SET excluded = FALSE WHERE record_id = ?",
+                "UPDATE _record SET excluded = FALSE WHERE record_id = ?",
                 [record_id_or_type],
             )
             return 1
@@ -3029,7 +2977,7 @@ class DatabaseManager:
         record_ids = records["record_id"].tolist()
         for rid in record_ids:
             self._duck._execute(
-                "UPDATE _record_metadata SET excluded = FALSE WHERE record_id = ?",
+                "UPDATE _record SET excluded = FALSE WHERE record_id = ?",
                 [rid],
             )
 
@@ -3327,8 +3275,8 @@ class DatabaseManager:
         variables = {}
         for var_type in all_var_types:
             rows = self._duck._fetchall(
-                "SELECT COUNT(DISTINCT record_id) FROM _record_metadata "
-                "WHERE variable_name = ? AND excluded = FALSE",
+                "SELECT COUNT(DISTINCT record_id) FROM _record "
+                "WHERE type = ? AND COALESCE(excluded, FALSE) = FALSE",
                 [var_type],
             )
             record_count = rows[0][0] if rows else 0
@@ -3601,7 +3549,7 @@ class DatabaseManager:
         from . import provenance_query
 
         rows = self._duck._fetchall(
-            "SELECT variable_name, schema_id FROM _record_metadata WHERE record_id = ? LIMIT 1",
+            "SELECT type, schema_id FROM _record WHERE record_id = ? LIMIT 1",
             [used_record_id],
         )
         if not rows:
@@ -3610,12 +3558,14 @@ class DatabaseManager:
 
         target_variant = provenance_query._producing_variant_key(self._duck, used_record_id)
 
-        # Candidates at the same (variable_name, schema_id), newest first.
+        # Candidates at the same (variable_name, schema_id), newest first. Recency
+        # comes from the save-event log; type/schema/excluded from the _record entity.
         candidates = self._duck._fetchall(
-            "SELECT record_id FROM _record_metadata "
-            "WHERE variable_name = ? AND schema_id IS NOT DISTINCT FROM ? "
-            "AND COALESCE(excluded, FALSE) = FALSE "
-            "ORDER BY timestamp DESC",
+            "SELECT rm.record_id FROM _record_save rm "
+            "JOIN _record r ON r.record_id = rm.record_id "
+            "WHERE r.type = ? AND r.schema_id IS NOT DISTINCT FROM ? "
+            "AND COALESCE(r.excluded, FALSE) = FALSE "
+            "ORDER BY rm.timestamp DESC",
             [vn, sid],
         )
         for (rid,) in candidates:

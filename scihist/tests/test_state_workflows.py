@@ -423,8 +423,8 @@ class TestMultiOutputSingleFunction:
         self._run_multi(db)
 
         db._duck._execute(
-            "UPDATE _record_metadata SET excluded = TRUE "
-            "WHERE variable_name = ? AND schema_id IN ("
+            "UPDATE _record SET excluded = TRUE "
+            "WHERE type = ? AND schema_id IN ("
             "  SELECT schema_id FROM _schema WHERE subject = ? AND trial = ?"
             ")",
             [WfMultiB.__name__, "1", "A"],

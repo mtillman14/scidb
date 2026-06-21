@@ -43,7 +43,6 @@ __all__ = [
     "compute_invocation_id",
     "compute_pathinput_record_id",
     "compute_save_invocation_id",
-    "compute_output_record_id",
     "generate_run_id",
     "normalize_as_table",
     "constant_value_repr",
@@ -176,37 +175,6 @@ def compute_save_invocation_id(output_record_id: str) -> str:
     ``derived_branch_params`` recovers them.
     """
     return _sha16(SAVE_FUNCTION_NAME, output_record_id)
-
-
-def compute_output_record_id(
-    type_name: str,
-    schema_version: int,
-    content_hash: str,
-    invocation_id: str,
-    output_num: int,
-) -> str:
-    """Content-addressed id for a record produced by an invocation.
-
-    Includes ``invocation_id`` (which folds in the function hash + every input
-    record_id) and ``output_num`` so two outputs that differ only by an upstream
-    constant — or by which slot of a multi-output call they came from — get
-    distinct ids automatically. This is the structural replacement for the old
-    ``__upstream``-in-``version_keys`` mechanism.
-    """
-    parts = [
-        f"type:{type_name}",
-        f"schema:{schema_version}",
-        f"content:{content_hash}",
-        f"invocation:{invocation_id}",
-        f"output_num:{output_num}",
-    ]
-    rid = _sha16(*parts)
-    logger.debug(
-        "compute_output_record_id(type=%s, sv=%s, content=%s, inv=%s, out=%s) = %s",
-        type_name, schema_version, content_hash[:12] if content_hash else None,
-        invocation_id, output_num, rid,
-    )
-    return rid
 
 
 def normalize_as_table(as_table_value, loadable_params) -> list[str]:

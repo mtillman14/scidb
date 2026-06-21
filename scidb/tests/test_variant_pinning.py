@@ -28,10 +28,17 @@ from scidb import (
     for_each,
     Fixed,
     Variant,
+    branch_param,
     Merge,
     ColumnSelection,
     EachOf,
 )
+
+
+def test_branch_param_factory_builds_namespaced_dict():
+    """branch_param(fn, **params) builds the namespaced filter without a dotted kwarg."""
+    assert branch_param("bandpass", low_hz=30) == {"bandpass.low_hz": 30}
+    assert branch_param("fn", a=1, b=2) == {"fn.a": 1, "fn.b": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +133,20 @@ class TestVariantConstruction:
     def test_nested_variant_conflict_raises(self):
         with pytest.raises(ValueError, match="Conflicting branch_param"):
             Variant(Variant(FilteredEMG, low_hz=20), low_hz=50)
+
+    def test_fn_namespaces_branch_params(self):
+        """fn= disambiguation namespaces params (no dotted-string kwarg needed)."""
+        v = Variant(FilteredEMG, fn="bandpass", low_hz=20)
+        assert v.branch_params == {"bandpass.low_hz": 20}
+
+    def test_fn_equivalent_to_dotted_kwarg(self):
+        a = Variant(FilteredEMG, fn="detect_spikes", threshold=0.5)
+        b = Variant(FilteredEMG, **{"detect_spikes.threshold": 0.5})
+        assert a.branch_params == b.branch_params == {"detect_spikes.threshold": 0.5}
+
+    def test_fn_requires_a_param(self):
+        with pytest.raises(ValueError, match="at least one branch_param"):
+            Variant(FilteredEMG, fn="bandpass")
 
 
 # ---------------------------------------------------------------------------

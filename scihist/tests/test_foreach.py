@@ -26,7 +26,7 @@ def _make_simple_mock_db():
         def distinct_schema_combinations(self, keys):
             return []
 
-        def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
+        def save_batch(self, variable_class, data_items, profile=False):
             ids = []
             for data, meta in data_items:
                 variable_class.save(data, **meta)
@@ -547,7 +547,7 @@ class TestForEachAllLevels:
                 lists = [self._values[k] for k in keys]
                 return [tuple(str(v) for v in combo) for combo in _product(*lists)]
 
-            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
+            def save_batch(self, variable_class, data_items, profile=False):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)
@@ -700,7 +700,7 @@ class TestForEachDistribute:
                     return schema_values[key]
                 return []
 
-            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
+            def save_batch(self, variable_class, data_items, profile=False):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)
@@ -1108,7 +1108,7 @@ class TestForEachConfigKeys:
             def distinct_schema_combinations(self, keys):
                 return []
 
-            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
+            def save_batch(self, variable_class, data_items, profile=False):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)
@@ -1275,7 +1275,7 @@ class TestForEachSchemaFiltering:
                     return self._combos[combo_key]
                 return []
 
-            def save_batch(self, variable_class, data_items, profile=False, lineage_hashes=None):
+            def save_batch(self, variable_class, data_items, profile=False):
                 ids = []
                 for data, meta in data_items:
                     variable_class.save(data, **meta)

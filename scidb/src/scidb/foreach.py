@@ -83,59 +83,52 @@ class _PreresolvedFilter(Filter):
     already-validated schema_ids directly — no second DB query or coverage
     check needed.
 
-    Also carries the ``__where`` provenance key derived from the merge-level
-    where= filter (``where_key``). This lets a constituent that was computed by
-    for_each (and therefore has a stored ``__where`` version key) be matched by
-    provenance in ``_load_with_where`` Strategy 1 — selecting the single variant
-    the filter describes — exactly as a direct ``.load(where=...)`` would. Without
-    it, constituents fall through to schema-id filtering (Strategy 2), which
-    cannot distinguish multiple variants that share the same schema keys.
-    Constituents with no stored ``__where`` (e.g. raw-saved data) simply miss
-    Strategy 1 and fall back to the pre-resolved ``schema_ids`` in Strategy 2.
+    Also carries the **variable-level portion** of the merge-level where= filter
+    (``variable_filter``). ``_load_with_where`` uses it for *semantic* variant
+    matching — selecting the single computed variant whose consumed input
+    schema_id set the filter describes — exactly as a direct ``.load(where=...)``
+    would (§10 "where= redesign"). Constituents with no producing invocation
+    (raw/direct-saved data) fall back to their own schema location, restricted to
+    the pre-resolved ``schema_ids``.
 
-    ``_schema_ids`` is authoritative in *both* strategies: it already encodes the
-    full where= filter (variable-level AND any SchemaKey portion).  The
-    ``_restrict_to_resolved_ids`` marker tells ``_load_with_where`` to apply it as
-    a schema-id row selector even when Strategy 1 matches by provenance — without
-    it, a constituent that *does* have a stored ``__where`` would return every
-    schema_id sharing that variant, ignoring the SchemaKey restriction.
+    ``_schema_ids`` is the **row restriction**: it already encodes the full where=
+    filter (variable-level AND any SchemaKey portion), applied on top of the
+    variant match via the ``_restrict_to_resolved_ids`` marker so a constituent
+    that matches a variant by provenance is still narrowed to the selected rows.
     """
 
-    # Tells DatabaseManager._load_with_where (Strategy 1) to intersect the
-    # provenance-matched records with resolve() — see class docstring.
+    # Tells DatabaseManager._load_with_where to intersect the variant-matched
+    # records with resolve() (the pre-resolved row set) — see class docstring.
     _restrict_to_resolved_ids = True
 
-    def __init__(self, schema_ids: set, where_key: str = ""):
+    def __init__(self, schema_ids: set, variable_filter: "Filter | None" = None):
         self._schema_ids = schema_ids
-        self._where_key = where_key or ""
+        self._variable_filter = variable_filter
 
     def to_key(self) -> str:
-        # Drives augmented["__where"] in _load_with_where: empty → Strategy 1
-        # skipped (schema-id fallback only); non-empty → provenance match.
-        return self._where_key
+        vf = self._variable_filter
+        return vf.to_key() if vf is not None else ""
 
     def resolve(self, db, target_variable_class, target_table_name, validate_coverage=True) -> set:
         return self._schema_ids
 
 
-def _merge_constituent_where_key(where: Any) -> str:
-    """Derive the ``__where`` provenance key for a merge-level where= filter.
+def _merge_constituent_variable_filter(where: Any) -> "Filter | None":
+    """The variable-level portion of a merge-level where= filter (or None).
 
-    Splits off any SchemaKey portion (which selects rows, not variants) and
-    keys on the variable-level portion only — mirroring exactly what
-    ``DatabaseManager._load_with_where`` does for a direct ``.load(where=...)``,
-    via the shared ``_where_key_from_filter`` helper, so Merge constituents and
-    direct loads resolve to the same stored variant.
+    Splits off any SchemaKey portion (which selects rows, not variants) and keeps
+    the variable-level portion only — the part that semantically identifies which
+    computed variant to return — mirroring what ``_load_with_where`` does for a
+    direct ``.load(where=...)`` so Merge constituents and direct loads select the
+    same variant.
     """
     from .filters import split_schema_key_filters
-    from .database import _where_key_from_filter
 
-    where_for_key = where
     if isinstance(where, Filter):
         sk_filter, var_filter = split_schema_key_filters(where)
         if sk_filter is not None:
-            where_for_key = var_filter  # None when where is purely SchemaKey
-    return _where_key_from_filter(where_for_key) or ""
+            return var_filter  # None when where is purely SchemaKey
+    return where if isinstance(where, Filter) else None
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +599,7 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
     from . import provenance_query
 
     schema_keys = set(db.dataset_schema_keys)
-    conds = ["inv.function_name = ?", "r.type = ?", "COALESCE(rm.excluded, FALSE) = FALSE"]
+    conds = ["inv.function_name = ?", "r.type = ?", "COALESCE(r.excluded, FALSE) = FALSE"]
     params: list = [fn_name, type_name]
     for k, v in schema_combo.items():
         if k in schema_keys:
@@ -616,7 +609,7 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
         "SELECT io.output_record_id FROM _invocation inv "
         "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
         "JOIN _record r ON r.record_id = io.output_record_id "
-        "JOIN _record_metadata rm ON rm.record_id = io.output_record_id "
+        "JOIN _record_save rm ON rm.record_id = io.output_record_id "
         "JOIN _schema s ON r.schema_id = s.schema_id "
         f"WHERE {' AND '.join(conds)} ORDER BY rm.timestamp DESC",
         params,
@@ -1881,15 +1874,14 @@ def _load_input(
         if where is not None:
             merge_effective_ids = _compute_merge_effective_ids(_merge_db, var_spec)
             _check_merge_filter_coverage(_merge_db, where, merge_effective_ids)
-            # Provenance key for the variable-level portion of the filter, shared
-            # by every constituent.  A constituent computed by for_each with this
-            # where= stored it as its __where version key; carrying it lets the
-            # constituent loader match that single variant (Strategy 1) instead of
-            # returning every variant that happens to share the same schema keys.
-            merge_where_key = _merge_constituent_where_key(where)
+            # Variable-level portion of the filter, shared by every constituent.
+            # Carrying it lets the constituent loader semantically select the single
+            # computed variant the filter describes (by its consumed input schema_id
+            # set) instead of returning every variant that shares the same schema keys.
+            merge_var_filter = _merge_constituent_variable_filter(where)
             Log.debug(
-                f"[Merge] {var_spec.__name__}: where provenance key="
-                f"{merge_where_key!r}"
+                f"[Merge] {var_spec.__name__}: variant filter="
+                f"{merge_var_filter!r}"
             )
 
         for sub_spec in var_spec.var_specs:
@@ -1900,7 +1892,7 @@ def _load_input(
                     validate_coverage=False,  # coverage validated once above
                 )
                 constituent_where = _PreresolvedFilter(
-                    matching_ids, where_key=merge_where_key
+                    matching_ids, variable_filter=merge_var_filter
                 )
             else:
                 constituent_where = None
@@ -2992,10 +2984,8 @@ def _save_results(
                 # The generated record's producing invocation (written by record_run
                 # in PHASE 4) carries the function identity, so the graph-based
                 # skip_computed gate finds it — no version_keys needed.
-                _db._save_record_metadata(
-                    record_id=generated_id, timestamp=ts, variable_name=out_name,
-                    schema_id=schema_id, content_hash=None,
-                    schema_version=sv, user_id=_user,
+                _db._save_record_event(
+                    record_id=generated_id, timestamp=ts, user_id=_user,
                 )
                 insert_record_entity(
                     _db._duck, record_id=generated_id, created_at=ts,

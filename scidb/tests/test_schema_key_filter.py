@@ -563,10 +563,9 @@ class TestSchemaKeyWithForEachWhereFilter:
     """Regression: schema_key() filter combined with a variable-level filter must not
     error when loading for_each-computed data.
 
-    Before the fix, adding schema_key("session").isin([...]) to a variable-level
-    filter changed the __where lookup key, defeating Strategy 1.  The fallback
-    (Strategy 2) then raised ValueError because the variable filter was finer
-    than the target.
+    The SchemaKey portion is split off as a row selector and the variable-level
+    portion drives the semantic variant match, so combining them returns only the
+    SchemaKey-selected rows of the matched variant (no error, no leak).
     """
 
     def test_schema_key_isin_combined_with_variable_filter(self, foreach_where_db):
@@ -644,29 +643,28 @@ class CollectOut(BaseVariable):
 class TestSchemaKeyOnMergeConstituent:
     """Regression: a SchemaKey filter combined with a variable-level filter must
     still restrict rows when the input is a ``Merge`` whose constituent was itself
-    computed by ``for_each`` (so it carries a stored ``__where`` version key).
+    computed by ``for_each``.
 
     The Merge path pre-resolves the where= filter per constituent into a
     ``_PreresolvedFilter`` whose ``resolve()`` already bakes in the SchemaKey
-    restriction.  Before the fix, ``_load_with_where`` Strategy 1 matched the
-    constituent by ``__where`` provenance and returned every schema_id sharing
-    that variant, ignoring the pre-resolved id set — so the SchemaKey filter
-    appeared to do nothing and every session leaked through.
+    restriction.  ``_load_with_where`` matches the constituent's variant
+    semantically (by consumed inputs) and then applies that pre-resolved id set as
+    a row restriction; without it the SchemaKey filter would appear to do nothing
+    and every session would leak through.
     """
 
-    def test_preresolved_filter_restricts_rows_in_strategy1(self, foreach_where_db):
-        """Directly exercise the bug: a _PreresolvedFilter whose where_key matches
-        the stored __where must still restrict rows to its resolved schema_ids."""
+    def test_preresolved_filter_restricts_rows(self, foreach_where_db):
+        """Directly exercise the bug: a _PreresolvedFilter whose variable_filter
+        matches the computed variant must still restrict rows to its resolved
+        schema_ids (the row-restriction applied on top of the variant match)."""
         from scidb.foreach import _PreresolvedFilter
 
         db = foreach_where_db
-        # ComputedOutput stored __where = (FilterVar == "U").to_key()
-        where_key = (FilterVar == "U").to_key()
         # Resolve ComputedOutput's schema_ids restricted to session=BL.
         bl_ids = schema_key("session").isin(["BL"]).resolve(
             db, ComputedOutput, ComputedOutput.table_name()
         )
-        pf = _PreresolvedFilter(bl_ids, where_key=where_key)
+        pf = _PreresolvedFilter(bl_ids, variable_filter=(FilterVar == "U"))
 
         out = db.load_all_as_df(
             ComputedOutput,
@@ -685,14 +683,14 @@ class TestSchemaKeyOnMergeConstituent:
         and as_table=True must hand the function a table containing only the
         SchemaKey-selected sessions.
 
-        Both constituents carry the same stored __where, so both are matched by
-        Strategy 1.  If the pre-resolved schema-id restriction is dropped, both
-        leak session=MID and the inner join cannot remove it — the table would
-        wrongly contain MID.
+        Both constituents match the same variant (same consumed inputs), so both
+        pass the variant match.  If the pre-resolved schema-id restriction is
+        dropped, both leak session=MID and the inner join cannot remove it — the
+        table would wrongly contain MID.
         """
         from scidb import for_each, Merge
 
-        # Second computed constituent with the same __where as ComputedOutput.
+        # Second computed constituent computed under the same where= as ComputedOutput.
         def compute2(filterVar):
             return 2.0
 

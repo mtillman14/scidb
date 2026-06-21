@@ -80,33 +80,6 @@ def test_invocation_id_distribute_matters():
 
 
 # ---------------------------------------------------------------------------
-# Output record ids
-# ---------------------------------------------------------------------------
-def test_output_id_deterministic():
-    a = prov.compute_output_record_id("Filtered", 1, "ch", "inv1", 0)
-    b = prov.compute_output_record_id("Filtered", 1, "ch", "inv1", 0)
-    assert a == b
-
-
-def test_output_id_output_num_matters():
-    a = prov.compute_output_record_id("T", 1, "ch", "inv1", 0)
-    b = prov.compute_output_record_id("T", 1, "ch", "inv1", 1)
-    assert a != b
-
-
-def test_output_id_invocation_matters():
-    a = prov.compute_output_record_id("T", 1, "ch", "invA", 0)
-    b = prov.compute_output_record_id("T", 1, "ch", "invB", 0)
-    assert a != b
-
-
-def test_output_id_content_matters():
-    a = prov.compute_output_record_id("T", 1, "chA", "inv", 0)
-    b = prov.compute_output_record_id("T", 1, "chB", "inv", 0)
-    assert a != b
-
-
-# ---------------------------------------------------------------------------
 # Run ids — fresh per call
 # ---------------------------------------------------------------------------
 def test_run_id_is_fresh():

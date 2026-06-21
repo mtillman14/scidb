@@ -1,8 +1,8 @@
 """
-Regression tests for orphaned records in _record_metadata.
+Regression tests for orphaned records.
 
-An orphaned record exists in _record_metadata but has no corresponding row in the
-variable's data table.  This can happen when a previous save used an unexpected
+An orphaned record exists in the save log / _record entity but has no corresponding
+row in the variable's data table.  This can happen when a previous save used an unexpected
 schema key (e.g. a prior for_each run with distribute=True saved an output with
 schema keys the user didn't intend), or when a save partially failed.
 
@@ -36,10 +36,10 @@ class Grouping(BaseVariable):
 
 
 def _inject_orphan(db, type_name, subject, distribute=None):
-    """Directly insert a _record_metadata row with no matching data row.
+    """Directly insert a _record (+ _record_save) row with no matching data row.
 
-    This simulates a record that was written to _record_metadata (e.g. by a buggy
-    prior for_each run) but whose data row was never written to {type_name}_data.
+    This simulates a record that was logged (e.g. by a buggy prior for_each run)
+    but whose data row was never written to {type_name}_data.
 
     Uses a dummy subject ("9999") so that schema_level is always determinable —
     the _schema table requires schema_level NOT NULL.  The exact schema values
@@ -58,23 +58,27 @@ def _inject_orphan(db, type_name, subject, distribute=None):
 
     schema_id = duck._get_or_create_schema_id(schema_level, key_values)
 
-    # Insert a phantom record_metadata row (no corresponding data row)
+    # Insert a phantom record (entity + save-event, no corresponding data row)
     import hashlib, time
     phantom_rid = "phantom" + hashlib.md5(
         f"{type_name}{subject}{distribute}{time.time()}".encode()
     ).hexdigest()[:10]
     duck.con.execute(
-        "INSERT INTO _record_metadata "
-        "(record_id, variable_name, schema_id, content_hash, timestamp) "
-        "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        "INSERT INTO _record "
+        "(record_id, created_at, type, schema_id, content_hash, schema_version, excluded) "
+        "VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, 1, FALSE)",
         [phantom_rid, type_name, schema_id, "deadbeef" * 2],
+    )
+    duck.con.execute(
+        "INSERT INTO _record_save (record_id, timestamp) VALUES (?, CURRENT_TIMESTAMP)",
+        [phantom_rid],
     )
     return phantom_rid
 
 
 class TestOrphanedRecordsExcluded:
     def test_no_nan_rows_from_orphaned_record(self, db):
-        """Orphaned record in _record_metadata must not appear as NaN row in spread load."""
+        """Orphaned record must not appear as NaN row in spread load."""
         Grouping.save("SHAM", subject=1, session="A")
         Grouping.save("STIM", subject=2, session="A")
 

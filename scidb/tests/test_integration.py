@@ -178,7 +178,7 @@ class TestIdempotentSaves:
 
         # Should only have one unique record_id in database
         rows = db._duck._fetchall(
-            "SELECT DISTINCT record_id FROM _record_metadata WHERE variable_name = 'ScalarValue'"
+            "SELECT DISTINCT record_id FROM _record WHERE type = 'ScalarValue'"
         )
         assert len(rows) == 1
 

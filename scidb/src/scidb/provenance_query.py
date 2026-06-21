@@ -382,31 +382,39 @@ def has_producing_invocation(duck, record_id: str) -> bool:
     return bool(rows)
 
 
-def record_where_clauses(duck, record_ids) -> dict[str, set]:
-    """``{record_id: {where_clause, ...}}`` — the ``where=`` filter string(s) of
-    the run(s) that produced each record (graph-derived replacement for the old
-    ``version_keys["__where"]``).
+def consumed_input_schema_ids(duck, record_ids) -> dict[str, frozenset]:
+    """``{record_id: frozenset(schema_id, ...)}`` — the *schema locations* of the
+    variable inputs each record's producing invocation consumed.
 
-    A record's producing invocation links to ``_run`` rows via ``_run_invocation``;
-    ``_run.where_clause`` is the same string for_each stored as ``__where``. Raw
-    records (no producing invocation) get no entry.
+    This is the semantic identity of a ``where=`` variant (§10, "where= redesign"
+    (B)): a ``where=`` filter's only effect on the computation is which input
+    records survive it, and the graph already records those as the invocation's
+    input edges. Reducing them to their **schema_ids** (stable locations, unlike
+    record_ids which change on every input re-save) gives a content-edit-stable key
+    that load can match against a freshly-resolved filter — making ``A & B`` and
+    ``B & A`` (and other textually-different but equivalent filters) match, which
+    the brittle ``where_clause`` string comparison cannot.
+
+    Constants and PathInput specs are excluded (no schema location); NULL schema_ids
+    are dropped. Raw records (no producing invocation) get no entry.
     """
     ids = [r for r in dict.fromkeys(record_ids)]
     if not ids:
         return {}
     placeholders = ", ".join(["?"] * len(ids))
     rows = duck._fetchall(
-        f"SELECT io.output_record_id, run.where_clause "
+        f"SELECT io.output_record_id, r.schema_id "
         f"FROM _invocation_output io "
-        f"JOIN _run_invocation ri ON ri.invocation_id = io.invocation_id "
-        f"JOIN _run run ON run.run_id = ri.run_id "
-        f"WHERE io.output_record_id IN ({placeholders})",
-        ids,
+        f"JOIN _invocation_input ii ON ii.invocation_id = io.invocation_id "
+        f"JOIN _record r ON r.record_id = ii.input_record_id "
+        f"WHERE io.output_record_id IN ({placeholders}) "
+        f"AND r.type NOT IN (?, ?) AND r.schema_id IS NOT NULL",
+        ids + [CONSTANT_TYPE, PATHINPUT_TYPE],
     )
-    out: dict[str, set] = {}
-    for rid, wc in rows:
-        out.setdefault(rid, set()).add(wc)
-    return out
+    acc: dict[str, set] = {}
+    for rid, schema_id in rows:
+        acc.setdefault(rid, set()).add(schema_id)
+    return {rid: frozenset(s) for rid, s in acc.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -515,14 +523,11 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
         input_types.update(invocation_path_inputs(duck, inv_id))
         at = sorted(as_table) if as_table else []
 
-        # where (config-level): the run(s) that produced this invocation.
-        where_rows = duck._fetchall(
-            "SELECT r.where_clause FROM _run_invocation ri "
-            "JOIN _run r ON r.run_id = ri.run_id "
-            "WHERE ri.invocation_id = ? AND r.where_clause IS NOT NULL LIMIT 1",
-            [inv_id],
-        )
-        where_clause = where_rows[0][0] if where_rows else None
+        # NB: where= is NOT part of config-variant identity. A where= filter's
+        # only effect on the computation is the surviving input set, already folded
+        # into invocation_id; its where_clause string is display-only (§10 where=
+        # redesign). So two for_each calls differing only by where= are the same
+        # config variant here.
 
         out_rows = duck._fetchall(
             "SELECT io.output_num, io.output_record_id, rec.type "
@@ -538,15 +543,13 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
                 tuple(sorted(input_types.items())),
                 tuple(sorted((k, repr(v)) for k, v in constants.items())),
                 output_num,
-                where_clause, tuple(at), bool(distribute),
+                tuple(at), bool(distribute),
             )
             if gkey not in groups:
                 vk: dict = {"__fn": fn_name}
                 if input_types:
                     vk["__inputs"] = input_types
                 vk["__constants"] = constants
-                if where_clause is not None:
-                    vk["__where"] = where_clause
                 if distribute:
                     vk["__distribute"] = True
                 if at:
@@ -604,8 +607,9 @@ def _current_records_by_schema(duck, variable_name: str) -> dict:
     optimization later.
     """
     rows = duck._fetchall(
-        "SELECT record_id, schema_id, timestamp FROM _record_metadata "
-        "WHERE variable_name = ? AND COALESCE(excluded, FALSE) = FALSE",
+        "SELECT rm.record_id, r.schema_id, rm.timestamp FROM _record_save rm "
+        "JOIN _record r ON r.record_id = rm.record_id "
+        "WHERE r.type = ? AND COALESCE(r.excluded, FALSE) = FALSE",
         [variable_name],
     )
     # Latest record per (schema_id, producing-variant key).
@@ -736,6 +740,34 @@ def realized_inputless_invocations(duck, fn_name: str) -> set:
             [inv_id],
         ):
             out.add((inv_id, sid))
+    return out
+
+
+def realized_inputless_schema_ids(duck, fn_name: str, const_rids: dict) -> set:
+    """Schema_ids where ``fn_name`` produced output via an **inputless** invocation
+    whose constant inputs exactly match ``const_rids`` (``{param: constant_record_id}``).
+
+    Used by the PathInput-node outdated check (``state.check_pathinput_node_state``)
+    to find the locations the loader has *actually* produced under the current
+    constant config. Constants are content-addressed, so matching is a plain
+    record_id dict-equality — no value round-trip and no invocation_id recompute
+    (the only hashing is the caller's ``compute_constant_record_id`` on the live
+    constants, which is identical everywhere). PathInput specs are deliberately
+    NOT part of this match: a template change does not fork a variant (see §10 #6).
+    """
+    by_inv: dict = {}
+    for inv_id, sid in realized_inputless_invocations(duck, fn_name):
+        by_inv.setdefault(inv_id, set()).add(sid)
+    out: set = set()
+    for inv_id, sids in by_inv.items():
+        rows = duck._fetchall(
+            "SELECT ii.param_name, ii.input_record_id FROM _invocation_input ii "
+            "JOIN _record r ON r.record_id = ii.input_record_id "
+            "WHERE ii.invocation_id = ? AND r.type = ?",
+            [inv_id, CONSTANT_TYPE],
+        )
+        if {p: rid for p, rid in rows} == const_rids:
+            out |= sids
     return out
 
 

@@ -423,6 +423,130 @@ def check_node_state(
     }
 
 
+def check_pathinput_node_state(
+    fn,
+    outputs: list[type],
+    inputs: dict,
+    db=None,
+    **iteration: list,
+) -> dict:
+    """Outdated check for a PathInput / constant-only function (no variable inputs).
+
+    A loader whose only inputs are a ``PathInput`` (+ optional constants) has no
+    DB-variable input to predict an expected set from, so the generic
+    :func:`check_node_state` can only report green-when-run / red-when-never-run
+    (a partially-run loader reads green — un-run combos leave no trace). This check
+    closes that gap by reconstructing the combos a run *would* produce **now** and
+    diffing them against what the loader has actually produced.
+
+    The should-run set is exactly the combos a run would *produce output for* now —
+    the **intersection** of the files on disk and the declared grid::
+
+        should = PathInput.discover()  ∩  Cartesian product of `iteration`
+               − schema-excluded combos
+
+    i.e. discovered combos restricted to the grid (empty/unspecified grid keys are
+    wildcards, so pure-discovery mode keeps every discovered combo). A grid combo
+    with no file produces nothing, and a file outside the grid is not iterated — so
+    neither is in ``should`` (and neither makes the node red). When there is no
+    PathInput at all (pure constants over a grid), ``should`` is just the grid.
+
+    Realized = the schema locations this function has produced output at under the
+    **current constants** (graph ground truth, content-addressed match — no
+    invocation_id recompute). The node is **red** iff any should-combo is not
+    realized (a new in-grid file appeared and hasn't been run); **green** otherwise.
+    Adding unwanted new data to the exclusion list drops it from ``should`` and
+    flips the node back to green, as if it did not exist.
+
+    Args:
+        fn: the pipeline function (plain callable).
+        outputs: output variable classes (accepted for signature parity; unused —
+            realized locations are read per producing function).
+        inputs: the ``for_each`` ``inputs`` dict (PathInput + any constants).
+        db: DatabaseManager (global DB if omitted).
+        **iteration: the iteration grid (e.g. ``subject=["1", "2"]``) — the same
+            metadata_iterables passed to ``for_each``. Empty/omitted keys fall back
+            to filesystem discovery, exactly like ``for_each``.
+
+    Returns the same dict shape as :func:`check_node_state`: ``{state, combos, counts}``.
+    """
+    import itertools
+
+    if db is None:
+        from scidb.database import get_database
+        db = get_database()
+    from scidb.database import _schema_str
+    from scidb.exclusions import filter_excluded_combos
+    from .foreach import _find_pathinput
+    from .provenance import compute_constant_record_id
+    from . import provenance_query
+
+    fn_name = getattr(fn, "__name__", None) or type(fn).__name__
+    schema_keys = list(db.dataset_schema_keys)
+
+    def _norm(combo: dict) -> dict:
+        return {k: _schema_str(v) for k, v in combo.items() if v is not None}
+
+    # --- should-run set: PathInput.discover() ∩ iteration grid, dedup, then exclude.
+    # This is exactly what for_each would *produce output for* now: a discovered
+    # file only counts if its combo is within the declared grid, and a grid combo
+    # only counts if a file exists for it. Unspecified/empty grid keys are
+    # wildcards, so pure-discovery mode (no grid) keeps every discovered combo. ---
+    should: list[dict] = []
+    seen: set = set()
+
+    def _add(combo: dict) -> None:
+        c = _norm(combo)
+        key = tuple(sorted(c.items()))
+        if c and key not in seen:
+            seen.add(key)
+            should.append(c)
+
+    grid_keys = [k for k, v in iteration.items() if v]
+    grid_sets = {k: {_schema_str(x) for x in iteration[k]} for k in grid_keys}
+
+    pi = _find_pathinput(inputs)
+    if pi is not None:
+        # Discovered combos that satisfy the grid (the intersection).
+        for combo in pi.discover():
+            c = _norm(combo)
+            if all(c.get(k) in grid_sets[k] for k in grid_keys):
+                _add(c)
+    elif grid_keys:
+        # No PathInput (pure constant inputs over a grid): there is no filesystem
+        # to intersect with, so the declared grid itself is the should-run set.
+        for prod in itertools.product(*[iteration[k] for k in grid_keys]):
+            _add(dict(zip(grid_keys, prod)))
+
+    should = filter_excluded_combos(should, schema_keys, db)
+
+    # --- realized locations produced under the current constants (graph truth) ---
+    cfg = provenance_query.config_from_inputs(inputs)
+    const_rids = {p: compute_constant_record_id(v) for p, v in cfg["constants"].items()}
+    realized_sids = provenance_query.realized_inputless_schema_ids(
+        db._duck, fn_name, const_rids,
+    )
+    realized = [_norm(_schema_id_to_combo(db, sid)) for sid in realized_sids]
+
+    def _is_realized(c: dict) -> bool:
+        # a should-combo is covered if some realized location agrees on all its keys
+        return any(all(r.get(k) == v for k, v in c.items()) for r in realized)
+
+    counts: dict[str, int] = {"up_to_date": 0, "stale": 0, "missing": 0}
+    combo_results: list[dict] = []
+    for c in should:
+        st: ComboState = "up_to_date" if _is_realized(c) else "missing"
+        counts[st] += 1
+        combo_results.append({"schema_combo": c, "branch_params": {}, "state": st})
+
+    overall: NodeState = "green" if (combo_results and counts["missing"] == 0) else "red"
+    logger.debug(
+        "pathinput node %s: %s (should=%d, up_to_date=%d, missing=%d)",
+        fn_name, overall, len(should), counts["up_to_date"], counts["missing"],
+    )
+    return {"state": overall, "combos": combo_results, "counts": counts}
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -461,18 +585,20 @@ def _get_latest_record_at_location(db, record_id: str) -> str | None:
     to ``get_latest_record_id_for_variant``.
     """
     rows = db._duck._fetchall(
-        "SELECT variable_name, schema_id FROM _record_metadata "
+        "SELECT type, schema_id FROM _record "
         "WHERE record_id = ? LIMIT 1",
         [record_id],
     )
     if not rows:
         return None
     vn, sid = rows[0]
+    # Recency from the save-event log; type/schema/excluded from the _record entity.
     latest = db._duck._fetchall(
-        "SELECT record_id FROM _record_metadata "
-        "WHERE variable_name = ? AND schema_id = ? "
-        "AND COALESCE(excluded, FALSE) = FALSE "
-        "ORDER BY timestamp DESC LIMIT 1",
+        "SELECT rm.record_id FROM _record_save rm "
+        "JOIN _record r ON r.record_id = rm.record_id "
+        "WHERE r.type = ? AND r.schema_id = ? "
+        "AND COALESCE(r.excluded, FALSE) = FALSE "
+        "ORDER BY rm.timestamp DESC LIMIT 1",
         [vn, int(sid)],
     )
     if not latest:

@@ -132,6 +132,36 @@ def test_execution_audit_records_run(db):
 
 
 # ---------------------------------------------------------------------------
+# consumed_input_schema_ids (§10 "where= redesign" (B) — semantic variant match)
+# ---------------------------------------------------------------------------
+def test_consumed_input_schema_ids(db):
+    from scidb import provenance_query
+
+    RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
+    raw = RawSignal.load(subject="S01", session="1")
+    for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
+             subject=["S01"], session=["1"])
+    f = Filtered.load(subject="S01", session="1")
+
+    # Filtered's producing invocation consumed the one RawSignal input; the
+    # consumed set is that input's schema location.
+    raw_sid = db._duck._fetchall(
+        "SELECT schema_id FROM _record WHERE record_id = ?", [raw.record_id]
+    )[0][0]
+    consumed = provenance_query.consumed_input_schema_ids(db._duck, [f.record_id])
+    assert consumed[f.record_id] == frozenset({raw_sid})
+
+
+def test_consumed_input_schema_ids_empty_for_raw(db):
+    from scidb import provenance_query
+
+    RawSignal.save(np.array([1.0]), subject="S01", session="1")
+    raw = RawSignal.load(subject="S01", session="1")
+    # Raw records have no producing invocation → no consumed inputs → no entry.
+    assert provenance_query.consumed_input_schema_ids(db._duck, [raw.record_id]) == {}
+
+
+# ---------------------------------------------------------------------------
 # has_lineage
 # ---------------------------------------------------------------------------
 def test_has_lineage_true_for_computed_false_for_raw(db):

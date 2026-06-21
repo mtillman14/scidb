@@ -270,22 +270,21 @@ def invocation_id_for_meta(meta: dict) -> str:
 # Output record metadata lookup
 # ---------------------------------------------------------------------------
 def _fetch_record_meta(duck, rids: list[str]) -> dict[str, dict]:
-    """Latest ``content_hash`` / ``schema_id`` / ``schema_version`` / ``timestamp``
-    per output record_id, read from ``_record_metadata`` (still authoritative
-    during the additive migration)."""
+    """``content_hash`` / ``schema_id`` / ``schema_version`` (from the ``_record``
+    entity) + latest save ``timestamp`` (from the ``_record_save`` event log) per
+    output record_id."""
     uniq = list(dict.fromkeys(rids))
     if not uniq:
         return {}
     placeholders = ", ".join(["?"] * len(uniq))
     rows = duck._fetchall(
         f"""
-        SELECT record_id, content_hash, schema_id, schema_version, timestamp
-        FROM (
-            SELECT record_id, content_hash, schema_id, schema_version, timestamp,
-                   ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) AS rn
-            FROM _record_metadata
-            WHERE record_id IN ({placeholders})
-        ) WHERE rn = 1
+        SELECT r.record_id, r.content_hash, r.schema_id, r.schema_version,
+               MAX(rs.timestamp) AS timestamp
+        FROM _record r
+        JOIN _record_save rs ON rs.record_id = r.record_id
+        WHERE r.record_id IN ({placeholders})
+        GROUP BY r.record_id, r.content_hash, r.schema_id, r.schema_version
         """,
         uniq,
     )
@@ -393,7 +392,7 @@ def record_run(
         output_edges[okey] = g.record_id
         run_inv_ids.add(inv_id)
 
-        # Output entity row (pull content_hash/schema_id from _record_metadata).
+        # Output entity row (pull content_hash/schema_id from _record + latest save ts).
         cm = meta_map.get(g.record_id, {})
         entity_rows[g.record_id] = (
             g.record_id,

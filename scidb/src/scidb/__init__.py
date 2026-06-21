@@ -24,7 +24,12 @@ Example:
 
 from .database import configure_database, get_database, get_user_id
 from .lineage_save import save
-from .state import check_combo_state, check_node_state, check_multiple_nodes_state
+from .state import (
+    check_combo_state,
+    check_node_state,
+    check_multiple_nodes_state,
+    check_pathinput_node_state,
+)
 from .log import Log
 from .exceptions import (
     AmbiguousParamError,
@@ -39,7 +44,7 @@ from .exceptions import (
 # Batch execution (Layer 2 — DB-backed, no lineage)
 from .foreach import for_each
 from .fixed import Fixed
-from .variant import Variant
+from .variant import Variant, branch_param
 from .merge import Merge
 from .column_selection import ColumnSelection
 from .colname import ColName
@@ -88,6 +93,7 @@ __all__ = [
     # Pipeline node staleness
     "check_combo_state",
     "check_node_state",
+    "check_pathinput_node_state",
     "check_multiple_nodes_state",
     # Logging
     "Log",
@@ -96,6 +102,7 @@ __all__ = [
     "pipeline",
     "Fixed",
     "Variant",
+    "branch_param",
     "Merge",
     "ColumnSelection",
     "ColName",
