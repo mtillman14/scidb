@@ -4,6 +4,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
+raw-options = { search_parent_directories = true }
 
 [project]
 name = "scidb"
