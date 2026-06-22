@@ -1,0 +1,8 @@
+-e ./scicanonicalhash
+-e ./scifor
+-e ./sciduckdb
+-e ./scilineage
+-e ./scihist
+-e ./scidb
+-e ./scimatlab
+-e ./scistack
