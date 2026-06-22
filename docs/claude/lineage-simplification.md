@@ -1,5 +1,11 @@
 # Lineage Simplification — Bipartite Provenance Model
 
+> **⚠️ This is the original DESIGN doc (pre-implementation). For the canonical,
+> up-to-date as-built reference see `database-model.md`.** Some details here were
+> revised during implementation (e.g. output `record_id` is still derived from
+> in-memory metadata, not `invocation_id`; `_record_metadata` became the slimmed
+> `_record_save`). Read this for the "why" behind the model.
+
 > Status: **design** (branch `dev-hist`). No code written yet. This document is
 > the agreed reference for the redesign. We are in beta with **no existing
 > databases**, so this is a **clean replacement** — old structures are deleted,

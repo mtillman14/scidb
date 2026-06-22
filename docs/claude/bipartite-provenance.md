@@ -1,5 +1,11 @@
 # Bipartite Provenance — As-Built
 
+> **⚠️ SUPERSEDED — see `database-model.md` for the canonical, up-to-date
+> reference.** This doc is an earlier as-built note and is now partly stale: it
+> still describes `_record_metadata` with `version_keys` / `lineage_hash`
+> columns, which were since renamed/slimmed to `_record_save` (the blob columns
+> were deleted). Read it only for the original design rationale.
+
 > Status: **implemented** (branch `dev-hist`). This documents the model as it
 > actually exists in code after the lineage-simplification migration, complementing
 > the design in `lineage-simplification.md`. Read this to understand how provenance

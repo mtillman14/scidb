@@ -1,5 +1,11 @@
 # Graph Database — Current State & Remaining TODOs
 
+> **⚠️ SUPERSEDED — see `database-model.md` for the canonical, up-to-date
+> reference.** The data-model description, the remaining-TODO list, and the
+> design-note history have all been folded into `database-model.md` (§11–§12).
+> This doc is retained for its fuller as-of-2026-06-20 prose, but the canonical
+> doc is authoritative.
+
 > Branch `dev-hist`, as of 2026-06-20. This documents the data model after the
 > lineage-simplification migration: a **bipartite provenance graph** is the single
 > source of truth. The old `_lineage` table, `version_keys` / `branch_params`
