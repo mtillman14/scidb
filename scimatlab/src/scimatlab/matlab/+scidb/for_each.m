@@ -462,7 +462,18 @@ function out = flatten_nested_table_outputs(result_tbl, output_names)
         string(result_tbl.Properties.VariableNames), ...
         [nested_cols, string(output_names)], 'stable');
 
-    pieces = {};
+    % Metadata column names are constant across every row (meta_block is
+    % always repmat of these), so resolve them once instead of re-reading
+    % meta_block.Properties.VariableNames per inner column.
+    meta_var_names = cellstr(meta_cols);
+
+    % Accumulate expanded rows as parallel meta/nested blocks (concatenated
+    % once at the end) and pass-through rows separately. Deferring the
+    % horizontal concat avoids paying table metadata reconciliation per row.
+    meta_pieces = {};
+    nested_pieces = {};
+    passthrough_pieces = {};
+
     for r = 1:height(result_tbl)
         % Find the first non-empty nested table in this row to determine
         % how many rows this combo expands to. All nested columns are
@@ -477,69 +488,96 @@ function out = flatten_nested_table_outputs(result_tbl, output_names)
         end
         if inner_h == 0
             % Pass the row through unchanged (no expansion needed).
-            pieces{end+1} = result_tbl(r, :); %#ok<AGROW>
+            passthrough_pieces{end+1} = result_tbl(r, :); %#ok<AGROW>
             continue;
         end
 
         % Build the metadata block (replicated)
-        meta_row = result_tbl(r, cellstr(meta_cols));
+        meta_row = result_tbl(r, meta_var_names);
         meta_block = repmat(meta_row, inner_h, 1);
 
-        % For each nested output column, fold the inner table in.
-        % OPTIMIZATION: Collect all columns first, then build table in one
-        % operation to avoid repeated table growth overhead.
-        nested_col_names = {};
-        nested_col_data = {};
-        nested_name_set = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+        % Fold each nested output column in. Work with whole inner tables
+        % rather than decomposing into individual columns: pop any
+        % meta-override columns into meta_block, prefix name collisions,
+        % then horizontally concat the (usually single) inner table.
+        nested_block = [];
+        seen_names = meta_var_names;  % names already in use (meta + nested)
 
         for nc = 1:numel(nested_cols)
             nc_name = char(nested_cols(nc));
             cell_val = result_tbl.(nc_name){r};
             if istable(cell_val)
-                inner_cols = string(cell_val.Properties.VariableNames);
-                for ic = 1:numel(inner_cols)
-                    icn = char(inner_cols(ic));
-                    if ismember(icn, meta_block.Properties.VariableNames)
-                        % Inner column matches a metadata column: prefer
-                        % the inner value (it's the per-row data the user
-                        % chose to include in their output table).
-                        meta_block.(icn) = cell_val.(icn);
-                    elseif isKey(nested_name_set, icn)
-                        % Disambiguate name collisions across nested
-                        % outputs by prefixing with the output name.
-                        prefixed_name = sprintf('%s_%s', nc_name, icn);
-                        nested_col_names{end+1} = prefixed_name; %#ok<AGROW>
-                        nested_col_data{end+1} = cell_val.(icn); %#ok<AGROW>
-                        nested_name_set(prefixed_name) = true;
-                    else
-                        nested_col_names{end+1} = icn; %#ok<AGROW>
-                        nested_col_data{end+1} = cell_val.(icn); %#ok<AGROW>
-                        nested_name_set(icn) = true;
+                inner = cell_val;
+                innames = inner.Properties.VariableNames;
+
+                % Inner columns matching a metadata column: prefer the
+                % inner value (per-row data the user put in their output)
+                % and drop them from the inner block.
+                meta_hit = ismember(innames, meta_var_names);
+                if any(meta_hit)
+                    hit_names = innames(meta_hit);
+                    for k = 1:numel(hit_names)
+                        meta_block.(hit_names{k}) = inner.(hit_names{k});
                     end
+                    inner(:, meta_hit) = [];
+                    innames = inner.Properties.VariableNames;
+                end
+
+                % Disambiguate name collisions across nested outputs by
+                % prefixing with the output name.
+                coll = ismember(innames, seen_names);
+                if any(coll)
+                    for k = find(coll)
+                        innames{k} = sprintf('%s_%s', nc_name, innames{k});
+                    end
+                    inner.Properties.VariableNames = innames;
+                end
+
+                seen_names = [seen_names, innames]; %#ok<AGROW>
+                if isempty(nested_block)
+                    nested_block = inner;
+                else
+                    nested_block = [nested_block, inner]; %#ok<AGROW>
                 end
             else
                 % Non-table cell — wrap in a cell column of inner_h
                 % copies so widths line up.
-                nested_col_names{end+1} = nc_name; %#ok<AGROW>
-                nested_col_data{end+1} = repmat({cell_val}, inner_h, 1); %#ok<AGROW>
-                nested_name_set(nc_name) = true;
+                col = table(repmat({cell_val}, inner_h, 1), 'VariableNames', {nc_name});
+                seen_names = [seen_names, {nc_name}]; %#ok<AGROW>
+                if isempty(nested_block)
+                    nested_block = col;
+                else
+                    nested_block = [nested_block, col]; %#ok<AGROW>
+                end
             end
         end
 
-        % Build nested_block in one operation (fast!)
-        if isempty(nested_col_names)
-            nested_block = table();
+        meta_pieces{end+1} = meta_block; %#ok<AGROW>
+        if isempty(nested_block)
+            nested_pieces{end+1} = table(); %#ok<AGROW>
         else
-            nested_block = table(nested_col_data{:}, 'VariableNames', nested_col_names);
+            nested_pieces{end+1} = nested_block; %#ok<AGROW>
         end
-
-        pieces{end+1} = [meta_block, nested_block]; %#ok<AGROW>
     end
 
-    if isempty(pieces)
-        out = result_tbl;
+    % Assemble. Expanded rows share a uniform schema, so stack meta and
+    % nested blocks independently then horzcat once. Pass-through rows have
+    % a different (full-output) schema and cannot be vertcat'd with expanded
+    % rows, matching the original behavior (datasets are all-expanded or
+    % all-passthrough in practice).
+    have_expanded = ~isempty(meta_pieces);
+    have_passthrough = ~isempty(passthrough_pieces);
+    if have_expanded
+        expanded = [vertcat(meta_pieces{:}), vertcat(nested_pieces{:})];
+        if have_passthrough
+            out = vertcat(expanded, vertcat(passthrough_pieces{:}));
+        else
+            out = expanded;
+        end
+    elseif have_passthrough
+        out = vertcat(passthrough_pieces{:});
     else
-        out = vertcat(pieces{:});
+        out = result_tbl;
     end
 end
 
