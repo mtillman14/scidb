@@ -1418,10 +1418,13 @@ class DatabaseManager:
 
         # Collapse to the latest record per *variant* when version_id="latest".
         # Variant identity is derived from the bipartite graph: the producing
-        # function + the accumulated upstream constants (§6). Records that differ
-        # only by which upstream record_id was consumed (i.e. input data was
-        # re-saved) share a variant and collapse to the newest. Distinct
-        # constant-variants (low_hz=20 vs 30) keep separate identities.
+        # function + the accumulated upstream constants (§6) + the consumed input
+        # *schema locations*. Records that differ only by which upstream record_id
+        # was consumed (i.e. input data was re-saved at the same location) share a
+        # variant and collapse to the newest. Distinct constant-variants
+        # (low_hz=20 vs 30) — and records computed from genuinely different input
+        # locations at the same output schema_id (cross-level where=) — keep
+        # separate identities.
         # Raw / manually saved records have no producing invocation; any non-schema
         # save kwargs are anchored on a synthetic __save__ invocation, so those take
         # the graph branch and only true raw saves fall into the "__raw__" variant.
@@ -1431,6 +1434,16 @@ class DatabaseManager:
             _t_collapse = time.perf_counter()
             from collections import defaultdict
             from . import provenance_query
+            # Consumed input *schema locations* per record (schema-edit-stable:
+            # a re-save keeps the same schema_id, a genuinely different input
+            # location changes it). Part of the variant key so two for_each runs
+            # that emit output at the SAME output schema_id but consumed DIFFERENT
+            # input locations (e.g. where=Side=='L' vs =='R' producing one
+            # subject-level record each) stay distinct instead of collapsing to
+            # the newest — which would hide the other from where=-based load.
+            consumed_map = provenance_query.consumed_input_schema_ids(
+                self._duck, df["record_id"].tolist()
+            )
             groups = defaultdict(list)
             for row in df.itertuples(index=True):
                 inv = provenance_query.producing_invocation(self._duck, row.record_id)
@@ -1441,7 +1454,8 @@ class DatabaseManager:
                     # share fn + constants); temporal re-saves share output_num
                     # and collapse to the newest.
                     onum = provenance_query.output_num_for(self._duck, row.record_id)
-                    variant_key = (inv[1], json.dumps(bp, sort_keys=True), onum)
+                    consumed = tuple(sorted(consumed_map.get(row.record_id, ())))
+                    variant_key = (inv[1], json.dumps(bp, sort_keys=True), onum, consumed)
                 else:
                     # No producing invocation → a plain raw save. (Any non-schema
                     # save kwargs are anchored on a synthetic __save__ invocation,
@@ -1993,15 +2007,26 @@ class DatabaseManager:
                 self, variable_class, table_name,
                 validate_coverage=variant_validate_coverage,
             ))
+            # The consumed-input subset test runs at the INPUT variable's level,
+            # which the target-resolved ``s_var`` does not capture when the output
+            # is coarser than the filter (cross-level where=): there ``resolve``
+            # short-circuits a finer filter to "all target ids", so consumed
+            # (input-level) ids could never be a subset. Resolve the filter at its
+            # OWN granularity for that test; fall back to ``s_var`` for filters with
+            # no intrinsic level (raw SQL) and for the same-level case (identical).
+            try:
+                s_var_native = frozenset(var_filter.resolve_native(self))
+            except NotImplementedError:
+                s_var_native = s_var
             consumed_map = provenance_query.consumed_input_schema_ids(
                 self._duck, records_all["record_id"].tolist()
             )
 
-            def _variant_match(row, _s=s_var, _c=consumed_map):
+            def _variant_match(row, _s=s_var, _sn=s_var_native, _c=consumed_map):
                 consumed = _c.get(row["record_id"])
                 if consumed is not None:
-                    return consumed <= _s            # subset: every consumed loc ∈ S_var
-                return row["schema_id"] in _s        # raw/direct-save fallback
+                    return consumed <= _sn           # subset: every consumed loc ∈ S_var (native level)
+                return row["schema_id"] in _s        # raw/direct-save fallback (target level)
 
             records = records_all[records_all.apply(_variant_match, axis=1)]
             Log.debug(

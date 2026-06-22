@@ -4,7 +4,8 @@ function filt = raw_sql(sql)
 %   FILT = scidb.raw_sql(SQL)
 %
 %   The SQL fragment is applied to the target variable's data table joined
-%   with _record_metadata.  No WHERE keyword should be included.
+%   with _record_save / _record (and _schema).  No WHERE keyword should be
+%   included.
 %
 %   Example:
 %       StepLength().load(where=scidb.raw_sql('"value" > 0.70'))

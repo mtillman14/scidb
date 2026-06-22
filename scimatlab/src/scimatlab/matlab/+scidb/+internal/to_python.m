@@ -7,8 +7,7 @@ function py_obj = to_python(data)
 
     % Pass through Python objects that arrived in a MATLAB cell. The
     % MATLAB→Python bridge can route them straight back without conversion
-    % (e.g. ``py.scilineage.core.LineageFcnResult`` cells produced when a
-    % LineageFcn-wrapped function returns multiple outputs via scifor).
+    % (e.g. a py.pandas.DataFrame produced upstream).
     if isa(data, 'py.object') && ~isa(data, 'py.NoneType')
         py_obj = data;
         return;

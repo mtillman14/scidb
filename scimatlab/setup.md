@@ -91,11 +91,11 @@ scidb.configure_database("experiment.duckdb", ["subject", "session"], "pipeline.
 % Save data
 RawSignal().save(randn(100, 3), subject=1, session="A");
 
-% Thunked computation
-filter_fn = scidb.LineageFcn(@bandpass_filter);
-raw = RawSignal().load(subject=1, session="A");
-result = filter_fn(raw, 10, 200);
-FilteredSignal().save(result, subject=1, session="A");
+% Provenance-tracked computation (lineage recorded automatically)
+scidb.for_each(@bandpass_filter, ...
+    struct('signal', RawSignal(), 'low_hz', 10, 'high_hz', 200), ...
+    {FilteredSignal()}, ...
+    subject=1, session="A");
 ```
 
 ## Troubleshooting

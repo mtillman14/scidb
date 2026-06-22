@@ -930,13 +930,8 @@ function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_t
             call_args{p} = vals;
         end
         res = fn(call_args{:});
-        % for_columns uses combined-call lineage: per-column LineageFcnResult
-        % objects cannot live in the reassembled wide table, so collapse them
-        % to their raw value (parity with Python's _make_raw_value_wrapper).
-        % Upstream provenance is still recorded at save time from input rids.
-        if isa(res, 'scidb.LineageFcnResult')
-            res = res.data;
-        end
+        % for_columns: res is a plain value. Upstream provenance is recorded
+        % at save time from input record_ids (no per-call lineage wrapper).
         [names_i, values_i] = expand_column_result(col, res, sep);
         for k = 1:numel(names_i)
             if any(strcmp(names_i{k}, out_names))

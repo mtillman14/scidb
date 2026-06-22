@@ -830,19 +830,18 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 'session', ["A" "B"], ...
                 where=(Side() == "L") & (StepLength() > 0.58));
 
-            % Check the duckdb database to ensure that the where= has
-            % been stored in the database as a version key.
+            % where= is no longer part of record identity. The issued filter
+            % is recorded (display-only) on the producing run's
+            % _run.where_clause. Verify it captured the filter string.
             db = scidb.get_database();
             rows = py.getattr(db, "_duck").fetchall( ...
-                "SELECT version_keys FROM _record_metadata WHERE variable_name = 'ProcessedSignal'", ...
+                "SELECT where_clause FROM _run WHERE function_name = 'double_values'", ...
                 py.list());
             testCase.verifyGreaterThan(int64(py.len(rows)), 0, ...
-                'Expected at least one ProcessedSignal record in _record_metadata');
-            % Check that __where is present in the version_keys JSON
-            first_vk = char(string(rows{1}{1}));
-            testCase.verifySubstring(first_vk, '__where');
-            testCase.verifySubstring(first_vk, 'Side');
-            testCase.verifySubstring(first_vk, 'StepLength');
+                'Expected at least one _run row for double_values');
+            first_wc = char(string(rows{1}{1}));
+            testCase.verifySubstring(first_wc, 'Side');
+            testCase.verifySubstring(first_wc, 'StepLength');
         end
 
         function test_loading_with_different_where_same_level(testCase)
@@ -872,23 +871,22 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 'session', ["A" "B"], ...
                 where=Side() == "R");
 
-            % Check the duckdb database to ensure that the where= has
-            % been stored in the database as a version key.
+            % The two issued filters are recorded (display-only) on the two
+            % producing runs' _run.where_clause. Verify both are present.
             db = scidb.get_database();
             rows = py.getattr(db, "_duck").fetchall( ...
-                "SELECT version_keys FROM _record_metadata WHERE variable_name = 'ProcessedSignal'", ...
+                "SELECT where_clause FROM _run WHERE function_name = 'double_values'", ...
                 py.list());
             testCase.verifyGreaterThan(int64(py.len(rows)), 0, ...
-                'Expected ProcessedSignal records in _record_metadata');
-            % Verify both __where variants are stored
-            vk_strings = cell(1, int64(py.len(rows)));
-            for i = 1:numel(vk_strings)
-                vk_strings{i} = char(string(rows{i}{1}));
+                'Expected _run rows for double_values');
+            wc_strings = cell(1, int64(py.len(rows)));
+            for i = 1:numel(wc_strings)
+                wc_strings{i} = char(string(rows{i}{1}));
             end
-            has_L = any(cellfun(@(s) contains(s, "Side == 'L'"), vk_strings));
-            has_R = any(cellfun(@(s) contains(s, "Side == 'R'"), vk_strings));
-            testCase.verifyTrue(has_L, 'Expected __where with Side L in version_keys');
-            testCase.verifyTrue(has_R, 'Expected __where with Side R in version_keys');
+            has_L = any(cellfun(@(s) contains(s, "Side == 'L'"), wc_strings));
+            has_R = any(cellfun(@(s) contains(s, "Side == 'R'"), wc_strings));
+            testCase.verifyTrue(has_L, 'Expected a run with where_clause Side L');
+            testCase.verifyTrue(has_R, 'Expected a run with where_clause Side R');
 
             % Check that loading with matching where= returns correct data
             result = ProcessedSignal().load(subject=1, session="A", where=Side()=="L");
@@ -938,22 +936,22 @@ classdef TestForEachWhere < matlab.unittest.TestCase
                 'subject', [1 2], ...
                 where=Side() == "R");
 
-            % Check the duckdb database to ensure that the where= has
-            % been stored in the database as a version key.
+            % The two issued filters are recorded (display-only) on the two
+            % producing runs' _run.where_clause. Verify both are present.
             db = scidb.get_database();
             rows = py.getattr(db, "_duck").fetchall( ...
-                "SELECT version_keys FROM _record_metadata WHERE variable_name = 'ProcessedSignal'", ...
+                "SELECT where_clause FROM _run WHERE function_name = 'sum_array'", ...
                 py.list());
             testCase.verifyGreaterThan(int64(py.len(rows)), 0, ...
-                'Expected ProcessedSignal records in _record_metadata');
-            vk_strings = cell(1, int64(py.len(rows)));
-            for i = 1:numel(vk_strings)
-                vk_strings{i} = char(string(rows{i}{1}));
+                'Expected _run rows for sum_array');
+            wc_strings = cell(1, int64(py.len(rows)));
+            for i = 1:numel(wc_strings)
+                wc_strings{i} = char(string(rows{i}{1}));
             end
-            has_L = any(cellfun(@(s) contains(s, "Side == 'L'"), vk_strings));
-            has_R = any(cellfun(@(s) contains(s, "Side == 'R'"), vk_strings));
-            testCase.verifyTrue(has_L, 'Expected __where with Side L in version_keys');
-            testCase.verifyTrue(has_R, 'Expected __where with Side R in version_keys');
+            has_L = any(cellfun(@(s) contains(s, "Side == 'L'"), wc_strings));
+            has_R = any(cellfun(@(s) contains(s, "Side == 'R'"), wc_strings));
+            testCase.verifyTrue(has_L, 'Expected a run with where_clause Side L');
+            testCase.verifyTrue(has_R, 'Expected a run with where_clause Side R');
 
             % Check that I can use where= to filter for different versions of ProcessedSignal
             % subject=1 where=L: loads RawSignal(1,A)=[1,2,3] (Side(1,A)=L), sum=6

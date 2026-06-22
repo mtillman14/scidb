@@ -12,14 +12,15 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %        with the prepared inputs and combo list, calling the user
 %        function once per combo.
 %     3. Python ``scimatlab.bridge.for_each_save`` saves the results
-%        with branch_params / ``__upstream`` / LineageFcnResult routing.
+%        (recording the bipartite provenance graph from each output's
+%        save metadata) with branch_params / ``__upstream``.
 %
 %   MATLAB owns only step 2 and the bridge plumbing. All correctness-
 %   sensitive logic (variant tracking, lineage save, version keys) lives
 %   in Python so MATLAB-driven and Python-driven pipelines stay in sync.
 %
 %   Arguments:
-%       fn      - Function handle (plain; use scihist.for_each for LineageFcn wrapping)
+%       fn      - Function handle (plain). Lineage is recorded automatically.
 %       inputs  - Struct mapping parameter names to BaseVariable instances,
 %                 scidb.Fixed wrappers, scidb.Variant wrappers,
 %                 scidb.Merge wrappers, scifor.PathInput instances, or
@@ -54,9 +55,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     if isa(fn, 'function_handle')
         fn_name = func2str(fn);
         hash_fn = fn;
-    elseif isa(fn, 'scidb.LineageFcn')
-        fn_name = func2str(fn.fcn);
-        hash_fn = fn.fcn;
     else
         fn_name = 'unknown';
         hash_fn = [];
@@ -281,15 +279,15 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     end
 
     % --- Convert each result table to a Python DataFrame for the save call.
-    %     LineageFcnResult cells get their .py_obj substituted so Python's
-    %     save path routes them through scihist's lineage-aware save. ---
+    %     Outputs are plain values; the bipartite provenance graph is
+    %     recorded by the bridge save path from each output's save metadata. ---
     py_result_dfs = py.list();
     for o = 1:n_out
         if n_outputs == 0
             scidb.Log.info('scifor output %d: Skipping storing output, 0 outputs specified', o)
             break; % Don't store outputs if 0 outputs are specified, e.g. {}
         end
-        tbl = result_tables{o};        
+        tbl = result_tables{o};
         if isempty(tbl)
             scidb.Log.warn('scifor output %d (%s): empty table; nothing to save', ...
                 o, output_names{o});
@@ -299,24 +297,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         scidb.Log.debug('scifor output %d (%s): table %dx%d cols=%s', ...
             o, output_names{o}, height(tbl), width(tbl), ...
             strjoin(string(tbl.Properties.VariableNames), ', '));
-        % If any cell in the output column is a scidb.LineageFcnResult,
-        % swap it for its py_obj so Python's save sees a real
-        % LineageFcnResult (isinstance pass) and routes via save_lineage_result.
-        oname = output_names{o};
-        if any(strcmp(tbl.Properties.VariableNames, oname))
-            col = tbl.(oname);
-            if iscell(col)
-                for r = 1:numel(col)
-                    if isa(col{r}, 'scidb.LineageFcnResult')
-                        col{r} = col{r}.py_obj;
-                    end
-                end
-                tbl.(oname) = col;
-            elseif isa(col, 'scidb.LineageFcnResult')
-                % Should not happen (non-cell single-value column) but handle defensively
-                tbl.(oname) = col.py_obj;
-            end
-        end
         py_result_dfs.append(scidb.internal.to_python(tbl));
     end
 
@@ -688,7 +668,8 @@ function val = build_scifor_input_from_desc(desc)
             cols_py = cell(py.list(desc{'columns'}));
             cols = cellfun(@char, cols_py, 'UniformOutput', false);
             iter_flag = false;
-            if py.bool(desc.__contains__('iterate'))
+            desc_keys = cellfun(@char, cell(py.list(desc.keys())), 'UniformOutput', false);
+            if any(strcmp('iterate', desc_keys))
                 iter_flag = logical(desc{'iterate'});
             end
             val = scifor.ColumnSelection(inner_val, cols, iter_flag);

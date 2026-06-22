@@ -19,7 +19,6 @@ classdef BaseVariable < dynamicprops
 %       record_id    - Unique record identifier (string)
 %       metadata     - Struct of metadata key-value pairs
 %       content_hash - Content hash of the data (string)
-%       lineage_hash - Lineage hash, if computed by a LineageFcn (string)
 %       py_obj       - Python BaseVariable shadow (used internally)
 
     properties
@@ -28,7 +27,6 @@ classdef BaseVariable < dynamicprops
         metadata     struct     % Metadata key-value pairs
         branch_params struct    % Branch parameters (computational variant discriminator)
         content_hash string     % Content hash (16-char hex)
-        lineage_hash string     % Lineage hash (64-char hex), empty if raw
         py_obj                  % Python BaseVariable shadow (internal)
         selected_columns string % Column names to extract on load (empty = all columns)
         iterate logical = false % for_columns: iterate per-column and reassemble
@@ -93,8 +91,8 @@ classdef BaseVariable < dynamicprops
         %   TypeClass().clear()         % prompts for confirmation
         %   TypeClass().clear('y')      % skips prompt
         %
-        %   Drops the data table and removes all entries from _variables
-        %   and _record_metadata for this variable type.
+        %   Drops the data table and removes this type's entries from
+        %   _variables, _record_save, and _record.
 
             type_name = class(obj);
             duck = py.getattr(scidb.get_database(), '_duck');
@@ -110,9 +108,16 @@ classdef BaseVariable < dynamicprops
                 return;
             end
 
+            % _record_save is keyed by record_id only (no variable_name
+            % column post-migration); delete its rows for this type's records
+            % via a subquery against _record (whose `type` column holds the
+            % class name), then drop the _record entities themselves. Run the
+            % _record_save delete before the _record delete so the subquery
+            % still sees the rows. _variables stores the bare class name.
             duck.con.execute(['DROP TABLE IF EXISTS "' type_name '_data"']);
-            duck.con.execute(['DELETE FROM _variables WHERE variable_name = ''' type_name '_data''']);
-            duck.con.execute(['DELETE FROM _record_metadata WHERE variable_name = ''' type_name '_data''']);
+            duck.con.execute(['DELETE FROM _variables WHERE variable_name = ''' type_name '''']);
+            duck.con.execute(['DELETE FROM _record_save WHERE record_id IN (SELECT record_id FROM _record WHERE type = ''' type_name ''')']);
+            duck.con.execute(['DELETE FROM _record WHERE type = ''' type_name '''']);
             fprintf('Cleared all data for %s\n', type_name);
         end
 
@@ -124,9 +129,9 @@ classdef BaseVariable < dynamicprops
         %
         %   RECORD_ID = TypeClass().save(DATA, Name, Value, ...)
         %
-        %   DATA can be a numeric array, scalar, scidb.LineageFcnResult
-        %   (lineage is stored automatically), scidb.BaseVariable (re-save),
-        %   or a MATLAB table.
+        %   DATA can be a numeric array, scalar, scidb.BaseVariable
+        %   (re-save), or a MATLAB table. (Lineage is recorded automatically
+        %   by scidb.for_each; there is no per-call lineage wrapper.)
         %
         %   Table auto-distribute: if DATA is a table whose column names
         %   include any configured dataset_schema_keys, save() automatically
@@ -148,9 +153,6 @@ classdef BaseVariable < dynamicprops
         %   Example:
         %       RawSignal().save(randn(100,3), subject=1, session="A");
         %
-        %       result = my_lineage_fcn(input_var, 2.5);
-        %       Processed().save(result, subject=1, session="A");
-        %
         %       % Auto-distribute a table (subject is a schema key)
         %       SubjectGrouping().save(groupingTbl);   % 1 record per row
         %
@@ -163,14 +165,6 @@ classdef BaseVariable < dynamicprops
             % Extract db option and build kwargs (needed for all paths)
             [metadata_nv, db_val] = extract_db(varargin);
             py_kwargs = scidb.internal.metadata_to_pykwargs(metadata_nv{:});
-
-            % LineageFcnResult: route to scihist's lineage-aware save
-            if isa(data, 'scidb.LineageFcnResult')
-                py_data = data.py_obj;
-                py_record_id = py.scihist.foreach.save(py_class, py_data, pyargs(py_kwargs{:}));
-                record_id = string(py_record_id);
-                return;
-            end
 
             % Auto-detect table-distribute: if data is a table with columns
             % matching the configured schema keys, dispatch to save_from_table.
@@ -611,21 +605,27 @@ classdef BaseVariable < dynamicprops
             py_kwargs = scidb.internal.build_csv_kwargs( ...
                 metadata_args, version, where, db_val);
 
+            scidb.Log.info('[to_csv] %s -> %s (version=%s)', ...
+                type_name, string(filename), version);
+
             % Column selection (e.g. GaitData("Speed")) maps onto the Python
-            % ColumnSelection wrapper, which has its own to_csv. With no
-            % selection we call the classmethod on the class directly.
+            % ColumnSelection wrapper, which has its own to_csv dispatched on an
+            % INSTANCE (MATLAB resolves instance methods fine).
+            %
+            % The plain-class case must NOT call py_class.to_csv(...): MATLAB
+            % cannot dispatch the inherited to_csv classmethod on the surrogate
+            % CLASS object (methods(py_class) omits it though Python hasattr sees
+            % it). Route it through the bridge instead — same pattern as
+            % save/load.
             if isempty(obj.selected_columns)
-                py_spec = py_class;
+                py.scimatlab.bridge.to_csv_bridge( ...
+                    type_name, char(filename), pyargs(py_kwargs{:}));
             else
                 cols = cellstr(obj.selected_columns(:)');
                 py_spec = py.scidb.column_selection.ColumnSelection( ...
                     py_class, py.list(cols));
+                py_spec.to_csv(char(filename), pyargs(py_kwargs{:}));
             end
-
-            scidb.Log.info('[to_csv] %s -> %s (version=%s)', ...
-                type_name, string(filename), version);
-
-            py_spec.to_csv(char(filename), pyargs(py_kwargs{:}));
         end
 
         % -----------------------------------------------------------------
@@ -687,8 +687,14 @@ classdef BaseVariable < dynamicprops
         %            database
         %       Any other name-value pairs are metadata filters.
         %
-        %   Returns a struct with function_name, function_hash, inputs,
-        %   constants.  Returns [] if no lineage recorded.
+        %   Returns a struct with fields:
+        %       function_name - producing function name (string)
+        %       function_hash - producing function source hash (string)
+        %       inputs        - cell array of structs, one per variable input,
+        %                       each with record_id, param_name, variable_type
+        %       constants     - struct mapping constant param name -> value
+        %   All fields are derived from the bipartite provenance graph.
+        %   Returns [] if the record has no producing invocation (raw save).
         %
         %   Example:
         %       p = ProcessedSignal().provenance(subject=1, session="A");
@@ -716,7 +722,8 @@ classdef BaseVariable < dynamicprops
                 prov.function_name = string(py_result{'function_name'});
                 prov.function_hash = string(py_result{'function_hash'});
                 prov.inputs        = scidb.internal.pylist_to_cell(py_result{'inputs'});
-                prov.constants     = scidb.internal.pylist_to_cell(py_result{'constants'});
+                % constants is a {param_name: value} dict in the graph model.
+                prov.constants     = scidb.internal.pydict_to_struct(py_result{'constants'});
             end
 
             
@@ -897,8 +904,8 @@ classdef BaseVariable < dynamicprops
         %WRAP_PY_VAR  Convert a Python BaseVariable to a MATLAB BaseVariable.
         %   This is used internally to convert results from the database into
         %   MATLAB objects.  The returned BaseVariable has the .py_obj property
-        %   set to the original Python BaseVariable shadow, so that lineage
-        %   tracking works if it's passed to another LineageFcn or re-saved.
+        %   set to the original Python BaseVariable shadow, so that provenance
+        %   is preserved if it's passed to scidb.for_each or re-saved.
         % Usage: v = scidb.BaseVariable.wrap_py_var(py_var)
             matlab_data = scidb.internal.from_python(py_var.data);
             matlab_data = scidb.internal.try_stack_numeric(matlab_data);
@@ -907,11 +914,6 @@ classdef BaseVariable < dynamicprops
             v.py_obj = py_var;
             v.record_id = string(py_var.record_id);
             v.content_hash = string(py_var.content_hash);
-
-            py_lh = py_var.lineage_hash;
-            if ~isa(py_lh, 'py.NoneType')
-                v.lineage_hash = string(py_lh);
-            end
 
             py_meta = py_var.metadata;
             if ~isa(py_meta, 'py.NoneType')
@@ -950,7 +952,6 @@ classdef BaseVariable < dynamicprops
             % Extract scalar fields from newline-joined strings (1 crossing each)
             record_ids     = splitlines(string(bulk{'record_ids'}));
             content_hashes = splitlines(string(bulk{'content_hashes'}));
-            lineage_hashes = splitlines(string(bulk{'lineage_hashes'}));
             branch_params_json = splitlines(string(bulk{'json_branch_params'}));
 
             % Parse all metadata at once via JSON (native C decoder, no crossings)
@@ -1120,10 +1121,6 @@ classdef BaseVariable < dynamicprops
                 v.py_obj = py_vars_cell{i};
                 v.record_id    = record_ids(i);
                 v.content_hash = content_hashes(i);
-
-                if lineage_hashes(i) ~= ""
-                    v.lineage_hash = lineage_hashes(i);
-                end
 
                 v.metadata = meta_cell{i};
 

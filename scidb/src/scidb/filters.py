@@ -109,6 +109,25 @@ class Filter(ABC):
         """
         ...
 
+    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+        """Schema_ids where this filter holds at its OWN variable granularity.
+
+        Unlike :meth:`resolve`, this takes no target: it neither expands a
+        coarse filter down to a finer target nor short-circuits a finer filter
+        to "all target ids". It is used by the semantic ``where=`` variant match
+        (``DatabaseManager._load_with_where``) to compare against a record's
+        **consumed input** schema_ids, which live at the input variable's level
+        — not the (possibly coarser) target's. For cross-level ``where=`` (output
+        coarser than the filter variable) the target-resolved set is at the wrong
+        level for that subset test; the native set is at the right one.
+
+        Filters with no intrinsic variable level (e.g. raw SQL) raise
+        ``NotImplementedError``; callers fall back to the target-resolved set.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support native-level resolution"
+        )
+
 
 def _op_to_sql(op: str) -> str:
     """Map Python comparison operator string to SQL operator."""
@@ -425,6 +444,13 @@ class VariableFilter(Filter):
 
         return matching_ids
 
+    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+        sql_op = _op_to_sql(self.op)
+        return _resolve_variable_schema_ids(
+            db, self.variable_class.table_name(),
+            f'"value" {sql_op} ?', [self.value],
+        )
+
 
 class ColumnFilter(Filter):
     """Filter based on a specific column in a tabular variable.
@@ -509,6 +535,13 @@ class ColumnFilter(Filter):
 
         return matching_ids
 
+    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+        sql_op = _op_to_sql(self.op)
+        return _resolve_variable_schema_ids(
+            db, self.variable_class.table_name(),
+            f'"{self.column}" {sql_op} ?', [self.value],
+        )
+
 
 class InFilter(Filter):
     """Filter for set membership (WHERE column IN (...)).
@@ -586,6 +619,16 @@ class InFilter(Filter):
 
         return matching_ids
 
+    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+        col = self.column or "value"
+        if not self.values:
+            return set()
+        placeholders = ", ".join(["?"] * len(self.values))
+        return _resolve_variable_schema_ids(
+            db, self.variable_class.table_name(),
+            f'"{col}" IN ({placeholders})', list(self.values),
+        )
+
 
 class CompoundFilter(Filter):
     """AND/OR combination of two filters.
@@ -624,6 +667,16 @@ class CompoundFilter(Filter):
         else:
             raise ValueError(f"Unknown compound operator: {self.op!r}")
 
+    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+        left_ids = self.left.resolve_native(db)
+        right_ids = self.right.resolve_native(db)
+        if self.op == "AND":
+            return left_ids & right_ids
+        elif self.op == "OR":
+            return left_ids | right_ids
+        else:
+            raise ValueError(f"Unknown compound operator: {self.op!r}")
+
 
 class NotFilter(Filter):
     """Complement of a filter's schema_id set.
@@ -650,6 +703,19 @@ class NotFilter(Filter):
     ) -> set[int]:
         inner_ids = self.inner.resolve(db, target_variable_class, target_table_name, validate_coverage)
         all_ids = _get_all_schema_ids_for_variable(db, target_table_name)
+        return all_ids - inner_ids
+
+    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+        # Complement at the inner filter's OWN variable level. Requires the inner
+        # to expose a single variable_class (the common leaf/NOT case); compound
+        # inners have no single level → fall back via NotImplementedError.
+        inner_var = getattr(self.inner, "variable_class", None)
+        if inner_var is None:
+            raise NotImplementedError(
+                "NotFilter over a multi-variable filter has no native level"
+            )
+        inner_ids = self.inner.resolve_native(db)
+        all_ids = _get_all_schema_ids_for_variable(db, inner_var.table_name())
         return all_ids - inner_ids
 
 

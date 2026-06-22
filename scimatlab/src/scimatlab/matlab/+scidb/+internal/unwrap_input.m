@@ -2,14 +2,14 @@ function data = unwrap_input(arg)
 %UNWRAP_INPUT  Extract raw MATLAB data from a lineage-tracked argument.
 %
 %   Used before calling feval() on the user's MATLAB function.
-%   scidb.LineageFcnResult and scidb.BaseVariable are unwrapped to their
-%   .data property; everything else passes through unchanged.
+%   scidb.BaseVariable is unwrapped to its .data property; everything else
+%   passes through unchanged.
 %
-%   When the argument is an array of LineageFcnResult or BaseVariable (e.g.
-%   multiple matches from load()), a cell array of all .data values is
-%   returned so that the calling function receives all results.
+%   When the argument is an array of BaseVariable (e.g. multiple matches
+%   from load()), a cell array of all .data values is returned so that the
+%   calling function receives all results.
 
-    if isa(arg, 'scidb.LineageFcnResult') || isa(arg, 'scidb.BaseVariable')
+    if isa(arg, 'scidb.BaseVariable')
         if numel(arg) > 1
             data = cell(1, numel(arg));
             all_numeric_scalar = true;

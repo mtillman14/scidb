@@ -212,13 +212,6 @@ classdef TestSaveLoad < matlab.unittest.TestCase
             testCase.verifyNotEqual(hashes(1), hashes(2));
         end
 
-        function test_raw_data_has_empty_lineage_hash(testCase)
-            % Raw data (not from a LineageFcn) should have no lineage hash
-            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            results = RawSignal().load('subject', 1, 'session', 'A', 'version', 'all');
-            testCase.verifyEqual(results(1).lineage_hash, string.empty);
-        end
-
         % --- list_versions ---
 
         function test_list_versions_returns_struct_array(testCase)

@@ -2,8 +2,9 @@ classdef TestEndToEnd < matlab.unittest.TestCase
 %TESTENDTOEND  End-to-end integration tests exercising full workflows.
 %
 %   These tests verify complete realistic scenarios involving multiple
-%   components working together: configure -> save -> lineage fcn -> save ->
-%   load -> provenance -> for_each.
+%   components working together: configure -> save -> for_each -> load ->
+%   provenance. Lineage is recorded automatically by scidb.for_each into
+%   the bipartite provenance graph (there is no per-call lineage wrapper).
 
     properties
         test_dir
@@ -20,7 +21,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
         function setupDatabase(testCase)
             testCase.test_dir = tempname;
             mkdir(testCase.test_dir);
-            scihist.configure_database( ...
+            scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
                 ["subject", "session"]);
         end
@@ -46,13 +47,11 @@ classdef TestEndToEnd < matlab.unittest.TestCase
                 RawSignal().save(data, 'subject', s, 'session', 'A');
             end
 
-            %% Step 2: Process with a lineage function
-            lfcn = scidb.LineageFcn(@double_values);
-            for s = [1 2 3]
-                raw = RawSignal().load('subject', s, 'session', 'A');
-                result = lfcn(raw);
-                ProcessedSignal().save(result, 'subject', s, 'session', 'A');
-            end
+            %% Step 2: Process with for_each (lineage recorded automatically)
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), ...
+                {ProcessedSignal()}, ...
+                'subject', [1 2 3], 'session', "A");
 
             %% Step 3: Verify processed data
             for s = [1 2 3]
@@ -61,7 +60,7 @@ classdef TestEndToEnd < matlab.unittest.TestCase
                 testCase.verifyEqual(proc.data, expected', 'AbsTol', 1e-10);
             end
 
-            %% Step 4: Verify lineage
+            %% Step 4: Verify provenance
             for s = [1 2 3]
                 prov = ProcessedSignal().provenance('subject', s, 'session', 'A');
                 testCase.verifyEqual(char(prov.function_name), 'double_values');
@@ -105,16 +104,15 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             RawSignal().save([1 2 3 4 5 6], 'subject', 1, 'session', 'A');
 
             %% Chain 1: double
-            raw = RawSignal().load('subject', 1, 'session', 'A');
-            lfcn1 = scidb.LineageFcn(@double_values);
-            step1 = lfcn1(raw);
-            ProcessedSignal().save(step1, 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             %% Chain 2: add offset
-            proc = ProcessedSignal().load('subject', 1, 'session', 'A');
-            lfcn2 = scidb.LineageFcn(@add_offset);
-            step2 = lfcn2(proc, 100);
-            FilteredSignal().save(step2, 'subject', 1, 'session', 'A');
+            scidb.for_each(@add_offset, ...
+                struct('x', ProcessedSignal(), 'offset', 100), ...
+                {FilteredSignal()}, ...
+                'subject', 1, 'session', "A");
 
             %% Verify final data: (x * 2) + 100
             final = FilteredSignal().load('subject', 1, 'session', 'A');
@@ -124,9 +122,9 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Verify lineage chain
             prov = FilteredSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEqual(char(prov.function_name), 'add_offset');
-            % Input should reference the processed signal (lineage result)
+            % Input references the upstream ProcessedSignal record.
             testCase.verifyEqual(numel(prov.inputs), 1);
-            testCase.verifyEqual(numel(prov.constants), 1);
+            testCase.verifyEqual(numel(fieldnames(prov.constants)), 1);
         end
 
         function test_baseline_subtraction_workflow(testCase)
@@ -167,24 +165,19 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             testCase.verifyEqual(d.data, [10 10 10]', 'AbsTol', 1e-10);
         end
 
-        function test_cache_hit_in_for_each(testCase)
+        function test_same_fn_two_outputs_consistent(testCase)
             %% Save raw data
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
 
-            %% Process manually (creates cache entry)
-            raw = RawSignal().load('subject', 1, 'session', 'A');
-            lfcn = scidb.LineageFcn(@double_values);
-            result = lfcn(raw);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            %% Apply the same function into two different output types
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {FilteredSignal()}, ...
+                'subject', 1, 'session', "A");
 
-            %% Process again with for_each using same lineage fcn (should hit cache)
-            scidb.for_each(lfcn, ...
-                struct('x', RawSignal()), ...
-                {FilteredSignal()}, ...
-                'subject', 1, ...
-                'session', "A");
-
-            %% Both outputs should have the same data
+            %% Both outputs should hold the same computed data
             proc = ProcessedSignal().load('subject', 1, 'session', 'A');
             filt = FilteredSignal().load('subject', 1, 'session', 'A');
             testCase.verifyEqual(proc.data, filt.data, 'AbsTol', 1e-10);
@@ -209,13 +202,13 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             %% Save input data
             RawSignal().save([10 20 30 40], 'subject', 1, 'session', 'A');
 
-            %% Split using lineage function with unpack_output
-            raw = RawSignal().load('subject', 1, 'session', 'A');
-            lfcn = scidb.LineageFcn(@split_data, 'unpack_output', true);
-            [first, second] = lfcn(raw);
-
-            SplitFirst().save(first, 'subject', 1, 'session', 'A');
-            SplitSecond().save(second, 'subject', 1, 'session', 'A');
+            %% Split into two outputs via a multi-output for_each.
+            %  split_data returns {first_half, second_half}, spread across
+            %  the two declared output types.
+            scidb.for_each(@split_data, ...
+                struct('x', RawSignal()), ...
+                {SplitFirst(), SplitSecond()}, ...
+                'subject', 1, 'session', "A");
 
             %% Load and verify
             r1 = SplitFirst().load('subject', 1, 'session', 'A');
@@ -229,17 +222,17 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             testCase.verifyEqual(char(p1.function_name), 'split_data');
             testCase.verifyEqual(char(p2.function_name), 'split_data');
 
-            %% Different outputs should have different lineage hashes
-            testCase.verifyNotEqual(r1.lineage_hash, r2.lineage_hash);
+            %% The two outputs are distinct records (different output_num).
+            testCase.verifyNotEqual(r1.record_id, r2.record_id);
         end
 
         function test_version_history(testCase)
             %% Save multiple versions
             id1 = RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             pause(0.1);
-            id2 = RawSignal().save([4 5 6], 'subject', 1, 'session', 'A');
+            id2 = RawSignal().save([4 5 6], 'subject', 1, 'session', 'A'); %#ok<NASGU>
             pause(0.1);
-            id3 = RawSignal().save([7 8 9], 'subject', 1, 'session', 'A');
+            id3 = RawSignal().save([7 8 9], 'subject', 1, 'session', 'A'); %#ok<NASGU>
 
             %% list_versions should show all 3
             versions = RawSignal().list_versions('subject', 1, 'session', 'A');
@@ -259,44 +252,38 @@ classdef TestEndToEnd < matlab.unittest.TestCase
             testCase.verifyEqual(numel(all_results), 3);
         end
 
-        function test_lineage_result_used_as_input_to_for_each(testCase)
-            %% Save raw data
+        function test_for_each_multiple_combos_have_provenance(testCase)
+            %% Save raw data for two subjects
             RawSignal().save([5 10 15], 'subject', 1, 'session', 'A');
             RawSignal().save([6 12 18], 'subject', 2, 'session', 'A');
 
-            %% Use a lineage function within for_each
-            lfcn = scidb.LineageFcn(@double_values);
-            scidb.for_each(lfcn, ...
+            %% Process both with one for_each call
+            scidb.for_each(@double_values, ...
                 struct('x', RawSignal()), ...
                 {ProcessedSignal()}, ...
                 'subject', [1 2], ...
                 'session', "A");
 
-            %% Verify outputs have lineage
+            %% Verify outputs and provenance per combo
             p1 = ProcessedSignal().load('subject', 1, 'session', 'A');
             p2 = ProcessedSignal().load('subject', 2, 'session', 'A');
-
             testCase.verifyEqual(p1.data, [10 20 30]', 'AbsTol', 1e-10);
             testCase.verifyEqual(p2.data, [12 24 36]', 'AbsTol', 1e-10);
-            testCase.verifyTrue(strlength(p1.lineage_hash) > 0);
-            testCase.verifyTrue(strlength(p2.lineage_hash) > 0);
 
-            %% Verify provenance
             prov1 = ProcessedSignal().provenance('subject', 1, 'session', 'A');
             prov2 = ProcessedSignal().provenance('subject', 2, 'session', 'A');
             testCase.verifyEqual(char(prov1.function_name), 'double_values');
             testCase.verifyEqual(char(prov2.function_name), 'double_values');
         end
 
-        function test_matrix_through_lineage_pipeline(testCase)
+        function test_matrix_through_pipeline(testCase)
             %% Verify matrix shapes survive the full pipeline
             data = [1 2 3; 4 5 6; 7 8 9; 10 11 12];  % 4x3
             RawSignal().save(data, 'subject', 1, 'session', 'A');
 
-            raw = RawSignal().load('subject', 1, 'session', 'A');
-            lfcn = scidb.LineageFcn(@double_values);
-            result = lfcn(raw);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             proc = ProcessedSignal().load('subject', 1, 'session', 'A');
             testCase.verifyEqual(size(proc.data), [4, 3]);

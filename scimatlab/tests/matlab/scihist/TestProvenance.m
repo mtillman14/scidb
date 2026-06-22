@@ -1,5 +1,12 @@
 classdef TestProvenance < matlab.unittest.TestCase
-%TESTPROVENANCE  Integration tests for provenance/lineage tracking.
+%TESTPROVENANCE  Integration tests for provenance tracking via the
+%   bipartite provenance graph.
+%
+%   Post lineage-simplification migration: there is no per-call lineage
+%   wrapper. Provenance is recorded automatically by scidb.for_each and
+%   read back via Type().provenance(...), which surfaces the graph's
+%   producing-invocation function name/hash, variable inputs, and
+%   constants.
 
     properties
         test_dir
@@ -16,7 +23,7 @@ classdef TestProvenance < matlab.unittest.TestCase
         function setupDatabase(testCase)
             testCase.test_dir = tempname;
             mkdir(testCase.test_dir);
-            scihist.configure_database( ...
+            scidb.configure_database( ...
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
                 ["subject", "session"]);
         end
@@ -36,15 +43,17 @@ classdef TestProvenance < matlab.unittest.TestCase
 
     methods (Test)
         function test_raw_data_no_provenance(testCase)
+            % A raw direct save has no producing invocation -> [].
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             prov = RawSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEmpty(prov);
         end
 
-        function test_lineage_result_has_provenance(testCase)
-            lfcn = scidb.LineageFcn(@double_values);
-            result = lfcn([1 2 3]);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+        function test_for_each_output_has_provenance(testCase)
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyFalse(isempty(prov));
@@ -52,27 +61,31 @@ classdef TestProvenance < matlab.unittest.TestCase
         end
 
         function test_provenance_function_name(testCase)
-            lfcn = scidb.LineageFcn(@double_values);
-            result = lfcn([1 2 3]);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEqual(char(prov.function_name), 'double_values');
         end
 
         function test_provenance_function_hash(testCase)
-            lfcn = scidb.LineageFcn(@double_values);
-            result = lfcn([1 2 3]);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
+            % MATLAB function source hash is a 64-char SHA-256 hex digest.
             testCase.verifyTrue(strlength(prov.function_hash) == 64);
         end
 
         function test_provenance_has_required_fields(testCase)
-            lfcn = scidb.LineageFcn(@double_values);
-            result = lfcn([1 2 3]);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyTrue(isfield(prov, 'function_name'));
@@ -81,146 +94,104 @@ classdef TestProvenance < matlab.unittest.TestCase
             testCase.verifyTrue(isfield(prov, 'constants'));
         end
 
-        function test_provenance_constants_from_constant_args(testCase)
-            lfcn = scidb.LineageFcn(@add_offset);
-            result = lfcn([1 2 3], 10);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
-
-            prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
-            % Two args: [1 2 3] (constant array) and 10 (constant scalar)
-            testCase.verifyEqual(numel(prov.constants), 2);
-        end
-
-        function test_provenance_inputs_from_loaded_variable(testCase)
+        function test_provenance_inputs_and_constants(testCase)
+            % add_offset(x, offset): x is a loaded variable input, offset is
+            % a constant.
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            raw = RawSignal().load('subject', 1, 'session', 'A');
-
-            lfcn = scidb.LineageFcn(@add_offset);
-            result = lfcn(raw, 5);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            scidb.for_each(@add_offset, ...
+                struct('x', RawSignal(), 'offset', 5), ...
+                {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEqual(numel(prov.inputs), 1);
-            testCase.verifyEqual(numel(prov.constants), 1);
+            % constants is a struct {param_name: value}.
+            testCase.verifyEqual(numel(fieldnames(prov.constants)), 1);
+            testCase.verifyTrue(isfield(prov.constants, 'offset'));
+            testCase.verifyEqual(double(prov.constants.offset), 5);
         end
 
-        function test_provenance_chained_lineage_fcns(testCase)
+        function test_provenance_chained_for_each(testCase)
             % Chain: raw -> double_values -> triple_values
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            lfcn1 = scidb.LineageFcn(@double_values);
-            step1 = lfcn1(raw);
-            ProcessedSignal().save(step1, 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
-            proc = ProcessedSignal().load('subject', 1, 'session', 'A');
-            lfcn2 = scidb.LineageFcn(@triple_values);
-            step2 = lfcn2(proc);
-            FilteredSignal().save(step2, 'subject', 1, 'session', 'A');
+            scidb.for_each(@triple_values, ...
+                struct('x', ProcessedSignal()), {FilteredSignal()}, ...
+                'subject', 1, 'session', "A");
 
-            % Provenance of final result references triple_values
+            % Provenance of the final result references triple_values.
             prov = FilteredSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEqual(char(prov.function_name), 'triple_values');
             testCase.verifyEqual(numel(prov.inputs), 1);
 
-            % The input should reference the upstream lineage function
+            % The single input references the upstream ProcessedSignal record.
             input_info = prov.inputs{1};
             testCase.verifyTrue(isstruct(input_info));
+            testCase.verifyEqual(char(input_info.variable_type), 'ProcessedSignal');
         end
 
         function test_provenance_two_variable_inputs(testCase)
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             ProcessedSignal().save([10 20 30], 'subject', 1, 'session', 'A');
 
-            raw = RawSignal().load('subject', 1, 'session', 'A');
-            proc = ProcessedSignal().load('subject', 1, 'session', 'A');
-
-            lfcn = scidb.LineageFcn(@sum_inputs);
-            result = lfcn(raw, proc);
-            FilteredSignal().save(result, 'subject', 1, 'session', 'A');
+            scidb.for_each(@sum_inputs, ...
+                struct('a', RawSignal(), 'b', ProcessedSignal()), ...
+                {FilteredSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov = FilteredSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEqual(char(prov.function_name), 'sum_inputs');
             testCase.verifyEqual(numel(prov.inputs), 2);
-            testCase.verifyEmpty(prov.constants);
+            % No constants -> struct with zero fields.
+            testCase.verifyEqual(numel(fieldnames(prov.constants)), 0);
         end
 
         function test_different_functions_different_hashes(testCase)
-            lfcn1 = scidb.LineageFcn(@double_values);
-            result1 = lfcn1([1 2 3]);
-            ProcessedSignal().save(result1, 'subject', 1, 'session', 'A');
+            RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
 
-            lfcn2 = scidb.LineageFcn(@triple_values);
-            result2 = lfcn2([1 2 3]);
-            FilteredSignal().save(result2, 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
+            scidb.for_each(@triple_values, ...
+                struct('x', RawSignal()), {FilteredSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov1 = ProcessedSignal().provenance('subject', 1, 'session', 'A');
             prov2 = FilteredSignal().provenance('subject', 1, 'session', 'A');
-
             testCase.verifyNotEqual(prov1.function_hash, prov2.function_hash);
         end
 
-        function test_lineage_hash_deterministic(testCase)
-            % Same computation twice should produce the same lineage hash
-            lfcn = scidb.LineageFcn(@double_values);
-
-            result1 = lfcn([1 2 3]);
-            ProcessedSignal().save(result1, 'subject', 1, 'session', 'A');
-
-            result2 = lfcn([1 2 3]);
-            ProcessedSignal().save(result2, 'subject', 1, 'session', 'B');
-
-            r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
-            r2 = ProcessedSignal().load('subject', 1, 'session', 'B');
-
-            testCase.verifyEqual(r1.lineage_hash, r2.lineage_hash);
-        end
-
-        function test_lineage_hash_changes_with_inputs(testCase)
-            lfcn = scidb.LineageFcn(@double_values);
-
-            result1 = lfcn([1 2 3]);
-            ProcessedSignal().save(result1, 'subject', 1, 'session', 'A');
-
-            result2 = lfcn([4 5 6]);
-            ProcessedSignal().save(result2, 'subject', 1, 'session', 'B');
-
-            r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
-            r2 = ProcessedSignal().load('subject', 1, 'session', 'B');
-
-            testCase.verifyNotEqual(r1.lineage_hash, r2.lineage_hash);
-        end
-
-        function test_provenance_constants_have_name_field(testCase)
-            % Constants in provenance carry a 'name' field (arg_0, arg_1, ...)
-            % and a 'value_repr' field — the new JSON column design preserves both.
+        function test_idempotent_rerun_same_record_id(testCase)
+            % Content-addressing: re-running an identical pipeline reproduces
+            % the same output record_id (replaces the old lineage_hash
+            % determinism check).
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            lfcn = scidb.LineageFcn(@add_offset);
-            result = lfcn(raw, 10);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
+            r1 = ProcessedSignal().load('subject', 1, 'session', 'A');
 
-            prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
-            % raw -> input, 10 -> constant
-            testCase.verifyEqual(numel(prov.constants), 1);
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
+            r2 = ProcessedSignal().load('subject', 1, 'session', 'A');
 
-            const_info = prov.constants{1};
-            testCase.verifyTrue(isstruct(const_info));
-            testCase.verifyTrue(isfield(const_info, 'name'));
-            testCase.verifyFalse(isempty(const_info.name));
-            testCase.verifyTrue(isfield(const_info, 'value_repr'));
+            testCase.verifyEqual(r1.record_id, r2.record_id);
         end
 
         function test_provenance_inputs_have_record_id(testCase)
-            % Variable inputs in provenance carry the source record_id,
-            % allowing exact tracing back to the specific saved variable used.
+            % Variable inputs carry the source record_id, allowing exact
+            % tracing back to the specific saved variable consumed.
             record_id = RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
-            raw = RawSignal().load('subject', 1, 'session', 'A');
 
-            lfcn = scidb.LineageFcn(@add_offset);
-            result = lfcn(raw, 10);
-            ProcessedSignal().save(result, 'subject', 1, 'session', 'A');
+            scidb.for_each(@double_values, ...
+                struct('x', RawSignal()), {ProcessedSignal()}, ...
+                'subject', 1, 'session', "A");
 
             prov = ProcessedSignal().provenance('subject', 1, 'session', 'A');
             testCase.verifyEqual(numel(prov.inputs), 1);

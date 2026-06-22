@@ -379,3 +379,60 @@ class TestCoarseFilterExpansion:
             assert var.data in (0.65, 0.70)
 
         db.close()
+
+
+# ===========================================================================
+# Cross-level where= variant coexistence (latest-collapse regression)
+# ===========================================================================
+
+class TestCrossLevelWhereVariants:
+    """Two for_each runs that emit output at the SAME output schema_id but
+    consume DIFFERENT input locations (cross-level where=) must coexist.
+
+    Regression: the ``version_id="latest"`` variant-collapse in
+    ``_find_record`` keys the variant on the producing fn + accumulated
+    constants + consumed input *schema locations*. If consumed locations were
+    omitted from the key, the two subject-level ``Summed`` records (one per
+    ``where=`` side, each computed from a different trial-level input) would
+    collapse to the newest, and ``load(where=Side=='L')`` would raise
+    NotFoundError because only the ``where=='R'`` record survived.
+    """
+
+    def test_cross_level_where_variants_coexist(self, db):
+        from scidb import for_each
+
+        class RawSig(BaseVariable):
+            schema_version = 1
+
+        class Summed(BaseVariable):
+            schema_version = 1
+
+        def agg_sum(x):
+            # for_each iterates at subject level over a trial-level input, so the
+            # input arrives aggregated as a multi-row DataFrame; where= restricts
+            # it to a single trial. Sum only the numeric value column (string
+            # schema-key columns are excluded by select_dtypes).
+            if isinstance(x, pd.DataFrame):
+                return float(x.select_dtypes(include="number").values.sum())
+            return float(np.sum(x))
+
+        # Side is trial-level; Summed is computed at subject level (coarser).
+        # String schema values mirror the aggregation tests so schema-key columns
+        # are not numeric and won't be summed by the function.
+        Side.save("L", subject="S01", trial="1")
+        Side.save("R", subject="S01", trial="2")
+        RawSig.save(10.0, subject="S01", trial="1")
+        RawSig.save(20.0, subject="S01", trial="2")
+
+        # where=L → consumes RawSig(S01,1)=10 → sum 10 at subject=S01
+        for_each(agg_sum, {"x": RawSig}, [Summed],
+                 subject=["S01"], where=(Side == "L"))
+        # where=R → consumes RawSig(S01,2)=20 → sum 20 at the SAME output
+        # schema_id (subject=S01); differs only by consumed input location.
+        for_each(agg_sum, {"x": RawSig}, [Summed],
+                 subject=["S01"], where=(Side == "R"))
+
+        # Both variants survive the latest-collapse and are individually
+        # loadable by the where= that produced them.
+        assert Summed.load(subject="S01", where=(Side == "L")).data == 10.0
+        assert Summed.load(subject="S01", where=(Side == "R")).data == 20.0

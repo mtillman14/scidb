@@ -1,13 +1,29 @@
-p="scidb/tests/test_exclusions.py"
-s=open(p).read().split("\n")
-# delete from the line "    def test_override_hash_in_version_keys" to EOF
-start=next(i for i,l in enumerate(s) if "def test_override_hash_in_version_keys" in l)
-new=s[:start]
-# strip trailing blank lines, keep one newline
-while new and new[-1].strip()=="":
-    new.pop()
-open(p,"w").write("\n".join(new)+"\n")
-print("deleted from line", start+1, "-> new len", len(new))
+import numpy as np, pandas as pd
+from scidb import BaseVariable, configure_database, for_each
+from scidb import provenance_query
 
-However, for the sake of the GUI, there needs to be a way to query whether a function with only PathInput and constant inputs (i.e. no variable input) is outdated from the last run.
-    I think the best way to do this is to check whether the union of 1. all the schema_ids found by the PathInput and 2. the specified iteration schema_ids is a subset of the schema_ids in the database for this invocation_id.
+db = configure_database("/tmp/xlvl.duckdb", ["subject", "trial"])
+
+class Side(BaseVariable): schema_version = 1
+class RawSig(BaseVariable): schema_version = 1
+class Summed(BaseVariable): schema_version = 1
+
+def agg_sum(x):
+    if isinstance(x, pd.DataFrame):
+        return float(x.select_dtypes(include="number").values.sum())
+    return float(np.sum(x))
+
+Side.save("L", subject="S01", trial="1")
+Side.save("R", subject="S01", trial="2")
+RawSig.save(10.0, subject="S01", trial="1")
+RawSig.save(20.0, subject="S01", trial="2")
+
+for_each(agg_sum, {"x": RawSig}, [Summed], subject=["S01"], where=(Side == "L"))
+for_each(agg_sum, {"x": RawSig}, [Summed], subject=["S01"], where=(Side == "R"))
+
+rows = db._duck._fetchall(
+    "SELECT rm.record_id, r.schema_id FROM _record_save rm "
+    "JOIN _record r ON r.record_id = rm.record_id WHERE r.type = 'Summed'", [])
+print("Summed records:", rows)
+print("consumed:", provenance_query.consumed_input_schema_ids(db._duck, [r[0] for r in rows]))
+db.close()

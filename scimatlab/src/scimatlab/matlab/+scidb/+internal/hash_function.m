@@ -18,8 +18,8 @@ function hash = hash_function(fcn)
 
     if strcmp(info.type, 'anonymous')
         error('scidb:AnonymousFunction', ...
-            ['Anonymous functions are not supported by scidb.LineageFcn. ' ...
-             'Use a named function defined in an .m file instead.']);
+            ['Anonymous functions cannot be hashed for scidb.for_each ' ...
+             'provenance. Use a named function defined in an .m file instead.']);
     end
 
     % Resolve the source file path

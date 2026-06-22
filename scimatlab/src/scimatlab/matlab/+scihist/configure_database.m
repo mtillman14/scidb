@@ -1,15 +1,13 @@
 function db = configure_database(db_path, schema_keys, varargin)
-%SCIHIST.CONFIGURE_DATABASE  Configure database with lineage backend.
+%SCIHIST.CONFIGURE_DATABASE  Deprecated thin shim over scidb.configure_database.
 %
 %   DB = scihist.configure_database(DB_PATH, SCHEMA_KEYS, ...)
 %
-%   This is the scihist wrapper around scidb.configure_database(). It
-%   opens the DuckDB-backed database AND registers the scilineage backend,
-%   so that LineageFcn-based computations can look up previously computed
-%   results (enabling cache hits).
-%
-%   Use this function (instead of scidb.configure_database) wherever
-%   LineageFcn caching or provenance tracking is required.
+%   DEPRECATED: this used to additionally register a scilineage cache
+%   backend, but the rerun cache was removed in the lineage-simplification
+%   migration. It now simply delegates to scidb.configure_database, mirroring
+%   the deprecated Python ``scihist.configure_database`` shim. Prefer calling
+%   scidb.configure_database directly.
 %
 %   Arguments:
 %       db_path     - Path to the DuckDB database file (string or char)
@@ -22,17 +20,8 @@ function db = configure_database(db_path, schema_keys, varargin)
 %       DB - The configured DatabaseManager Python object.
 %
 %   Example:
-%       db = scihist.configure_database("experiment.duckdb", ...
+%       db = scidb.configure_database("experiment.duckdb", ...
 %           ["subject", "session"]);
 
-    % Delegate to scidb.configure_database for all MATLAB-side setup:
-    % string-array conversion, absolute-path resolution, scifor schema
-    % propagation, and log-file path. This mirrors the Python
-    % scihist.configure_database, which simply calls
-    % scidb.configure_database() and then registers the lineage backend.
     db = scidb.configure_database(db_path, schema_keys, varargin{:});
-
-    % Register the database as the scilineage cache backend so that
-    % LineageFcn invocations can look up previously computed results.
-    py.scilineage.configure_backend(db);
 end

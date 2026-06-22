@@ -318,88 +318,80 @@ classdef TestMerge < matlab.unittest.TestCase
 
         % --- where= selects one variant by provenance (multi-variant merge) ---
 
-        function test_merge_selects_variant_by_where_provenance(testCase)
-        %TEST_MERGE_SELECTS_VARIANT_BY_WHERE_PROVENANCE  When a variable has been
-        %   computed by for_each in MULTIPLE where= variants that share the same
-        %   schema keys, loading it through scidb.Merge with a where= must select
-        %   the single variant matching that filter's __where provenance — exactly
-        %   like a direct .load(where=...).  Previously every variant leaked
-        %   through (N rows per schema-key combo instead of 1).
+        function test_merge_selects_variant_by_branch_param(testCase)
+        %TEST_MERGE_SELECTS_VARIANT_BY_BRANCH_PARAM  When a variable has been
+        %   computed by for_each in MULTIPLE constant (branch_param) variants that
+        %   share the same schema keys, loading it through scidb.Merge with the
+        %   constituent pinned via scidb.Variant must select the single matching
+        %   variant — exactly like a direct branch_param-filtered load. Otherwise
+        %   every variant leaks through (N rows per schema-key combo instead of 1).
         %
-        %   Two all-pass filters (Side=="L" and StepLength>0.5 both hold at every
-        %   combo) produce two ProcessedSignal variants over the same combos,
-        %   distinguishable by value (x*2 vs x*3):
-        %       __where "Side == 'L'"     : ProcessedSignal = RawSignal * 2
-        %       __where "StepLength > 0.5": ProcessedSignal = RawSignal * 3
+        %   Under the where= redesign, variant identity is semantic — by consumed
+        %   inputs — so two all-pass where= filters over the same inputs are the
+        %   SAME variant. A constant applied via branch_param/Variant is what
+        %   distinguishes same-input variants (parity with scidb Python
+        %   test_variable_filter_merge.py::TestMergeSelectsVariantByBranchParam).
+        %
+        %   Two add_offset variants over the same combos, distinguishable by value:
+        %       offset=100 : ProcessedSignal = RawSignal + 100
+        %       offset=200 : ProcessedSignal = RawSignal + 200
             RawSignal().save(10, 'subject', 1, 'session', 'A');
             RawSignal().save(20, 'subject', 1, 'session', 'B');
             PareticSide().save("p",  'subject', 1, 'session', 'A');
             PareticSide().save("np", 'subject', 1, 'session', 'B');
-            Side().save("L", 'subject', 1, 'session', 'A');
-            Side().save("L", 'subject', 1, 'session', 'B');
-            StepLength().save(0.7, 'subject', 1, 'session', 'A');
-            StepLength().save(0.7, 'subject', 1, 'session', 'B');
 
-            % Variant 1: __where "Side == 'L'", ProcessedSignal = RawSignal * 2
-            scidb.for_each(@double_values, ...
-                struct('x', RawSignal()), ...
+            % Variant 1: offset=100, ProcessedSignal = RawSignal + 100
+            scidb.for_each(@add_offset, ...
+                struct('x', RawSignal(), 'offset', 100), ...
                 {ProcessedSignal()}, ...
-                'subject', 1, 'session', ["A" "B"], ...
-                where=Side() == "L");
-            % Variant 2: __where "StepLength > 0.5", ProcessedSignal = RawSignal * 3
-            scidb.for_each(@triple_values, ...
-                struct('x', RawSignal()), ...
+                'subject', 1, 'session', ["A" "B"]);
+            % Variant 2: offset=200, ProcessedSignal = RawSignal + 200
+            scidb.for_each(@add_offset, ...
+                struct('x', RawSignal(), 'offset', 200), ...
                 {ProcessedSignal()}, ...
-                'subject', 1, 'session', ["A" "B"], ...
-                where=StepLength() > 0.5);
+                'subject', 1, 'session', ["A" "B"]);
 
-            % Merge under Side=="L" must keep only variant 1 (x*2):
-            %   2 rows (sessions A,B), ProcessedSignal = [20,40], sum = 60.
-            % Without the provenance fix both variants leak → 4 rows, sum = 150.
+            % Merge pinning offset=100 must keep only variant 1:
+            %   2 rows (sessions A,B), ProcessedSignal = [110,120], sum = 230.
+            % Without the pin both variants leak → 4 rows, sum = 660.
             scidb.for_each(@merge_processed_summary, ...
-                struct('data', scidb.Merge(PareticSide(), ProcessedSignal())), ...
+                struct('data', scidb.Merge(PareticSide(), ...
+                    scidb.Variant(ProcessedSignal(), offset=100))), ...
                 {MergedResult()}, ...
-                'subject', 1, ...
-                where=Side() == "L");
+                'subject', 1);
 
             r = MergedResult().load('subject', 1);
-            testCase.verifyEqual(r.data, [2; 60], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r.data, [2; 230], 'AbsTol', 1e-10);
         end
 
-        function test_merge_selects_other_variant_by_where(testCase)
-        %TEST_MERGE_SELECTS_OTHER_VARIANT_BY_WHERE  Same setup, loaded under the
-        %   OTHER filter (StepLength>0.5) selects variant 2 (x*3) — proving the
-        %   __where provenance, not the shared schema keys, drives selection.
+        function test_merge_selects_other_variant_by_branch_param(testCase)
+        %TEST_MERGE_SELECTS_OTHER_VARIANT_BY_BRANCH_PARAM  Same setup, pinned to
+        %   the OTHER variant (offset=200) selects variant 2 — proving the constant
+        %   branch_param, not the shared schema keys, drives selection.
             RawSignal().save(10, 'subject', 1, 'session', 'A');
             RawSignal().save(20, 'subject', 1, 'session', 'B');
             PareticSide().save("p",  'subject', 1, 'session', 'A');
             PareticSide().save("np", 'subject', 1, 'session', 'B');
-            Side().save("L", 'subject', 1, 'session', 'A');
-            Side().save("L", 'subject', 1, 'session', 'B');
-            StepLength().save(0.7, 'subject', 1, 'session', 'A');
-            StepLength().save(0.7, 'subject', 1, 'session', 'B');
 
-            scidb.for_each(@double_values, ...
-                struct('x', RawSignal()), ...
+            scidb.for_each(@add_offset, ...
+                struct('x', RawSignal(), 'offset', 100), ...
                 {ProcessedSignal()}, ...
-                'subject', 1, 'session', ["A" "B"], ...
-                where=Side() == "L");
-            scidb.for_each(@triple_values, ...
-                struct('x', RawSignal()), ...
+                'subject', 1, 'session', ["A" "B"]);
+            scidb.for_each(@add_offset, ...
+                struct('x', RawSignal(), 'offset', 200), ...
                 {ProcessedSignal()}, ...
-                'subject', 1, 'session', ["A" "B"], ...
-                where=StepLength() > 0.5);
+                'subject', 1, 'session', ["A" "B"]);
 
-            % Merge under StepLength>0.5 must keep only variant 2 (x*3):
-            %   2 rows, ProcessedSignal = [30,60], sum = 90.
+            % Merge pinning offset=200 must keep only variant 2:
+            %   2 rows, ProcessedSignal = [210,220], sum = 430.
             scidb.for_each(@merge_processed_summary, ...
-                struct('data', scidb.Merge(PareticSide(), ProcessedSignal())), ...
+                struct('data', scidb.Merge(PareticSide(), ...
+                    scidb.Variant(ProcessedSignal(), offset=200))), ...
                 {MergedResult()}, ...
-                'subject', 1, ...
-                where=StepLength() > 0.5);
+                'subject', 1);
 
             r = MergedResult().load('subject', 1);
-            testCase.verifyEqual(r.data, [2; 90], 'AbsTol', 1e-10);
+            testCase.verifyEqual(r.data, [2; 430], 'AbsTol', 1e-10);
         end
     end
 end

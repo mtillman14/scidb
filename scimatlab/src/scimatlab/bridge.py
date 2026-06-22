@@ -1669,6 +1669,28 @@ def get_surrogate_class(type_name: str):
     return cls
 
 
+def to_csv_bridge(type_name, filename, **kwargs):
+    """Export a variable to CSV on behalf of MATLAB ``BaseVariable.to_csv``.
+
+    MATLAB cannot dispatch the inherited ``to_csv`` *classmethod* on a Python
+    surrogate **class object**: ``methods(py_class)`` omits it (it reflects only
+    the metaclass's own methods, not classmethods accessible via the MRO) even
+    though Python ``hasattr(py_class, 'to_csv')`` is True. So rather than calling
+    ``py_class.to_csv(...)`` from MATLAB, MATLAB calls this module-level bridge —
+    the same delegation pattern ``save``/``load`` already use (they route through
+    ``save_batch_bridge``/``load_and_extract`` instead of the surrogate's
+    classmethods).
+
+    ``filename`` is positional; all load options (``where=``, ``version=``,
+    ``db=``, and schema-key metadata filters) arrive as ``**kwargs`` and are
+    forwarded verbatim to ``to_csv`` → ``export_csv``. Column selection
+    (``MyVar["col"].to_csv``) is dispatched on a ``ColumnSelection`` *instance*
+    in MATLAB, which works without this bridge.
+    """
+    cls = get_surrogate_class(type_name)
+    cls.to_csv(str(filename), **kwargs)
+
+
 def get_data_column_name(py_class, db=None):
     """Resolve the single data column name for a variable type.
 

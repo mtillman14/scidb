@@ -2,7 +2,7 @@
 
 MATLAB wrapper for the SciStack scientific data versioning framework.
 
-Provides `scidb.BaseVariable` and `scidb.LineageFcn` for MATLAB, with full lineage tracking and caching. All hashing, lineage computation, and database operations are delegated to Python via MATLAB's `py.` interface — the MATLAB layer is a thin wrapper.
+Provides `scidb.BaseVariable` and `scidb.for_each` for MATLAB, with full provenance tracking. All hashing, provenance recording, and database operations are delegated to Python via MATLAB's `py.` interface — the MATLAB layer is a thin wrapper. Lineage is recorded automatically by `scidb.for_each` into scidb's bipartite provenance graph; there is no per-call lineage wrapper.
 
 ## Requirements
 
@@ -39,18 +39,13 @@ raw = RawSignal().load(subject=1, session="A");
 disp(raw.data);       % 100x3 double
 disp(raw.record_id);  % "a3f8c2e1b9d04710"
 
-%% Lineage-tracked computation
-filter_fn = scidb.LineageFcn(@bandpass_filter);
-result = filter_fn(raw, 10, 200);
+%% Provenance-tracked computation (lineage recorded automatically)
+scidb.for_each(@bandpass_filter, ...
+    struct('signal', RawSignal(), 'low_hz', 10, 'high_hz', 200), ...
+    {FilteredSignal()}, ...
+    subject=1, session="A");
 
-%% Save result (lineage is stored automatically)
-FilteredSignal().save(result, subject=1, session="A");
-
-%% Second run — cache hit, no computation
-raw = RawSignal().load(subject=1, session="A");
-result = filter_fn(raw, 10, 200);  % Returns cached result instantly
-
-%% Inspect provenance
+%% Inspect provenance (read from the bipartite graph)
 p = FilteredSignal().provenance(subject=1, session="A");
 fprintf("Computed by: %s\n", p.function_name);
 ```
@@ -61,31 +56,30 @@ fprintf("Computed by: %s\n", p.function_name);
 MATLAB (user code)
    │
    ├── scidb.BaseVariable   ← instance methods: save, load, list_versions, provenance
-   ├── scidb.LineageFcn      ← wraps function handle, orchestrates cache check / execute
+   ├── scidb.for_each        ← batch execution; provenance recorded on save
    │
    └── py. interface ──────────────────────────────┐
                                                     │
 Python (in-process)                                 │
    ├── scimatlab.bridge                          │
-   │     ├── MatlabLineageFcn           ← proxy for LineageFcn duck-typing contract
-   │     ├── MatlabLineageFcnInvocation ← reuses classify_inputs() from scilineage
-   │     └── make_lineage_fcn_result    ← creates real LineageFcnResult instances
+   │     ├── for_each_prepare / for_each_save  ← run scidb.for_each's prepare +
+   │     │                                        save phases (MATLAB runs the loop)
+   │     ├── save_batch_bridge / load_and_extract ← bulk save/load
+   │     └── MatlabLineageFcn                  ← lightweight identity proxy used
+   │                                              only for node-state coloring
    │                                                │
-   ├── scilineage (unchanged)                       │
-   │     ├── classify_inputs()                      │
-   │     ├── compute_lineage_hash()                 │
-   │     └── extract_lineage()                      │
-   │                                                │
-   └── scidb (unchanged)                            │
-         ├── DatabaseManager.save_variable()        │
-         ├── DatabaseManager.find_by_lineage()      │
+   └── scidb (the single source of truth)           │
+         ├── DatabaseManager.save_batch / load      │
+         ├── for_each (records the bipartite        │
+         │   provenance graph from save metadata)   │
+         ├── get_provenance / provenance_query      │
          └── configure_database()                   │
-                    │                    │
-                 DuckDB             SQLite
-                 (data)            (lineage)
+                    │
+                 DuckDB
+          (data + bipartite provenance graph)
 ```
 
-The key insight: Python proxy classes satisfy the duck-typing contracts of scilineage, so all existing Python code (lineage hashing, input classification, cache lookup, lineage extraction) works unchanged. No existing Python packages are modified.
+The key insight: the MATLAB layer hands its inputs/results to the Python bridge, which drives scidb's real prepare/save phases. All correctness-sensitive logic — variant tracking, provenance recording, identity hashing, where= semantics — lives in scidb, so MATLAB-driven and Python-driven pipelines stay in sync. (`scilineage` is reduced to function-source hashing; the former `@lineage_fcn` / `LineageFcnResult` / rerun-cache system was removed in favor of the bipartite graph.)
 
 ## Defining Variable Types
 
@@ -126,20 +120,21 @@ All methods are called on instances of BaseVariable subclasses:
 | `Type().provenance(name=val, ...)` | Get lineage information |
 | `Type().to_csv(filename, name=val, ...)` | Export to a flat CSV (one row per schema_id). Works for scalars, single-row tables, `Type("col")` column selection, and `scidb.Merge(A(), B()).to_csv(...)` |
 
-### Lineage System
+### Batch Execution & Provenance
 
 | Class/Function | Description |
 |---|---|
-| `scidb.LineageFcn(@func)` | Wrap a named function for lineage + caching |
-| `t(args...)` | Call: check cache, execute on miss, return LineageFcnResult |
+| `scidb.for_each(@func, inputs, outputs, Name, Value, ...)` | Run `func` once per combo; loads inputs, runs the loop, saves outputs, and records the provenance graph automatically |
+| `Type().provenance(Name, Value, ...)` | Read provenance from the graph: `function_name`, `function_hash`, `inputs` (cell of structs), `constants` (struct) |
+
+`inputs` is a struct mapping parameter names to `scidb.BaseVariable` instances, `scidb.Fixed` / `scidb.Variant` / `scidb.Merge` wrappers, `scifor.PathInput` instances, or constant values. `outputs` is a cell array of output type instances.
 
 ### Return Types
 
-- `Type().load(...)` returns `scidb.BaseVariable` with `.data`, `.record_id`, `.metadata`
-- LineageFcn calls return `scidb.LineageFcnResult` with `.data` (pass to `Type().save(...)`)
+- `Type().load(...)` returns `scidb.BaseVariable` with `.data`, `.record_id`, `.metadata`, `.content_hash`, `.branch_params`
 
 ## Cross-Language Interop
 
-Data saved from Python can be loaded in MATLAB and vice versa. Lineage chains are continuous across languages — a MATLAB LineageFcn can consume a Python-produced variable, and the provenance graph records the full history.
+Data saved from Python can be loaded in MATLAB and vice versa. Provenance chains are continuous across languages — a MATLAB `scidb.for_each` step can consume a Python-produced variable, and the bipartite graph records the full history.
 
-MATLAB lineage functions cache against other MATLAB functions (not Python functions), since function identity is computed differently (source file hash vs bytecode hash).
+Function identity is content-addressed by source hash, computed differently per language (MATLAB source-file hash vs Python bytecode/AST hash), so a re-run reproduces records within a language.

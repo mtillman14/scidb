@@ -482,7 +482,7 @@ classdef TestSciforForEachFeatures < matlab.unittest.TestCase
             received = strings(0, 1);
 
             function out = colmax(v, col_name)
-                received(end+1) = string(col_name); %#ok<AGROW>
+                received(end+1,1) = string(col_name); %#ok<AGROW>
                 out = max(v);
             end
 
