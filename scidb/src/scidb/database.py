@@ -137,15 +137,15 @@ def _filter_records_by_branch_params(df, branch_params_filter: dict | None, duck
         return df
     from . import provenance_query
 
-    # Derive each candidate record's branch params from the graph once.
-    bp_cache: dict = {}
+    # Derive every candidate record's branch params from the graph in one batched
+    # closure build (instead of a per-record ancestry walk).
+    bp_cache: dict = (
+        provenance_query.branch_params_batch(duck, df["record_id"].tolist())
+        if duck is not None else {}
+    )
 
     def _bp_for(record_id):
-        if record_id not in bp_cache:
-            bp_cache[record_id] = (
-                provenance_query.derived_branch_params(duck, record_id) if duck is not None else {}
-            )
-        return bp_cache[record_id]
+        return bp_cache.get(record_id, {})
 
     for key, value in branch_params_filter.items():
         def _match_row(row, k=key, v=value):
@@ -1444,19 +1444,25 @@ class DatabaseManager:
             # input locations (e.g. where=Side=='L' vs =='R' producing one
             # subject-level record each) stay distinct instead of collapsing to
             # the newest — which would hide the other from where=-based load.
+            all_rids = df["record_id"].tolist()
             consumed_map = provenance_query.consumed_input_schema_ids(
-                self._duck, df["record_id"].tolist()
+                self._duck, all_rids
             )
+            # Batched provenance: one closure build instead of 3 per-row queries
+            # (each previously walking the ancestry) — the collapse hot path.
+            inv_map = provenance_query.producing_invocation_batch(self._duck, all_rids)
+            bp_map = provenance_query.branch_params_batch(self._duck, all_rids)
+            onum_map = provenance_query.output_num_batch(self._duck, all_rids)
             groups = defaultdict(list)
             for row in df.itertuples(index=True):
-                inv = provenance_query.producing_invocation(self._duck, row.record_id)
+                inv = inv_map.get(row.record_id)
                 if inv is not None:
-                    bp = provenance_query.derived_branch_params(self._duck, row.record_id)
+                    bp = bp_map.get(row.record_id, {})
                     # output_num keeps distinct outputs of ONE call separate
                     # (flatten/distribute spread one call into many records that
                     # share fn + constants); temporal re-saves share output_num
                     # and collapse to the newest.
-                    onum = provenance_query.output_num_for(self._duck, row.record_id)
+                    onum = onum_map.get(row.record_id)
                     consumed = tuple(sorted(consumed_map.get(row.record_id, ())))
                     variant_key = (inv[1], json.dumps(bp, sort_keys=True), onum, consumed)
                 else:
@@ -2227,12 +2233,18 @@ class DatabaseManager:
         # Internal pipeline markers (__fn etc.) and fn sweep-constants are not
         # exposed here — the latter appear in the ``__branch_params`` column below.
         from . import provenance_query as _pq
+        # Batched: derive every record's branch params in one closure build,
+        # reused for both the __save__ kwarg columns and the __branch_params
+        # column (previously two per-record ancestry walks each — the dominant
+        # cost when assembling large spread results).
+        rec_id_values = records["record_id"].values
+        bp_map = _pq.branch_params_batch(self._duck, list(rec_id_values))
         per_row_kwargs: list[dict] = []
         kwarg_col_names: dict[str, list] = {}
-        for rid in records["record_id"].values:
+        for rid in rec_id_values:
             kw = {
                 k[len("__save__."):]: v
-                for k, v in _pq.derived_branch_params(self._duck, rid).items()
+                for k, v in bp_map.get(rid, {}).items()
                 if k.startswith("__save__.")
             }
             per_row_kwargs.append(kw)
@@ -2248,10 +2260,8 @@ class DatabaseManager:
         # Branch params column — derived from the bipartite graph (§6) per record,
         # not read from a stored column.
         if include_bp:
-            from . import provenance_query
             meta_dict["__branch_params"] = [
-                json.dumps(provenance_query.derived_branch_params(self._duck, rid))
-                for rid in records["record_id"].values
+                json.dumps(bp_map.get(rid, {})) for rid in rec_id_values
             ]
 
         meta_df = pd.DataFrame(meta_dict)

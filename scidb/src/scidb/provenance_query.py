@@ -64,6 +64,203 @@ def output_num_for(duck, record_id: str):
     return rows[0][0] if rows else None
 
 
+# ---------------------------------------------------------------------------
+# Batched lookups — same results as the per-record primitives above, but built
+# with O(depth) bulk queries instead of O(records × depth) round-trips. Used by
+# the hot load paths (_find_record collapse, _assemble_df_from_records_and_data)
+# where the per-record form was the dominant cost on large result sets.
+# ---------------------------------------------------------------------------
+def _chunked_in(duck, sql_template: str, ids, tail_params=None, chunk: int = 900):
+    """Run ``sql_template`` (containing a single ``{ph}`` placeholder-list slot)
+    over ``ids`` in chunks, returning the concatenated rows.
+
+    ``tail_params`` are appended after the id placeholders on every chunk (for
+    queries with trailing constant params, e.g. type filters).
+    """
+    tail_params = list(tail_params or [])
+    out: list = []
+    ids = list(ids)
+    for start in range(0, len(ids), chunk):
+        chunk_ids = ids[start : start + chunk]
+        placeholders = ", ".join(["?"] * len(chunk_ids))
+        sql = sql_template.format(ph=placeholders)
+        out.extend(duck._fetchall(sql, chunk_ids + tail_params))
+    return out
+
+
+def producing_invocation_batch(duck, record_ids) -> dict:
+    """Batched :func:`producing_invocation`.
+
+    ``{record_id: (inv_id, fn_name, fn_hash)}`` for records that have a producing
+    invocation (raw/manual records are absent from the map). Matches the
+    per-record function's "lowest invocation_id wins" tie-break.
+    """
+    ids = [r for r in dict.fromkeys(record_ids)]
+    if not ids:
+        return {}
+    rows = _chunked_in(
+        duck,
+        "SELECT io.output_record_id, io.invocation_id, inv.function_name, inv.function_hash "
+        "FROM _invocation_output io "
+        "JOIN _invocation inv ON inv.invocation_id = io.invocation_id "
+        "WHERE io.output_record_id IN ({ph})",
+        ids,
+    )
+    out: dict = {}
+    for out_rid, inv_id, fn_name, fn_hash in rows:
+        prev = out.get(out_rid)
+        # ORDER BY io.invocation_id LIMIT 1 ⇒ keep the lowest invocation_id.
+        if prev is None or inv_id < prev[0]:
+            out[out_rid] = (inv_id, fn_name, fn_hash)
+    return out
+
+
+def output_num_batch(duck, record_ids) -> dict:
+    """Batched :func:`output_num_for` — ``{record_id: output_num}`` for records
+    with a producing invocation (lowest invocation_id wins, mirroring LIMIT 1)."""
+    ids = [r for r in dict.fromkeys(record_ids)]
+    if not ids:
+        return {}
+    rows = _chunked_in(
+        duck,
+        "SELECT output_record_id, invocation_id, output_num "
+        "FROM _invocation_output WHERE output_record_id IN ({ph})",
+        ids,
+    )
+    best: dict = {}
+    out: dict = {}
+    for out_rid, inv_id, onum in rows:
+        if out_rid not in best or inv_id < best[out_rid]:
+            best[out_rid] = inv_id
+            out[out_rid] = onum
+    return out
+
+
+def _build_upstream_closure(duck, seed_record_ids, max_depth: int = 20):
+    """Load the full upstream subgraph reachable from ``seed_record_ids`` into
+    in-memory adjacency maps using O(max_depth) batched queries.
+
+    Returns ``(rec_to_inv, inv_constants, inv_var_inputs)`` where:
+
+    * ``rec_to_inv``: ``{record_id: (inv_id, fn_name)}`` for produced records
+    * ``inv_constants``: ``{inv_id: {f"{fn_name}.{param}": value}}``
+    * ``inv_var_inputs``: ``{inv_id: [input_record_id, ...]}`` (variable inputs
+      only; constants and PathInput specs excluded — matching
+      :func:`invocation_inputs`)
+
+    Together these let a caller reproduce :func:`derived_branch_params` for every
+    seed with a pure-Python walk and zero further DB round-trips.
+    """
+    rec_to_inv: dict = {}
+    inv_constants: dict = {}
+    inv_var_inputs: dict = {}
+    inv_fn_name: dict = {}  # invocation_id -> function_name (for constant namespacing)
+
+    seen_records: set = set()
+    frontier = list(dict.fromkeys(seed_record_ids))
+    depth = 0
+    while frontier and depth <= max_depth:
+        new_records = [r for r in frontier if r not in seen_records]
+        seen_records.update(new_records)
+        if not new_records:
+            break
+
+        # 1) producing invocation (+ fn_name) for each frontier record.
+        inv_rows = _chunked_in(
+            duck,
+            "SELECT io.output_record_id, io.invocation_id, inv.function_name "
+            "FROM _invocation_output io "
+            "JOIN _invocation inv ON inv.invocation_id = io.invocation_id "
+            "WHERE io.output_record_id IN ({ph})",
+            new_records,
+        )
+        for out_rid, inv_id, fn_name in inv_rows:
+            prev = rec_to_inv.get(out_rid)
+            if prev is None or inv_id < prev[0]:
+                rec_to_inv[out_rid] = (inv_id, fn_name)
+            inv_fn_name[inv_id] = fn_name
+
+        # 2) inputs for the newly discovered invocations (skip ones already loaded).
+        inv_ids = list(dict.fromkeys(
+            rec_to_inv[r][0] for r in new_records
+            if r in rec_to_inv and rec_to_inv[r][0] not in inv_var_inputs
+        ))
+        if not inv_ids:
+            depth += 1
+            frontier = []
+            continue
+
+        in_rows = _chunked_in(
+            duck,
+            "SELECT ii.invocation_id, ii.param_name, ii.input_record_id, r.type, c.value_repr "
+            "FROM _invocation_input ii "
+            "LEFT JOIN _record r ON r.record_id = ii.input_record_id "
+            "LEFT JOIN _constant c ON c.record_id = ii.input_record_id "
+            "WHERE ii.invocation_id IN ({ph})",
+            inv_ids,
+        )
+        for inv_id in inv_ids:
+            inv_var_inputs.setdefault(inv_id, [])
+            inv_constants.setdefault(inv_id, {})
+        next_frontier: list = []
+        var_pairs: dict = {}  # inv_id -> [(param_name, in_rid), ...] for stable sort
+        for inv_id, param_name, in_rid, rtype, value_repr in in_rows:
+            if rtype == PATHINPUT_TYPE:
+                continue  # PathInput spec — neither variable nor sweep constant
+            if rtype == CONSTANT_TYPE:
+                # Namespace by the producing function name (as derived_branch_params).
+                fn_name = inv_fn_name.get(inv_id)
+                inv_constants[inv_id][f"{fn_name}.{param_name}"] = _safe_literal(value_repr)
+            else:
+                var_pairs.setdefault(inv_id, []).append((param_name, in_rid))
+                next_frontier.append(in_rid)
+        # Match invocation_inputs' sort (param_name, record_id) so the per-record
+        # DFS visits ancestors in the same order as derived_branch_params.
+        for inv_id, pairs in var_pairs.items():
+            inv_var_inputs[inv_id] = [rid for _p, rid in sorted(pairs)]
+
+        depth += 1
+        frontier = next_frontier
+
+    return rec_to_inv, inv_constants, inv_var_inputs
+
+
+def branch_params_batch(duck, record_ids, max_depth: int = 20) -> dict:
+    """Batched :func:`derived_branch_params` — ``{record_id: {fn.param: value}}``.
+
+    Builds the upstream closure once (O(max_depth) bulk queries), then accumulates
+    each requested record's branch params with an in-memory walk identical in
+    semantics to the per-record version (same DFS order, same last-write-wins on
+    a namespaced-key collision), so results match byte-for-byte.
+    """
+    seeds = [r for r in dict.fromkeys(record_ids)]
+    if not seeds:
+        return {}
+    rec_to_inv, inv_constants, inv_var_inputs = _build_upstream_closure(
+        duck, seeds, max_depth
+    )
+    out: dict = {}
+    for seed in seeds:
+        bp: dict = {}
+        visited: set = set()
+        stack = [(seed, 0)]
+        while stack:
+            cur, depth = stack.pop()
+            if cur in visited or depth > max_depth:
+                continue
+            visited.add(cur)
+            inv = rec_to_inv.get(cur)
+            if inv is None:
+                continue
+            inv_id, _fn_name = inv
+            for nkey, value in inv_constants.get(inv_id, {}).items():
+                bp[nkey] = value
+            for child in inv_var_inputs.get(inv_id, ()):
+                stack.append((child, depth + 1))
+        out[seed] = bp
+    return out
+
+
 def invocation_inputs(duck, invocation_id: str):
     """Split an invocation's input edges into variable inputs and constants.
 

@@ -98,6 +98,64 @@ def test_derived_branch_params_empty_for_raw(db):
 
 
 # ---------------------------------------------------------------------------
+# Batched provenance equivalence — the bulk forms used by the hot load paths
+# (_find_record collapse, _assemble_df_from_records_and_data) must return
+# results identical to the per-record primitives they replace, since correctness
+# of variant collapse and branch_params columns depends on it.
+# ---------------------------------------------------------------------------
+def _multi_record_pipeline(db):
+    """Two subjects × two low_hz variants → a spread of computed records sharing
+    ancestry, so the batched closure is exercised on overlapping subgraphs."""
+    for subj in ("S01", "S02"):
+        RawSignal.save(np.array([1.0, 2.0, 3.0]), subject=subj, session="1")
+    for low in (20, 30):
+        for_each(bandpass, {"signal": RawSignal, "low_hz": low}, [Filtered],
+                 subject=["S01", "S02"], session=["1"])
+    for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
+             subject=["S01", "S02"], session=["1"])
+    rows = db._duck._fetchall("SELECT record_id FROM _record")
+    return [r[0] for r in rows]
+
+
+def test_batched_provenance_matches_per_record(db):
+    from scidb import provenance_query as pq
+
+    rids = _multi_record_pipeline(db)
+    duck = db._duck
+
+    inv_map = pq.producing_invocation_batch(duck, rids)
+    onum_map = pq.output_num_batch(duck, rids)
+    bp_map = pq.branch_params_batch(duck, rids)
+
+    for rid in rids:
+        assert inv_map.get(rid) == pq.producing_invocation(duck, rid)
+        assert onum_map.get(rid) == pq.output_num_for(duck, rid)
+        # branch_params_batch omits empty maps only when a record has none;
+        # the per-record form returns {} there, so normalise with .get(rid, {}).
+        assert bp_map.get(rid, {}) == pq.derived_branch_params(duck, rid)
+
+
+def test_batched_provenance_empty_inputs(db):
+    from scidb import provenance_query as pq
+
+    assert pq.producing_invocation_batch(db._duck, []) == {}
+    assert pq.output_num_batch(db._duck, []) == {}
+    assert pq.branch_params_batch(db._duck, []) == {}
+
+
+def test_branch_params_batch_handles_duplicates(db):
+    """Duplicate seed ids (a record appearing twice in a result set) must not
+    corrupt the per-record accumulation."""
+    from scidb import provenance_query as pq
+
+    s = _two_step(db)
+    once = pq.branch_params_batch(db._duck, [s.record_id])
+    twice = pq.branch_params_batch(db._duck, [s.record_id, s.record_id])
+    assert once == twice
+    assert once[s.record_id] == pq.derived_branch_params(db._duck, s.record_id)
+
+
+# ---------------------------------------------------------------------------
 # get_pipeline (§8)
 # ---------------------------------------------------------------------------
 def test_get_pipeline_nodes_and_edges(db):

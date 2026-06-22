@@ -80,6 +80,69 @@ def test_invocation_id_distribute_matters():
 
 
 # ---------------------------------------------------------------------------
+# record_run's inlined invocation_id must agree with invocation_id_for_meta.
+#
+# record_run computes the id directly from the bindings/as_table/distribute it
+# already assembled (a perf win — it no longer re-derives them via
+# invocation_id_for_meta). The generates_file lineage-only save still keys on
+# invocation_id_for_meta, so the two must stay byte-identical or those paths
+# would disagree on identity.
+# ---------------------------------------------------------------------------
+def _inline_invocation_id(meta):
+    """Reproduce the exact assembly record_run does inline for one record."""
+    from scidb.provenance import (
+        compute_invocation_id,
+        constant_record_id_from_hash,
+    )
+    from scidb.provenance_save import (
+        _constant_bindings,
+        _normalize_as_table,
+        _parse_json_dict,
+        _variable_bindings,
+    )
+    from scicanonicalhash import canonical_hash
+
+    var_b = _variable_bindings(meta)
+    const_b = _constant_bindings(meta)
+    loadable = list(_parse_json_dict(meta.get("__inputs")).keys()) or [
+        p for p, _r, _s in var_b
+    ]
+    as_table = _normalize_as_table(meta, loadable)
+    distribute = bool(meta.get("__distribute", False))
+    bindings = list(var_b)
+    for param, value in const_b.items():
+        bindings.append((param, constant_record_id_from_hash(canonical_hash(value)), None))
+    return compute_invocation_id(meta.get("__fn_hash") or "", as_table, distribute, bindings)
+
+
+def test_inline_invocation_id_matches_helper():
+    import json
+
+    from scidb.provenance_save import invocation_id_for_meta
+
+    metas = [
+        # plain variable + constant
+        {"__fn_hash": "h1",
+         "__upstream": json.dumps({"__rid_signal": "rid_sig"}),
+         "__constants": json.dumps({"low_hz": 20})},
+        # multiple constants, no variables
+        {"__fn_hash": "h2",
+         "__constants": json.dumps({"a": 1, "b": "x", "c": 3.5})},
+        # aggregation flag + inputs list
+        {"__fn_hash": "h3",
+         "__upstream": json.dumps({"__rid_x": "r1", "__rid_y": "r2"}),
+         "__inputs": json.dumps({"x": "k", "y": "k"}),
+         "__as_table": True},
+        # distribute flag
+        {"__fn_hash": "h4",
+         "__upstream": json.dumps({"__rid_x": "r1"}),
+         "__distribute": True},
+    ]
+    for meta in metas:
+        assert _inline_invocation_id(meta) == invocation_id_for_meta(meta)
+
+
+# ---------------------------------------------------------------------------
 # Run ids — fresh per call
 # ---------------------------------------------------------------------------
 def test_run_id_is_fresh():

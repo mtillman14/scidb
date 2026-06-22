@@ -36,6 +36,7 @@ from .provenance import (
     compute_constant_record_id,
     compute_invocation_id,
     compute_pathinput_record_id,
+    constant_record_id_from_hash,
     constant_value_repr,
     constant_value_type,
     generate_run_id,
@@ -317,9 +318,19 @@ def record_run(
     if not graph_records:
         return None
 
+    import time
+
+    from .log import Log
+
+    timings: dict[str, float] = {}
+    _t_start = time.perf_counter()
+
     duck = db._duck
     created_at = datetime.now().isoformat()
+    _t = time.perf_counter()
     meta_map = _fetch_record_meta(duck, [g.record_id for g in graph_records])
+    timings["1_meta_fetch"] = time.perf_counter() - _t
+    _t_assemble = time.perf_counter()
 
     # Accumulators (deduped by key so we can ON CONFLICT DO NOTHING cheaply).
     entity_rows: dict[str, tuple] = {}        # record_id -> _record row
@@ -348,16 +359,25 @@ def record_run(
         # (param, record_id, selector) triples; constants carry no selector.
         bindings: list[tuple[str, str, str | None]] = list(var_b)
         for param, value in const_b.items():
-            crid = compute_constant_record_id(value)
-            bindings.append((param, crid, None))
+            # canonical_hash drives the record id too, so hash once and derive the
+            # id from it instead of calling compute_constant_record_id (which would
+            # re-hash the value).
             ch = canonical_hash(value)
+            crid = constant_record_id_from_hash(ch)
+            bindings.append((param, crid, None))
             constant_rows[crid] = (crid, constant_value_repr(value), constant_value_type(value), ch)
             entity_rows.setdefault(crid, (crid, created_at, CONSTANT_TYPE, None, ch, None, False))
 
-        # Identity computed via the shared helper so the generates_file
-        # lineage-only save (which keys generated:{invocation_id}) and this save
-        # path can never disagree.
-        inv_id = invocation_id_for_meta(meta)
+        # Identity. ``bindings`` (var inputs + constant rids), ``as_table`` and
+        # ``distribute`` here are assembled identically to invocation_id_for_meta,
+        # so compute the id directly from them rather than re-deriving the whole
+        # binding set + re-hashing every constant per record (that doubled the
+        # per-record CPU and dominated record_run on large for_each saves). The
+        # generates_file lineage-only save calls invocation_id_for_meta, which
+        # shares these same helpers, so the two paths still agree.
+        inv_id = compute_invocation_id(
+            meta.get("__fn_hash") or "", as_table, distribute, bindings
+        )
         # Store NULL (not []) for "no aggregation" — avoids empty-list bind
         # ambiguity on the VARCHAR[] column; identity hashing treats them alike.
         invocation_rows[inv_id] = (
@@ -405,78 +425,101 @@ def record_run(
             False,
         )
 
+    timings["2_assemble_loop"] = time.perf_counter() - _t_assemble
+
     run_id = generate_run_id()
     logger.debug(
         "record_run: run_id=%s fn=%s records=%d invocations=%d constants=%d edges_in=%d",
         run_id, function_name, len(graph_records), len(invocation_rows),
         len(constant_rows), len(input_edges),
     )
+    _t_commit = time.perf_counter()
     _commit_graph(
         duck, run_id, created_at, user_id, function_name, where_clause,
         entity_rows, constant_rows, invocation_rows, input_edges,
         output_edges, run_inv_ids,
+        timings=timings,
     )
+    timings["3_commit"] = time.perf_counter() - _t_commit
+    timings["total"] = time.perf_counter() - _t_start
+
+    Log.info(
+        f"[timing] record_run(fn={function_name}): {len(graph_records)} record(s), "
+        f"{len(invocation_rows)} invocation(s), {len(constant_rows)} constant(s), "
+        f"{len(input_edges)} input edge(s), {timings['total']:.3f}s"
+    )
+    for phase, elapsed in timings.items():
+        Log.debug(f"  record_run {phase:30s} {elapsed:.3f}s")
     return run_id
 
 
 def _commit_graph(
     duck, run_id, created_at, user_id, function_name, where_clause,
     entity_rows, constant_rows, invocation_rows, input_edges,
-    output_edges, run_inv_ids,
+    output_edges, run_inv_ids, timings: dict | None = None,
 ) -> None:
     """Transactionally insert the assembled graph rows + the append-only run.
 
     Used by :func:`record_run` (the for_each save path). All graph inserts are
     idempotent (``ON CONFLICT DO NOTHING``); the ``_run`` row is always appended.
+    ``timings`` (optional) receives per-table elapsed times for diagnostics.
     """
+    import time as _time
+    timings = timings if timings is not None else {}
+
+    def _timed(label, fn):
+        _t = _time.perf_counter()
+        fn()
+        timings[label] = _time.perf_counter() - _t
+
     duck._begin()
     try:
         # Bulk vectorized inserts (see SciDuck._bulk_insert): per-row executemany
         # against these PK/composite-PK tables scaled to ~hundreds of seconds for
         # a for_each over thousands of records.
-        duck._bulk_insert(
+        _timed("3a_record", lambda: duck._bulk_insert(
             "_record",
             ("record_id", "created_at", "type", "schema_id",
              "content_hash", "schema_version", "excluded"),
             entity_rows.values(),
             conflict_cols=["record_id"],
-        )
-        duck._bulk_insert(
+        ))
+        _timed("3b_constant", lambda: duck._bulk_insert(
             "_constant",
             ("record_id", "value_repr", "value_type", "content_hash"),
             constant_rows.values(),
             conflict_cols=["record_id"],
-        )
-        duck._bulk_insert(
+        ))
+        _timed("3c_invocation", lambda: duck._bulk_insert(
             "_invocation",
             ("invocation_id", "function_name", "function_hash", "as_table", "distribute"),
             invocation_rows.values(),
             conflict_cols=["invocation_id"],
-        )
-        duck._bulk_insert(
+        ))
+        _timed("3d_invocation_input", lambda: duck._bulk_insert(
             "_invocation_input",
             ("invocation_id", "param_name", "input_record_id", "selector"),
             [(inv, param, rid, sel) for (inv, param, rid), sel in input_edges.items()],
             conflict_cols=["invocation_id", "param_name", "input_record_id"],
-        )
-        duck._bulk_insert(
+        ))
+        _timed("3e_invocation_output", lambda: duck._bulk_insert(
             "_invocation_output",
             ("invocation_id", "output_num", "output_record_id"),
             [(inv, onum, rid) for (inv, onum), rid in output_edges.items()],
             conflict_cols=["invocation_id", "output_num"],
-        )
+        ))
         duck.con.execute(
             "INSERT INTO _run (run_id, timestamp, user_id, function_name, where_clause) "
             "VALUES (?, ?, ?, ?, ?)",
             [run_id, created_at, user_id, function_name, where_clause],
         )
-        duck._bulk_insert(
+        _timed("3f_run_invocation", lambda: duck._bulk_insert(
             "_run_invocation",
             ("run_id", "invocation_id"),
             [(run_id, inv) for inv in run_inv_ids],
             conflict_cols=["run_id", "invocation_id"],
-        )
-        duck._commit()
+        ))
+        _timed("3g_commit", lambda: duck._commit())
     except Exception:
         logger.exception("graph commit failed; rolling back for run_id=%s", run_id)
         try:
