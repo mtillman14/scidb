@@ -340,61 +340,93 @@ def record_run(
     output_edges: dict[tuple[str, int], str] = {}     # (inv_id, output_num) -> rid
     run_inv_ids: set[str] = set()
 
+    # Invocation-level memo. The whole assembly above (binding set, constant
+    # hashing, invocation_id, invocation/input/constant rows) depends only on a
+    # record's identity-determining meta — never on which output slot it is. A
+    # distribute/flatten fan-out emits THOUSANDS of output records that all share
+    # one invocation, so without this every one re-derives the identical id
+    # (canonical_hash ×N + SHA): that recomputation was ~all of record_run's time
+    # (22.9s for 14253 records → 1 invocation). The key is built from the raw
+    # meta strings (no parse/hash), and two metas that match it provably produce
+    # the same invocation_id, so the memo only ever collapses true duplicates.
+    inv_cache: dict = {}
+    # Per-invocation output-slot allocation state (see the output-edge block).
+    inv_cursor: dict = {}                      # inv_id -> next slot to try
+    rid_slot: dict = {}                        # (inv_id, record_id) -> assigned slot
+
     for g in graph_records:
         meta = g.meta
-        fn_name = meta.get("__fn") or function_name or "unknown"
-        fn_hash = meta.get("__fn_hash") or ""
 
-        var_b = _variable_bindings(meta)   # list of (param, rid, selector)
-        const_b = _constant_bindings(meta)
-        loadable_params = (
-            list(_parse_json_dict(meta.get("__inputs")).keys())
-            or [p for p, _r, _s in var_b]
+        # repr() every field that can be a live dict/list (e.g. __constants /
+        # __upstream / __inputs may arrive parsed, not as JSON strings) so the key
+        # is always hashable. repr is deterministic for a given content+order, so
+        # identical metas (a fan-out) share a key; any ordering difference only
+        # costs a recompute (compute_invocation_id sorts bindings → same id).
+        cache_key = (
+            meta.get("__fn_hash"),
+            repr(meta.get("__graph_var_bindings")),
+            repr(meta.get("__upstream")),
+            repr(meta.get("__inputs")),
+            repr(meta.get("__constants")),
+            repr(meta.get("__as_table")),
+            bool(meta.get("__distribute", False)),
         )
-        as_table = _normalize_as_table(meta, loadable_params)
-        distribute = bool(meta.get("__distribute", False))
+        inv_id = inv_cache.get(cache_key)
+        if inv_id is None:
+            fn_name = meta.get("__fn") or function_name or "unknown"
+            fn_hash = meta.get("__fn_hash") or ""
 
-        # Assemble the full binding set (variables + constants) and the
-        # constant entity/value rows it implies. Bindings are
-        # (param, record_id, selector) triples; constants carry no selector.
-        bindings: list[tuple[str, str, str | None]] = list(var_b)
-        for param, value in const_b.items():
-            # canonical_hash drives the record id too, so hash once and derive the
-            # id from it instead of calling compute_constant_record_id (which would
-            # re-hash the value).
-            ch = canonical_hash(value)
-            crid = constant_record_id_from_hash(ch)
-            bindings.append((param, crid, None))
-            constant_rows[crid] = (crid, constant_value_repr(value), constant_value_type(value), ch)
-            entity_rows.setdefault(crid, (crid, created_at, CONSTANT_TYPE, None, ch, None, False))
+            var_b = _variable_bindings(meta)   # list of (param, rid, selector)
+            const_b = _constant_bindings(meta)
+            loadable_params = (
+                list(_parse_json_dict(meta.get("__inputs")).keys())
+                or [p for p, _r, _s in var_b]
+            )
+            as_table = _normalize_as_table(meta, loadable_params)
+            distribute = bool(meta.get("__distribute", False))
 
-        # Identity. ``bindings`` (var inputs + constant rids), ``as_table`` and
-        # ``distribute`` here are assembled identically to invocation_id_for_meta,
-        # so compute the id directly from them rather than re-deriving the whole
-        # binding set + re-hashing every constant per record (that doubled the
-        # per-record CPU and dominated record_run on large for_each saves). The
-        # generates_file lineage-only save calls invocation_id_for_meta, which
-        # shares these same helpers, so the two paths still agree.
-        inv_id = compute_invocation_id(
-            meta.get("__fn_hash") or "", as_table, distribute, bindings
-        )
-        # Store NULL (not []) for "no aggregation" — avoids empty-list bind
-        # ambiguity on the VARCHAR[] column; identity hashing treats them alike.
-        invocation_rows[inv_id] = (
-            inv_id, fn_name, fn_hash, as_table or None, distribute,
-        )
-        for param, rid, selector in bindings:
-            input_edges[(inv_id, param, rid)] = selector
+            # Assemble the full binding set (variables + constants) and the
+            # constant entity/value rows it implies. Bindings are
+            # (param, record_id, selector) triples; constants carry no selector.
+            bindings: list[tuple[str, str, str | None]] = list(var_b)
+            for param, value in const_b.items():
+                # canonical_hash drives the record id too, so hash once and derive
+                # the id from it instead of calling compute_constant_record_id
+                # (which would re-hash the value).
+                ch = canonical_hash(value)
+                crid = constant_record_id_from_hash(ch)
+                bindings.append((param, crid, None))
+                constant_rows[crid] = (crid, constant_value_repr(value), constant_value_type(value), ch)
+                entity_rows.setdefault(crid, (crid, created_at, CONSTANT_TYPE, None, ch, None, False))
 
-        # PathInput-spec edges: config-level (template+root_folder), recorded as
-        # distinctly-typed input records so variant queries can surface them.
-        # Added AFTER inv_id is computed → deliberately NOT part of identity.
-        for param, spec in _pathinput_specs(meta).items():
-            prid = compute_pathinput_record_id(spec)
-            ch = canonical_hash(spec)
-            constant_rows[prid] = (prid, spec, "PathInput", ch)
-            entity_rows.setdefault(prid, (prid, created_at, PATHINPUT_TYPE, None, ch, None, False))
-            input_edges[(inv_id, param, prid)] = None
+            # Identity. ``bindings`` (var inputs + constant rids), ``as_table`` and
+            # ``distribute`` here are assembled identically to invocation_id_for_meta,
+            # so compute the id directly from them rather than re-deriving the whole
+            # binding set + re-hashing every constant per record. The generates_file
+            # lineage-only save calls invocation_id_for_meta, which shares these
+            # same helpers, so the two paths still agree.
+            inv_id = compute_invocation_id(
+                meta.get("__fn_hash") or "", as_table, distribute, bindings
+            )
+            # Store NULL (not []) for "no aggregation" — avoids empty-list bind
+            # ambiguity on the VARCHAR[] column; identity hashing treats them alike.
+            invocation_rows[inv_id] = (
+                inv_id, fn_name, fn_hash, as_table or None, distribute,
+            )
+            for param, rid, selector in bindings:
+                input_edges[(inv_id, param, rid)] = selector
+
+            # PathInput-spec edges: config-level (template+root_folder), recorded as
+            # distinctly-typed input records so variant queries can surface them.
+            # Added AFTER inv_id is computed → deliberately NOT part of identity.
+            for param, spec in _pathinput_specs(meta).items():
+                prid = compute_pathinput_record_id(spec)
+                ch = canonical_hash(spec)
+                constant_rows[prid] = (prid, spec, "PathInput", ch)
+                entity_rows.setdefault(prid, (prid, created_at, PATHINPUT_TYPE, None, ch, None, False))
+                input_edges[(inv_id, param, prid)] = None
+
+            inv_cache[cache_key] = inv_id
 
         # Output edge. One call can emit MANY records that share an invocation
         # and arrive with the same nominal output_num — notably flatten/distribute
@@ -404,12 +436,22 @@ def record_run(
         # order is the deterministic collection (row) order, so re-runs reproduce
         # the same assignment. An idempotent re-save (same record_id) is not a
         # collision and keeps its slot.
-        okey = (inv_id, g.output_num)
-        if okey in output_edges and output_edges[okey] != g.record_id:
-            n = g.output_num
+        #
+        # A monotonic per-invocation cursor makes this O(1) amortized: a big
+        # distribute fan-out shares one base output_num, so probing from
+        # g.output_num every time was O(n²). The cursor skips already-filled
+        # slots; the while-loop only ever runs for interleaved multi-output bases,
+        # so uniqueness/idempotency are preserved while the common path stays flat.
+        existing = rid_slot.get((inv_id, g.record_id))
+        if existing is not None:
+            okey = (inv_id, existing)          # idempotent re-save keeps its slot
+        else:
+            n = max(g.output_num, inv_cursor.get(inv_id, 0))
             while (inv_id, n) in output_edges and output_edges[(inv_id, n)] != g.record_id:
                 n += 1
             okey = (inv_id, n)
+            inv_cursor[inv_id] = n + 1
+            rid_slot[(inv_id, g.record_id)] = n
         output_edges[okey] = g.record_id
         run_inv_ids.add(inv_id)
 

@@ -160,6 +160,58 @@ def test_rerun_idempotent_graph_new_run(db):
 
 
 # ---------------------------------------------------------------------------
+# Distribute/flatten fan-out: ONE invocation → MANY output records.
+#
+# A returned DataFrame spread into one record per row produces thousands of
+# GraphRecords that all share identity-relevant meta (one invocation) and the
+# same nominal output_num. record_run must (a) compute the invocation once
+# (memo), and (b) hand each output a unique output_num without an
+# _invocation_output PK collision — the slot-allocation cursor.
+# ---------------------------------------------------------------------------
+def test_distribute_fanout_one_invocation_unique_slots(db):
+    from scidb.provenance_save import GraphRecord, record_run
+
+    n = 500
+    # Use live dicts (not JSON strings) for __upstream/__constants — that is how
+    # real for_each meta arrives, and the cache key must stay hashable for them.
+    shared_meta = {
+        "__fn": "calc_fanout",
+        "__fn_hash": "fanouthash",
+        "__upstream": {"__rid_signal": "input_rid_X"},
+        "__constants": {"low_hz": 20},
+        "__distribute": True,
+    }
+    # All share one invocation + the same base output_num (0), distinct outputs.
+    graph_records = [
+        GraphRecord("Filtered", 1, 0, f"out_rid_{i:05d}", dict(shared_meta))
+        for i in range(n)
+    ]
+
+    run_id = record_run(
+        db, graph_records, function_name="calc_fanout",
+        where_clause=None, user_id="tester",
+    )
+    assert run_id is not None
+
+    # Exactly one invocation despite n outputs (memo collapsed the duplicates).
+    assert _count(db, "_invocation") == 1
+    # n distinct output edges, each with a unique (invocation_id, output_num).
+    assert _count(db, "_invocation_output") == n
+    onums = [r[0] for r in db._duck._fetchall(
+        "SELECT output_num FROM _invocation_output")]
+    assert len(set(onums)) == n
+
+    # Re-running is idempotent for the graph (same ids, ON CONFLICT DO NOTHING):
+    # no new invocation/output rows, but a fresh _run is appended.
+    runs_before = _count(db, "_run")
+    record_run(db, graph_records, function_name="calc_fanout",
+               where_clause=None, user_id="tester")
+    assert _count(db, "_invocation") == 1
+    assert _count(db, "_invocation_output") == n
+    assert _count(db, "_run") == runs_before + 1
+
+
+# ---------------------------------------------------------------------------
 # Multiple schema locations → independent invocations
 # ---------------------------------------------------------------------------
 def test_multiple_subjects_independent_invocations(db):
