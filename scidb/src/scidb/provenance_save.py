@@ -87,16 +87,18 @@ def record_direct_save(duck, output_record_id: str, kwargs: dict, created_at: st
         input_edges.append((save_inv_id, str(name), crid, None))
 
     con = duck.con
-    con.executemany(
-        "INSERT INTO _record "
-        "(record_id, created_at, type, schema_id, content_hash, schema_version, excluded) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
+    duck._bulk_insert(
+        "_record",
+        ("record_id", "created_at", "type", "schema_id",
+         "content_hash", "schema_version", "excluded"),
         entity_rows,
+        conflict_cols=["record_id"],
     )
-    con.executemany(
-        "INSERT INTO _constant (record_id, value_repr, value_type, content_hash) "
-        "VALUES (?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
+    duck._bulk_insert(
+        "_constant",
+        ("record_id", "value_repr", "value_type", "content_hash"),
         constant_rows,
+        conflict_cols=["record_id"],
     )
     con.execute(
         "INSERT INTO _invocation "
@@ -104,12 +106,11 @@ def record_direct_save(duck, output_record_id: str, kwargs: dict, created_at: st
         "VALUES (?, ?, ?, ?, ?) ON CONFLICT (invocation_id) DO NOTHING",
         [save_inv_id, SAVE_FUNCTION_NAME, "", [], False],
     )
-    con.executemany(
-        "INSERT INTO _invocation_input "
-        "(invocation_id, param_name, input_record_id, selector) "
-        "VALUES (?, ?, ?, ?) "
-        "ON CONFLICT (invocation_id, param_name, input_record_id) DO NOTHING",
+    duck._bulk_insert(
+        "_invocation_input",
+        ("invocation_id", "param_name", "input_record_id", "selector"),
         input_edges,
+        conflict_cols=["invocation_id", "param_name", "input_record_id"],
     )
     con.execute(
         "INSERT INTO _invocation_output (invocation_id, output_num, output_record_id) "
@@ -430,47 +431,50 @@ def _commit_graph(
     """
     duck._begin()
     try:
-        con = duck.con
-        con.executemany(
-            "INSERT INTO _record "
-            "(record_id, created_at, type, schema_id, content_hash, schema_version, excluded) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
-            list(entity_rows.values()),
+        # Bulk vectorized inserts (see SciDuck._bulk_insert): per-row executemany
+        # against these PK/composite-PK tables scaled to ~hundreds of seconds for
+        # a for_each over thousands of records.
+        duck._bulk_insert(
+            "_record",
+            ("record_id", "created_at", "type", "schema_id",
+             "content_hash", "schema_version", "excluded"),
+            entity_rows.values(),
+            conflict_cols=["record_id"],
         )
-        if constant_rows:
-            con.executemany(
-                "INSERT INTO _constant (record_id, value_repr, value_type, content_hash) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
-                list(constant_rows.values()),
-            )
-        con.executemany(
-            "INSERT INTO _invocation "
-            "(invocation_id, function_name, function_hash, as_table, distribute) "
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (invocation_id) DO NOTHING",
-            list(invocation_rows.values()),
+        duck._bulk_insert(
+            "_constant",
+            ("record_id", "value_repr", "value_type", "content_hash"),
+            constant_rows.values(),
+            conflict_cols=["record_id"],
         )
-        if input_edges:
-            con.executemany(
-                "INSERT INTO _invocation_input "
-                "(invocation_id, param_name, input_record_id, selector) "
-                "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT (invocation_id, param_name, input_record_id) DO NOTHING",
-                [(inv, param, rid, sel) for (inv, param, rid), sel in input_edges.items()],
-            )
-        con.executemany(
-            "INSERT INTO _invocation_output (invocation_id, output_num, output_record_id) "
-            "VALUES (?, ?, ?) ON CONFLICT (invocation_id, output_num) DO NOTHING",
+        duck._bulk_insert(
+            "_invocation",
+            ("invocation_id", "function_name", "function_hash", "as_table", "distribute"),
+            invocation_rows.values(),
+            conflict_cols=["invocation_id"],
+        )
+        duck._bulk_insert(
+            "_invocation_input",
+            ("invocation_id", "param_name", "input_record_id", "selector"),
+            [(inv, param, rid, sel) for (inv, param, rid), sel in input_edges.items()],
+            conflict_cols=["invocation_id", "param_name", "input_record_id"],
+        )
+        duck._bulk_insert(
+            "_invocation_output",
+            ("invocation_id", "output_num", "output_record_id"),
             [(inv, onum, rid) for (inv, onum), rid in output_edges.items()],
+            conflict_cols=["invocation_id", "output_num"],
         )
-        con.execute(
+        duck.con.execute(
             "INSERT INTO _run (run_id, timestamp, user_id, function_name, where_clause) "
             "VALUES (?, ?, ?, ?, ?)",
             [run_id, created_at, user_id, function_name, where_clause],
         )
-        con.executemany(
-            "INSERT INTO _run_invocation (run_id, invocation_id) "
-            "VALUES (?, ?) ON CONFLICT (run_id, invocation_id) DO NOTHING",
+        duck._bulk_insert(
+            "_run_invocation",
+            ("run_id", "invocation_id"),
             [(run_id, inv) for inv in run_inv_ids],
+            conflict_cols=["run_id", "invocation_id"],
         )
         duck._commit()
     except Exception:

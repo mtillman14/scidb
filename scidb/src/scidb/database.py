@@ -1153,13 +1153,16 @@ class DatabaseManager:
                 "SELECT * FROM save_df "
                 "ON CONFLICT (record_id, timestamp) DO NOTHING"
             )
+            timings["6c1_record_save_insert"] = time.perf_counter() - t6c
             # The type/schema/content metadata lives on the bipartite entities table
             # (_record); map metadata_rows to the _record column order.
+            t6c2 = time.perf_counter()
             from .provenance import insert_record_entities
             insert_record_entities(
                 self._duck,
                 [(r[0], r[1], r[2], r[3], r[4], r[5], False) for r in metadata_rows],
             )
+            timings["6c2_record_entities_insert"] = time.perf_counter() - t6c2
             timings["6c_meta_insert"] = time.perf_counter() - t6c
 
             # Upsert _variables (one row per variable)

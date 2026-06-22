@@ -245,12 +245,20 @@ def insert_record_entity(
     )
 
 
+_RECORD_COLUMNS = (
+    "record_id", "created_at", "type", "schema_id",
+    "content_hash", "schema_version", "excluded",
+)
+
+
 def insert_record_entities(duck, rows: list[tuple]) -> None:
     """Bulk-insert ``_record`` rows. Each row is
-    ``(record_id, created_at, type, schema_id, content_hash, schema_version, excluded)``."""
-    if not rows:
-        return
-    duck.con.executemany(_RECORD_INSERT, rows)
+    ``(record_id, created_at, type, schema_id, content_hash, schema_version, excluded)``.
+
+    Uses a single vectorized ``INSERT ... SELECT`` (see ``SciDuck._bulk_insert``);
+    the previous per-row ``executemany`` cost ~497s for 8k rows into this
+    PK-indexed table."""
+    duck._bulk_insert("_record", _RECORD_COLUMNS, rows, conflict_cols=["record_id"])
 
 
 # ---------------------------------------------------------------------------

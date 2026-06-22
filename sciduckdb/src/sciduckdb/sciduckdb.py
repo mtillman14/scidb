@@ -570,6 +570,37 @@ class SciDuck:
         with self._lock:
             return self.con.executemany(sql, params_list)
 
+    def _bulk_insert(self, table: str, columns, rows, conflict_cols=None) -> None:
+        """Insert many rows with a single vectorized ``INSERT ... SELECT``.
+
+        DuckDB's ``executemany`` re-runs the prepared single-row statement once
+        per row; against a PRIMARY-KEY / indexed table that is pathologically
+        slow (per-row index probe + maintenance), e.g. ~497s for 8k rows into
+        ``_record``. This registers the rows as one DataFrame and issues a single
+        bulk insert instead (sub-second for the same data).
+
+        ``rows`` is an iterable of value tuples in ``columns`` order. When
+        ``conflict_cols`` is given, appends ``ON CONFLICT (...) DO NOTHING`` so
+        the insert stays idempotent. Safe to call inside an open transaction
+        (the register/insert/unregister run on the same connection).
+        """
+        rows = list(rows)
+        if not rows:
+            return
+        columns = list(columns)
+        df = pd.DataFrame(rows, columns=columns)
+        col_str = ", ".join(f'"{c}"' for c in columns)
+        sql = f'INSERT INTO "{table}" ({col_str}) SELECT * FROM _bulk_insert_df'
+        if conflict_cols:
+            conflict_str = ", ".join(f'"{c}"' for c in conflict_cols)
+            sql += f" ON CONFLICT ({conflict_str}) DO NOTHING"
+        with self._lock:
+            self.con.register("_bulk_insert_df", df)
+            try:
+                self.con.execute(sql)
+            finally:
+                self.con.unregister("_bulk_insert_df")
+
     def _begin(self):
         with self._lock:
             self.con.execute("BEGIN TRANSACTION")

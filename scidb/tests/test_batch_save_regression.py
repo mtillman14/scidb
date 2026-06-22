@@ -236,6 +236,120 @@ class TestBatchSaveRegression:
         assert len(all_records) == 1
 
 
+class TestBulkInsertProvenance:
+    """Guard the vectorized provenance-insert path.
+
+    The bipartite provenance tables (_record, _constant, _invocation,
+    _invocation_input, _invocation_output, _run_invocation) used to be populated
+    with ``con.executemany`` — DuckDB re-runs the single-row statement once per
+    row, which against these PK/indexed tables cost ~497s for an 8k-record
+    for_each (the `6c2_record_entities_insert` blowup). They now go through
+    ``SciDuck._bulk_insert`` (one ``INSERT ... SELECT`` per table). These tests
+    fail if any of them reverts to the per-row path.
+    """
+
+    def test_record_entities_use_bulk_insert(self, db, monkeypatch):
+        """save_batch's _record insert must go through _bulk_insert, not per-row."""
+        from sciduckdb.sciduckdb import SciDuck
+
+        tables = []
+        orig = SciDuck._bulk_insert
+
+        def _spy(self, table, columns, rows, conflict_cols=None):
+            tables.append(table)
+            return orig(self, table, columns, rows, conflict_cols=conflict_cols)
+
+        monkeypatch.setattr(SciDuck, "_bulk_insert", _spy)
+
+        for subj in ["S01", "S02", "S03"]:
+            Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
+        for_each(
+            process, {"data": Input}, [Output],
+            subject=["S01", "S02", "S03"], trial=["1"],
+        )
+
+        # _record (entities) is the table whose per-row insert was the 497s
+        # bottleneck; _invocation exercises the VARCHAR[] (as_table) list column.
+        assert "_record" in tables, "save_batch did not bulk-insert _record entities"
+        assert "_invocation" in tables, "graph commit did not bulk-insert _invocation"
+
+    def test_no_per_row_executemany_in_provenance(self, db, monkeypatch):
+        """No provenance table may be written via con.executemany (the slow path)."""
+        from sciduckdb.sciduckdb import SciDuck
+
+        offenders = []
+        orig = SciDuck._executemany
+
+        def _spy(self, sql, params_list):
+            offenders.append(sql)
+            return orig(self, sql, params_list)
+
+        monkeypatch.setattr(SciDuck, "_executemany", _spy)
+
+        # Also catch direct con.executemany (bypassing the SciDuck wrapper).
+        direct = []
+
+        class _ConProxy:
+            def __init__(self, con):
+                self._con = con
+
+            def executemany(self, sql, params_list):
+                direct.append(sql)
+                return self._con.executemany(sql, params_list)
+
+            def __getattr__(self, name):
+                return getattr(self._con, name)
+
+        monkeypatch.setattr(db._duck, "con", _ConProxy(db._duck.con))
+
+        for subj in ["S01", "S02", "S03"]:
+            Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
+        for_each(
+            process, {"data": Input}, [Output],
+            subject=["S01", "S02", "S03"], trial=["1"],
+        )
+
+        all_executemany = offenders + direct
+        assert not all_executemany, (
+            f"Provenance/save path fell back to per-row executemany: {all_executemany}"
+        )
+
+    def test_bulk_insert_is_idempotent(self, db):
+        """ON CONFLICT DO NOTHING is preserved: re-running yields no duplicates."""
+        for subj in ["S01", "S02", "S03"]:
+            Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
+
+        kwargs = dict(subject=["S01", "S02", "S03"], trial=["1"])
+        for_each(process, {"data": Input}, [Output], **kwargs)
+        first = len(db.list_versions(Output))
+        # Re-run the identical computation — same content hashes → no new rows.
+        for_each(process, {"data": Input}, [Output], **kwargs)
+        second = len(db.list_versions(Output))
+
+        assert first == 3, f"Expected 3 Output records, got {first}"
+        assert second == first, (
+            f"Re-running duplicated records ({first} -> {second}); "
+            "ON CONFLICT DO NOTHING not preserved in bulk insert"
+        )
+
+    def test_bulk_insert_moderate_batch_correctness(self, db):
+        """A few hundred records save correctly through the bulk path (types,
+        None schema_id, list columns all round-trip)."""
+        subjects = [f"S{i:03d}" for i in range(60)]
+        for subj in subjects:
+            Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
+
+        for_each(
+            process, {"data": Input}, [Output],
+            subject=subjects, trial=["1"],
+        )
+
+        all_records = db.list_versions(Output)
+        assert len(all_records) == len(subjects), (
+            f"Expected {len(subjects)} records, got {len(all_records)}"
+        )
+
+
 class TestBatchSavePerformance:
     """Performance characteristics of batch save (informational, not strict pass/fail)."""
 
