@@ -1362,6 +1362,55 @@ def _for_each_prepare(
                 return False
         return True
 
+    # --- Step 12 diagnostic: record/row multiplicity per schema location ---
+    # When a per-combo call receives MORE rows than expected, the cause is almost
+    # always >1 record_id at one schema location (distinct branch_param/version
+    # VARIANTS, both kept by "latest version PER PARAMETER SET"), or one record
+    # whose stored table has multiple rows. This pass makes the distinction
+    # explicit so it's obvious which is happening and what the variants are.
+    _diag_inputs = []
+    for _pn, _data in loaded_inputs.items():
+        _d = (_data if isinstance(_data, pd.DataFrame)
+              else (_data.data if (hasattr(_data, "data")
+                    and isinstance(getattr(_data, "data", None), pd.DataFrame)) else None))
+        if _d is not None:
+            _diag_inputs.append((_pn, _d))
+    for _pn, _d in _diag_inputs:
+        _rid_cols = [c for c in _d.columns if c.startswith("__rid_")]
+        if not _rid_cols:
+            continue
+        _rc = _rid_cols[0]
+        _scols = [k for k in _lookup_keys if k in _d.columns]
+        if not _scols:
+            continue
+        _multi = 0
+        _samples = []
+        for _vals, _grp in _d.groupby(_scols, sort=False):
+            _rids = list(dict.fromkeys(_grp[_rc].tolist()))
+            if len(_rids) > 1 or len(_grp) > 1:
+                _loc = dict(zip(_scols, _vals if isinstance(_vals, tuple) else (_vals,)))
+                if len(_rids) > 1:
+                    _multi += 1
+                if len(_samples) < 5:
+                    _bps = [rid_to_bp.get(r, {}) for r in _rids]
+                    _samples.append(
+                        f"{_loc}: {len(_grp)} row(s), {len(_rids)} record_id(s) "
+                        f"branch_params={_bps}"
+                    )
+        if _multi:
+            Log.warn(
+                f"[scidb] Step 12 diagnostic: input '{_pn}' has {_multi} schema "
+                f"location(s) with MORE THAN ONE record_id (distinct "
+                f"branch_param/version variants). Each such location feeds the "
+                f"function a multi-row table. Examples: " + "; ".join(_samples)
+            )
+        elif _samples:
+            Log.info(
+                f"[scidb] Step 12 diagnostic: input '{_pn}' — single record_id but "
+                f"multi-row stored table at some locations. Examples: "
+                + "; ".join(_samples)
+            )
+
     if _aggregation_mode:
         # Aggregation mode: skip rid expansion.  Strip __rid_* columns from
         # loaded DataFrames so the user's function doesn't see internal

@@ -38,22 +38,30 @@ empty, EVERY base combo hits the unconditional `else` (line 1377). And
 The two identical rows are simply that location's loaded rows (2 records or a
 2-row table value); without rid registration they are also not variant-separated.
 
-## Fix
-In `_for_each_prepare` Step 11, distinguish wrapper types by `isinstance`, not by
-`hasattr('.data')`:
-- `isinstance(data, _scifor.Fixed)` → fixed path (unchanged).
-- `isinstance(data, _scifor.ColumnSelection)` → treat like a plain DataFrame:
-  rename `__record_id`→`__rid_{param}` inside `.data` AND
-  `rid_keys.append(rid_col)`.
-- plain `pd.DataFrame` → unchanged.
+## Fix (AS IMPLEMENTED — decoupled pruning from rid expansion)
+First attempt coupled ColumnSelection into `rid_keys` (full rid tracking). That
+regressed `Variant` pinning (wrong value) and `for_columns` (a `__rid_*` column
+leaked into the as_table frame), because `rid_keys` drives THREE things: pruning,
+rid **expansion**, and scifor **schema extension**. ColumnSelection only wants the
+pruning.
 
-Verify downstream handles ColumnSelection-wrapped rid columns:
-- `rid_per_combo` build (`foreach.py:1233-1265`) already unwraps `.data` — OK.
-- aggregation-mode `__rid_*` strip (`foreach.py:1292-1307`) only handles raw
-  DataFrames → extend to strip from `ColumnSelection.data` too.
-- scifor schema extension (`foreach.py:1409-1412`) adds rid keys globally;
-  scifor `ColumnSelection.apply` filters by combo then selects `self.columns`,
-  so `__rid_*` is naturally excluded from what the fn sees — OK.
+Final design — `_for_each_prepare` Step 11/12:
+- Distinguish wrapper types by `isinstance` (not `hasattr('.data')`):
+  - `_scifor.Fixed` → fixed path (unchanged).
+  - `_scifor.ColumnSelection` → recorded in new `colsel_params`; `__record_id`
+    renamed to internal `__rid_{param}` (so column selection drops it); NOT added
+    to `rid_keys` (no expansion, no schema change → Variant/for_columns semantics
+    preserved). The ONLY net change vs the buggy code is pruning.
+  - plain `pd.DataFrame` → full rid tracking (unchanged).
+- Step 12 builds `colsel_existence` (schema locations each ColumnSelection has
+  data for) + a coarse-level-safe `_colsel_combo_present(schema_vals)` probe, and
+  the full-iteration combo loop prunes Cartesian combos absent from that coverage.
+  Plain inputs still prune via the existing rid-validity check.
+- scifor `as_table` assembly (`_prepare_input`, `_run_column_iteration`,
+  `_extract_data`) now excludes internal `__`-prefixed schema columns — needed for
+  PLAIN DataFrame as_table inputs, which legitimately extend the schema with
+  `__rid_*`.
+- aggregation-mode `__rid_*` strip also handles `ColumnSelection.data`.
 
 ## Logging improvements (make this class of bug obvious)
 1. Step 11: per input, log detected wrapper type and whether rid tracking was
