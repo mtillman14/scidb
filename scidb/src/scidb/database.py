@@ -1019,6 +1019,32 @@ class DatabaseManager:
             content_hash = canonical_hash(data_val)
             t4_hash += time.perf_counter() - _t
 
+            # Diagnostic (first record of the batch only): surface what is being
+            # content-hashed. A DataFrame whose `to_numpy()` dtype is `object`
+            # (mixed-type columns) was the source of non-deterministic hashes —
+            # object arrays hash Python pointer bytes — so this line makes the
+            # culprit (object dtype, column order, index) observable.
+            if i == 0:
+                try:
+                    import pandas as _pd_diag
+                    if isinstance(data_val, _pd_diag.DataFrame):
+                        Log.info(
+                            f"[content_hash] {type_name}: first-record input is "
+                            f"DataFrame columns={list(data_val.columns)} "
+                            f"dtypes={[str(d) for d in data_val.dtypes]} "
+                            f"to_numpy_dtype={data_val.to_numpy().dtype} "
+                            f"index_head={list(data_val.index)[:5]} -> "
+                            f"content_hash={content_hash}"
+                        )
+                    else:
+                        Log.info(
+                            f"[content_hash] {type_name}: first-record input "
+                            f"type={type(data_val).__name__} -> "
+                            f"content_hash={content_hash}"
+                        )
+                except Exception:
+                    pass
+
             _t = time.perf_counter()
             record_id = generate_record_id(
                 class_name=type_name,

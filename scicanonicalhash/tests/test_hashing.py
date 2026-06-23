@@ -86,6 +86,57 @@ class TestCanonicalHash:
         assert canonical_hash(df1) == canonical_hash(df2)
         assert canonical_hash(df1) != canonical_hash(df3)
 
+    # --- Determinism regressions (identical content must hash identically) -----
+
+    def test_object_array_hashed_by_value_not_pointer(self):
+        """Object-dtype arrays must hash by VALUE — `tobytes()` on an object
+        array is pointer bytes (non-deterministic). Two equal-valued object
+        arrays built separately must hash the same."""
+        pytest.importorskip("numpy")
+        import numpy as np
+
+        a = np.array(["R", "L", "R"], dtype=object)
+        b = np.array(["R", "L", "R"], dtype=object)
+        assert canonical_hash(a) == canonical_hash(b)
+        assert canonical_hash(a) != canonical_hash(
+            np.array(["R", "L", "L"], dtype=object)
+        )
+
+    def test_mixed_type_dataframe_is_deterministic(self):
+        """A mixed-type (str + float) DataFrame — `to_numpy()` is object dtype —
+        must hash deterministically for identical data (the GAITRite per-cycle
+        case: identical values previously produced different hashes)."""
+        pytest.importorskip("pandas")
+        import pandas as pd
+
+        d1 = pd.DataFrame({"foot": ["R", "L"], "len": [0.751, 0.975]})
+        d2 = pd.DataFrame({"foot": ["R", "L"], "len": [0.751, 0.975]})
+        d3 = pd.DataFrame({"foot": ["R", "L"], "len": [0.751, 0.976]})
+        assert canonical_hash(d1) == canonical_hash(d2)
+        assert canonical_hash(d1) != canonical_hash(d3)
+
+    def test_dataframe_column_order_invariant(self):
+        """Column ORDER is non-semantic for stored content → same hash."""
+        pytest.importorskip("pandas")
+        import pandas as pd
+
+        d1 = pd.DataFrame({"a": ["R", "L"], "b": [0.1, 0.2]})
+        d2 = d1[["b", "a"]]  # same data, permuted columns
+        assert canonical_hash(d1) == canonical_hash(d2)
+
+    def test_dataframe_index_invariant(self):
+        """The pandas INDEX is not persisted content → must not affect the hash."""
+        pytest.importorskip("pandas")
+        import pandas as pd
+
+        d1 = pd.DataFrame({"a": [1, 2, 3]})
+        d2 = pd.DataFrame({"a": [1, 2, 3]}, index=[10, 11, 12])
+        d3 = d1.iloc[1:]  # non-default index from a row split
+        assert canonical_hash(d1) == canonical_hash(d2)
+        assert canonical_hash(d3) == canonical_hash(
+            pd.DataFrame({"a": [2, 3]})
+        )
+
 
 class TestGenerateRecordId:
     """Tests for the generate_record_id function."""

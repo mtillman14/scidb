@@ -1,16 +1,21 @@
 import scidb
 db = scidb.configure_database("/Users/mitchelltillman/Downloads/data.db", ["subject","session","speed","trial","cycle"])
-inv = db._duck._fetchall(
-    "SELECT invocation_id, output_num FROM _invocation_output WHERE output_record_id = '002bd63afe587e0a'")
-print("output edge:", inv)
-inv_id = inv[0][0]
-print("invocation row:", db._duck._fetchall(
-    "SELECT invocation_id, function_name, function_hash, as_table, distribute "
-    "FROM _invocation WHERE invocation_id = ?", [inv_id]))
-print("input edges for THIS inv:", db._duck._fetchall(
-    "SELECT param_name, input_record_id FROM _invocation_input WHERE invocation_id = ?", [inv_id]))
-print("total _invocation_input rows in DB:", db._duck._fetchall("SELECT COUNT(*) FROM _invocation_input")[0][0])
-print("input edges across ALL distribute invocations:", db._duck._fetchall("""
-    SELECT COUNT(*) FROM _invocation_input ii
-    JOIN _invocation i ON i.invocation_id = ii.invocation_id
-    WHERE i.distribute = TRUE"""))
+
+class GAITRiteLoaded(scidb.BaseVariable):
+    pass
+
+# (a) the GAITRiteLoaded DOUBLE[] for one trial (adjust kwargs to a real trial)
+gl = GAITRiteLoaded.load(subject="SS02", session="BL", speed="FV", trial="3")
+print("GAITRiteLoaded.data:\n", gl.data)
+
+# (b) the GAITRiteLoadedCycle DOUBLE values for that trial, per run (save time), by cycle
+print(db._duck._fetchall("""
+    SELECT rs.timestamp, CAST(s.cycle AS INTEGER) AS cycle, t.*
+    FROM _record r
+    JOIN _schema s        ON s.schema_id = r.schema_id
+    JOIN _record_save rs  ON rs.record_id = r.record_id
+    JOIN "GAITRiteLoadedCycle_data" t ON t.record_id = r.record_id
+    WHERE r.type = 'GAITRiteLoadedCycle'
+    AND s.subject='SS02' AND s.session='BL' AND s.speed='FV' AND s.trial='3'
+    ORDER BY rs.timestamp, CAST(s.cycle AS INTEGER)
+"""))
