@@ -2859,6 +2859,31 @@ def _save_results(
     else:
         direct_constants = constants_val or {}
 
+    # Input-provenance diagnostic. Each saved row's _invocation_input edges are
+    # built ONLY from its __rid_* columns (full iteration), combo_to_rids
+    # (aggregation), or lineage_fixed_rids (Fixed). If NONE of these is present,
+    # the output records are saved with NO consumed-input edges → broken lineage
+    # AND the precondition for the re-run orphan/duplicate cascade (records can't
+    # be tied to the input version they consumed). Cheap: inspects columns once.
+    _rid_cols_present = [c for c in result_tbl.columns if c.startswith("__rid_")]
+    Log.info(
+        f"[batch_save] input-provenance sources for {fn_name!r}: "
+        f"rid_keys={list(rid_keys or [])}, "
+        f"__rid_* cols in result_tbl={_rid_cols_present}, "
+        f"combo_to_rids={'set' if combo_to_rids else 'None'}, "
+        f"fixed_rids={list((lineage_fixed_rids or {}).keys())}"
+    )
+    if not _rid_cols_present and not combo_to_rids and not lineage_fixed_rids:
+        Log.warn(
+            f"[batch_save] {fn_name!r}: NO input-binding source (no __rid_* columns "
+            f"in the result table, no aggregation combo_to_rids, no fixed rids) — "
+            f"saved records will have NO _invocation_input edges (broken input "
+            f"provenance). This severs lineage and is the precondition for the "
+            f"re-run orphan/duplicate cascade. Likely the __rid_* discriminator "
+            f"columns were dropped before save (e.g. distribute fan-out or the "
+            f"result round-trip)."
+        )
+
     # ===========================================================================
     # PHASE 1: Collect all (data, metadata) items for batch saving
     # ===========================================================================

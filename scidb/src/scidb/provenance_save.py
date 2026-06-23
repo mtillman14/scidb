@@ -544,6 +544,46 @@ def _commit_graph(
             [(inv, param, rid, sel) for (inv, param, rid), sel in input_edges.items()],
             conflict_cols=["invocation_id", "param_name", "input_record_id"],
         ))
+        # Diagnostic: detect output edges that the (invocation_id, output_num)
+        # ON CONFLICT DO NOTHING below will SILENTLY DROP. A re-run of a
+        # deterministic for_each reuses the same invocation_id and output_num
+        # sequence; if it produced NEW record_ids (content changed since the last
+        # run), those edges collide with the prior run's and are dropped, leaving
+        # the NEW output records with no producing-invocation edge. Orphaned
+        # records then look like raw saves to the latest-version collapse and
+        # pollute loads with duplicate ("__raw__") variants.
+        if output_edges and run_inv_ids:
+            from .log import Log
+            _inv_list = list(run_inv_ids)
+            _ph = ", ".join(["?"] * len(_inv_list))
+            _existing = {
+                (row[0], row[1]): row[2]
+                for row in duck._fetchall(
+                    f"SELECT invocation_id, output_num, output_record_id "
+                    f"FROM _invocation_output WHERE invocation_id IN ({_ph})",
+                    _inv_list,
+                )
+            }
+            _dropped = [
+                (inv, onum, rid, _existing[(inv, onum)])
+                for (inv, onum), rid in output_edges.items()
+                if (inv, onum) in _existing and _existing[(inv, onum)] != rid
+            ]
+            if _dropped:
+                _samp = "; ".join(
+                    f"(inv={i[:8]}…, output_num={o}): new={n[:8]}… vs kept={k[:8]}…"
+                    for i, o, n, k in _dropped[:5]
+                )
+                Log.warn(
+                    f"[provenance] {len(_dropped)} output edge(s) will be DROPPED on "
+                    f"save: their (invocation_id, output_num) already point to a "
+                    f"DIFFERENT record_id from an earlier run. Those new output "
+                    f"record(s) will have NO producing-invocation edge (orphaned → "
+                    f"treated as raw saves, polluting latest-version loads). This "
+                    f"happens when a deterministic for_each is re-run and produces "
+                    f"new content. Examples: {_samp}"
+                )
+
         _timed("3e_invocation_output", lambda: duck._bulk_insert(
             "_invocation_output",
             ("invocation_id", "output_num", "output_record_id"),

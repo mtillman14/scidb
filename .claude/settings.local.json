@@ -79,7 +79,9 @@
       "Bash(awk '/^\\\\[tool\\\\./{p=1} p' scicanonicalhash/pyproject.toml)",
       "Bash(awk '/^\\\\[tool\\\\.ruff/{p=1} p&&/^\\\\[/&&!/ruff/&&NR>1{if\\(seen\\)exit} {if\\(/^\\\\[tool\\\\.ruff/\\)seen=1; if\\(seen\\)print}' path-gen/pyproject.toml)",
       "Bash(awk '/class TestListPipelineVariants/,/^class [A-Z].*:/' scidb/tests/test_branch_params.py)",
-      "Bash(cd *)"
+      "Bash(cd *)",
+      "Bash(awk 'NR>=2820 && NR<=2882 && /^def |^    def |result_tbl|combo_to_rids_keys|rid_keys|input_selectors|def _/' scidb/src/scidb/foreach.py)",
+      "Bash(awk 'NR<=2880 && /^def /{l=NR\": \"$0} END{print l}' scidb/src/scidb/foreach.py)"
     ]
   }
 }

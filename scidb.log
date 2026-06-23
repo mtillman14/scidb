@@ -1,0 +1,2 @@
+[15:49:35.731] [INFO] configure_database: path=<your_db_path>, schema_keys=['subject', 'session', 'speed', 'trial', 'cycle']
+[15:49:42.176] [INFO] configure_database: path=<your_db_path>, schema_keys=['subject', 'session', 'speed', 'trial', 'cycle']
