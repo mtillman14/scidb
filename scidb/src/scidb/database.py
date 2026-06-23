@@ -1479,8 +1479,55 @@ class DatabaseManager:
             collapsed_count = len(df) - len(keep_indices)
             if collapsed_count > 0:
                 Log.debug(f"_find_record: collapsed {collapsed_count} non-latest variant row(s)")
+            df = df.loc[keep_indices]
+
+            # --- Diagnostic: why do some locations still have >1 record? ---
+            # After "latest per (variable, schema_id, variant)" collapse, a schema
+            # KEY location should normally map to ONE record. If it doesn't, the
+            # survivors differ either by schema_id (two schema_ids allocated for
+            # identical key values) or by variant_key (same schema_id but distinct
+            # producing fn / branch_params / output_num / consumed input locations).
+            # The branch is vectorized and only does work when duplicates remain.
+            _sk = self.dataset_schema_keys
+            if _sk and len(df) > 1:
+                _dupmask = df.duplicated(subset=_sk, keep=False)
+                if _dupmask.any():
+                    _dup = df[_dupmask]
+                    _n_locs = _dup.groupby(_sk, sort=False).ngroups
+                    _samples = []
+                    for _vals, _g in _dup.groupby(_sk, sort=False):
+                        if len(_samples) >= 3:
+                            break
+                        _sids = sorted(set(_g["schema_id"].tolist()))
+                        _rids = _g["record_id"].tolist()
+                        if len(_sids) > 1:
+                            _kind = f"DISTINCT schema_id for identical keys {_sids}"
+                        else:
+                            _vks = []
+                            for _r in _rids:
+                                _inv = inv_map.get(_r)
+                                if _inv is not None:
+                                    _vks.append((
+                                        _inv[1],
+                                        json.dumps(bp_map.get(_r, {}), sort_keys=True),
+                                        onum_map.get(_r),
+                                        tuple(sorted(consumed_map.get(_r, ()))),
+                                    ))
+                                else:
+                                    _vks.append(("__raw__", None))
+                            _kind = f"same schema_id {_sids[0]}, DISTINCT variant_keys={_vks}"
+                        _loc = dict(zip(_sk, _vals if isinstance(_vals, tuple) else (_vals,)))
+                        _samples.append(
+                            f"{_loc}: {len(_g)} records, record_ids={_rids[:4]} -> {_kind}"
+                        )
+                    Log.warn(
+                        f"_find_record({type_name}, latest): {_n_locs} schema "
+                        f"location(s) retain >1 record after collapse — these feed "
+                        f"multi-row per-combo tables. Examples: " + "; ".join(_samples)
+                    )
+
             # Apply smart sorting by schema keys (numeric or alphabetic per column)
-            df = self._sort_by_schema_keys(df.loc[keep_indices])
+            df = self._sort_by_schema_keys(df)
             t_collapse = time.perf_counter() - _t_collapse
 
         t_vk_filter = 0.0
