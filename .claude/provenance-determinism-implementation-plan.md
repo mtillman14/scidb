@@ -54,38 +54,39 @@ Today `record_run`'s assembly loop assigns `output_num` from in-memory state onl
 (`output_edges`, `inv_cursor`, `rid_slot`, lines ~445-455); `_commit_graph`
 inserts with `ON CONFLICT (invocation_id, output_num) DO NOTHING`.
 
-Change to make assignment aware of COMMITTED edges and branch on `schema_id`:
-- **B1 (seed committed edges, lazily per inv_id):** when an `invocation_id` is
-  first computed (inv_cache miss), query
-  `SELECT io.output_num, io.output_record_id, r.schema_id FROM _invocation_output io
-   JOIN _record r ON r.record_id = io.output_record_id WHERE io.invocation_id = ?`
-  and seed `output_edges[(inv,onum)]=rid`, `rid_slot[(inv,rid)]=onum`,
-  `committed_schema[(inv,onum)]=schema_id`, `inv_cursor[inv]=max(onum)+1`.
-- **B2 (assignment branch):** for a new record `g` (schema_id `g_sid` from
-  `meta_map`): same `record_id` already slotted → idempotent. Else walk slots from
-  `max(g.output_num, inv_cursor)`; if a slot is occupied by a DIFFERENT record at
-  a DIFFERENT schema_id → skip (`n += 1`, disjoint location gets a fresh slot); if
-  occupied by a different record at the SAME schema_id → **supersede**: take that
-  slot and record the occupant in `superseded_records`.
-- **B3 (commit upsert):** output-edge insert must UPSERT
-  (`ON CONFLICT (invocation_id, output_num) DO UPDATE SET output_record_id =
-  EXCLUDED.output_record_id`). Check `sciduckdb._bulk_insert` — it currently maps
-  `conflict_cols`→DO NOTHING; add a DO-UPDATE option or do a dedicated upsert for
-  `_invocation_output`.
-- **B4 (exclude superseded):** inside the `_commit_graph` transaction,
-  `UPDATE _record SET excluded = TRUE WHERE record_id IN (superseded_records)`.
-- Net effect: disjoint-location re-runs → fresh slots, all linked (the 288-orphan
-  case); same-location re-computation with new content → newest linked, old
-  excluded (no orphan, no duplicate); identical re-run → idempotent no-op.
+### IMPLEMENTED — IMMUTABLE design (no upsert, no exclusion)
+User pushed back on upsert/`excluded` mutation (immutable-records philosophy; no
+upserts exist elsewhere). The actual bug (288 orphans) was DISJOINT locations, and
+that needs only an immutable APPEND. Implemented:
+- **B1 (seed committed slots, once per inv_id):** the first time a run touches an
+  `invocation_id`, load its committed edges:
+  `SELECT output_num, output_record_id FROM _invocation_output WHERE invocation_id=?`
+  → seed `output_edges[(inv,onum)]=rid`, `rid_slot[(inv,rid)]=onum`,
+  `inv_cursor[inv]=max(onum)+1`.
+- **B2 (assignment — unchanged logic, now committed-aware):** the existing
+  cursor/while-loop now probes past committed slots, so a NEW record gets the next
+  FREE `output_num` (append). An identical re-save matches `rid_slot` and keeps its
+  committed slot.
+- **Commit:** insert ONLY this run's edges (`run_output_edges`), keeping
+  `ON CONFLICT DO NOTHING` — which now only ever no-ops on an identical re-insert
+  (new records never collide). Committed edges are never rewritten.
+- The old "edge will be DROPPED" WARN in `_commit_graph` is repurposed as an
+  INVARIANT check (a true collision after seeding ⇒ Fix-B regression).
+- NOTHING is mutated or excluded.
 
-### Fix B tests (`tests/test_rerun_output_edges.py`)
-- Two separate runs of a `distribute` fn over DISJOINT locations sharing one
-  `invocation_id` (e.g. via PathInput, excluded from identity) → every record
-  keeps an `_invocation_output` edge (0 orphans). Assert via the same
-  `no_edge` query used in diagnosis.
-- Re-run over the SAME location with CHANGED content → newest record linked, old
-  `excluded=TRUE`; `.load()` returns exactly one record.
-- Identical re-run → no new record_id, no new edge, just a new `_record_save`.
+### Deferred (immutable read-side, NOT implemented)
+Same-location RE-COMPUTATION with genuinely-changed content (needs changed input,
+since the content-hash fix makes deterministic re-runs idempotent): the new record
+appends at a fresh `output_num`, so BOTH versions are retained (immutable). If a
+plain `.load()` should return only the latest, that is a READ-side collapse change
+(keep latest-by-timestamp among records at the same schema_id sharing
+fn+bp+consumed, ignoring output_num WITHIN a schema_id) — watch the flatten case.
+Not the user's situation; left as a follow-up.
+
+### Fix B tests (`tests/test_rerun_output_edges.py`) — IMPLEMENTED
+- Two runs sharing one `invocation_id` (constant-only fn) over DISJOINT locations
+  → both records keep an `_invocation_output` edge (0 orphans), two distinct slots.
+- Identical re-run → no new record, no new edge (idempotent), one linked record.
 
 ## ~~Fix — multi-row load ordering~~ (SCRAPPED — wrong theory)
 Records are SINGLE-row with a `DOUBLE[]` column distributed to per-cycle `DOUBLE`;

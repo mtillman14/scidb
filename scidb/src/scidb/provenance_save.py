@@ -337,7 +337,14 @@ def record_run(
     constant_rows: dict[str, tuple] = {}      # record_id -> _constant row
     invocation_rows: dict[str, tuple] = {}    # invocation_id -> _invocation row
     input_edges: dict[tuple[str, str, str], str | None] = {}   # (inv,param,rid) -> selector
+    # ``output_edges`` is the WORKING slot map used for collision-free assignment
+    # (seeded below with already-COMMITTED edges so a cross-run save appends fresh
+    # slots instead of colliding). ``run_output_edges`` is the subset actually
+    # produced by THIS run — only those are inserted, so committed edges are never
+    # rewritten (immutable: we append, never overwrite or exclude).
     output_edges: dict[tuple[str, int], str] = {}     # (inv_id, output_num) -> rid
+    run_output_edges: dict[tuple[str, int], str] = {}
+    seeded_invs: set[str] = set()              # inv_ids whose committed edges are loaded
     run_inv_ids: set[str] = set()
 
     # Invocation-level memo. The whole assembly above (binding set, constant
@@ -428,6 +435,29 @@ def record_run(
 
             inv_cache[cache_key] = inv_id
 
+        # Fix B (immutable cross-run slot assignment): the first time this run
+        # touches an invocation, load its already-COMMITTED output slots into the
+        # working state. New output records then probe past them and take the next
+        # FREE output_num (append) instead of colliding on the
+        # (invocation_id, output_num) PK and being silently dropped/orphaned — the
+        # cause of the cross-run orphans when a deterministic for_each is invoked
+        # again (e.g. a second PathInput over disjoint locations, sharing one
+        # invocation_id). Nothing committed is overwritten or excluded; the slot
+        # range simply grows. An idempotent re-save (same record_id) recognises its
+        # committed slot via ``rid_slot`` and re-inserts the identical edge (a
+        # DO NOTHING no-op).
+        if inv_id not in seeded_invs:
+            seeded_invs.add(inv_id)
+            for _onum, _orid in duck._fetchall(
+                "SELECT output_num, output_record_id FROM _invocation_output "
+                "WHERE invocation_id = ?",
+                [inv_id],
+            ):
+                output_edges.setdefault((inv_id, _onum), _orid)
+                rid_slot.setdefault((inv_id, _orid), _onum)
+                if _onum + 1 > inv_cursor.get(inv_id, 0):
+                    inv_cursor[inv_id] = _onum + 1
+
         # Output edge. One call can emit MANY records that share an invocation
         # and arrive with the same nominal output_num — notably flatten/distribute
         # modes (a returned DataFrame spread into one record per row). They are
@@ -453,6 +483,7 @@ def record_run(
             inv_cursor[inv_id] = n + 1
             rid_slot[(inv_id, g.record_id)] = n
         output_edges[okey] = g.record_id
+        run_output_edges[okey] = g.record_id   # only this run's edges are inserted
         run_inv_ids.add(inv_id)
 
         # Output entity row (pull content_hash/schema_id from _record + latest save ts).
@@ -479,7 +510,7 @@ def record_run(
     _commit_graph(
         duck, run_id, created_at, user_id, function_name, where_clause,
         entity_rows, constant_rows, invocation_rows, input_edges,
-        output_edges, run_inv_ids,
+        run_output_edges, run_inv_ids,
         timings=timings,
     )
     timings["3_commit"] = time.perf_counter() - _t_commit
@@ -498,7 +529,7 @@ def record_run(
 def _commit_graph(
     duck, run_id, created_at, user_id, function_name, where_clause,
     entity_rows, constant_rows, invocation_rows, input_edges,
-    output_edges, run_inv_ids, timings: dict | None = None,
+    run_output_edges, run_inv_ids, timings: dict | None = None,
 ) -> None:
     """Transactionally insert the assembled graph rows + the append-only run.
 
@@ -544,15 +575,14 @@ def _commit_graph(
             [(inv, param, rid, sel) for (inv, param, rid), sel in input_edges.items()],
             conflict_cols=["invocation_id", "param_name", "input_record_id"],
         ))
-        # Diagnostic: detect output edges that the (invocation_id, output_num)
-        # ON CONFLICT DO NOTHING below will SILENTLY DROP. A re-run of a
-        # deterministic for_each reuses the same invocation_id and output_num
-        # sequence; if it produced NEW record_ids (content changed since the last
-        # run), those edges collide with the prior run's and are dropped, leaving
-        # the NEW output records with no producing-invocation edge. Orphaned
-        # records then look like raw saves to the latest-version collapse and
-        # pollute loads with duplicate ("__raw__") variants.
-        if output_edges and run_inv_ids:
+        # Invariant check (Fix B): with cross-run slot seeding, a NEW output record
+        # is always assigned a FREE output_num, so an incoming edge must never
+        # collide with a committed slot pointing at a DIFFERENT record_id. The only
+        # legitimate "conflict" below is an idempotent re-insert of an IDENTICAL
+        # edge (same record_id), which DO NOTHING no-ops. If a true collision is
+        # seen here it means slot seeding failed (a Fix-B regression) and a record
+        # would be orphaned — so warn loudly rather than dropping silently.
+        if run_output_edges and run_inv_ids:
             from .log import Log
             _inv_list = list(run_inv_ids)
             _ph = ", ".join(["?"] * len(_inv_list))
@@ -566,28 +596,26 @@ def _commit_graph(
             }
             _dropped = [
                 (inv, onum, rid, _existing[(inv, onum)])
-                for (inv, onum), rid in output_edges.items()
+                for (inv, onum), rid in run_output_edges.items()
                 if (inv, onum) in _existing and _existing[(inv, onum)] != rid
             ]
             if _dropped:
                 _samp = "; ".join(
-                    f"(inv={i[:8]}…, output_num={o}): new={n[:8]}… vs kept={k[:8]}…"
+                    f"(inv={i[:8]}…, output_num={o}): new={n[:8]}… vs committed={k[:8]}…"
                     for i, o, n, k in _dropped[:5]
                 )
                 Log.warn(
-                    f"[provenance] {len(_dropped)} output edge(s) will be DROPPED on "
-                    f"save: their (invocation_id, output_num) already point to a "
-                    f"DIFFERENT record_id from an earlier run. Those new output "
-                    f"record(s) will have NO producing-invocation edge (orphaned → "
-                    f"treated as raw saves, polluting latest-version loads). This "
-                    f"happens when a deterministic for_each is re-run and produces "
-                    f"new content. Examples: {_samp}"
+                    f"[provenance] INVARIANT VIOLATION: {len(_dropped)} output edge(s) "
+                    f"collide with a committed slot at a DIFFERENT record_id and would "
+                    f"be dropped (orphaning those records). Cross-run slot seeding "
+                    f"(Fix B) should have assigned them fresh output_nums — this "
+                    f"indicates a regression. Examples: {_samp}"
                 )
 
         _timed("3e_invocation_output", lambda: duck._bulk_insert(
             "_invocation_output",
             ("invocation_id", "output_num", "output_record_id"),
-            [(inv, onum, rid) for (inv, onum), rid in output_edges.items()],
+            [(inv, onum, rid) for (inv, onum), rid in run_output_edges.items()],
             conflict_cols=["invocation_id", "output_num"],
         ))
         duck.con.execute(
