@@ -139,9 +139,12 @@ class TestSkipComputedBasic:
         assert not _skip_lines(capsys.readouterr().out)
 
     def test_multiple_subjects_all_skip(self, db, capsys):
-        """Three subjects, nothing changed → three [skip] lines."""
+        """Three subjects, nothing changed → three [skip] lines, no re-execution."""
+        call_count = [0]
+
         @pipeline
         def double(x):
+            call_count[0] += 1
             return x * 2
 
         for s in [1, 2, 3]:
@@ -149,6 +152,7 @@ class TestSkipComputedBasic:
 
         for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
                  subject=[1, 2, 3], trial=[1])
+        count_after_first = call_count[0]
         capsys.readouterr()
 
         for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
@@ -157,6 +161,10 @@ class TestSkipComputedBasic:
         out = capsys.readouterr().out
         assert len(_skip_lines(out)) == 3
         assert not _recompute_lines(out)
+        # When every combo is skipped the function must not run again — the
+        # filtered (empty) combo set must drive zero iterations, not fall back
+        # to re-running the full set.
+        assert call_count[0] == count_after_first
 
     def test_skip_then_rerun_after_change(self, db, capsys):
         """Skip → input changes → recompute → skip again on third run."""

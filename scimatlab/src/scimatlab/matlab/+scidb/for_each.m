@@ -156,7 +156,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
                'distribute', logical(opts.distribute), ...
                'as_table', py_as_table, ...
                'db', py_db, ...
-               'dry_run', logical(dry_run)));
+               'dry_run', logical(dry_run), ...
+               'skip_computed', logical(opts.skip_computed)));
     scidb.Log.info('for_each_prepare returned in %.3fs', toc(prep_t0));
 
     % Dry-run: Python ran the scifor.for_each(dry_run=true) call itself
@@ -226,6 +227,26 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     output_names = cell(1, numel(output_names_cell));
     for o = 1:numel(output_names_cell)
         output_names{o} = char(output_names_cell{o});
+    end
+
+    % --- No combos to run: short-circuit before the scifor loop. ---
+    % prepare returns the authoritative combo set in full_combos; an empty set
+    % means there is nothing to iterate (every combo was filtered out, e.g. by
+    % skip_computed or non-existent-schema pruning). We must NOT fall through to
+    % scifor.for_each here: it would treat an empty _all_combos as "unset" and
+    % rebuild the full Cartesian product from the metadata iterables, re-running
+    % exactly the combos prepare deliberately removed. Free the prepare-side
+    % cache and return an empty result instead.
+    if n_combos == 0
+        scidb.Log.info(['for_each(%s): 0 combos to run (all filtered/skipped); ' ...
+            'skipping scifor loop'], fn_name);
+        try
+            py.scimatlab.bridge.for_each_save(handle, py.list(), pyargs('save', false));
+        catch free_err
+            scidb.Log.warn('for_each: failed to free prepare cache: %s', free_err.message);
+        end
+        result_tbl = table();
+        return;
     end
 
     % --- Build scifor options for the inner loop ---
@@ -925,8 +946,16 @@ function [meta_args, opts] = split_options(varargin)
     opts.distribute = false;
     opts.where = [];
     opts.introspect = false;
+    opts.skip_computed = false;
     opts.fn_name_override = '';
     opts.fn_hash_override = '';
+
+    % Reserved option names (normalized: lowercased, underscores removed) used
+    % to warn when a metadata key looks like a misspelled option. Keep in sync
+    % with the cases below.
+    reserved_opts = ["dryrun", "save", "preload", "astable", "db", ...
+                     "parallel", "distribute", "where", "introspect", ...
+                     "skipcomputed", "fnname", "fnhash"];
 
     meta_args = {};
     i = 1;
@@ -974,6 +1003,9 @@ function [meta_args, opts] = split_options(varargin)
                 case "introspect"
                     opts.introspect = logical(varargin{i+1});
                     i = i + 2; continue;
+                case "skip_computed"
+                    opts.skip_computed = logical(varargin{i+1});
+                    i = i + 2; continue;
                 case "_fn_name"
                     opts.fn_name_override = char(varargin{i+1});
                     i = i + 2; continue;
@@ -984,5 +1016,23 @@ function [meta_args, opts] = split_options(varargin)
         end
         meta_args{end+1} = varargin{i}; %#ok<AGROW>
         i = i + 1;
+    end
+
+    % Typo guard: an unrecognized option name (e.g. "skipComputed",
+    % "dry_run" misspelled) silently becomes a metadata iteration axis, which
+    % is almost never intended and produces confusing phantom iterations. Warn
+    % when a metadata KEY normalizes to a reserved option name but didn't match
+    % a case above.
+    for j = 1:2:numel(meta_args)
+        k = meta_args{j};
+        if ischar(k) || isstring(k)
+            nkey = erase(lower(string(k)), "_");
+            if ismember(nkey, reserved_opts)
+                scidb.Log.warn(['Metadata key "%s" looks like a for_each ' ...
+                    'option but was not recognized — it is being treated as ' ...
+                    'an iteration axis. Check spelling/case (e.g. ' ...
+                    '"skip_computed").'], char(string(k)));
+            end
+        end
     end
 end

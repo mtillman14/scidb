@@ -622,7 +622,8 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
 
 
 def _build_skip_hook(
-    fn, outputs: list, db, inputs: dict, as_table=None, distribute: bool = False
+    fn, outputs: list, db, inputs: dict, as_table=None, distribute: bool = False,
+    fn_hash: "str | None" = None,
 ) -> "Callable[[dict], bool]":
     """Return a pre-combo hook that returns True when a combo can be skipped.
 
@@ -651,6 +652,12 @@ def _build_skip_hook(
 
     ``fn`` is a plain pipeline function; its identity comes from
     ``compute_function_hash(fn)`` (the same hash for_each writes to the graph).
+
+    ``fn_hash`` overrides that computation. The MATLAB-driven bridge passes a
+    no-op sentinel for ``fn`` whose hash would never match what the MATLAB save
+    path stored (the MATLAB-computed source hash, written as ``__fn_hash`` →
+    graph ``function_hash``). Passing the same MATLAB hash here keeps the
+    function-hash comparison meaningful instead of forcing eternal recompute.
     """
     from scicanonicalhash import canonical_hash as _chash
     from scilineage.hashing import compute_function_hash
@@ -681,7 +688,10 @@ def _build_skip_hook(
             continue
         constant_values[name] = value
 
-    fn_hash = compute_function_hash(fn, truncate=16)
+    # Identity hash: use the caller-supplied override (MATLAB path passes its
+    # source hash, since the sentinel ``fn`` has no meaningful bytecode hash);
+    # otherwise compute from the plain Python function.
+    fn_hash = fn_hash if fn_hash is not None else compute_function_hash(fn, truncate=16)
     # Plain function name (``.fcn`` peel kept only for any legacy wrapped input).
     fn_name = getattr(getattr(fn, "fcn", fn), "__name__", None) or repr(fn)
     selectors = compute_input_selectors(inputs)

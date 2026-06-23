@@ -393,6 +393,7 @@ def for_each_prepare(
     as_table=None,
     db=None,
     dry_run: bool = False,
+    skip_computed: bool = False,
 ):
     """Bridge entry: run scidb.for_each's prepare phase in Python.
 
@@ -420,6 +421,14 @@ def for_each_prepare(
     distribute : bool
     as_table : bool, list, or None
     db : DatabaseManager or None
+    skip_computed : bool
+        If True, build scidb's pre-combo skip hook (the same one
+        ``scidb.for_each`` builds in its Step 1.6) and apply it during
+        prepare, so combos whose outputs already exist with unchanged
+        upstream provenance are dropped from ``full_combos`` and never run
+        in MATLAB's loop. The hook is fed the MATLAB-computed ``fn_hash`` so
+        its function-hash comparison matches what the save path stored.
+        No-op (with a warning) when no database is available.
 
     Returns
     -------
@@ -441,9 +450,11 @@ def for_each_prepare(
     from scidb.foreach import (
         PerComboLoader,
         PerComboLoaderMerge,
+        _build_skip_hook,
         _for_each_prepare,
         _resolve_for_columns,
     )
+    from scidb.log import Log
 
     # Reconstruct Python wrappers from the kind-tagged spec
     inputs = {
@@ -534,6 +545,38 @@ def for_each_prepare(
             "dry_run": True,
         }
 
+    # skip_computed: build the same pre-combo skip hook scidb.for_each builds
+    # in its Step 1.6 (which the MATLAB path bypasses by calling
+    # _for_each_prepare directly). Feed it the MATLAB-computed fn_hash so the
+    # function-hash comparison matches what the save path stored — the sentinel
+    # fn's own hash would never match, forcing eternal recompute. The hook is
+    # applied inside _for_each_prepare's Step 14 combo filter, so the returned
+    # full_combos already exclude skippable combos.
+    pre_combo_hook = None
+    if skip_computed and outputs:
+        skip_db = resolved_db
+        if skip_db is None:
+            try:
+                from scidb.database import get_database
+                skip_db = get_database()
+            except Exception:
+                skip_db = None
+        if skip_db is None:
+            Log.warn(
+                "[bridge] skip_computed=True ignored: no database available "
+                "(pass db= or configure a global database)"
+            )
+        else:
+            pre_combo_hook = _build_skip_hook(
+                fn, outputs, skip_db, inputs,
+                as_table=as_table_arg, distribute=bool(distribute),
+                fn_hash=fn_hash,
+            )
+            Log.info(
+                f"[bridge] skip_computed=True: built skip hook for {fn_name} "
+                f"(fn_hash={fn_hash[:12] if fn_hash else '<none>'})"
+            )
+
     state = _for_each_prepare(
         fn=fn,
         fn_name=fn_name,
@@ -544,7 +587,7 @@ def for_each_prepare(
         db=db if db is not None and not isinstance(db, type(None)) else None,
         distribute=bool(distribute),
         where=where_arg,
-        _pre_combo_hook=None,
+        _pre_combo_hook=pre_combo_hook,
         _cancel_check=None,
         metadata_iterables=meta,
     )

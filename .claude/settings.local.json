@@ -81,7 +81,8 @@
       "Bash(awk '/class TestListPipelineVariants/,/^class [A-Z].*:/' scidb/tests/test_branch_params.py)",
       "Bash(cd *)",
       "Bash(awk 'NR>=2820 && NR<=2882 && /^def |^    def |result_tbl|combo_to_rids_keys|rid_keys|input_selectors|def _/' scidb/src/scidb/foreach.py)",
-      "Bash(awk 'NR<=2880 && /^def /{l=NR\": \"$0} END{print l}' scidb/src/scidb/foreach.py)"
+      "Bash(awk 'NR<=2880 && /^def /{l=NR\": \"$0} END{print l}' scidb/src/scidb/foreach.py)",
+      "Bash(awk '/case \"_all_combos\"/{found=1} found{print NR\": \"$0; c++} c>4{exit}' scimatlab/src/scimatlab/matlab/+scifor/for_each.m)"
     ]
   }
 }
