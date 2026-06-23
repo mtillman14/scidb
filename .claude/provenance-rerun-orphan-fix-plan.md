@@ -40,11 +40,22 @@ save routes through `_for_each_save_resolved → _save_results` (bridge:843); th
 bridge reverse-maps sanitized `x__rid_x → __rid_x` (bridge:802-818) IF
 `rid_rename_map` was populated and MATLAB returned those columns.
 
-Hypothesis: the `__rid_*` discriminator columns do not survive the MATLAB loop /
-distribute fan-out into the result table, so `_save_results` finds no binding
-source → no input edges. To confirm: re-run the distribute step and read the new
-`[batch_save] input-provenance sources` line + the existing `[bridge]
-for_each_save ... columns=` line.
+### Bug #2 ROOT CAUSE FOUND + FIXED
+Confirmed via logs: Step 11 DID register `__rid_gaitriteTable` (rid key present,
+609 record_ids mapped), yet no input edges resulted. Cause: `rid_per_combo` (and
+the ColumnSelection coverage set) grouped via
+`df.groupby([k for k in _lookup_keys if k in df.columns])`, which INCLUDED the
+all-NaN `cycle` column (GAITRiteLoaded is stored at subject/session/speed/trial,
+so its spread carries `cycle` as all-NaN). pandas `groupby(dropna=True)` dropped
+every NaN-key group → empty `rid_per_combo` → empty `combo_to_rids` → no
+`__upstream` → NO `_invocation_input` edges. Systemic for any variable input
+coarser than the full schema.
+
+FIX (DONE, `foreach.py`): both groupbys now exclude all-NaN columns —
+`[k for k in _lookup_keys if k in df.columns and not df[k].isna().all()]` — so a
+coarser input groups by the keys it actually populates. Mapping keys are still
+built over the full `_lookup_keys` (missing filled with ""), so downstream combo
+matching is unchanged. Regression test: `tests/test_coarse_input_provenance.py`.
 
 ## Diagnostic logging (DONE)
 - `_commit_graph` (`provenance_save.py`): `Log.warn`s when an output edge will be

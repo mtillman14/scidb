@@ -1286,7 +1286,18 @@ def _for_each_prepare(
 
         if df is None or rid_col not in df.columns:
             continue
-        schema_cols_in_df = [k for k in _lookup_keys if k in df.columns]
+        # Group only by the schema keys this input actually POPULATES. A variable
+        # stored at a coarser level than the dataset schema (e.g. a subject/session/
+        # speed/trial variable in a schema that also has 'cycle') carries the finer
+        # keys as all-NaN columns. Including an all-NaN column here is catastrophic:
+        # pandas groupby drops NaN-key groups by default, so EVERY row is dropped →
+        # empty mapping → no rids tracked → no __upstream → no _invocation_input
+        # edges (severed input provenance, the precondition for the orphan cascade).
+        # The mapping key is still built over the full _lookup_keys (missing keys
+        # filled with ""), so downstream combo matching is unaffected.
+        schema_cols_in_df = [
+            k for k in _lookup_keys if k in df.columns and not df[k].isna().all()
+        ]
         mapping: dict = {}
         # Dedupe rids per group so DataFrame-mode inputs (one DuckDB row
         # per inner-table row, all sharing a single record_id) don't
@@ -1317,7 +1328,13 @@ def _for_each_prepare(
         df = data.data if (hasattr(data, "data") and isinstance(data.data, pd.DataFrame)) else None
         if df is None:
             continue
-        schema_cols_in_df = [k for k in _lookup_keys if k in df.columns]
+        # Same all-NaN exclusion as rid_per_combo above: a coarser-level
+        # ColumnSelection input carries finer schema keys as all-NaN columns;
+        # grouping by them would drop every row (pandas dropna), yielding EMPTY
+        # coverage → the prune step would then drop ALL combos and nothing runs.
+        schema_cols_in_df = [
+            k for k in _lookup_keys if k in df.columns and not df[k].isna().all()
+        ]
         present: set = set()
         if schema_cols_in_df:
             for combo_vals, _group in df.groupby(schema_cols_in_df, sort=False):
@@ -2866,22 +2883,31 @@ def _save_results(
     # AND the precondition for the re-run orphan/duplicate cascade (records can't
     # be tied to the input version they consumed). Cheap: inspects columns once.
     _rid_cols_present = [c for c in result_tbl.columns if c.startswith("__rid_")]
+    # combo_to_rids may be a non-empty dict of EMPTY rid-maps (aggregation
+    # bookkeeping with no actual upstream records) — that still yields no input
+    # edges, so check for real rids rather than mere presence.
+    _combo_has_rids = bool(combo_to_rids) and any(
+        rids
+        for rids_by_param in combo_to_rids.values()
+        for rids in (rids_by_param.values() if isinstance(rids_by_param, dict) else [])
+    )
     Log.info(
         f"[batch_save] input-provenance sources for {fn_name!r}: "
         f"rid_keys={list(rid_keys or [])}, "
         f"__rid_* cols in result_tbl={_rid_cols_present}, "
-        f"combo_to_rids={'set' if combo_to_rids else 'None'}, "
+        f"combo_to_rids={'has-rids' if _combo_has_rids else ('empty' if combo_to_rids else 'None')}, "
         f"fixed_rids={list((lineage_fixed_rids or {}).keys())}"
     )
-    if not _rid_cols_present and not combo_to_rids and not lineage_fixed_rids:
+    if not _rid_cols_present and not _combo_has_rids and not lineage_fixed_rids:
         Log.warn(
-            f"[batch_save] {fn_name!r}: NO input-binding source (no __rid_* columns "
-            f"in the result table, no aggregation combo_to_rids, no fixed rids) — "
-            f"saved records will have NO _invocation_input edges (broken input "
-            f"provenance). This severs lineage and is the precondition for the "
-            f"re-run orphan/duplicate cascade. Likely the __rid_* discriminator "
-            f"columns were dropped before save (e.g. distribute fan-out or the "
-            f"result round-trip)."
+            f"[batch_save] {fn_name!r}: NO variable input-binding source (no __rid_* "
+            f"columns in the result table, no upstream rids in combo_to_rids, no "
+            f"fixed rids) — saved records will have NO _invocation_input edges. "
+            f"EXPECTED when the only inputs are files (PathInput) or constants; a "
+            f"BUG if a scidb-variable input was consumed (severs lineage and is the "
+            f"precondition for the re-run orphan/duplicate cascade — the __rid_* "
+            f"discriminators were likely dropped before save, e.g. distribute "
+            f"fan-out or the result round-trip)."
         )
 
     # ===========================================================================
