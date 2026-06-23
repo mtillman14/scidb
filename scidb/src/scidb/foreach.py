@@ -1136,19 +1136,42 @@ def _for_each_prepare(
     rid_to_bp: dict = {}   # {record_id: branch_params_dict}
     rid_keys: list = []    # __rid_{param_name} column names added to this call's schema
     fixed_rid_values: dict = {}  # {param_name: record_id} for Fixed inputs
+    # ColumnSelection inputs participate in non-existent-combo PRUNING but NOT in
+    # rid expansion / schema extension. Coupling them into rid_keys (as plain
+    # DataFrame inputs are) would change variant semantics — it perturbs Variant
+    # branch_param pinning and for_columns aggregation. So we track them
+    # separately and use only their schema-location coverage to prune combos.
+    colsel_params: list = []  # param_names whose input is a ColumnSelection wrapper
 
     for param_name, data in list(loaded_inputs.items()):
-        # Extract DataFrame from Fixed wrapper if needed
+        # Extract DataFrame from a wrapper if needed. Both _scifor.Fixed and
+        # _scifor.ColumnSelection expose a `.data` DataFrame, so they MUST be
+        # distinguished by TYPE — a bare ``hasattr(data, 'data')`` check
+        # misclassifies a ColumnSelection as Fixed.  Three distinct treatments:
+        #   - plain DataFrame  -> full rid tracking (expansion + schema + pruning)
+        #   - Fixed            -> single fixed record_id, no iteration rid key
+        #   - ColumnSelection  -> pruning only (tracked in colsel_params), NOT
+        #                         rid expansion/schema (preserves Variant /
+        #                         for_columns semantics)
         df = None
         is_fixed = False
+        is_colsel = False
         if isinstance(data, pd.DataFrame):
             df = data
-        elif hasattr(data, 'data') and isinstance(data.data, pd.DataFrame):
-            # scifor.Fixed wrapper
+        elif isinstance(data, _scifor.Fixed) and isinstance(data.data, pd.DataFrame):
             df = data.data
             is_fixed = True
+        elif isinstance(data, _scifor.ColumnSelection) and isinstance(data.data, pd.DataFrame):
+            df = data.data
+            is_colsel = True
 
         if df is None or "__record_id" not in df.columns:
+            if df is not None:
+                Log.info(
+                    f"[scidb] Step 11: input '{param_name}' "
+                    f"({type(data).__name__}) has no __record_id column — "
+                    f"rid tracking disabled for this input"
+                )
             continue
 
         # Build rid→bp from this input's DataFrame (vectorized for performance)
@@ -1177,9 +1200,29 @@ def _for_each_prepare(
             if len(df) == 1:
                 fixed_rid_values[param_name] = str(df.iloc[0]["__record_id"])
             data.data = df_renamed
+            Log.info(
+                f"[scidb] Step 11: input '{param_name}' (Fixed): rid tracked "
+                f"via fixed_rid_values (no iteration rid key)"
+            )
+        elif is_colsel:
+            # ColumnSelection: keep the renamed (now __-prefixed, hence
+            # column-selection-dropped) discriminator on the wrapper's data, and
+            # mark the param for existence-based combo pruning. Deliberately NOT
+            # added to rid_keys: no schema extension, no rid expansion.
+            data.data = df_renamed
+            colsel_params.append(param_name)
+            Log.info(
+                f"[scidb] Step 11: input '{param_name}' (ColumnSelection): "
+                f"pruning-only (no rid expansion)"
+            )
         else:
+            # Plain DataFrame: full rid tracking (expansion + schema + pruning).
             loaded_inputs[param_name] = df_renamed
             rid_keys.append(rid_col)
+            Log.info(
+                f"[scidb] Step 11: input '{param_name}' "
+                f"({type(data).__name__}): registered rid key '{rid_col}'"
+            )
 
     Log.info(f"[scidb] variant tracking: {len(rid_to_bp)} record_id(s) mapped, "
               f"{len(rid_keys)} rid key(s): {rid_keys}, "
@@ -1264,6 +1307,61 @@ def _for_each_prepare(
             )
         rid_per_combo[rid_col] = mapping
 
+    # Existence coverage for ColumnSelection inputs: the set of schema-location
+    # keys (over _lookup_keys) each one actually has data for. Used purely to
+    # PRUNE non-existent Cartesian combos — no rid expansion, no schema change.
+    # Keyed identically to rid_per_combo so the same combo_key tuple compares.
+    colsel_existence: dict = {}  # param_name -> set[tuple]
+    for param_name in colsel_params:
+        data = loaded_inputs.get(param_name)
+        df = data.data if (hasattr(data, "data") and isinstance(data.data, pd.DataFrame)) else None
+        if df is None:
+            continue
+        schema_cols_in_df = [k for k in _lookup_keys if k in df.columns]
+        present: set = set()
+        if schema_cols_in_df:
+            for combo_vals, _group in df.groupby(schema_cols_in_df, sort=False):
+                raw_key = combo_vals if isinstance(combo_vals, tuple) else (combo_vals,)
+                col_val = {sk: ("" if v is None else str(v))
+                           for sk, v in zip(schema_cols_in_df, raw_key)}
+                present.add(tuple(col_val.get(sk, "") for sk in _lookup_keys))
+        else:
+            present.add(tuple("" for _ in _lookup_keys))
+        colsel_existence[param_name] = present
+        Log.info(
+            f"[scidb] Step 12: ColumnSelection '{param_name}' covers "
+            f"{len(present)} schema location(s) for combo pruning"
+        )
+
+    # Precompute, per ColumnSelection input, the index positions it actually
+    # populates (a coarser input's finer keys are "" everywhere). Computed once,
+    # not per combo, since it depends only on the coverage set.
+    _colsel_coverage = []  # list[(present_set, populated_idx_tuple)]
+    for _param, present in colsel_existence.items():
+        if not present:
+            continue
+        populated_idx = tuple(
+            i for i in range(len(_lookup_keys))
+            if any(key[i] != "" for key in present)
+        )
+        _colsel_coverage.append((present, populated_idx))
+
+    def _colsel_combo_present(schema_vals: tuple) -> bool:
+        """True if every ColumnSelection input has data at this combo location.
+
+        ``schema_vals`` is the combo key over ``_lookup_keys``. Compared only on
+        the keys each input actually populates, so a ColumnSelection stored at a
+        coarser level (finer keys absent from its frame) still matches.
+        """
+        n = len(_lookup_keys)
+        for present, populated_idx in _colsel_coverage:
+            probe = tuple(
+                schema_vals[i] if i in populated_idx else "" for i in range(n)
+            )
+            if probe not in present:
+                return False
+        return True
+
     if _aggregation_mode:
         # Aggregation mode: skip rid expansion.  Strip __rid_* columns from
         # loaded DataFrames so the user's function doesn't see internal
@@ -1290,21 +1388,33 @@ def _for_each_prepare(
             # (this is the no-iteration case; aggregate across everything).
             below_iterated_keys = set(current_schema_keys)
         for param_name, data in list(loaded_inputs.items()):
+            # Resolve the underlying frame for plain DataFrame OR ColumnSelection
+            # wrapper inputs (the latter now carries a renamed __rid_* column too,
+            # since Step 11 registers a rid key for it).
             if isinstance(data, pd.DataFrame):
-                rid_cols_in_df = [c for c in data.columns if c.startswith("__rid_")]
-                empty_schema_cols = [
-                    c for c in data.columns
-                    if c in below_iterated_keys and data[c].isna().all()
-                ]
-                drop_cols = rid_cols_in_df + empty_schema_cols
-                if drop_cols:
-                    loaded_inputs[param_name] = data.drop(columns=drop_cols)
-                if empty_schema_cols:
-                    Log.info(
-                        f"[scidb] aggregation: dropped all-null schema "
-                        f"column(s) {empty_schema_cols} from loaded input "
-                        f"'{param_name}' (below iterated schema level)"
-                    )
+                _df = data
+            elif isinstance(data, _scifor.ColumnSelection) and isinstance(data.data, pd.DataFrame):
+                _df = data.data
+            else:
+                continue
+            rid_cols_in_df = [c for c in _df.columns if c.startswith("__rid_")]
+            empty_schema_cols = [
+                c for c in _df.columns
+                if c in below_iterated_keys and _df[c].isna().all()
+            ]
+            drop_cols = rid_cols_in_df + empty_schema_cols
+            if drop_cols:
+                _stripped = _df.drop(columns=drop_cols)
+                if isinstance(data, pd.DataFrame):
+                    loaded_inputs[param_name] = _stripped
+                else:
+                    data.data = _stripped
+            if empty_schema_cols:
+                Log.info(
+                    f"[scidb] aggregation: dropped all-null schema "
+                    f"column(s) {empty_schema_cols} from loaded input "
+                    f"'{param_name}' (below iterated schema level)"
+                )
 
         # Don't expand combos — aggregation keeps multiple records per combo
         full_combos = list(base_combos)
@@ -1348,8 +1458,18 @@ def _for_each_prepare(
         Log.debug(f"expanding combos: {len(base_combos)} base combos, "
                   f"{len(rid_per_combo)} rid dimensions")
         full_combos: list = []
+        _pruned_colsel = 0
         for combo in base_combos:
             schema_vals = tuple(str(combo.get(k, "")) for k in _lookup_keys)
+
+            # Prune Cartesian combos that no ColumnSelection input has data for.
+            # (Plain DataFrame inputs prune via the rid-validity check below;
+            # ColumnSelection inputs deliberately don't expand, so they prune
+            # here instead — without this, non-existent grid points leak through
+            # as empty per-combo calls.)
+            if colsel_existence and not _colsel_combo_present(schema_vals):
+                _pruned_colsel += 1
+                continue
 
             rid_lists: list = []
             rid_col_names: list = []
@@ -1381,11 +1501,41 @@ def _for_each_prepare(
                     full_combo[f"__rid_{fixed_param}"] = fixed_rid
                 full_combos.append(full_combo)
 
+        if _pruned_colsel:
+            Log.info(
+                f"[scidb] Step 12: pruned {_pruned_colsel} non-existent combo(s) "
+                f"via ColumnSelection coverage"
+            )
         if len(full_combos) != len(base_combos):
             Log.info(f"expanded {len(base_combos)} base combos -> "
-                     f"{len(full_combos)} full combos (rid variants)")
+                     f"{len(full_combos)} full combos (rid variants / pruning)")
         else:
             Log.debug(f"{len(full_combos)} combos (no rid expansion needed)")
+
+        # Existence-pruning health check. In full iteration mode the rid-validity
+        # skip and the ColumnSelection coverage prune are the ONLY things that
+        # drop Cartesian combos with no backing data. If there are DataFrame-backed
+        # inputs but NEITHER pruning mechanism is active, the entire Cartesian
+        # product leaks through — every non-existent location becomes an empty
+        # per-combo call. This is exactly the failure mode when an input wrapper
+        # fails to register either a rid key or ColumnSelection coverage.
+        _has_df_inputs = any(
+            isinstance(v, pd.DataFrame)
+            or (isinstance(v, (_scifor.ColumnSelection, _scifor.Fixed))
+                and isinstance(getattr(v, "data", None), pd.DataFrame))
+            for v in loaded_inputs.values()
+        )
+        if (_has_df_inputs and not rid_per_combo and not colsel_existence
+                and len(full_combos) == len(base_combos)):
+            Log.warn(
+                "[scidb] Step 12: full iteration over all schema keys kept the "
+                f"ENTIRE Cartesian product ({len(full_combos)} combos) with no "
+                "pruning — DataFrame-backed inputs registered neither a rid key nor "
+                "ColumnSelection coverage, so non-existent schema locations will be "
+                "passed to the function as EMPTY tables. This usually means an "
+                "input's __record_id was lost before variant tracking (Step 11). "
+                "Check the per-input logs above."
+            )
 
     # Step 14: Apply pre-combo hook (e.g. skip_computed from scihist): filter out any
     # combos where the hook returns True.

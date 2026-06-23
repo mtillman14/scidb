@@ -467,6 +467,24 @@ def for_each(
                         f"set {iterate_columns} must be present in every combo."
                     )
 
+        # Surface empty per-combo inputs explicitly. After upstream existence
+        # filtering an empty input usually means this combo has no backing data
+        # for that input — the function is still called (it may handle empties),
+        # but the emptiness must never be silent.
+        _empty_inputs = [
+            name for name, val in
+            (list(filtered_inputs.items()) + list(iterate_dfs.items()))
+            if _input_is_empty(val)
+        ]
+        if _empty_inputs:
+            empty_msg = (
+                f"[empty-combo] {metadata_str}: input(s) "
+                f"{', '.join(_empty_inputs)} had 0 rows"
+            )
+            print(empty_msg)
+            if _log_fn is not None:
+                _log_fn(empty_msg)
+
         # Call the function
         all_param_names = (
             list(filtered_inputs.keys())
@@ -704,7 +722,14 @@ def _run_column_iteration(
             call_kwargs[name] = base_kwargs[name].resolve(metadata, col)
         for name, df in iterate_dfs.items():
             if name in as_table_set:
-                keep = [c for c in df.columns if c in schema_keys] + [col]
+                # Keep real schema keys + the current column, but never surface
+                # internal tracking columns (e.g. scidb's ``__rid_*`` record-id
+                # discriminators, which DB wrappers add to the schema for per-combo
+                # filtering). They've already done their filtering job upstream.
+                keep = [
+                    c for c in df.columns
+                    if c in schema_keys and not c.startswith("__")
+                ] + [col]
                 call_kwargs[name] = df[keep]
             else:
                 call_kwargs[name] = df[col].values
@@ -816,6 +841,23 @@ def _is_dataframe(value: Any) -> bool:
         import pandas as pd
         return isinstance(value, pd.DataFrame)
     except ImportError:
+        return False
+
+
+def _input_is_empty(value: Any) -> bool:
+    """Return True if a prepared per-combo input carries zero rows.
+
+    Used only for logging — a DataFrame with no rows, or a sized container
+    (array/list/Series) of length 0. Scalars and unsized values are never
+    considered empty.
+    """
+    if _is_dataframe(value):
+        return value.empty
+    if value is None:
+        return False
+    try:
+        return len(value) == 0
+    except TypeError:
         return False
 
 
@@ -1000,11 +1042,14 @@ def _extract_data(
 ) -> Any:
     """Extract data from a filtered DataFrame.
 
-    If as_table: return full DataFrame (including schema columns).
+    If as_table: return full DataFrame (real schema columns + data columns, but
+    not internal ``__``-prefixed schema columns such as scidb's ``__rid_*``
+    record-id discriminators).
     Otherwise: drop schema key columns; if 1 row + 1 data col -> extract scalar.
     """
     if as_table:
-        return df
+        internal = [c for c in df.columns if c in schema_keys and c.startswith("__")]
+        return df.drop(columns=internal) if internal else df
 
     data_cols = [c for c in df.columns if c not in schema_keys]
     if len(df) == 1 and len(data_cols) == 1:
@@ -1061,8 +1106,13 @@ def _prepare_input(
         cols = column_selection or _all_data_columns(filtered, schema_keys)
         cols = _apply_exclusions(cols, excl)
         if as_table:
-            # Keep schema columns alongside selected data columns
-            keep = [c for c in filtered.columns if c in schema_keys] + cols
+            # Keep real schema columns alongside selected data columns, but never
+            # surface internal tracking columns (e.g. scidb's ``__rid_*`` record-id
+            # discriminators added to the schema for per-combo filtering).
+            keep = [
+                c for c in filtered.columns
+                if c in schema_keys and not c.startswith("__")
+            ] + cols
             return filtered[keep]
         return _apply_column_selection(filtered, cols)
 
