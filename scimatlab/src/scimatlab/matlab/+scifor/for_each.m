@@ -131,14 +131,70 @@ function varargout = for_each(fn, inputs, varargin)
         end
     end
 
-    % --- Resolve empty arrays from table inputs (standalone mode) ---
+    % --- Resolve empty arrays from inputs (standalone mode) ---
+    %   Empty [] means "use all values". Resolve from table inputs first, then
+    %   from PathInput filesystem discovery. Keys the user passed with explicit
+    %   (non-empty) values assert intent and are never overwritten.
     if isempty(opts.all_combos)
+        user_explicit_keys = string.empty;
+        for i = 1:numel(meta_values)
+            if ~isempty(meta_values{i})
+                user_explicit_keys(end+1) = meta_keys(i); %#ok<AGROW>
+            end
+        end
+
+        % Pass 1: table inputs (non-raising; returns {} when no column).
         for i = 1:numel(meta_values)
             if isempty(meta_values{i})
                 meta_values{i} = distinct_values_from_inputs(inputs, meta_keys(i));
-                if isempty(meta_values{i})
-                    fprintf('[warn] no values found for ''%s'' in input tables, 0 iterations\n', ...
+            end
+        end
+
+        % Pass 2: PathInput filesystem discovery. The Case A/B decision (and
+        % whether discovered combos drive iteration directly) is owned by
+        % PathInput so the scidb and scifor layers share one implementation.
+        pi = find_pathinput(inputs);
+        if ~isempty(pi) && any(cellfun(@isempty, meta_values))
+            iter_struct = struct();
+            for i = 1:numel(meta_keys)
+                iter_struct.(char(meta_keys(i))) = meta_values{i};
+            end
+            [filled, discovered_combos] = pi.apply_discovery(iter_struct, user_explicit_keys);
+            for i = 1:numel(meta_keys)
+                if isempty(meta_values{i}) && isfield(filled, char(meta_keys(i)))
+                    meta_values{i} = filled.(char(meta_keys(i)));
+                end
+            end
+            % Use discovered combos directly only when every iterated key is a
+            % template placeholder (otherwise a Cartesian product with the
+            % table-derived keys is still required).
+            placeholder_keys = string(pi.placeholder_keys());
+            if ~isempty(discovered_combos) && all(ismember(meta_keys, placeholder_keys))
+                opts.all_combos = project_combos(discovered_combos, meta_keys);
+                msg = sprintf('[scifor] PathInput discovery: using %d disk combos', ...
+                    numel(opts.all_combos));
+                fprintf('%s\n', msg);
+                if ~isempty(opts.log_fn)
+                    opts.log_fn(msg);
+                end
+            end
+        end
+
+        % Any key still unresolved: warn (0 iterations) when a source exists
+        % but yields no values; error when no input provides the key at all.
+        for i = 1:numel(meta_values)
+            if isempty(meta_values{i})
+                if key_has_source(inputs, meta_keys(i), pi)
+                    fprintf('[warn] no values found for ''%s'' in inputs, 0 iterations\n', ...
                         meta_keys(i));
+                else
+                    error('scifor:for_each', ...
+                        ['Empty list [] was passed for ''%s'', but no input table ' ...
+                         'has that column and no PathInput template has a {%s} ' ...
+                         'placeholder. Provide values explicitly, add a table ' ...
+                         'input with a ''%s'' column, or use a PathInput with a ' ...
+                         '{%s} placeholder.'], ...
+                        meta_keys(i), meta_keys(i), meta_keys(i), meta_keys(i));
                 end
             end
         end
@@ -1391,8 +1447,11 @@ function values = distinct_values_from_inputs(inputs, key)
     end
 
     if isempty(all_values)
-        error('scifor:for_each', ...
-            'Empty list [] was passed for ''%s'', but no input DataFrame has that column.', key);
+        % No table input has this column. Not an error here: a PathInput may
+        % still provide the key via filesystem discovery (handled by the
+        % caller), which decides whether an unresolved key warns or errors.
+        values = {};
+        return;
     end
 
     % Deduplicate
@@ -1400,6 +1459,68 @@ function values = distinct_values_from_inputs(inputs, key)
         values = num2cell(unique(cell2mat(all_values)));
     else
         values = unique(all_values);
+    end
+end
+
+
+function pi = find_pathinput(inputs)
+%FIND_PATHINPUT  Return the first PathInput in inputs (unwrapping Fixed), or [].
+    pi = [];
+    input_names = fieldnames(inputs);
+    for p = 1:numel(input_names)
+        v = inputs.(input_names{p});
+        if isa(v, 'scifor.PathInput')
+            pi = v;
+            return;
+        end
+        if isa(v, 'scifor.Fixed') && isa(v.data, 'scifor.PathInput')
+            pi = v.data;
+            return;
+        end
+    end
+end
+
+
+function tf = key_has_source(inputs, key, pi)
+%KEY_HAS_SOURCE  True if any table column or PathInput placeholder provides KEY.
+    tf = false;
+    input_names = fieldnames(inputs);
+    for p = 1:numel(input_names)
+        tbl = get_raw_table(inputs.(input_names{p}));
+        if ~isempty(tbl) && ismember(char(key), tbl.Properties.VariableNames)
+            tf = true;
+            return;
+        end
+    end
+    if ~isempty(pi) && any(string(pi.placeholder_keys()) == string(key))
+        tf = true;
+    end
+end
+
+
+function out = project_combos(combos, meta_keys)
+%PROJECT_COMBOS  Reduce discovered combos to the iterated keys and dedupe.
+%   Each combo is a struct; keep only the META_KEYS fields and drop duplicate
+%   projections (e.g. when iterating fewer keys than the template has).
+    keys = cellstr(meta_keys);
+    seen = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+    out = {};
+    for c = 1:numel(combos)
+        s = struct();
+        sig_parts = cell(1, numel(keys));
+        for k = 1:numel(keys)
+            if isfield(combos{c}, keys{k})
+                s.(keys{k}) = combos{c}.(keys{k});
+                sig_parts{k} = char(string(combos{c}.(keys{k})));
+            else
+                sig_parts{k} = '';
+            end
+        end
+        sig = strjoin(sig_parts, '|');
+        if ~isKey(seen, sig)
+            seen(sig) = true;
+            out{end+1} = s; %#ok<AGROW>
+        end
     end
 end
 

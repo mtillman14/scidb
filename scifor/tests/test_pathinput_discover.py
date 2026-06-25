@@ -200,6 +200,66 @@ class TestDiscover:
         assert combos == [{"x": "X"}]
 
 
+class TestApplyDiscovery:
+    """The discovery-orchestration decision shared by scidb and scifor."""
+
+    def _pi(self, tmp_tree):
+        return PathInput(
+            "{subject}/XSENS/{session}/{subject}_XSENS_{session}_{speed}-001.xlsx",
+            root_folder=tmp_tree,
+        )
+
+    def test_case_a_no_iterables_adopts_all_keys(self, tmp_tree):
+        """No metadata iterables -> adopt every discovered key + use combos directly."""
+        pi = self._pi(tmp_tree)
+        iterables, combos = pi.apply_discovery({}, set())
+        assert set(iterables) == {"subject", "session", "speed"}
+        assert sorted(iterables["subject"]) == ["1", "2"]
+        # Combos drive iteration directly (no Cartesian invention).
+        assert combos is not None
+        assert len(combos) == 4
+
+    def test_case_b_all_empty_uses_discovered_combos(self, tmp_tree):
+        """All template keys passed as [] -> fill from disk, use combos directly."""
+        pi = self._pi(tmp_tree)
+        iterables, combos = pi.apply_discovery(
+            {"subject": [], "session": [], "speed": []}, set()
+        )
+        assert sorted(iterables["subject"]) == ["1", "2"]
+        assert sorted(iterables["session"]) == ["A", "B"]
+        assert combos is not None
+        assert len(combos) == 4
+        # Crucially NOT the Cartesian product (2x2x2=8) — only real files (4).
+        assert {"subject": "2", "session": "B", "speed": "slow"} not in combos
+
+    def test_case_b_explicit_key_falls_back_to_cartesian(self, tmp_tree):
+        """An explicit (non-empty) template key asserts intent -> no direct combos."""
+        pi = self._pi(tmp_tree)
+        iterables, combos = pi.apply_discovery(
+            {"subject": ["1"], "session": [], "speed": []},
+            user_explicit_keys={"subject"},
+        )
+        # Empty keys still filled from disk...
+        assert sorted(iterables["session"]) == ["A", "B"]
+        # ...but discovered combos do NOT drive iteration (Cartesian does).
+        assert combos is None
+        # Explicit key left untouched.
+        assert iterables["subject"] == ["1"]
+
+    def test_empty_discovery_returns_unchanged(self, tmp_path):
+        pi = PathInput("{subject}/missing/{x}.csv", root_folder=tmp_path)
+        iterables, combos = pi.apply_discovery({"subject": []}, set())
+        assert combos is None
+        assert iterables["subject"] == []
+
+    def test_log_callback_invoked(self, tmp_tree):
+        pi = self._pi(tmp_tree)
+        msgs = []
+        pi.apply_discovery({"subject": [], "session": [], "speed": []}, set(), log=msgs.append)
+        assert any("matching_files=4" in m for m in msgs)
+        assert any("disk combos" in m for m in msgs)
+
+
 class TestLoad:
     def test_load_with_root_folder(self, tmp_path):
         pi = PathInput("{subject}/data.mat", root_folder=tmp_path)

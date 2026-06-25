@@ -344,4 +344,74 @@ classdef TestPathInput < matlab.unittest.TestCase
             testCase.verifyClass(combos{1}.num, 'char');
         end
     end
+
+    % ------------------------------------------------------------------
+    % apply_discovery + standalone scifor.for_each discovery integration
+    % ------------------------------------------------------------------
+    methods (Access = private)
+        function root = makeGaitTree(~, base)
+            % subjects 1,2; subject 1 has sessions A,B (A: fast,slow; B: fast),
+            % subject 2 has session A (fast). 4 real files of 8 Cartesian combos.
+            root = fullfile(base, 'gait');
+            specs = {{'1','A','fast'}, {'1','A','slow'}, {'1','B','fast'}, {'2','A','fast'}};
+            for i = 1:numel(specs)
+                s = specs{i}{1}; ses = specs{i}{2}; sp = specs{i}{3};
+                d = fullfile(root, s, 'XSENS', ses);
+                if ~isfolder(d); mkdir(d); end
+                fname = sprintf('%s_XSENS_%s_%s-001.xlsx', s, ses, sp);
+                fclose(fopen(fullfile(d, fname), 'w'));
+            end
+        end
+    end
+
+    methods (Test)
+        function test_apply_discovery_all_empty_uses_disk_combos(testCase)
+            root = testCase.makeGaitTree(testCase.tmp_dir);
+            pi = scifor.PathInput( ...
+                "{subject}/XSENS/{session}/{subject}_XSENS_{session}_{speed}-001.xlsx", ...
+                'root_folder', root);
+            iter = struct('subject', {{}}, 'session', {{}}, 'speed', {{}});
+            [filled, combos] = pi.apply_discovery(iter, string.empty);
+            testCase.verifyEqual(sort(string(filled.subject)), ["1" "2"]);
+            testCase.verifyEqual(sort(string(filled.session)), ["A" "B"]);
+            % Discovered combos drive iteration directly: 4 real files, not 8.
+            testCase.verifyNotEmpty(combos);
+            testCase.verifyLength(combos, 4);
+        end
+
+        function test_apply_discovery_explicit_key_falls_back(testCase)
+            root = testCase.makeGaitTree(testCase.tmp_dir);
+            pi = scifor.PathInput( ...
+                "{subject}/XSENS/{session}/{subject}_XSENS_{session}_{speed}-001.xlsx", ...
+                'root_folder', root);
+            iter = struct('subject', {{'1'}}, 'session', {{}}, 'speed', {{}});
+            [filled, combos] = pi.apply_discovery(iter, "subject");
+            % Empty keys still filled from disk...
+            testCase.verifyEqual(sort(string(filled.session)), ["A" "B"]);
+            % ...but combos do not drive iteration (Cartesian does).
+            testCase.verifyEmpty(combos);
+        end
+
+        function test_foreach_standalone_discovers_pathinput_values(testCase)
+            % Regression: scifor.for_each called directly with a PathInput and
+            % all-empty [] schema keys must discover values from the filesystem
+            % rather than raising "no input DataFrame has that column".
+            root = testCase.makeGaitTree(testCase.tmp_dir);
+            scifor.set_schema(["subject", "session", "speed"]);
+            cleanup = onCleanup(@() scifor.set_schema(string.empty(1,0))); %#ok<NASGU>
+            pathTemplate = "{subject}/XSENS/{session}/{subject}_XSENS_{session}_{speed}-001.xlsx";
+            gaitPath = scifor.PathInput(pathTemplate, 'root_folder', root);
+
+            % fn receives the resolved path; return its basename to verify.
+            fn = @(p) string(p);
+            result = scifor.for_each(fn, ...
+                struct('xlsx_file_path', gaitPath), ...
+                subject=[], session=[], speed=[]);
+
+            % One row per real file (4), not the 8-combo Cartesian product.
+            testCase.verifyEqual(height(result), 4);
+            testCase.verifyTrue(all(ismember(["subject" "session" "speed"], ...
+                string(result.Properties.VariableNames))));
+        end
+    end
 end

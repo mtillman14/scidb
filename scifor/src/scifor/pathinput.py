@@ -160,6 +160,97 @@ class PathInput:
                 keys.append(field_name)
         return keys
 
+    def apply_discovery(
+        self,
+        metadata_iterables: dict,
+        user_explicit_keys: "set | None" = None,
+        log=None,
+    ) -> "tuple[dict, list[dict] | None]":
+        """Fill empty metadata iterables from filesystem discovery.
+
+        Canonical PathInput discovery-orchestration shared by the scidb and
+        scifor layers (see scidb.foreach Step 3 and scifor.foreach standalone
+        resolution).  Runs ``discover()`` and decides how the discovered combos
+        relate to the caller-supplied ``metadata_iterables``:
+
+        * **Empty discovery** — nothing on disk matched; returns the iterables
+          unchanged with ``discovered_combos=None``.
+        * **Case A — no metadata iterables at all**: adopt every discovered key
+          with all of its discovered values and return the discovered combos so
+          they drive iteration directly.
+        * **Case B — keys provided (some may be ``[]``)**: fill each empty
+          template key from disk.  If the caller passed an *explicit*
+          (non-empty) value for any template key (``user_explicit_keys``), that
+          asserts intent — the Cartesian product of the iterables drives
+          iteration, so ``discovered_combos=None``.  Otherwise every template
+          key was auto-filled from disk, so the discovered combos are returned
+          directly to avoid inventing non-existent Cartesian combos (e.g.
+          ``{sub1,sub2} x {sessA,sessB}`` producing ``{sub2,sessB}`` when only
+          three of the four files exist).
+
+        Args:
+            metadata_iterables: Mutable mapping of key -> list of values.
+                Mutated in place (empty lists filled) and also returned.
+            user_explicit_keys: Keys the caller passed with explicit non-empty
+                values (i.e. NOT delegated to DB/filesystem resolution).  These
+                suppress the discovered-combos shortcut in Case B.
+            log: Optional ``log(msg)`` callback for parity with the layer-level
+                logging around this decision.
+
+        Returns:
+            ``(metadata_iterables, discovered_combos | None)``.
+        """
+        if user_explicit_keys is None:
+            user_explicit_keys = set()
+
+        def _log(msg: str) -> None:
+            if log is not None:
+                log(msg)
+
+        combos = self.discover()
+        _log(
+            f"PathInput discovery: template={self.path_template!r}, "
+            f"root_folder={self.root_folder!r}, matching_files={len(combos)}"
+        )
+        if not combos:
+            return metadata_iterables, None
+
+        combo_keys = list(combos[0].keys())
+
+        # Case A: no metadata keys passed at all -> adopt every discovered key.
+        if not metadata_iterables:
+            for key in combo_keys:
+                metadata_iterables[key] = list(dict.fromkeys(c[key] for c in combos))
+                _log(f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem")
+            return metadata_iterables, combos
+
+        # Case B: keys provided (some may be []).  Fill empty template keys
+        # from disk; explicit user-provided values are left alone.
+        user_filter_seen = False
+        for key in combo_keys:
+            if key not in metadata_iterables:
+                continue
+            user_vals = metadata_iterables[key]
+            if not user_vals:
+                metadata_iterables[key] = list(dict.fromkeys(c[key] for c in combos))
+                _log(f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem")
+            elif key in user_explicit_keys:
+                user_filter_seen = True
+
+        if user_filter_seen:
+            # User asserted intent for at least one template key; let the
+            # Cartesian product of the iterables drive iteration.  Combos with
+            # missing files surface at runtime rather than being dropped here.
+            _log(
+                "explicit user values for template keys; skipping discovery "
+                "filter — Cartesian product of iterables will drive combos"
+            )
+            return metadata_iterables, None
+
+        # All template keys filled from disk -> use discovered combos directly.
+        _log(f"no user-explicit template keys; using {len(combos)} disk combos directly")
+        return metadata_iterables, combos
+
     def discover(self) -> list[dict[str, str]]:
         """Walk the filesystem and return all metadata combos matching the template.
 

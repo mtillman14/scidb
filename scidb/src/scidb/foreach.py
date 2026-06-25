@@ -887,72 +887,14 @@ def _for_each_prepare(
         Log.info("[scidb] Step 3: PathInput detected, running filesystem discovery")
         pi = _find_pathinput(inputs)
         if pi is not None:
-            combos = pi.discover()
-            Log.debug(f"PathInput discovery: template={pi.path_template!r}, "
-                      f"root_folder={pi.root_folder!r}, "
-                      f"matching_files={len(combos)}")
-            if combos:
-                combo_keys = list(combos[0].keys())
-
-                # Case A: No metadata keys passed at all → adopt every
-                # discovered key with all its discovered values.
-                if not metadata_iterables:
-                    for key in combo_keys:
-                        metadata_iterables[key] = list(dict.fromkeys(c[key] for c in combos))
-                        Log.info(f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem")
-                    _discovered_combos = combos
-                else:
-                    # Case B: Keys provided (some may be []). For each
-                    # template key, fill empty lists from disk; explicit
-                    # user-provided values are left alone.
-                    #
-                    # "Explicit" means the user passed a non-empty list at
-                    # the call site (captured in user_explicit_keys before
-                    # Step 2).  A key whose value came from DB resolution
-                    # (Step 2) or filesystem discovery (here) is NOT
-                    # considered explicit — those are auto-fills, not
-                    # user assertions of intent.
-                    user_filter_seen = False
-                    for key in combo_keys:
-                        if key not in metadata_iterables:
-                            continue
-                        user_vals = metadata_iterables[key]
-                        if not user_vals:
-                            metadata_iterables[key] = list(dict.fromkeys(
-                                c[key] for c in combos
-                            ))
-                            Log.info(f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem")
-                        elif key in user_explicit_keys:
-                            user_filter_seen = True
-
-                    if user_filter_seen:
-                        # User supplied explicit values for at least one
-                        # template key — those define the intended combo
-                        # set. Leave _discovered_combos=None so Step 12
-                        # falls through to the Cartesian product of
-                        # metadata_iterables. Combos whose files are
-                        # missing on disk will be attempted and fail
-                        # with FileNotFoundError, which scifor catches
-                        # per-combo and records as a skip — surfacing as
-                        # "missing" in check_node_state rather than
-                        # being silently dropped here.
-                        Log.info(
-                            "[scidb] explicit user values for template keys; "
-                            "skipping discovery filter — Cartesian product "
-                            "of user-provided iterables will drive base_combos"
-                        )
-                    else:
-                        # All template keys filled from disk discovery —
-                        # use discovered combos directly to avoid
-                        # inventing non-existent combos via Cartesian
-                        # product (e.g. {sub1,sub2} × {sessA,sessB}
-                        # producing {sub2,sessB} when only 3 of 4 files
-                        # exist).
-                        _discovered_combos = combos
-                        Log.info(
-                            f"[scidb] no user-explicit template keys; "
-                            f"_discovered_combos set to {len(combos)} disk combos"
-                        )
+            # The discovery decision (Case A / Case B, and whether discovered
+            # combos drive iteration directly) is owned by PathInput so the
+            # scidb and scifor layers share one implementation.  "Explicit"
+            # keys are those the user passed with non-empty values — a value
+            # filled from DB (Step 2) or disk is an auto-fill, not intent.
+            metadata_iterables, _discovered_combos = pi.apply_discovery(
+                metadata_iterables, user_explicit_keys, log=Log.info
+            )
     else:
         Log.info("[scidb] Step 3: no PathInput detected, skipping filesystem discovery")
 

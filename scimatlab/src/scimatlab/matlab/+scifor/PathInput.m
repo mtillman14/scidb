@@ -153,6 +153,85 @@ classdef PathInput < handle
             end
         end
 
+        function [iterables_out, combos] = apply_discovery(obj, metadata_iterables, user_explicit_keys)
+        %APPLY_DISCOVERY  Fill empty metadata iterables from filesystem discovery.
+        %
+        %   [ITERABLES, COMBOS] = pi.apply_discovery(METADATA_ITERABLES, USER_EXPLICIT_KEYS)
+        %
+        %   Thin wrapper over Python's PathInput.apply_discovery so the scidb
+        %   and scifor layers share one discovery-orchestration implementation.
+        %
+        %   METADATA_ITERABLES is a struct mapping each iterated key to a cell
+        %   array of values (empty cell {} for keys to resolve from disk).
+        %   USER_EXPLICIT_KEYS is a string array / cellstr of the keys the
+        %   caller passed with explicit (non-empty) values.
+        %
+        %   Returns ITERABLES (same struct with empty template keys filled
+        %   from disk) and COMBOS — a cell array of structs to drive iteration
+        %   directly, or [] when the Cartesian product of ITERABLES should be
+        %   used instead.
+
+            % Marshal metadata_iterables -> py.dict of key -> py.list(str).
+            py_iter = py.dict();
+            fns = fieldnames(metadata_iterables);
+            for i = 1:numel(fns)
+                vals = metadata_iterables.(fns{i});
+                py_list = py.list();
+                if ~isempty(vals)
+                    if ~iscell(vals)
+                        vals = num2cell(vals);
+                    end
+                    for j = 1:numel(vals)
+                        py_list.append(py.str(char(string(vals{j}))));
+                    end
+                end
+                py_iter.update(pyargs(fns{i}, py_list));
+            end
+
+            % Marshal user_explicit_keys -> py.list(str).
+            py_explicit = py.list();
+            ek = string(user_explicit_keys);
+            for i = 1:numel(ek)
+                py_explicit.append(py.str(char(ek(i))));
+            end
+
+            res = obj.py_obj.apply_discovery(py_iter, py_explicit);
+            out_iter = res{1};
+            py_combos = res{2};
+
+            % Convert returned iterables dict back to a MATLAB struct of
+            % cellstr values (discovered values are strings, like discover()).
+            iterables_out = struct();
+            ks = cell(py.list(out_iter.keys()));
+            for ki = 1:numel(ks)
+                k = char(ks{ki});
+                v_list = cell(py.list(out_iter{k}));
+                vals = cell(1, numel(v_list));
+                for vi = 1:numel(v_list)
+                    vals{vi} = char(string(v_list{vi}));
+                end
+                iterables_out.(k) = vals;
+            end
+
+            % Convert discovered combos (None -> []; else cell of structs).
+            if isa(py_combos, 'py.NoneType')
+                combos = [];
+            else
+                n = int64(py.len(py_combos));
+                combos = cell(1, n);
+                for i = 1:n
+                    d = py_combos{i};
+                    s = struct();
+                    cks = cell(py.list(d.keys()));
+                    for cki = 1:numel(cks)
+                        ck = char(cks{cki});
+                        s.(ck) = char(string(d{ck}));
+                    end
+                    combos{i} = s;
+                end
+            end
+        end
+
         function disp(obj)
         %DISP  Display the PathInput.
             opts = "";
