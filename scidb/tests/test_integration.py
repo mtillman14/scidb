@@ -710,6 +710,165 @@ class TestSaveBatchSingleColumn:
         assert s2.data == 20.0
 
 
+class TestSaveBatchSchemaValidation:
+    """save_batch must skip (with a warning) records that can't fit the batch's
+    storage schema, and persist the rest, instead of aborting the whole atomic
+    batch insert.
+
+    Real-world trigger: a MATLAB for_each over EMG files where two files were
+    empty (loadDelsysEMGOneFile returned an empty struct -> empty dict). The
+    multi_column writer did data_val['RHAM'] for every record; the empty dicts
+    raised KeyError('RHAM') and took down all 268 saves.
+
+    Skipped records get a None in the returned record_ids list, aligned to the
+    original input order, so callers (e.g. foreach graph_records) can still zip
+    items with record_ids.
+    """
+
+    def test_skips_empty_dict_record(self, db):
+        class EmgValue(BaseVariable):
+            schema_version = 1
+
+        good = {"RHAM": np.array([1.0, 2.0]), "RVL": np.array([3.0, 4.0])}
+        data_items = [
+            (good, {"subject": 1, "trial": 1}),
+            ({}, {"subject": 1, "trial": 2}),          # empty -> skip
+            (good, {"subject": 1, "trial": 3}),
+        ]
+        record_ids = db.save_batch(EmgValue, data_items)
+
+        assert len(record_ids) == 3
+        assert isinstance(record_ids[0], str)
+        assert record_ids[1] is None                    # skipped slot
+        assert isinstance(record_ids[2], str)
+
+        # Valid records persisted and load back.
+        np.testing.assert_array_equal(
+            EmgValue.load(subject=1, trial=1).data["RHAM"], [1.0, 2.0])
+        np.testing.assert_array_equal(
+            EmgValue.load(subject=1, trial=3).data["RVL"], [3.0, 4.0])
+        # The empty record was not saved.
+        with pytest.raises(NotFoundError):
+            EmgValue.load(subject=1, trial=2)
+
+    def test_skips_partial_keys_record(self, db):
+        class EmgValue2(BaseVariable):
+            schema_version = 1
+
+        # NOTE: use length>=2 arrays. _infer_data_columns unwraps length-1
+        # arrays to scalars (DOUBLE), which mismatches the DOUBLE[] storage row
+        # — a separate pre-existing quirk unrelated to schema validation.
+        full = {"RHAM": np.array([1.0, 9.0]), "RVL": np.array([2.0, 8.0]),
+                "LHAM": np.array([3.0, 7.0])}
+        partial = {"RHAM": np.array([1.0, 9.0]),
+                   "RVL": np.array([2.0, 8.0])}  # missing LHAM
+        data_items = [
+            (full, {"subject": 1, "trial": 1}),
+            (partial, {"subject": 1, "trial": 2}),      # missing a key -> skip
+            (full, {"subject": 1, "trial": 3}),
+        ]
+        record_ids = db.save_batch(EmgValue2, data_items)
+
+        assert [isinstance(r, str) for r in record_ids] == [True, False, True]
+        assert EmgValue2.load(subject=1, trial=1).data.keys() == full.keys()
+        with pytest.raises(NotFoundError):
+            EmgValue2.load(subject=1, trial=2)
+
+    def test_skips_shape_mismatch_record(self, db):
+        """A scalar where the column stores a vector (or vice versa) is skipped."""
+        class EmgValue3(BaseVariable):
+            schema_version = 1
+
+        vec = {"RHAM": np.array([1.0, 2.0]), "RVL": np.array([3.0, 4.0])}
+        # RHAM is a bare scalar here -> DOUBLE vs the batch's DOUBLE[] -> skip.
+        scalar = {"RHAM": 1.0, "RVL": np.array([3.0, 4.0])}
+        data_items = [
+            (vec, {"subject": 1, "trial": 1}),
+            (scalar, {"subject": 1, "trial": 2}),       # shape mismatch -> skip
+        ]
+        record_ids = db.save_batch(EmgValue3, data_items)
+
+        assert isinstance(record_ids[0], str)
+        assert record_ids[1] is None
+        with pytest.raises(NotFoundError):
+            EmgValue3.load(subject=1, trial=2)
+
+    def test_leading_empty_dict_does_not_define_schema(self, db):
+        """An empty dict as the FIRST item must not become the table schema;
+        the first usable record defines it and the empty one is skipped."""
+        class EmgValue4(BaseVariable):
+            schema_version = 1
+
+        good = {"RHAM": np.array([1.0, 2.0]), "RVL": np.array([3.0, 4.0])}
+        data_items = [
+            ({}, {"subject": 1, "trial": 1}),           # leading empty -> skip
+            (good, {"subject": 1, "trial": 2}),
+            (good, {"subject": 1, "trial": 3}),
+        ]
+        record_ids = db.save_batch(EmgValue4, data_items)
+
+        assert record_ids[0] is None
+        assert isinstance(record_ids[1], str)
+        assert isinstance(record_ids[2], str)
+        np.testing.assert_array_equal(
+            EmgValue4.load(subject=1, trial=2).data["RHAM"], [1.0, 2.0])
+
+    def test_all_records_incompatible_returns_all_none(self, db):
+        """If every record is incompatible, nothing saves and all slots None."""
+        class EmgValue5(BaseVariable):
+            schema_version = 1
+
+        # Both empty -> no usable reference schema at all -> skip everything.
+        data_items = [
+            ({}, {"subject": 1, "trial": 1}),
+            ({}, {"subject": 1, "trial": 2}),
+        ]
+        record_ids = db.save_batch(EmgValue5, data_items)
+        assert record_ids == [None, None]
+
+
+class TestSaveBatchSingleElementArrayDict:
+    """Regression: a multi_column dict whose value is a length-1 ndarray.
+
+    _infer_data_columns unwraps length-1 arrays to scalars when choosing the
+    column type (-> DOUBLE), so _python_to_storage must unwrap too. Before the
+    fix, the row still carried np.array([x]) (DOUBLE[]) into the DOUBLE column
+    and DuckDB raised: Conversion Error (DOUBLE[] -> DOUBLE).
+    """
+
+    def test_single_element_array_dict_saves_as_scalar(self, db):
+        class OneSampleEmg(BaseVariable):
+            schema_version = 1
+
+        data_items = [
+            ({"RHAM": np.array([1.5]), "RVL": np.array([2.5])},
+             {"subject": 1, "trial": 1}),
+            ({"RHAM": np.array([3.5]), "RVL": np.array([4.5])},
+             {"subject": 1, "trial": 2}),
+        ]
+        record_ids = db.save_batch(OneSampleEmg, data_items)
+        assert all(isinstance(r, str) for r in record_ids)
+
+        loaded = OneSampleEmg.load(subject=1, trial=1).data
+        # Length-1 arrays round-trip as scalars (the column is scalar DOUBLE).
+        assert isinstance(loaded["RHAM"], float)
+        assert loaded["RHAM"] == pytest.approx(1.5)
+        assert loaded["RVL"] == pytest.approx(2.5)
+
+    def test_single_element_int_array_dict_saves_as_scalar(self, db):
+        class OneSampleCount(BaseVariable):
+            schema_version = 1
+
+        data_items = [
+            ({"n": np.array([7])}, {"subject": 1, "trial": 1}),
+        ]
+        record_ids = db.save_batch(OneSampleCount, data_items)
+        assert isinstance(record_ids[0], str)
+
+        loaded = OneSampleCount.load(subject=1, trial=1).data
+        assert loaded["n"] == 7
+
+
 class TestSaveAutoDistribute:
     """save() auto-distributes a DataFrame whose columns include schema keys."""
 

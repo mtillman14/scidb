@@ -84,6 +84,7 @@ from sciduckdb import (
     _infer_duckdb_type, _python_to_storage, _storage_to_python,
     _storage_to_python_column,
     _infer_data_columns, _value_to_storage_row, _dataframe_to_storage_rows,
+    _record_schema_mismatch,
     _bulk_df_to_storage_rows,
     _flatten_dict, _unflatten_dict,
 )
@@ -904,11 +905,78 @@ class DatabaseManager:
 
         data_col_types, dtype_meta = _infer_data_columns(first_data)
         is_dataframe = dtype_meta.get("mode") == "dataframe"
+
+        # Reference-schema selection: a leading degenerate record (e.g. an
+        # empty dict -> no columns) must not define the table schema. Fall back
+        # to the first record that yields a usable (non-empty) schema. The
+        # degenerate record itself is caught by the validation pass below.
+        if not data_col_types and not is_dataframe:
+            for _dv, _ in data_items:
+                _ct, _dm = _infer_data_columns(_dv)
+                if _ct:
+                    first_data = _dv
+                    data_col_types, dtype_meta = _ct, _dm
+                    is_dataframe = dtype_meta.get("mode") == "dataframe"
+                    break
+
+        # No usable schema anywhere (e.g. every record is an empty dict): there
+        # is nothing to store. Skip the whole batch rather than create an
+        # empty-column table or write contentless rows.
+        if not data_col_types and not is_dataframe:
+            Log.warn(
+                f"[batch_save] {type_name}: no usable data schema in any of "
+                f"{len(data_items)} record(s) (all empty); nothing saved."
+            )
+            return [None] * len(data_items)
+
         col_types_str = ", ".join(f"{c}: {t}" for c, t in data_col_types.items())
         Log.info(f"save_batch({type_name}): {len(data_items)} items, "
                  f"mode={dtype_meta.get('mode', 'single_column')}, "
                  f"data: {_describe_data(first_data)}, "
                  f"DuckDB columns: [{col_types_str}]")
+
+        # --- Validate each record against the reference schema ---
+        # A single record whose value doesn't fit the batch's columns (empty
+        # dict, missing/extra keys, or a scalar where the column stores a
+        # vector, etc.) would abort the atomic batch insert and lose ALL saves
+        # in the batch. Skip such records with a clear per-record warning and
+        # persist the rest. record_ids is returned aligned to the ORIGINAL
+        # data_items order with None in each skipped slot, so callers that zip
+        # items with record_ids (e.g. foreach graph_records) stay aligned.
+        #
+        # DataFrame mode stores one DuckDB row per frame row with its own
+        # empty-frame handling, so it is left unvalidated here to avoid
+        # false-positive skips (e.g. an empty frame inferring VARCHAR columns).
+        n_original = len(data_items)
+        skipped_slots: dict[int, None] = {}  # orig_idx -> None (kept for clarity)
+        if not is_dataframe:
+            valid_items = []
+            valid_orig_idx = []
+            for _idx, (_dv, _fm) in enumerate(data_items):
+                _rec_col_types, _ = _infer_data_columns(_dv)
+                _reason = _record_schema_mismatch(data_col_types, _rec_col_types)
+                if _reason is None:
+                    valid_items.append((_dv, _fm))
+                    valid_orig_idx.append(_idx)
+                    continue
+                skipped_slots[_idx] = None
+                _meta_str = ", ".join(
+                    f"{k}={v}" for k, v in _fm.items()
+                    if not str(k).startswith("__")
+                ) or f"item #{_idx}"
+                Log.warn(
+                    f"[batch_save] {type_name}: SKIPPED record ({_meta_str}) — "
+                    f"incompatible with batch schema and NOT saved: {_reason}"
+                )
+            if not valid_items:
+                Log.warn(
+                    f"[batch_save] {type_name}: all {n_original} record(s) "
+                    f"incompatible with the batch schema; nothing saved."
+                )
+                return [None] * n_original
+            data_items = valid_items
+        else:
+            valid_orig_idx = list(range(n_original))
 
         if not self._duck._table_exists(table_name):
             data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
@@ -1235,6 +1303,15 @@ class DatabaseManager:
             for phase, elapsed in timings.items():
                 print(f"  {phase:30s} {elapsed:8.3f}s")
             print()
+
+        # record_ids is aligned with the (possibly filtered) data_items. Remap
+        # to the ORIGINAL input order, leaving None for records skipped by the
+        # schema-validation pass, so callers can zip items with record_ids.
+        if skipped_slots:
+            aligned = [None] * n_original
+            for _pos, _orig_idx in enumerate(valid_orig_idx):
+                aligned[_orig_idx] = record_ids[_pos]
+            return aligned
 
         return record_ids
 

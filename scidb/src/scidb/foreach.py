@@ -3112,7 +3112,20 @@ def _save_results(
                 )
 
             save_elapsed = time.perf_counter() - save_t0
-            total_saved += len(items)
+            # save_batch returns None in the slot of any record it skipped
+            # (schema-incompatible); count only the records actually persisted.
+            _n_saved = sum(1 for _r in record_ids if isinstance(_r, str))
+            _n_skipped = len(items) - _n_saved
+            total_saved += _n_saved
+            if _n_skipped:
+                _skip_msg = (
+                    f"[batch_save] {_output_name(output_obj)}: {_n_skipped} of "
+                    f"{len(items)} record(s) SKIPPED (schema-incompatible, e.g. "
+                    f"empty/missing-key results); the rest were saved. See the "
+                    f"per-record SKIPPED warning(s) in the log for details."
+                )
+                Log.warn(_skip_msg)
+                print(_skip_msg)
 
             # Collect for the bipartite provenance graph. output_idx is the
             # output slot (output_num); items align with record_ids in order.
@@ -3144,14 +3157,27 @@ def _save_results(
                      f"({len(items)/save_elapsed:.1f} records/s)")
 
         except Exception as e:
-            Log.error(f"[batch_save] Failed to save batch for {_output_name(output_obj)}: {e}")
-            # Log first few failed items
+            import traceback
+            Log.error(
+                f"[batch_save] Failed to save batch for "
+                f"{_output_name(output_obj)} ({len(items)} record(s)): "
+                f"{type(e).__name__}: {e}"
+            )
+            # Full traceback pinpoints the failing operation; the per-record
+            # cause (if it is one record) is best surfaced by the schema
+            # validation in save_batch, which skips bad records individually.
+            Log.error("[batch_save] traceback:\n" + traceback.format_exc())
+            # NOTE: these are the FIRST rows of the batch for context — NOT
+            # necessarily the row that raised. A batch insert fails atomically,
+            # so the offending record is not identifiable from the exception
+            # alone; rely on the SKIPPED warnings above to find bad records.
+            print(f"[error] failed to save {_output_name(output_obj)}: "
+                  f"{type(e).__name__}: {e}")
             for data, meta in items[:3]:
                 meta_str = ", ".join(f"{k}={v}" for k, v in meta.items()
                                      if not k.startswith("__"))
-                msg = f"[error] {meta_str}: failed to save {_output_name(output_obj)}: {e}"
-                print(msg)
-                Log.error(msg)
+                Log.error(f"[error] (first batch rows, not necessarily the "
+                          f"culprit) {meta_str}: {_output_name(output_obj)}")
 
     # ===========================================================================
     # PHASE 3: generates_file outputs — lineage-only save (graph + metadata, no

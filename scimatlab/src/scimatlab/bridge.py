@@ -1426,7 +1426,11 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
     Log.debug(f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
               f"split={t_split:.3f}s, assembly={t_convert - t_start - t_split:.3f}s")
 
-    result = "\n".join(_db.save_batch(cls, data_items))
+    # save_batch returns None in the slot of any record it skipped (schema-
+    # incompatible). Emit an empty string for those so the newline-delimited
+    # result stays row-aligned with the input on the MATLAB side.
+    _rids = _db.save_batch(cls, data_items)
+    result = "\n".join(r if isinstance(r, str) else "" for r in _rids)
 
     Log.info(f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
              f"split={t_split:.3f}s, total={_time.perf_counter() - t_start:.3f}s")

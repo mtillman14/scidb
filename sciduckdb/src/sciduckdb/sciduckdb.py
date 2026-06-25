@@ -197,6 +197,17 @@ def _python_to_storage(value: Any, meta: dict) -> Any:
     """Convert a Python value to its DuckDB-storable form."""
     ptype = meta.get("python_type", "")
 
+    # _infer_data_columns unwraps length-1 arrays to scalars when it picks the
+    # column type, e.g. {"x": np.array([1.0])} -> DOUBLE column with
+    # python_type="float". Mirror that unwrap here so the stored value is a
+    # scalar matching the column; otherwise the row carries a DOUBLE[] into a
+    # DOUBLE column and DuckDB rejects the cast (DOUBLE[] -> DOUBLE).
+    if ptype in ("float", "int", "bool", "str"):
+        if isinstance(value, np.ndarray) and value.size == 1:
+            value = value.item()
+        elif isinstance(value, np.generic):
+            value = value.item()
+
     if ptype == "ndarray":
         arr = value
         # Scalar in a column typed as ndarray (e.g. ragged vectors): wrap as 1-element list
@@ -408,6 +419,84 @@ def _infer_data_columns(
     ddb_type, col_meta = _infer_duckdb_type(sample_value)
     meta = {"mode": "single_column", "columns": {col_name: col_meta}}
     return {col_name: ddb_type}, meta
+
+
+# DuckDB type categories used by _storage_signature.  Records can only share a
+# column if their values reduce to the same (category, array-depth) signature;
+# this is intentionally coarse so benign coercions (BIGINT -> DOUBLE) are
+# allowed while shape changes (scalar vs vector) and category changes
+# (DOUBLE vs VARCHAR) are rejected.
+_NUMERIC_DDB_TYPES = {
+    "BOOLEAN", "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "FLOAT", "REAL", "DOUBLE",
+}
+_TEMPORAL_DDB_TYPES = {"DATE", "TIME", "TIMESTAMP", "INTERVAL"}
+
+
+def _storage_signature(ddb_type: str) -> Tuple[str, int]:
+    """Reduce a DuckDB column type string to (base_category, array_depth).
+
+    array_depth counts trailing ``[]`` (0 = scalar, 1 = vector, 2 = matrix).
+    base_category is a coarse bucket so that, e.g., ``BIGINT`` and ``DOUBLE``
+    are both ``numeric`` (DuckDB coerces them into one column) but ``DOUBLE``
+    and ``VARCHAR`` differ.  This is the unit of comparison for deciding
+    whether two records can be stored in the same batch column.
+    """
+    t = ddb_type.strip().upper()
+    depth = 0
+    while t.endswith("[]"):
+        depth += 1
+        t = t[:-2].strip()
+    if t in _NUMERIC_DDB_TYPES or t.startswith("DECIMAL"):
+        category = "numeric"
+    elif t == "VARCHAR":
+        category = "string"
+    elif t == "JSON":
+        category = "json"
+    elif t in _TEMPORAL_DDB_TYPES:
+        category = "temporal"
+    else:
+        category = t
+    return (category, depth)
+
+
+def _record_schema_mismatch(
+    ref_col_types: dict, rec_col_types: dict
+) -> Optional[str]:
+    """Return a human-readable reason a record can't join the batch, or None.
+
+    A record "fits" the batch schema when it has exactly the reference column
+    set and every column's storage signature matches.  This is the predicate
+    used by save_batch to skip (with a warning) records that would otherwise
+    abort the atomic batch insert:
+
+      * empty/partial dicts  -> missing keys
+      * unexpected dict keys -> extra keys
+      * a scalar where the column stores a vector (or vice versa),
+        or a string where the column is numeric -> signature mismatch
+    """
+    ref_keys = set(ref_col_types)
+    rec_keys = set(rec_col_types)
+    if ref_keys != rec_keys:
+        missing = sorted(ref_keys - rec_keys)
+        extra = sorted(rec_keys - ref_keys)
+        parts = []
+        if missing:
+            parts.append(f"missing keys {missing}")
+        if extra:
+            parts.append(f"unexpected keys {extra}")
+        if not parts:
+            parts.append("key set differs from batch schema")
+        return "; ".join(parts)
+    for col in ref_col_types:
+        ref_sig = _storage_signature(ref_col_types[col])
+        rec_sig = _storage_signature(rec_col_types[col])
+        if ref_sig != rec_sig:
+            return (
+                f"column '{col}' shape/type mismatch: batch column is "
+                f"{ref_col_types[col]} but record value is {rec_col_types[col]}"
+            )
+    return None
 
 
 def _dataframe_to_storage_rows(df: pd.DataFrame, dtype_meta: dict) -> list:
