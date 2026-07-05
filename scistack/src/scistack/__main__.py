@@ -3,6 +3,7 @@
 
 Usage:
     scistack project new <name> --schema-keys subject session
+    scistack db <command> ...      # alias for the ``scidb`` CLI
 """
 
 from __future__ import annotations
@@ -42,10 +43,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip running 'uv sync' after scaffolding.",
     )
 
+    # --- db (alias for the scidb CLI; wiring lives in scidb.inspect.cli) ---
+    try:
+        from scidb.inspect.cli import add_db_subparser
+        add_db_subparser(sub)
+    except ImportError:
+        pass
+
     args = parser.parse_args(argv)
 
     if args.command == "project" and args.project_command == "new":
         return _cmd_project_new(args)
+
+    if args.command == "db":
+        dispatch = getattr(args, "_dispatch", None)
+        if dispatch is not None:
+            return dispatch(args)
 
     parser.print_help()
     return 1

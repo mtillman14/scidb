@@ -2,6 +2,7 @@
 
 from .sciduckdb import (
     SciDuck,
+    schema_keys_from_db,
     _infer_duckdb_type,
     _numpy_dtype_to_duckdb,
     _python_to_storage,
@@ -19,6 +20,7 @@ from .sciduckdb import (
 
 __all__ = [
     "SciDuck",
+    "schema_keys_from_db",
     "_infer_duckdb_type",
     "_numpy_dtype_to_duckdb",
     "_python_to_storage",

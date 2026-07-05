@@ -1,7 +1,12 @@
 # Plan: Database Observability API + CLI (`scidb.inspect` / `scidb <command>`)
 
-> Status: DRAFT for approval — 2026-07-04, branch `dev`.
-> Rev 2 (same day): primary command renamed `scistack db …` → `scidb …`;
+> Status: APPROVED; Phase 1 implemented 2026-07-05 (branch `dev`), awaiting
+> test run. Delivered: read-only plumbing (sciduckdb `read_only=` +
+> `schema_keys_from_db`, DatabaseManager `read_only=` + lazy `db.inspect`),
+> `scidb/inspect/` (`api.py` Inspector + dataclasses, `render.py`, `cli.py`
+> with discovery), `scidb` console script + `scistack db` alias, tests in
+> `scidb/tests/test_inspect_{api,cli}.py`.
+> Rev 2 (2026-07-04): primary command renamed `scistack db …` → `scidb …`;
 > added Phase 5 (declarative write commands) and Phase 6 (`pick` /
 > record-id selector); recorded the read/write bright-line decision.
 

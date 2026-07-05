@@ -41,6 +41,9 @@ dev = [
     "pytest-cov>=4.0.0",
 ]
 
+[project.scripts]
+scidb = "scidb.inspect.cli:main"
+
 [tool.hatch.build.targets.sdist]
 include = ["/src"]
 

@@ -620,6 +620,39 @@ def _value_to_storage_row(value: Any, dtype_meta: dict) -> list:
 # Main class
 # ---------------------------------------------------------------------------
 
+def schema_keys_from_db(db_path: Union[str, Path]) -> List[str]:
+    """Read the dataset schema keys stored in an existing database.
+
+    Opens ``db_path`` read-only, reads the ``_schema`` table's key columns
+    (everything except ``schema_id``/``schema_level``, in ordinal order), and
+    closes the connection. This lets tools open a database without knowing
+    its schema keys in advance (e.g. the ``scidb`` CLI).
+
+    Raises ValueError if the file has no ``_schema`` table (not a
+    scidb/sciduckdb database) and whatever duckdb raises if the file does not
+    exist or is locked.
+    """
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        rows = con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = '_schema' "
+            "AND column_name NOT IN ('schema_id', 'schema_level') "
+            "ORDER BY ordinal_position"
+        ).fetchall()
+        has_table = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_name = '_schema'"
+        ).fetchall()[0][0] > 0
+    finally:
+        con.close()
+    if not has_table:
+        raise ValueError(
+            f"{db_path} has no _schema table — not a scidb/sciduckdb database"
+        )
+    return [r[0] for r in rows]
+
+
 class SciDuck:
     """
     A thin DuckDB layer for managing versioned, schema-aware scientific data.
@@ -630,15 +663,25 @@ class SciDuck:
         Path to the DuckDB database file.  Use ":memory:" for in-memory.
     dataset_schema : list of str
         Ordered hierarchy, e.g. ["subject", "session", "trial"].
+    read_only : bool
+        Open the underlying DuckDB connection read-only. No DDL is executed
+        (the database must already exist); DuckDB rejects every write on the
+        connection, so a read-only SciDuck can never contend for the write
+        lock beyond DuckDB's shared read lock.
     """
 
-    def __init__(self, db_path: Union[str, Path], dataset_schema: List[str]):
+    def __init__(self, db_path: Union[str, Path], dataset_schema: List[str],
+                 read_only: bool = False):
         self.db_path = str(db_path)
         self.dataset_schema = list(dataset_schema)
+        self.read_only = bool(read_only)
         self._lock = threading.Lock()
-        logger.info("DuckDB lock ACQUIRED: %s", self.db_path)
-        self.con = duckdb.connect(self.db_path)
-        self._init_metadata_tables()
+        logger.info("DuckDB lock ACQUIRED (read_only=%s): %s", self.read_only, self.db_path)
+        self.con = duckdb.connect(self.db_path, read_only=self.read_only)
+        if self.read_only:
+            self._validate_schema_columns()
+        else:
+            self._init_metadata_tables()
 
     # ------------------------------------------------------------------
     # Thin internal interface (future backend swap point)
@@ -767,19 +810,35 @@ class SciDuck:
 
         # Validate schema consistency if _schema already has data
         if self._fetchall("SELECT COUNT(*) FROM _schema")[0][0] > 0:
-            existing_cols = [
-                row[0] for row in self._fetchall(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = '_schema' "
-                    "AND column_name NOT IN ('schema_id', 'schema_level') "
-                    "ORDER BY ordinal_position"
-                )
-            ]
-            if existing_cols != self.dataset_schema:
+            self._validate_schema_columns()
+
+    def _validate_schema_columns(self):
+        """Check that the existing _schema columns match dataset_schema.
+
+        Read-only companion to _init_metadata_tables: runs the same
+        consistency check without any DDL, so it is safe on a read-only
+        connection (where the tables must already exist).
+        """
+        if not self._table_exists("_schema"):
+            if self.read_only:
                 raise ValueError(
-                    f"Database schema mismatch. "
-                    f"Existing: {existing_cols}, Provided: {self.dataset_schema}"
+                    f"{self.db_path} has no _schema table — not a scidb/sciduckdb "
+                    f"database (read-only open cannot create it)"
                 )
+            return
+        existing_cols = [
+            row[0] for row in self._fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = '_schema' "
+                "AND column_name NOT IN ('schema_id', 'schema_level') "
+                "ORDER BY ordinal_position"
+            )
+        ]
+        if existing_cols != self.dataset_schema:
+            raise ValueError(
+                f"Database schema mismatch. "
+                f"Existing: {existing_cols}, Provided: {self.dataset_schema}"
+            )
 
     # ------------------------------------------------------------------
     # Schema entry management
@@ -1371,9 +1430,11 @@ class SciDuck:
         logger.info("DuckDB lock RELEASED: %s", self.db_path)
 
     def reopen(self):
-        """Reopen the DuckDB connection after close()."""
-        logger.info("DuckDB lock ACQUIRED (reopen): %s", self.db_path)
-        self.con = duckdb.connect(str(self.db_path))
+        """Reopen the DuckDB connection after close(), preserving read_only mode."""
+        logger.info("DuckDB lock ACQUIRED (reopen, read_only=%s): %s",
+                    getattr(self, "read_only", False), self.db_path)
+        self.con = duckdb.connect(str(self.db_path),
+                                  read_only=getattr(self, "read_only", False))
 
     def __enter__(self):
         """Enter context manager."""

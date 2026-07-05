@@ -515,6 +515,7 @@ class DatabaseManager:
         self,
         dataset_db_path: str | Path,
         dataset_schema_keys: list[str],
+        read_only: bool = False,
     ):
         """
         Initialize database connection.
@@ -525,6 +526,10 @@ class DatabaseManager:
                 (e.g., ["subject", "visit", "channel"]). These keys identify the
                 logical location of data. Any other metadata keys are treated as
                 version parameters.
+            read_only: Open the database read-only (it must already exist). No
+                DDL runs and every write on the connection fails at the DuckDB
+                level — used by inspection tooling (scidb.inspect / the scidb
+                CLI) so it can never contend for the write lock.
         """
         self.dataset_db_path = Path(dataset_db_path)
 
@@ -534,18 +539,27 @@ class DatabaseManager:
                 "not a set. Schema key order defines the dataset hierarchy."
             )
         self.dataset_schema_keys = list(dataset_schema_keys)
+        self.read_only = bool(read_only)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
         # Initialize SciDuck backend for data storage and lineage (all in DuckDB)
-        self._duck = SciDuck(self.dataset_db_path, dataset_schema=dataset_schema_keys)
+        self._duck = SciDuck(
+            self.dataset_db_path,
+            dataset_schema=dataset_schema_keys,
+            read_only=self.read_only,
+        )
 
-        # Create metadata tables for type registration (in DuckDB)
-        self._ensure_meta_tables()
-        self._ensure_record_save_table()
-        self._ensure_schema_overrides_table()
-        self._ensure_provenance_tables()
+        # Create metadata tables for type registration (in DuckDB).
+        # Skipped on read-only connections: the tables must already exist, and
+        # DuckDB rejects DDL (even CREATE TABLE IF NOT EXISTS) in read-only mode.
+        if not self.read_only:
+            self._ensure_meta_tables()
+            self._ensure_record_save_table()
+            self._ensure_schema_overrides_table()
+            self._ensure_provenance_tables()
 
         self._closed = False # Track connection open/closed state
+        self._inspector = None  # lazy scidb.inspect.Inspector (see .inspect)
 
     def _ensure_meta_tables(self):
         """Create internal metadata tables for type registration."""
@@ -3932,12 +3946,24 @@ class DatabaseManager:
             self._closed = True
 
     def reopen(self):
-        # reopen DuckDB
+        # reopen DuckDB (preserving read-only mode)
         if self._duck is None:
-            self._duck = SciDuck(self.dataset_db_path, dataset_schema=self.dataset_schema_keys)
+            self._duck = SciDuck(
+                self.dataset_db_path,
+                dataset_schema=self.dataset_schema_keys,
+                read_only=getattr(self, "read_only", False),
+            )
         else:
             self._duck.reopen()
         self._closed = False
+
+    @property
+    def inspect(self):
+        """Lazy read-side observability facade (scidb.inspect.Inspector)."""
+        if self._inspector is None:
+            from .inspect.api import Inspector
+            self._inspector = Inspector(self)
+        return self._inspector
 
     def set_current_db(self):
         """Set this DatabaseManager as the active global database."""
