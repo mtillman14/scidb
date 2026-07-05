@@ -165,6 +165,18 @@ class SqlResult:
 
 
 @dataclass
+class PickCandidate:
+    """One selectable record in `pick`: identity + everything a human needs
+    to tell coexisting variants apart. Selection only — never data."""
+    record_id: str
+    variable: str
+    schema: dict[str, str]
+    branch_params: dict[str, str]   # namespaced fn.param → display string
+    function_name: str | None       # producing function (None = raw save)
+    saved: str | None
+
+
+@dataclass
 class ExclusionRecord:
     schema: dict[str, str]     # only the keys the exclusion names (rest = wildcard)
     reason: str
@@ -854,6 +866,35 @@ class Inspector:
                     f"{len(group)} rows × {len(data_cols)} cols "
                     f"({', '.join(data_cols)})")
         return previews
+
+    @_timed
+    def pick(self, variable, latest: bool = True,
+             include_excluded: bool = False, **metadata) -> list[PickCandidate]:
+        """Candidates for record selection: latest records matching the
+        metadata, enriched with branch params and producing function so
+        coexisting variants are tellable apart. Batched enrichment
+        (branch_params_batch / producing_invocation_batch — N+1 rule)."""
+        from .. import provenance_query
+        from .graph import _value_str
+
+        recs = self.records(variable, latest=latest,
+                            include_excluded=include_excluded, **metadata)
+        rids = [r.record_id for r in recs]
+        bp = provenance_query.branch_params_batch(self._duck, rids)
+        producing = provenance_query.producing_invocation_batch(self._duck, rids)
+        out = []
+        for r in recs:
+            inv = producing.get(r.record_id)
+            out.append(PickCandidate(
+                record_id=r.record_id,
+                variable=r.variable,
+                schema=r.schema,
+                branch_params={k: _value_str(v)
+                               for k, v in bp.get(r.record_id, {}).items()},
+                function_name=inv[1] if inv else None,
+                saved=r.timestamp or None,
+            ))
+        return out
 
     @_timed
     def exclusions(self) -> list[ExclusionRecord]:

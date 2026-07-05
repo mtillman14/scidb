@@ -49,6 +49,7 @@ nav:
     - Batch Processing (for_each): guide/for_each.md
     - Filtering & Selection: guide/filters.md
     - Browsing & Exporting: guide/browsing.md
+    - Inspecting a Database (scidb CLI): guide/inspect.md
   - Walkthroughs:
     - VO2 Max Pipeline: guide/walkthrough.md
   - API Reference:

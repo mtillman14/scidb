@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from .api import (
     DbOverview,
     ExclusionRecord,
+    PickCandidate,
     NodeStateSummary,
     ProvenanceTree,
     RecordSummary,
@@ -603,6 +604,26 @@ def render_node_states(states: list[NodeStateSummary], show_missing: bool = Fals
             if overflow > 0:
                 lines.append(s.missing_more_fmt.format(n=overflow))
     return "\n".join(lines)
+
+
+def render_pick_table(candidates: list[PickCandidate],
+                      schema_keys: list[str]) -> str:
+    if not candidates:
+        return "(no matching records)"
+    used_keys = [k for k in schema_keys if any(k in c.schema for c in candidates)]
+    param_keys = sorted({k for c in candidates for k in c.branch_params})
+    headers = [*used_keys, *param_keys, "function", "saved", "record_id"]
+    rows = [
+        [
+            *[c.schema.get(k, "") for k in used_keys],
+            *[c.branch_params.get(k, "-") for k in param_keys],
+            c.function_name or "(raw)",
+            c.saved,
+            c.record_id,
+        ]
+        for c in candidates
+    ]
+    return format_table(headers, rows)
 
 
 def render_exclusions(exclusions: list[ExclusionRecord],

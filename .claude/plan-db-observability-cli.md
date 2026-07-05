@@ -1,11 +1,62 @@
 # Plan: Database Observability API + CLI (`scidb.inspect` / `scidb <command>`)
 
-> Status: APPROVED; Phase 1 implemented 2026-07-05 (branch `dev`), awaiting
-> test run. Delivered: read-only plumbing (sciduckdb `read_only=` +
-> `schema_keys_from_db`, DatabaseManager `read_only=` + lazy `db.inspect`),
-> `scidb/inspect/` (`api.py` Inspector + dataclasses, `render.py`, `cli.py`
-> with discovery), `scidb` console script + `scistack db` alias, tests in
-> `scidb/tests/test_inspect_{api,cli}.py`.
+> Status: **ALL PHASES (1–6) COMPLETE and test-verified 2026-07-05**
+> (branch `dev`, user-run suite green; uncommitted as of completion).
+> Phase 6 design: stdout carries ONLY the selected record_id (composable
+> `$(scidb pick …)`); ambiguity without a listing/interactive flag fails
+> with the disambiguation table on stderr; `--interactive` = stdlib
+> numbered menus (chooser injected — `pick.drill_down` is pure and
+> unit-tested; a future `scidb[tui]` extra would replace only the chooser).
+> Phase 6 fix worth keeping: variant menus must be sorted by label —
+> candidate order from `_find_record` is newest-save-first and therefore
+> run-dependent (regression: `test_variant_menu_order_is_deterministic`).
+> Follow-ups now live in the "Later" list: GUI onto `scidb.inspect`
+> (graph + open-plot-by-record_id consuming `pick`), MATLAB bridge,
+> branch/variant-level exclusion (model work), further write capabilities
+> via the mutate.py checklist.
+> Phase 4: `sql` escape hatch (SqlResult, JSON-safe cells), `show --values`
+> previews, RenderStyle ANSI colors (TTY-only, --no-color honored),
+> `docs/guide/inspect.md` + mkdocs nav.
+> Phase 5: **generic write seam, not exclusion-specific** (user request:
+> future writes incl. hypothesis/finding documentation): `mutate.Mutator`
+> facade (per-invocation write session, `@_mutation` audit logging,
+> uniform `MutationResult`), `DatabaseLockedError` mapping (also applied to
+> Inspector.open), CLI `_write_handler` registration seam in dispatch;
+> exclusions (`exclude`/`include`/`exclusions`) are the first plugin —
+> new-write-capability checklist documented in mutate.py's docstring.
+> Phase 3: `trace` (batched enrichment, fn_hash surfaced, ambiguity =
+> AmbiguousVersionError w/ candidates), `runs`/`audit`, `state [--missing]
+> [--pathinput]` (PathInput reconstructed from the stored spec for the
+> standalone discovery check), CLI literal-coercion of NON-schema key=val
+> values (schema keys stay verbatim strings — zero-padded rule pinned).
+> Semantics pinned in tests: expected-invocation prediction cross-products
+> all coexisting input variants, so a mid-chain variable gaining a variant
+> correctly reds its consumer. Tests: `test_inspect_phase3.py`. Phase 1: read-only plumbing
+> (sciduckdb `read_only=` + `schema_keys_from_db`, DatabaseManager
+> `read_only=` + lazy `db.inspect`), `scidb/inspect/` (`api.py`, `render.py`,
+> `cli.py` with discovery), `scidb` console script + `scistack db` alias.
+> Phase 2: `graph.py` PipelineGraph + `pipeline`/`variants` commands with
+> tree/mermaid/dot/json renderers. Two Phase 2 decisions:
+> (a) **step grouping = (fn_name, variable-input wiring)**, coarser than
+> call_id (which folds constants in) — one node per step with constants
+> aggregated as variants, each variant keeping its call_id; PathInput specs
+> displayed but excluded from grouping.
+> (b) **node state carries `state_basis`**: "stored_hash" (CLI default —
+> most-recently-run hash; detects missing/partial/input-resave but NOT
+> source edits) vs "live_fn" (pass fn_registry for full check_node_state
+> semantics) vs "none". Tests: `test_inspect_{api,cli,pipeline}.py`.
+> Rev 3 (2026-07-05): added the **render style seam** (see "Render style
+> seam" section) so tree layout and state-tag wording stay cheaply tunable
+> after Phase 3; applied to the Phase 2 renderers and test-verified
+> (`TestRenderStyle`; `ASCII_STYLE` preset via `--style ascii` /
+> `SCIDB_STYLE`).
+> Implementation gotcha worth keeping: global argparse flags must be
+> duplicated onto each subcommand parser **with `default=SUPPRESS`** — since
+> Python 3.9 a subparser parses into a fresh namespace and copies its
+> defaults back, clobbering flags parsed before the subcommand (regression
+> test: `test_global_flags_accepted_before_and_after_subcommand`).
+> Next: Phase 2 (pipeline graph + variant aggregation moved down from
+> scistack-gui `domain/variant_resolver.py`).
 > Rev 2 (2026-07-04): primary command renamed `scistack db …` → `scidb …`;
 > added Phase 5 (declarative write commands) and Phase 6 (`pick` /
 > record-id selector); recorded the read/write bright-line decision.
@@ -176,6 +227,30 @@ constant values:
 - Non-DAG corner cases (multi-producer variables, self-referential
   input==output fns) render as repeated node references (`FilteredEMG (↑)`),
   never infinite recursion.
+
+### Render style seam (rev 3 — keeps presentation tunable after Phase 3)
+
+All *presentation* constants — tree glyphs (bullets, branch/continuation
+characters, arrows), state-tag wording (`[green, last-run recipe]`,
+`— N/M combos missing`), count/variant suffix formats, and diagram colors —
+live in a single `RenderStyle` dataclass in `render.py`, with
+`DEFAULT_STYLE` as the one source of truth. Rules:
+
+1. **No renderer may hardcode a presentation literal.** Structure
+   (what is a node, what nests under what) is renderer logic; how it is
+   drawn comes from the style object. Every renderer takes
+   ``style: RenderStyle | None = None`` (None → `DEFAULT_STYLE`).
+2. **Phase 3+ renderers (trace, runs, state) must consume the same
+   `RenderStyle`** — no parallel constants. New presentation needs
+   (e.g. trace's record/audit lines) add *fields* to RenderStyle, so one
+   dataclass stays the complete inventory of tunables.
+3. **Tuning = edit `DEFAULT_STYLE` defaults in one place**; renderer code
+   and Phase 3 logic don't change. Tests that match output either assert
+   semantic content (names, counts) or pin DEFAULT_STYLE explicitly.
+4. **Presets are just instances**: `ASCII_STYLE` (no-Unicode terminals)
+   ships as proof the seam works and is test-covered. A CLI `--style`
+   flag / env var mapping onto presets is a cheap later add — wiring only,
+   no renderer changes.
 
 ### `scidb trace` example
 

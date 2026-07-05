@@ -29,6 +29,7 @@ from ..log import Log
 from . import render
 from .api import Inspector
 from .mutate import Mutator, lock_errors_mapped
+from .pick import PickAborted, drill_down
 
 
 class CLIError(Exception):
@@ -222,6 +223,69 @@ def _cmd_variants(insp: Inspector, args) -> None:
         _emit_json(variants)
     else:
         print(render.render_variants_table(variants))
+
+
+def _stderr_chooser(title: str, labels) -> int:
+    """Numbered menu on stderr, choice from stdin — stdout stays clean so
+    ``$(scidb pick …)`` captures only the record_id."""
+    print(title, file=sys.stderr)
+    for i, label in enumerate(labels, 1):
+        print(f"  {i}. {label}", file=sys.stderr)
+    while True:
+        sys.stderr.write(f"choice [1-{len(labels)}, q to cancel]: ")
+        sys.stderr.flush()
+        try:
+            raw = input().strip()
+        except EOFError:
+            raise PickAborted()
+        if raw.lower() in ("q", "quit"):
+            raise PickAborted()
+        if raw.isdigit() and 1 <= int(raw) <= len(labels):
+            return int(raw) - 1
+        print(f"invalid choice: {raw!r}", file=sys.stderr)
+
+
+def _cmd_pick(insp: Inspector, args) -> None:
+    schema_keys = insp._db.dataset_schema_keys
+    metadata = _coerce_non_schema(_parse_kv(args.metadata), schema_keys)
+    type_name = args.type
+
+    try:
+        if type_name is None:
+            if not args.interactive:
+                raise CLIError(
+                    "pick needs a variable type (or --interactive to choose one)")
+            variables = [v for v in insp.variables() if v.record_count > 0]
+            if not variables:
+                raise CLIError("No variables with records in this database")
+            idx = _stderr_chooser(
+                "Select variable:",
+                [f"{v.name}   ({v.record_count} records)" for v in variables])
+            type_name = variables[idx].name
+
+        candidates = insp.pick(type_name, **metadata)
+        if not candidates:
+            raise CLIError(f"No {type_name} records match {metadata or '(any)'}")
+
+        if args.json:
+            _emit_json(candidates)
+        elif args.table:
+            print(render.render_pick_table(candidates, schema_keys))
+        elif args.interactive:
+            chosen = drill_down(candidates, schema_keys, _stderr_chooser)
+            print(chosen.record_id)
+        elif len(candidates) == 1:
+            print(candidates[0].record_id)
+        else:
+            # Ambiguous non-interactive pick must fail so $(…) gets nothing —
+            # the disambiguation table goes to stderr.
+            print(render.render_pick_table(candidates, schema_keys),
+                  file=sys.stderr)
+            raise CLIError(
+                f"{len(candidates)} records match — narrow with schema keys / "
+                f"branch params, or use --interactive / --table / --json.")
+    except PickAborted:
+        raise CLIError("selection cancelled")
 
 
 def _cmd_exclusions(insp: Inspector, args) -> None:
@@ -432,6 +496,20 @@ def _add_commands(sub: argparse._SubParsersAction,
                        help="Read-only SQL escape hatch (rendered as a table).")
     p.add_argument("query", help="The SELECT to run (writes fail: read-only).")
     p.set_defaults(_handler=_cmd_sql)
+
+    p = sub.add_parser("pick", parents=[parent],
+                       help="Resolve a variable output to its record_id "
+                            "(prints only the id — composable in $(…)).")
+    p.add_argument("type", nargs="?", default=None,
+                   help="Variable type (omit with --interactive to choose one).")
+    p.add_argument("metadata", nargs="*",
+                   help="key=value filters (same rules as show/trace).")
+    p.add_argument("-i", "--interactive", action="store_true",
+                   help="Drill down via menus (variable → schema keys → "
+                        "variant); menus on stderr, record_id on stdout.")
+    p.add_argument("--table", action="store_true",
+                   help="List all candidates as a table instead of selecting.")
+    p.set_defaults(_handler=_cmd_pick)
 
     p = sub.add_parser("exclusions", parents=[parent],
                        help="List currently-excluded schema combinations.")

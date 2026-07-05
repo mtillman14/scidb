@@ -9,6 +9,7 @@ from .api import (
     DbOverview,
     ExclusionRecord,
     Inspector,
+    PickCandidate,
     NodeStateSummary,
     ProvenanceTree,
     RecordSummary,
@@ -58,4 +59,5 @@ __all__ = [
     "ExclusionRecord",
     "Mutator",
     "MutationResult",
+    "PickCandidate",
 ]
