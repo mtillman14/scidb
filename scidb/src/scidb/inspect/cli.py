@@ -1,24 +1,34 @@
-"""``scidb`` CLI — thin rendering shell over scidb.inspect.Inspector.
+"""``scidb`` CLI — thin rendering shell over scidb.inspect.
 
-Phase 1 commands: status, vars, schema, show. Every command opens the
-database strictly read-only and supports ``--json`` (machine-readable
-``dataclasses.asdict`` output).
+Read commands (status, vars, schema, pipeline, variants, trace, runs,
+state, show, sql, exclusions) open the database strictly read-only via
+``Inspector``. Write commands (exclude, include — and future declarative
+writes) are registered with ``_write_handler`` instead of ``_handler``,
+which routes them through ``mutate.Mutator`` (a per-invocation read-write
+session with lock-contention mapped to a one-line error). That split is the
+whole write seam: new write capabilities add a Mutator method + a
+``_write_handler`` command and inherit session handling, audit logging, and
+error mapping (see mutate.py's checklist).
 
-Also mountable as the ``scistack db`` alias via ``add_db_subparser``.
+Every command supports ``--json`` (machine-readable ``dataclasses.asdict``
+output). Also mountable as the ``scistack db`` alias via ``add_db_subparser``.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import dataclasses
 import json
 import os
 import sys
 from pathlib import Path
 
+from ..exceptions import DatabaseLockedError
 from ..log import Log
 from . import render
 from .api import Inspector
+from .mutate import Mutator, lock_errors_mapped
 
 
 class CLIError(Exception):
@@ -97,6 +107,56 @@ def _parse_kv(pairs: list[str]) -> dict[str, str]:
     return out
 
 
+def _parse_kv_lists(pairs: list[str]) -> dict[str, list[str]]:
+    """Like _parse_kv, but repeated keys accumulate into lists
+    (``subject=S01 subject=S02`` → {"subject": ["S01", "S02"]})."""
+    out: dict[str, list[str]] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise CLIError(f"Expected key=value, got {pair!r}")
+        key, value = pair.split("=", 1)
+        out.setdefault(key, []).append(value)
+    return out
+
+
+def _coerce_non_schema(metadata: dict, schema_keys) -> dict:
+    """Literal-eval NON-schema values so ``low_hz=20`` matches the stored
+    int 20 (branch-param matching is exact-typed equality). Schema-key values
+    are returned verbatim: schema columns are stored as strings and
+    zero-padded values like "01" must never be auto-converted."""
+    out: dict = {}
+    for key, value in metadata.items():
+        if key in schema_keys:
+            out[key] = value
+        else:
+            try:
+                out[key] = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                out[key] = value
+    return out
+
+
+_STYLE_PRESETS = {"default": render.DEFAULT_STYLE, "ascii": render.ASCII_STYLE}
+
+
+def _resolve_style(args) -> render.RenderStyle:
+    name = getattr(args, "style", None) or os.environ.get("SCIDB_STYLE") or "default"
+    preset = _STYLE_PRESETS.get(name)
+    if preset is None:
+        raise CLIError(
+            f"Unknown render style {name!r}; choose from {sorted(_STYLE_PRESETS)}"
+        )
+    if _want_color(getattr(args, "no_color", False), sys.stdout.isatty()):
+        preset = render.with_ansi_colors(preset)
+    return preset
+
+
+def _want_color(no_color: bool, isatty: bool) -> bool:
+    """Color state tags only on a real terminal, and never under --no-color
+    (piped/captured output stays byte-plain — including --json and -o files)."""
+    return isatty and not no_color
+
+
 def _emit_json(result) -> None:
     if isinstance(result, list):
         payload = [dataclasses.asdict(r) for r in result]
@@ -131,17 +191,113 @@ def _cmd_schema(insp: Inspector, args) -> None:
     if args.json:
         _emit_json(tree)
     elif args.tree:
-        print(render.render_schema_tree(tree))
+        print(render.render_schema_tree(tree, style=_resolve_style(args)))
     else:
         print(render.render_schema_summary(tree))
 
 
+def _cmd_pipeline(insp: Inspector, args) -> None:
+    graph = insp.pipeline(output_type=args.type)
+    style = _resolve_style(args)
+    if args.json or args.format == "json":
+        text = json.dumps(dataclasses.asdict(graph), indent=2, default=str)
+    elif args.format == "tree":
+        text = render.render_pipeline_tree(
+            graph, expand_variants=args.variants, include_values=args.values,
+            style=style)
+    elif args.format == "mermaid":
+        text = render.render_pipeline_mermaid(graph, style=style)
+    else:  # dot
+        text = render.render_pipeline_dot(graph, style=style)
+    if args.output is not None:
+        Path(args.output).write_text(text + "\n")
+        print(f"wrote {args.output}", file=sys.stderr)
+    else:
+        print(text)
+
+
+def _cmd_variants(insp: Inspector, args) -> None:
+    variants = insp.variants(args.name)
+    if args.json:
+        _emit_json(variants)
+    else:
+        print(render.render_variants_table(variants))
+
+
+def _cmd_exclusions(insp: Inspector, args) -> None:
+    exclusions = insp.exclusions()
+    if args.json:
+        _emit_json(exclusions)
+    else:
+        print(render.render_exclusions(exclusions, insp._db.dataset_schema_keys))
+
+
+def _cmd_exclude(mut: Mutator, args) -> None:
+    result = mut.exclude_schema(args.reason, **_parse_kv(args.schema))
+    _emit_json(result) if args.json else print(render.render_mutation_result(result))
+
+
+def _cmd_include(mut: Mutator, args) -> None:
+    result = mut.include_schema(args.reason, **_parse_kv(args.schema))
+    _emit_json(result) if args.json else print(render.render_mutation_result(result))
+
+
+def _cmd_sql(insp: Inspector, args) -> None:
+    result = insp.sql(args.query)
+    if args.json:
+        _emit_json(result)
+    else:
+        print(render.format_table(result.columns, result.rows))
+        print(f"({result.row_count} rows)")
+
+
+def _cmd_trace(insp: Inspector, args) -> None:
+    if args.type is None and args.record_id is None:
+        raise CLIError("trace needs a variable type (plus key=val filters) "
+                       "or --record-id")
+    metadata = _coerce_non_schema(_parse_kv(args.metadata),
+                                  insp._db.dataset_schema_keys)
+    tree = insp.trace(args.type, record_id=args.record_id,
+                      include_audit=args.audit, **metadata)
+    if args.json:
+        _emit_json(tree)
+    else:
+        print(render.render_trace(tree, style=_resolve_style(args)))
+
+
+def _cmd_runs(insp: Inspector, args) -> None:
+    runs = insp.runs(fn=args.fn, limit=args.limit)
+    if args.json:
+        _emit_json(runs)
+    else:
+        print(render.render_runs_table(runs))
+
+
+def _cmd_state(insp: Inspector, args) -> None:
+    if args.pathinput:
+        if not args.fn:
+            raise CLIError("state --pathinput requires a function name")
+        grid = _parse_kv_lists(args.metadata)
+        states = insp.pathinput_state(args.fn, **grid)
+    else:
+        if args.metadata:
+            raise CLIError("key=value grid args only apply with --pathinput")
+        states = insp.node_state(args.fn)
+    if args.json:
+        _emit_json(states)
+    else:
+        print(render.render_node_states(states, show_missing=args.missing,
+                                        style=_resolve_style(args)))
+
+
 def _cmd_show(insp: Inspector, args) -> None:
-    metadata = _parse_kv(args.metadata)
+    metadata = _coerce_non_schema(_parse_kv(args.metadata),
+                                  insp._db.dataset_schema_keys)
     records = insp.records(
         args.type,
         latest=not args.versions,
         include_excluded=args.include_excluded,
+        include_values=args.values,
         **metadata,
     )
     if args.json:
@@ -172,6 +328,9 @@ def _add_global_args(parser: argparse.ArgumentParser,
                         help="Emit machine-readable JSON instead of tables.")
     parser.add_argument("--no-color", action="store_true", **d,
                         help="Disable colored output (Phase 1 output is uncolored).")
+    parser.add_argument("--style", choices=["default", "ascii"], **d,
+                        help="Render style preset (or set SCIDB_STYLE). "
+                             "'ascii' avoids Unicode box-drawing characters.")
     parser.add_argument("-v", "--verbose", action="store_true", **d,
                         help="Verbose logging (facade call timing etc.).")
 
@@ -201,6 +360,60 @@ def _add_commands(sub: argparse._SubParsersAction,
     p.add_argument("--tree", action="store_true", help="Render the full hierarchy tree.")
     p.set_defaults(_handler=_cmd_schema)
 
+    p = sub.add_parser("pipeline", parents=[parent],
+                       help="The pipeline DAG: functions, variables, variants, state.")
+    p.add_argument("--type", default=None,
+                   help="Restrict to this variable type and everything upstream.")
+    p.add_argument("--variants", action="store_true",
+                   help="Expand each step into one line per constants variant.")
+    p.add_argument("--values", action="store_true",
+                   help="Show input params and PathInput specs per step.")
+    p.add_argument("--format", choices=["tree", "mermaid", "dot", "json"],
+                   default="tree", help="Output format (default: tree).")
+    p.add_argument("-o", "--output", default=None,
+                   help="Write output to a file instead of stdout.")
+    p.set_defaults(_handler=_cmd_pipeline)
+
+    p = sub.add_parser("variants", parents=[parent],
+                       help="Coexisting variants of a variable type or function.")
+    p.add_argument("name", help="Variable type or function name.")
+    p.set_defaults(_handler=_cmd_variants)
+
+    p = sub.add_parser("trace", parents=[parent],
+                       help="Full upstream provenance of one record.")
+    p.add_argument("type", nargs="?", default=None,
+                   help="Variable type name (omit when using --record-id).")
+    p.add_argument("metadata", nargs="*",
+                   help="key=value filters. Schema-key values match verbatim; "
+                        "other values are parsed as Python literals "
+                        "(low_hz=20 matches the stored int 20).")
+    p.add_argument("--record-id", default=None,
+                   help="Trace this exact record instead of resolving by metadata.")
+    p.add_argument("--audit", action="store_true",
+                   help="Append the execution audit (who ran it, when, where=).")
+    p.set_defaults(_handler=_cmd_trace)
+
+    p = sub.add_parser("runs", parents=[parent],
+                       help="Execution audit log (_run), newest first.")
+    p.add_argument("--fn", default=None, help="Only runs of this function.")
+    p.add_argument("-n", "--limit", type=int, default=50,
+                   help="Maximum rows (default: 50).")
+    p.set_defaults(_handler=_cmd_runs)
+
+    p = sub.add_parser("state", parents=[parent],
+                       help="Green/red run state per pipeline function.")
+    p.add_argument("fn", nargs="?", default=None,
+                   help="Function name (omit for all functions).")
+    p.add_argument("metadata", nargs="*",
+                   help="Iteration grid for --pathinput (repeat keys for "
+                        "lists: subject=S01 subject=S02).")
+    p.add_argument("--missing", action="store_true",
+                   help="List the missing schema combos per red node.")
+    p.add_argument("--pathinput", action="store_true",
+                   help="Discovery-based check for a PathInput loader: "
+                        "files on disk ∩ grid − exclusions vs realized.")
+    p.set_defaults(_handler=_cmd_state)
+
     p = sub.add_parser("show", parents=[parent],
                        help="Records at a location (latest per variant).")
     p.add_argument("type", help="Variable type name.")
@@ -211,7 +424,36 @@ def _add_commands(sub: argparse._SubParsersAction,
                    help="Show every saved version, not just the latest per variant.")
     p.add_argument("--include-excluded", action="store_true",
                    help="Include records marked excluded.")
+    p.add_argument("--values", action="store_true",
+                   help="Add a compact value preview per record (storage form).")
     p.set_defaults(_handler=_cmd_show)
+
+    p = sub.add_parser("sql", parents=[parent],
+                       help="Read-only SQL escape hatch (rendered as a table).")
+    p.add_argument("query", help="The SELECT to run (writes fail: read-only).")
+    p.set_defaults(_handler=_cmd_sql)
+
+    p = sub.add_parser("exclusions", parents=[parent],
+                       help="List currently-excluded schema combinations.")
+    p.set_defaults(_handler=_cmd_exclusions)
+
+    p = sub.add_parser("exclude", parents=[parent],
+                       help="Exclude a schema combination from every analysis "
+                            "(write; omitted keys are wildcards).")
+    p.add_argument("schema", nargs="+",
+                   help="key=value schema keys (values verbatim strings).")
+    p.add_argument("--reason", required=True,
+                   help="Why this data is excluded (stored in the audit trail).")
+    p.set_defaults(_write_handler=_cmd_exclude)
+
+    p = sub.add_parser("include", parents=[parent],
+                       help="Re-include a previously excluded combination "
+                            "(write; history preserved).")
+    p.add_argument("schema", nargs="+",
+                   help="key=value schema keys of the exact excluded keyset.")
+    p.add_argument("--reason", required=True,
+                   help="Why this data is re-included (stored in the audit trail).")
+    p.set_defaults(_write_handler=_cmd_include)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -234,9 +476,15 @@ def add_db_subparser(sub: argparse._SubParsersAction) -> None:
 
 
 def dispatch(args: argparse.Namespace) -> int:
-    """Run a parsed inspect command. Shared by ``scidb`` and ``scistack db``."""
+    """Run a parsed inspect command. Shared by ``scidb`` and ``scistack db``.
+
+    Read commands (``_handler``) get a read-only Inspector; write commands
+    (``_write_handler``) get a per-invocation read-write Mutator — the seam
+    every future write capability plugs into.
+    """
     handler = getattr(args, "_handler", None)
-    if handler is None:
+    write_handler = getattr(args, "_write_handler", None)
+    if handler is None and write_handler is None:
         build_parser().print_help()
         return 1
     if args.verbose:
@@ -248,14 +496,25 @@ def dispatch(args: argparse.Namespace) -> int:
         # Same convention as configure_database: scidb.log next to the db file.
         if Log.get_path() is None:
             Log.set_path(str(Path(db_path).parent / "scidb.log"))
-        Log.info(f"scidb cli: db={db_path} (resolved via {source})")
+        mode = "write" if write_handler else "read-only"
+        Log.info(f"scidb cli: db={db_path} (resolved via {source}, {mode})")
         if args.verbose:
-            print(f"database: {db_path} (via {source})", file=sys.stderr)
-        with Inspector.open(db_path) as insp:
-            handler(insp, args)
+            print(f"database: {db_path} (via {source}, {mode})", file=sys.stderr)
+        if write_handler is not None:
+            with Mutator.open(db_path) as mut, lock_errors_mapped(db_path):
+                write_handler(mut, args)
+        else:
+            with Inspector.open(db_path) as insp:
+                handler(insp, args)
         return 0
-    except CLIError as e:
+    except (CLIError, DatabaseLockedError) as e:
         print(f"Error: {e}", file=sys.stderr)
+        Log.error(f"scidb cli failed: {type(e).__name__}: {e}")
+        return 1
+    except ValueError as e:
+        # Primitive-level validation (unknown key, already excluded, …).
+        print(f"Error: {e}", file=sys.stderr)
+        Log.error(f"scidb cli failed: {type(e).__name__}: {e}")
         return 1
     except Exception as e:
         # DuckDB lock contention, malformed db, unknown variable, bad filters…

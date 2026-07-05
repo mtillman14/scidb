@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from ..exceptions import NotFoundError
+from ..exceptions import AmbiguousVersionError, NotFoundError
 from ..log import Log
 
 if TYPE_CHECKING:
@@ -85,6 +85,66 @@ class SchemaTree:
 
 
 @dataclass
+class RunRecord:
+    timestamp: str
+    user_id: str | None
+    function_name: str
+    where_clause: str | None       # display-only by design — never parsed
+    run_id: str | None = None      # set by runs(); audit rows have no run_id
+    n_invocations: int | None = None
+
+
+@dataclass
+class TraceInput:
+    param: str
+    record_id: str
+    variable: str
+
+
+@dataclass
+class TraceEdge:
+    from_record_id: str
+    to_record_id: str
+    param: str
+
+
+@dataclass
+class TraceNode:
+    record_id: str
+    variable: str
+    schema: dict[str, str]
+    depth: int
+    function_name: str | None      # None = raw / direct save
+    function_hash: str | None      # surfaced deliberately: old-hash lineage rows are visible
+    constants: dict[str, str]
+    path_inputs: dict[str, str]    # param → spec string
+    inputs: list[TraceInput]
+    saved: str | None
+    saved_by: str | None
+    run_count: int
+    last_run: str | None
+
+
+@dataclass
+class ProvenanceTree:
+    root_record_id: str
+    nodes: list[TraceNode]
+    edges: list[TraceEdge]
+    audit: list[RunRecord] = field(default_factory=list)
+
+
+@dataclass
+class NodeStateSummary:
+    function_name: str
+    state: str                     # green | red | unknown
+    state_basis: str               # live_fn | stored_hash | discovery | none
+    up_to_date: int
+    missing: int
+    missing_combos: list[dict] = field(default_factory=list)
+    constants: dict | None = None  # set by pathinput_state (per-config results)
+
+
+@dataclass
 class RecordSummary:
     record_id: str
     variable: str
@@ -94,6 +154,22 @@ class RecordSummary:
     content_hash: str
     schema_version: int
     excluded: bool
+    value_preview: str | None = None   # set by records(include_values=True)
+
+
+@dataclass
+class SqlResult:
+    columns: list[str]
+    rows: list[list]
+    row_count: int
+
+
+@dataclass
+class ExclusionRecord:
+    schema: dict[str, str]     # only the keys the exclusion names (rest = wildcard)
+    reason: str
+    changed_at: str
+    changed_by: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -138,13 +214,20 @@ class Inspector:
 
     @classmethod
     def open(cls, db_path: str | Path) -> "Inspector":
-        """Open an existing database read-only, discovering its schema keys."""
+        """Open an existing database read-only, discovering its schema keys.
+
+        A writer in another process holds an exclusive file lock (even
+        against read-only opens), so lock contention is mapped to
+        DatabaseLockedError with a plain-language message.
+        """
         from sciduckdb import schema_keys_from_db
 
         from ..database import DatabaseManager
+        from .mutate import lock_errors_mapped
 
-        keys = schema_keys_from_db(db_path)
-        db = DatabaseManager(db_path, keys, read_only=True)
+        with lock_errors_mapped(db_path):
+            keys = schema_keys_from_db(db_path)
+            db = DatabaseManager(db_path, keys, read_only=True)
         Log.info(f"Inspector.open: {db_path} (read-only, schema_keys={keys})")
         return cls(db, _owns_db=True)
 
@@ -336,11 +419,369 @@ class Inspector:
         return tree
 
     @_timed
+    def pipeline(self, output_type: str | None = None,
+                 fn_registry: dict | None = None):
+        """The type-level pipeline DAG (see graph.PipelineGraph).
+
+        output_type: restrict to that variable and everything upstream of it.
+        fn_registry: optional {fn_name: callable} — with the live functions,
+            node state detects source edits (state_basis="live_fn"); without,
+            state uses the most recently run stored hash ("stored_hash").
+        """
+        from .graph import build_pipeline_graph
+        output_type = getattr(output_type, "__name__", output_type)
+        return build_pipeline_graph(
+            self._db, output_type=output_type, fn_registry=fn_registry,
+        )
+
+    @_timed
+    def variants(self, name):
+        """Coexisting variants of a variable type or of a function.
+
+        ``name`` is matched as an output type first, then as a function name.
+        A registered variable with no producing pipeline steps returns [].
+        """
+        from .graph import VariantSummary, _value_str
+
+        name = getattr(name, "__name__", name)
+        raw = self._db.list_pipeline_variants()
+
+        def to_summary(v) -> VariantSummary:
+            return VariantSummary(
+                function_name=v["function_name"],
+                call_id=v["call_id"],
+                output_type=v["output_type"],
+                output_num=v["output_num"],
+                input_types=dict(v["input_types"]),
+                constants={k: _value_str(val) for k, val in v["constants"].items()},
+                record_count=int(v["record_count"]),
+            )
+
+        matches = [v for v in raw if v["output_type"] == name]
+        if not matches:
+            matches = [v for v in raw if v["function_name"] == name]
+        if not matches:
+            known_type = self._scalar(
+                "SELECT 1 FROM _variables WHERE variable_name = ?",
+                [name], default=None,
+            )
+            if known_type is None:
+                raise NotFoundError(
+                    f"{name!r} is neither a variable type nor a recorded "
+                    f"pipeline function in this database"
+                )
+            return []  # real variable, just no producing pipeline steps (raw saves)
+        out = [to_summary(v) for v in matches]
+        out.sort(key=lambda s: (
+            s.output_type, s.function_name,
+            s.output_num if s.output_num is not None else -1,
+            sorted(s.constants.items()),
+        ))
+        return out
+
+    def _resolve_record_id(self, variable, record_id, metadata) -> str:
+        """Resolve (variable + metadata) or an explicit record_id to exactly
+        one record. Ambiguity (multiple latest records — several variants or
+        under-specified schema keys) raises with the candidates listed."""
+        from .. import provenance_query
+
+        if record_id:
+            rows = self._duck._fetchall(
+                "SELECT type FROM _record WHERE record_id = ?", [record_id])
+            if not rows:
+                raise NotFoundError(f"Record {record_id!r} not found")
+            return record_id
+        if variable is None:
+            raise ValueError("Provide a variable type (plus metadata) or a record_id")
+
+        type_name = getattr(variable, "__name__", variable)
+        nested = self._db._split_metadata(metadata)
+        df = self._db._find_record(
+            type_name, nested_metadata=nested, version_id="latest")
+        if df.empty:
+            raise NotFoundError(f"No {type_name} record matches {metadata}")
+        if len(df) > 1:
+            rids = list(df["record_id"])
+            bp = provenance_query.branch_params_batch(self._duck, rids)
+            keys = self._db.dataset_schema_keys
+            cands = []
+            for _, row in df.head(5).iterrows():
+                schema = " ".join(
+                    f"{k}={row[k]}" for k in keys
+                    if k in row.index and row[k] is not None and not pd.isna(row[k]))
+                params = bp.get(row["record_id"], {})
+                cands.append(f"{row['record_id'][:8]}… ({schema}; {params})")
+            raise AmbiguousVersionError(
+                f"{len(df)} {type_name} records match {metadata}: "
+                + "; ".join(cands)
+                + ". Narrow with schema keys / branch params, or pass record_id."
+            )
+        return df.iloc[0]["record_id"]
+
+    @_timed
+    def trace(self, variable=None, record_id: str | None = None,
+              include_audit: bool = False, **metadata) -> ProvenanceTree:
+        """Full upstream provenance of one record (provenance_query.pipeline).
+
+        Resolve by variable + metadata (schema keys and branch params), or
+        pass record_id directly. include_audit appends the execution_audit
+        rows for the root record.
+        """
+        from .. import provenance_query
+        from .graph import _value_str
+
+        duck = self._duck
+        rid = self._resolve_record_id(variable, record_id, metadata)
+        pipe = provenance_query.pipeline(self._db, rid)
+        rids = [n["record_id"] for n in pipe["nodes"]]
+
+        # Batch the per-node enrichments (never per-record loops — N+1 rule).
+        producing = provenance_query.producing_invocation_batch(duck, rids)
+        saves = self._latest_saves_batch(rids)
+        run_info = self._run_info_batch(rids)
+        path_specs = {
+            inv_id: provenance_query.invocation_path_inputs(duck, inv_id)
+            for inv_id in {p[0] for p in producing.values()}
+        }
+
+        nodes = []
+        for n in pipe["nodes"]:
+            nrid = n["record_id"]
+            inv = producing.get(nrid)
+            saved_ts, saved_by = saves.get(nrid, (None, None))
+            n_runs, last_run = run_info.get(nrid, (0, None))
+            nodes.append(TraceNode(
+                record_id=nrid,
+                variable=n["variable_type"],
+                schema={k: str(v) for k, v in n["schema"].items()},
+                depth=int(n["depth"]),
+                function_name=n["function_name"],
+                function_hash=inv[2] if inv else None,
+                constants={k: _value_str(v) for k, v in n["constants"].items()},
+                path_inputs=dict(path_specs.get(inv[0], {})) if inv else {},
+                inputs=[
+                    TraceInput(param=i["param_name"], record_id=i["record_id"],
+                               variable=i["variable_type"])
+                    for i in n["inputs"]
+                ],
+                saved=_iso(saved_ts),
+                saved_by=saved_by,
+                run_count=int(n_runs),
+                last_run=_iso(last_run),
+            ))
+        edges = [
+            TraceEdge(from_record_id=e["from_record_id"],
+                      to_record_id=e["to_record_id"],
+                      param=e["param_name"])
+            for e in pipe["edges"]
+        ]
+        audit = []
+        if include_audit:
+            audit = [
+                RunRecord(timestamp=_iso(a["timestamp"]) or "",
+                          user_id=a["user_id"],
+                          function_name=a["function_name"],
+                          where_clause=a["where_clause"])
+                for a in provenance_query.execution_audit(duck, rid)
+            ]
+        return ProvenanceTree(root_record_id=rid, nodes=nodes, edges=edges,
+                              audit=audit)
+
+    def _latest_saves_batch(self, rids) -> dict:
+        """{record_id: (timestamp, user_id)} of the newest save event."""
+        if not rids:
+            return {}
+        placeholders = ", ".join(["?"] * len(rids))
+        rows = self._duck._fetchall(
+            f"SELECT record_id, timestamp, user_id FROM ("
+            f"SELECT rs.*, ROW_NUMBER() OVER ("
+            f"PARTITION BY record_id ORDER BY timestamp DESC) AS rn "
+            f"FROM _record_save rs WHERE record_id IN ({placeholders})"
+            f") WHERE rn = 1",
+            list(rids),
+        )
+        return {rid: (ts, uid) for rid, ts, uid in rows}
+
+    def _run_info_batch(self, rids) -> dict:
+        """{record_id: (run_count, last_run_timestamp)} from the _run audit."""
+        if not rids:
+            return {}
+        placeholders = ", ".join(["?"] * len(rids))
+        rows = self._duck._fetchall(
+            f"SELECT io.output_record_id, COUNT(*), MAX(run.timestamp) "
+            f"FROM _invocation_output io "
+            f"JOIN _run_invocation ri ON ri.invocation_id = io.invocation_id "
+            f"JOIN _run run ON run.run_id = ri.run_id "
+            f"WHERE io.output_record_id IN ({placeholders}) "
+            f"GROUP BY io.output_record_id",
+            list(rids),
+        )
+        return {rid: (n, ts) for rid, n, ts in rows}
+
+    @_timed
+    def runs(self, fn: str | None = None, limit: int = 50) -> list[RunRecord]:
+        """The _run execution audit, newest first."""
+        params: list = []
+        where = ""
+        if fn is not None:
+            where = "WHERE r.function_name = ? "
+            params.append(getattr(fn, "__name__", fn))
+        params.append(int(limit))
+        rows = self._duck._fetchall(
+            "SELECT r.run_id, r.timestamp, r.user_id, r.function_name, "
+            "r.where_clause, COUNT(ri.invocation_id) "
+            "FROM _run r "
+            "LEFT JOIN _run_invocation ri ON ri.run_id = r.run_id "
+            + where +
+            "GROUP BY r.run_id, r.timestamp, r.user_id, r.function_name, r.where_clause "
+            "ORDER BY r.timestamp DESC LIMIT ?",
+            params,
+        )
+        return [
+            RunRecord(timestamp=_iso(ts) or "", user_id=uid, function_name=fn_name,
+                      where_clause=wc, run_id=run_id, n_invocations=int(n))
+            for run_id, ts, uid, fn_name, wc, n in rows
+        ]
+
+    @_timed
+    def audit(self, variable=None, record_id: str | None = None,
+              **metadata) -> list[RunRecord]:
+        """Every run that (re)produced one record, oldest first."""
+        from .. import provenance_query
+        rid = self._resolve_record_id(variable, record_id, metadata)
+        return [
+            RunRecord(timestamp=_iso(a["timestamp"]) or "", user_id=a["user_id"],
+                      function_name=a["function_name"],
+                      where_clause=a["where_clause"])
+            for a in provenance_query.execution_audit(self._duck, rid)
+        ]
+
+    @_timed
+    def node_state(self, fn=None, fn_registry: dict | None = None
+                   ) -> list[NodeStateSummary]:
+        """Binary green/red per pipeline function (§9c semantics).
+
+        fn: a name or callable to check one function (a callable is used as
+        its own live registry entry — full source-edit detection); None = all
+        recorded functions. Standalone (no callable/registry) uses the
+        most-recently-run stored hash — see graph module docstring.
+        """
+        from ..state import _schema_id_to_combo
+        from .graph import _node_states
+
+        registry = dict(fn_registry or {})
+        if fn is not None and callable(fn):
+            registry.setdefault(getattr(fn, "__name__", str(fn)), fn)
+        if fn is not None:
+            names = [getattr(fn, "__name__", fn)]
+            known = self._scalar(
+                "SELECT 1 FROM _invocation WHERE function_name = ?",
+                [names[0]], default=None)
+            if known is None:
+                raise NotFoundError(
+                    f"Function {names[0]!r} has no recorded invocations")
+        else:
+            names = sorted(r[0] for r in self._duck._fetchall(
+                "SELECT DISTINCT function_name FROM _invocation "
+                "WHERE function_name <> '__save__'"))
+
+        states = _node_states(self._db, names, fn_registry=registry or None)
+        out = []
+        for name in names:
+            st = states[name]
+            out.append(NodeStateSummary(
+                function_name=name,
+                state=st["state"],
+                state_basis=st["basis"],
+                up_to_date=st["counts"].get("up_to_date", 0),
+                missing=st["counts"].get("missing", 0),
+                missing_combos=[
+                    {k: str(v) for k, v in
+                     _schema_id_to_combo(self._db, sid).items()}
+                    for sid in st["missing_schema_ids"] if sid is not None
+                ],
+            ))
+        return out
+
+    @_timed
+    def pathinput_state(self, fn_name: str, **grid) -> list[NodeStateSummary]:
+        """On-demand discovery check for a PathInput loader (§10 in the
+        design doc): should-run = PathInput.discover() ∩ grid − exclusions vs
+        realized locations. One result per stored (spec, constants) config.
+
+        The PathInput is reconstructed from the stored __pathinput__ spec, so
+        this works standalone — but discover() walks the *current* filesystem,
+        so run it where the data folders are reachable. grid values are lists
+        (e.g. subject=["S01","S02"]); omitted keys are wildcards.
+        """
+        from scifor import PathInput
+
+        from .. import provenance_query
+        from ..state import check_pathinput_node_state
+        from .graph import _value_str, parse_path_input
+
+        fn_name = getattr(fn_name, "__name__", fn_name)
+        duck = self._duck
+        inv_rows = duck._fetchall(
+            "SELECT invocation_id FROM _invocation WHERE function_name = ?",
+            [fn_name])
+        if not inv_rows:
+            raise NotFoundError(f"Function {fn_name!r} has no recorded invocations")
+
+        configs: dict[tuple, tuple[dict, dict]] = {}
+        for (inv_id,) in inv_rows:
+            specs = provenance_query.invocation_path_inputs(duck, inv_id)
+            if not specs:
+                continue
+            _, constants = provenance_query.invocation_inputs(duck, inv_id)
+            key = (tuple(sorted(specs.items())),
+                   tuple(sorted((k, repr(v)) for k, v in constants.items())))
+            configs.setdefault(key, (specs, constants))
+        if not configs:
+            raise NotFoundError(
+                f"Function {fn_name!r} has no PathInput inputs recorded — "
+                f"use node_state() for variable-input functions")
+
+        def _stub():  # check_pathinput_node_state only reads fn.__name__
+            pass
+        _stub.__name__ = fn_name
+
+        results = []
+        for specs, constants in configs.values():
+            inputs: dict = dict(constants)
+            for param, spec in specs.items():
+                info = parse_path_input(spec)
+                if info is None:
+                    raise ValueError(f"Unparseable PathInput spec for "
+                                     f"{fn_name}.{param}: {spec!r}")
+                if info.get("root_folder"):
+                    inputs[param] = PathInput(info["template"],
+                                              root_folder=info["root_folder"])
+                else:
+                    inputs[param] = PathInput(info["template"])
+            res = check_pathinput_node_state(_stub, [], inputs, db=self._db, **grid)
+            results.append(NodeStateSummary(
+                function_name=fn_name,
+                state=res["state"],
+                state_basis="discovery",
+                up_to_date=res["counts"]["up_to_date"],
+                missing=res["counts"]["missing"],
+                missing_combos=[
+                    {k: str(v) for k, v in c["schema_combo"].items()}
+                    for c in res["combos"] if c["state"] == "missing"
+                ],
+                constants={k: _value_str(v) for k, v in constants.items()},
+            ))
+        return results
+
+    @_timed
     def records(
         self,
         variable,
         latest: bool = True,
         include_excluded: bool = False,
+        include_values: bool = False,
+        preview_len: int = 80,
         **metadata: Any,
     ) -> list[RecordSummary]:
         type_name = getattr(variable, "__name__", variable)
@@ -368,4 +809,105 @@ class Inspector:
                 schema_version=int(row["schema_version"]),
                 excluded=bool(row["excluded"]),
             ))
+        if include_values and out:
+            previews = self._value_previews(
+                type_name, [r.record_id for r in out], preview_len)
+            for r in out:
+                r.value_preview = previews.get(r.record_id)
         return out
+
+    def _value_previews(self, type_name: str, rids: list[str],
+                        preview_len: int) -> dict[str, str]:
+        """Compact per-record value previews straight from the data table
+        (storage form — good enough to recognize a record, not a load API)."""
+        table = self._scalar(
+            "SELECT table_name FROM _registered_types WHERE type_name = ?",
+            [type_name], default=type_name,
+        )
+        if not self._duck._table_exists(table):
+            return {}
+        placeholders = ", ".join(["?"] * len(rids))
+        try:
+            data = self._duck._fetchdf(
+                f'SELECT * FROM "{table}" WHERE record_id IN ({placeholders})',
+                list(rids),
+            )
+        except Exception as e:  # data table without record_id column etc.
+            Log.debug(f"inspect: value preview unavailable for {type_name}: {e}")
+            return {}
+        if "record_id" not in data.columns:
+            return {}
+        data_cols = [c for c in data.columns
+                     if c not in ("record_id", "schema_id")]
+
+        def clip(text: str) -> str:
+            return text if len(text) <= preview_len else text[:preview_len] + "…"
+
+        previews: dict[str, str] = {}
+        for rid, group in data.groupby("record_id"):
+            if len(group) == 1:
+                pairs = ", ".join(
+                    f"{c}={group.iloc[0][c]}" for c in data_cols)
+                previews[str(rid)] = clip(pairs)
+            else:
+                previews[str(rid)] = clip(
+                    f"{len(group)} rows × {len(data_cols)} cols "
+                    f"({', '.join(data_cols)})")
+        return previews
+
+    @_timed
+    def exclusions(self) -> list[ExclusionRecord]:
+        """Currently-excluded schema combinations (read side of the Phase 5
+        write commands; the write side lives on mutate.Mutator)."""
+        from ..exclusions import list_exclusions
+
+        if not self._duck._table_exists("__scidb_schema_overrides"):
+            return []
+        df = list_exclusions(db=self._db)
+        keys = self._db.dataset_schema_keys
+        out = []
+        for _, row in df.iterrows():
+            schema = {
+                k: str(row[k]) for k in keys
+                if k in row.index and row[k] is not None and not pd.isna(row[k])
+            }
+            out.append(ExclusionRecord(
+                schema=schema,
+                reason=str(row["reason"]),
+                changed_at=_iso(row["changed_at"]) or "",
+                changed_by=None if pd.isna(row.get("changed_by"))
+                else str(row["changed_by"]),
+            ))
+        return out
+
+    @_timed
+    def sql(self, query: str) -> SqlResult:
+        """Read-only escape hatch: arbitrary SQL, rendered/serialized as a
+        table. Writes fail at the DuckDB level (read-only connection)."""
+
+        def cell(value):
+            if value is None:
+                return None
+            if isinstance(value, (str, int, float, bool)):
+                return value
+            if hasattr(value, "isoformat"):
+                return _iso(value)
+            if hasattr(value, "item"):  # numpy scalar
+                try:
+                    return value.item()
+                except (AttributeError, ValueError):
+                    pass
+            try:
+                if pd.isna(value):
+                    return None
+            except (TypeError, ValueError):
+                pass
+            return str(value)
+
+        df = self._duck._fetchdf(query)
+        return SqlResult(
+            columns=[str(c) for c in df.columns],
+            rows=[[cell(v) for v in row]
+                  for row in df.itertuples(index=False, name=None)],
+            row_count=len(df),
+        )

@@ -34,6 +34,7 @@ from .log import Log
 from .exceptions import (
     AmbiguousParamError,
     AmbiguousVersionError,
+    DatabaseLockedError,
     DatabaseNotConfiguredError,
     NotFoundError,
     NotRegisteredError,
@@ -129,4 +130,5 @@ __all__ = [
     "ReservedMetadataKeyError",
     "AmbiguousVersionError",
     "AmbiguousParamError",
+    "DatabaseLockedError",
 ]

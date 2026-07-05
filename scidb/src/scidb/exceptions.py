@@ -43,3 +43,14 @@ class AmbiguousParamError(SciStackError):
     pass
 
 
+class DatabaseLockedError(SciStackError):
+    """Raised when the database file is locked by another session.
+
+    DuckDB allows one read-write connection (or multiple read-only ones);
+    opening while a GUI/MATLAB session or another process holds the file
+    raises this instead of a raw DuckDB IO error.
+    """
+
+    pass
+
+
