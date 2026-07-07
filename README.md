@@ -20,6 +20,8 @@ SciStack replaces all of it with three ideas:
 - **Automatic lineage** — a simple decorator records exactly what function and inputs produced each result
 - **Computation caching** — if you've already computed something, SciStack knows and skips it
 
+And because analysis doesn't end at processing, **figures and statistics are pipeline steps too**: `plot_`/`stat_` functions get the same caching and lineage, every figure carries an embedded provenance stamp back to its exact data, and `scidb report` collects everything into a shareable page ([details below](#from-pipeline-to-paper-visualization--statistics)).
+
 With SciStack, your analysis scripts contain _only_ analysis logic. The infrastructure is handled for you.
 
 ## Package Architecture
@@ -394,6 +396,110 @@ By abstracting away all infrastructure — file paths, storage formats, naming c
 Data saved from Python can be loaded in MATLAB and vice versa. The MATLAB API mirrors the Python API closely:
 
 Today, sharing a pipeline means sharing a pile of scripts with hardcoded paths and implicit assumptions. With SciStack, the pipeline _is_ the science, and the infrastructure adapts to wherever it runs.
+
+## From Pipeline to Paper: Visualization & Statistics
+
+Data analysis is more than processing — it ends in **figures** and
+**statistics**. SciStack treats both as first-class pipeline endpoints: your
+plotting and stats functions run through the same `for_each`, with the same
+caching, lineage, and variant tracking as every other step.
+
+### Figures (`plot_` functions)
+
+Name a function with the `plot_` prefix, return a figure, and tell SciStack
+where the file goes. The framework renders, saves, and tracks it:
+
+```python
+def plot_timeseries(signal, filename):
+    fig, ax = plt.subplots()
+    ax.plot(signal)
+    return fig    # SciStack saves it to `filename` and closes it
+
+for_each(
+    plot_timeseries,
+    inputs={"signal": FilteredEMG,
+            "filename": PathOutput("plots/{subject}_{trial}.png")},
+    outputs=[EMGFigure],
+    subject=[1, 2, 3], trial=[1, 2, 3],
+)
+```
+
+**Draft by default.** Styling a figure takes dozens of iterations — so by
+default nothing is recorded while you tweak. When the figure is right, add
+`finalized=True` and the path is stored as a queryable record with full
+lineage (and `skip_computed=True` skips unchanged figures on re-runs).
+
+**Every figure knows where it came from.** SciStack embeds a provenance
+stamp *inside* the image file (PNG/SVG/PDF): the record it belongs to, the
+function and exact input records that produced it. Find a figure in a paper
+draft two years from now and trace it straight back to its data:
+
+```python
+from scidb import read_artifact_stamp
+read_artifact_stamp("plots/1_2.png")
+# {'record_id': 'a1b2c3…', 'function': 'plot_timeseries',
+#  'inputs': {'signal': ['9e4bdc…']}, 'schema': {'subject': '1', 'trial': '2'}, …}
+```
+
+### Statistics (`stat_` functions)
+
+Name a function with the `stat_` prefix and return a result dict — it is
+stored as a queryable JSON record. Your stats receive the **long-format
+table** (schema keys as columns), which is exactly what stats packages
+expect:
+
+```python
+def stat_step_length(df, filename):
+    from csvstats.ttest import ttest_dep
+    return ttest_dep(df, "session", "StepLength",
+                     repeated_measures_column="subject", filename=filename)
+
+for_each(stat_step_length,
+         inputs={"df": StepLength,
+                 "filename": PathOutput("reports/step_length_ttest.pdf")},
+         outputs=[StepLengthTTest],
+         finalized=True)        # no iteration keys: all subjects fan in
+```
+
+Drafts print the result instead of saving it — explore interactively, then
+finalize.
+
+### One result per analysis decision — automatically
+
+Ran your filter at two cutoffs? SciStack already keeps both variants of the
+data. Every endpoint (and every aggregation) runs **once per variant**: two
+`low_hz` settings mean two t-tests and two figures, each labeled with its
+settings — never silently pooled. Path templates can name the variant so
+files don't collide:
+
+```python
+PathOutput("plots/{subject}_{low_hz}.png")   # one file per filter setting
+```
+
+(and if a template *would* make two variants overwrite each other's file,
+SciStack refuses and tells you the one-line fix). To deliberately pool
+variants — e.g. a robustness/multiverse analysis across all your pipeline
+decisions — wrap the input in `AcrossVariants(...)` and the settings arrive
+as columns.
+
+### Your report, one command
+
+When the figures and stats are finalized, collect them all:
+
+```bash
+scidb report db experiment.duckdb -o reports/paper1
+```
+
+This writes a self-contained HTML page — every figure (grouped by function,
+labeled with its subject/session and settings), every stats result as a
+table, plus a `stats.csv` you can paste into a manuscript and a
+`manifest.json` for tooling. Artifacts are copied in and stamp-verified: if
+a figure file was overwritten since its record was saved, the report flags
+it as **stale** instead of letting you publish it.
+
+All of it works identically from MATLAB — `plot_`/`stat_` functions,
+`finalized`, `scifor.PathOutput`, `scidb.AcrossVariants`, and the same
+report command.
 
 ## Learn More
 
