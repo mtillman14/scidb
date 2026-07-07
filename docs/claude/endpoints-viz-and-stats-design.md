@@ -266,12 +266,28 @@ environment, Python owns correctness).
   `TestAcrossVariants`, `TestShareLimits` (+ helpers `plot_signal_line`,
   `plot_self_saving`, `stat_row_count`, `sum_all`, `count_specs`).
 
-## Reporting surface (the payoff — build last)
+## Reporting surface (the payoff — build last) — **IMPLEMENTED** (2026-07-07, pending user test run)
 
 Endpoints exist because of a paper/report. Once figures and stats are
 lineage-tracked records, a `scidb report` CLI command (extending the
 observability CLI) can dump all figures + stats tables for an analysis into a
 folder or HTML page.
+
+**As built** (plan: `.claude/plan-scidb-report-cli.md`;
+`scidb/src/scidb/inspect/report.py`): `scidb report db <path> [-o dir]
+[--fn plot_gait] [--var StatOut] [--all-versions] [--no-copy] [--no-embed]
+[--json]`, plus `db.inspect.report()` / `db.inspect.write_report(dir)`.
+Discovery is graph-derived (producing fn prefix — no new bookkeeping);
+latest-per-variant by default; artifact stamps verified (`stamp_ok=False` ⇒
+STALE warning: file overwritten by another run since the record was saved);
+missing files warn but still render their metadata. Output folder:
+self-contained `index.html` (inline CSS, no external requests; figures
+grouped by fn with schema+branch_params captions so variant siblings sit
+labeled side by side; per-(fn, key-set) stats tables with nested fields in
+collapsible blocks), `manifest.json` (the ReportData), `stats.csv` (the
+paste-into-a-paper table), `artifacts/` copies (record_id-prefixed,
+portable). Drafts never appear (no records) — stated in the page header.
+Tests: `scidb/tests/test_report.py`.
 
 ## Staging
 
@@ -304,6 +320,8 @@ Design together (done above), implement staged:
    share_limits port as needed.
    **DONE** (2026-07-07, pending user MATLAB test run) — see D7 "As built".
 5. **Report/CLI surface.**
+   **DONE** (2026-07-07, pending user test run) — see "Reporting surface"
+   above.
 
 ## Remaining open questions
 

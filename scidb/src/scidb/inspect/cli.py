@@ -22,6 +22,7 @@ import dataclasses
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from ..exceptions import DatabaseLockedError
@@ -329,6 +330,23 @@ def _cmd_trace(insp: Inspector, args) -> None:
         print(render.render_trace(tree, style=_resolve_style(args)))
 
 
+def _cmd_report(insp: Inspector, args) -> None:
+    if args.json:
+        _emit_json(insp.report(fn=args.fn, variable=args.var,
+                               all_versions=args.all_versions))
+        return
+    out_dir = args.output or (
+        f"scidb-report-{Path(insp._db.dataset_db_path).stem}-"
+        f"{time.strftime('%Y%m%d')}"
+    )
+    index = insp.write_report(
+        out_dir, fn=args.fn, variable=args.var,
+        all_versions=args.all_versions,
+        copy_artifacts=not args.no_copy, embed=args.embed,
+    )
+    print(f"Report written: {index}")
+
+
 def _cmd_runs(insp: Inspector, args) -> None:
     runs = insp.runs(fn=args.fn, limit=args.limit)
     if args.json:
@@ -456,6 +474,30 @@ def _add_commands(sub: argparse._SubParsersAction,
     p.add_argument("--audit", action="store_true",
                    help="Append the execution audit (who ran it, when, where=).")
     p.set_defaults(_handler=_cmd_trace)
+
+    p = sub.add_parser("report", parents=[parent],
+                       help="Collect finalized endpoint (plot_/stat_) records "
+                            "into a self-contained HTML report folder "
+                            "(figures + per-test stats tables + provenance).")
+    p.add_argument("--fn", default=None,
+                   help="Only this endpoint function (e.g. plot_gait).")
+    p.add_argument("--var", default=None,
+                   help="Only this output variable type. NOTE: filters on the "
+                        "PRODUCING fn prefix, so only endpoint-produced "
+                        "records of the type appear.")
+    p.add_argument("-o", "--output", default=None,
+                   help="Output directory (default: "
+                        "./scidb-report-<dbname>-<date>).")
+    p.add_argument("--all-versions", action="store_true",
+                   help="Include superseded record versions "
+                        "(default: latest per variant).")
+    p.add_argument("--no-copy", action="store_true",
+                   help="Link original artifact paths instead of copying "
+                        "them into <outdir>/artifacts/ (report not portable).")
+    p.add_argument("--no-embed", dest="embed", action="store_false",
+                   default=True,
+                   help="Never inline images into index.html (always link).")
+    p.set_defaults(_handler=_cmd_report)
 
     p = sub.add_parser("runs", parents=[parent],
                        help="Execution audit log (_run), newest first.")

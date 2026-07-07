@@ -203,6 +203,16 @@ scidb.for_each(@plot_timeseries, ...
 - csv-stats' `data_column="_"` all-columns loop (a `for_columns` analog;
   future).
 
+## Reporting
+
+`scidb report db <path> [-o dir]` (or `db.inspect.write_report(dir)`)
+collects every **finalized** endpoint record into a self-contained HTML
+report folder — figures grouped by function with variant-labeled captions,
+per-test-family stats tables, `stats.csv`, `manifest.json`, and verified
+provenance stamps (an overwritten artifact is flagged STALE). Drafts never
+appear (no records). See the report row in
+[observability-api-design.md](observability-api-design.md).
+
 ## Tests
 
 `scidb/tests/test_plotting.py` — files written + path records queryable

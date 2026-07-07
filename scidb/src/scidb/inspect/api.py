@@ -952,3 +952,31 @@ class Inspector:
                   for row in df.itertuples(index=False, name=None)],
             row_count=len(df),
         )
+
+    # -- report (endpoint surface; see inspect/report.py) -------------------
+
+    @_timed
+    def report(self, fn: str | None = None, variable=None,
+               all_versions: bool = False):
+        """Collect every finalized endpoint (plot_/stat_) record into a
+        ReportData manifest: figures with artifact paths + stamp
+        verification, stats with parsed result JSON, per-entry warnings.
+        Drafts never appear (no records). See inspect/report.py.
+        """
+        from .report import collect_report
+        return collect_report(self, fn=fn, variable=variable,
+                              all_versions=all_versions)
+
+    @_timed
+    def write_report(self, out_dir, fn: str | None = None, variable=None,
+                     all_versions: bool = False, copy_artifacts: bool = True,
+                     embed: bool = True) -> "Path":
+        """Write a self-contained endpoint report folder: index.html (inline
+        CSS, embedded/copied figures, per-test-family stats tables) +
+        manifest.json + stats.csv (+ artifacts/ copies). Returns the path
+        to index.html.
+        """
+        from .report import write_report
+        return write_report(self, out_dir, fn=fn, variable=variable,
+                            all_versions=all_versions,
+                            copy_artifacts=copy_artifacts, embed=embed)
