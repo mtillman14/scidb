@@ -89,7 +89,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     captures stdout line-by-line, and pushes it to the WebSocket queue.
     """
     logger.info(
-        "[run_thread] Step 1: Thread started for run_id=%s, function=%s, variants=%d, "
+        "[run_thread] Thread started for run_id=%s, function=%s, variants=%d, "
         "schema_level=%s, schema_filter=%s, where_filters=%s, run_options=%s",
         run_id, function_name, len(variants or []),
         schema_level, _summarize_schema_filter(schema_filter),
@@ -101,8 +101,40 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         logger.debug("[run_thread] Emitting output for run_id=%s: %s", run_id, text.rstrip())
         push_message({"type": "run_output", "run_id": run_id, "text": text})
 
+    class _RunLogRelay(logging.Handler):
+        """Relays scifor/scidb INFO+ log records to the frontend run console.
+
+        The pipeline narrative (banner, progress, run summary, failures) is
+        log records since the logging redesign — stdout only carries dry-run
+        output — so the frontend gets it from a scoped handler instead.
+        Attached to the "scifor"/"scidb" loggers only (never "scistack_gui",
+        whose records include emit()'s own debug line — a feedback loop).
+        """
+
+        _RELAY_LOGGERS = ("scifor", "scidb")
+
+        def __init__(self):
+            super().__init__(level=logging.INFO)
+            self.setFormatter(logging.Formatter("%(message)s"))
+
+        def emit(self, record):
+            try:
+                emit(self.format(record) + "\n")
+            except Exception:
+                pass
+
+        def __enter__(self):
+            for name in self._RELAY_LOGGERS:
+                logging.getLogger(name).addHandler(self)
+            return self
+
+        def __exit__(self, *exc):
+            for name in self._RELAY_LOGGERS:
+                logging.getLogger(name).removeHandler(self)
+            return False
+
     # Register this run so cancel_run/force_cancel_run can find it.
-    logger.info("[run_thread] Step 2: Registering run in active runs registry (run_id=%s)", run_id)
+    logger.info("[run_thread] Registering run in active runs registry (run_id=%s)", run_id)
     cancel_event = threading.Event()
     with _active_runs_lock:
         _active_runs[run_id] = {
@@ -118,10 +150,10 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
 
     # The DatabaseManager is stored in thread-local storage by configure_database().
     # Background threads don't inherit that local, so we re-register it here.
-    logger.info("[run_thread] Step 3: Setting current database for thread (run_id=%s)", run_id)
+    logger.info("[run_thread] Setting current database for thread (run_id=%s)", run_id)
     db.set_current_db()
 
-    logger.info("[run_thread] Step 4: Looking up function '%s' in registry (run_id=%s)", function_name, run_id)
+    logger.info("[run_thread] Looking up function '%s' in registry (run_id=%s)", function_name, run_id)
     try:
         fn = registry.get_function(function_name)
         logger.debug("[run_thread] Function found: %s (run_id=%s)", fn, run_id)
@@ -135,20 +167,19 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         return
 
     # Look up input/output types for this function from the DB.
-    logger.info("[run_thread] Step 5: Querying DB for pipeline variants (run_id=%s)", run_id)
+    logger.info("[run_thread] Querying DB for pipeline variants (run_id=%s)", run_id)
     all_variants = db.list_pipeline_variants()
     fn_variants = [v for v in all_variants if v["function_name"] == function_name]
     logger.debug("[run_thread] Found %d variants for function '%s' (run_id=%s)",
                  len(fn_variants), function_name, run_id)
 
-    from scidb.log import Log
-    Log.info(f"run: fn_variants for '{function_name}' = {fn_variants}")
+    logger.debug("run: fn_variants for '%s' = %s", function_name, fn_variants)
 
     # --- Check manual edges for current output wiring ---
     # If the user has rewired the function's outputs (e.g. deleted an old output
     # node and connected a new one), manual edges should override DB-derived
     # output types.  This prevents stale DB history from resurrecting old nodes.
-    logger.info("[run_thread] Step 6: Checking manual edges for output wiring (run_id=%s)", run_id)
+    logger.info("[run_thread] Checking manual edges for output wiring (run_id=%s)", run_id)
     from scistack_gui import pipeline_store, layout as layout_store
     from scistack_gui.api.pipeline import _fn_params_from_registry
     from scistack_gui.domain.edge_resolver import (
@@ -181,7 +212,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
 
     if fn_variants and manual_output_types:
         # Override output types in DB-derived variants with the current wiring.
-        logger.info("[run_thread] Step 7: Overriding DB output types with manual edge outputs: %s (run_id=%s)",
+        logger.info("[run_thread] Overriding DB output types with manual edge outputs: %s (run_id=%s)",
                     manual_output_types, run_id)
         Log.info(f"run: overriding DB output types with manual edge outputs: {manual_output_types}")
         overridden = []
@@ -201,7 +232,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
 
     if not fn_variants:
         # No DB history yet — try to infer inputs/outputs from manual edges.
-        logger.info("[run_thread] Step 8: No DB variants found, inferring from manual edges (run_id=%s)", run_id)
+        logger.info("[run_thread] No DB variants found, inferring from manual edges (run_id=%s)", run_id)
         Log.info(f"run: all_edges = {all_edges}")
         Log.info(f"run: manual_nodes = {manual_nodes}")
         Log.info(f"run: fn_node_ids = {fn_node_ids}")
@@ -235,7 +266,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
             return
 
         # Collect constant values from pending constants for wired constant nodes.
-        logger.info("[run_thread] Step 9: Collecting pending constants for wired nodes (run_id=%s)", run_id)
+        logger.info("[run_thread] Collecting pending constants for wired nodes (run_id=%s)", run_id)
         import ast as _ast
         inferred_constants: dict[str, list] = {}  # const_name → list of typed values
         if constant_names:
@@ -265,7 +296,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                  f"constants={list(inferred_constants.keys())} for '{function_name}' from edges")
 
         # Build synthetic variants: cross-product of output types × constant combos.
-        logger.info("[run_thread] Step 10: Building synthetic variants from inferred data (run_id=%s)", run_id)
+        logger.info("[run_thread] Building synthetic variants from inferred data (run_id=%s)", run_id)
         if inferred_constants:
             # Build all combinations of constant values.
             from itertools import product as _product
@@ -291,7 +322,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                         len(fn_variants), run_id)
 
     # --- Variant resolution via domain layer ---
-    logger.info("[run_thread] Step 11: Resolving variants to execute (run_id=%s)", run_id)
+    logger.info("[run_thread] Resolving variants to execute (run_id=%s)", run_id)
     from scistack_gui.domain.variant_resolver import (
         filter_variants, deduplicate_variants,
     )
@@ -319,7 +350,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                     list(pending_consts.keys()), run_id)
 
     # Schema iteration will be handled directly by for_each via schema_filter and schema_level.
-    logger.info("[run_thread] Step 12: Schema iteration parameters will be handled by for_each (run_id=%s)", run_id)
+    logger.info("[run_thread] Schema iteration parameters will be handled by for_each (run_id=%s)", run_id)
     if schema_level:
         logger.debug("[run_thread] Schema level: %s (run_id=%s)", schema_level, run_id)
     if schema_filter:
@@ -327,7 +358,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                      {k: f"{len(v)} values" for k, v in schema_filter.items()}, run_id)
 
     # Extract run options (dry_run, save, distribute, as_table).
-    logger.info("[run_thread] Step 13: Extracting run options (run_id=%s)", run_id)
+    logger.info("[run_thread] Extracting run options (run_id=%s)", run_id)
     opts = run_options or {}
     opt_dry_run = opts.get("dry_run", False)
     opt_save = opts.get("save", True)
@@ -339,13 +370,13 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     success = True
     run_started_at = time.time()
     # Build where= argument from where_filters.
-    logger.info("[run_thread] Step 14: Building where filters (run_id=%s)", run_id)
+    logger.info("[run_thread] Building where filters (run_id=%s)", run_id)
     where_arg = _build_where(where_filters)
     if where_arg:
         logger.debug("[run_thread] Where filters built: %s (run_id=%s)", where_arg, run_id)
 
     logger.info(
-        "[run_thread] Step 15: Starting execution of %d target(s) for '%s' "
+        "[run_thread] Starting execution of %d target(s) for '%s' "
         "(dry_run=%s, save=%s, distribute=%s, as_table=%s, schema_level=%s, schema_filter=%s) (run_id=%s)",
         len(unique_targets), function_name,
         opt_dry_run, opt_save, opt_distribute, opt_as_table,
@@ -363,8 +394,8 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                 emit("⛔ Cancelled\n")
                 break
             # Build inputs dict: variable class inputs + scalar constants
-            logger.info("[run_thread] Step 16.%d: Processing target %d/%d (run_id=%s)",
-                       idx, idx, len(unique_targets), run_id)
+            logger.info("[run_thread] Processing target %d/%d (run_id=%s)",
+                       idx, len(unique_targets), run_id)
             try:
                 logger.debug("[run_thread] Building inputs for target %d (run_id=%s)", idx, run_id)
                 inputs = {}
@@ -457,13 +488,13 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                     "error": info.get("error"),
                 })
 
-            # Capture for_each stdout and relay it line-by-line.
-            logger.info("[run_thread] Step 17.%d: Executing for_each for target %d (run_id=%s)",
-                       idx, idx, run_id)
+            # Relay the run narrative (log records) plus any stdout (dry-run
+            # output) to the frontend console.
+            logger.info("[run_thread] Executing for_each for target %d (run_id=%s)",
+                       idx, run_id)
             buf = StringIO()
             try:
-                logger.debug("[run_thread] Redirecting stdout to buffer (run_id=%s)", run_id)
-                with redirect_stdout(buf):
+                with _RunLogRelay(), redirect_stdout(buf):
                     for_each(fn, inputs=inputs, outputs=[OutputCls],
                              dry_run=opt_dry_run, save=opt_save,
                              distribute=opt_distribute,
@@ -510,7 +541,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         cancelled = True
         emit("⛔ Force-cancelled\n")
     finally:
-        logger.info("[run_thread] Step 18: Cleanup and completion (run_id=%s)", run_id)
+        logger.info("[run_thread] Cleanup and completion (run_id=%s)", run_id)
         duration_ms = int((time.time() - run_started_at) * 1000)
         # Read the final cancel flags from the registry before popping it.
         logger.debug("[run_thread] Removing run from active registry (run_id=%s)", run_id)

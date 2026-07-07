@@ -53,16 +53,16 @@ def load_from_config(config: SciStackConfig) -> dict:
 
     Returns a summary dict.
     """
-    logger.info("[matlab_registry] Step 1: Loading MATLAB config")
+    logger.info("[matlab_registry] Loading MATLAB config")
     global _config
     _config = config
 
-    logger.info("[matlab_registry] Step 2: Clearing registries")
+    logger.info("[matlab_registry] Clearing registries")
     _matlab_functions.clear()
     _matlab_variables.clear()
 
     # --- Function files ---
-    logger.info("[matlab_registry] Step 3: Parsing %d MATLAB function files", len(config.matlab_functions))
+    logger.info("[matlab_registry] Parsing %d MATLAB function files", len(config.matlab_functions))
     for idx, path in enumerate(config.matlab_functions):
         logger.debug("[matlab_registry] Parsing function file %d/%d: %s", idx + 1, len(config.matlab_functions), path)
         info = parse_matlab_function(path)
@@ -78,7 +78,7 @@ def load_from_config(config: SciStackConfig) -> dict:
             logger.warning("[matlab_registry] Could not parse MATLAB function from %s", path)
 
     # --- Variable classdef files ---
-    logger.info("[matlab_registry] Step 4: Parsing %d MATLAB variable files", len(config.matlab_variables))
+    logger.info("[matlab_registry] Parsing %d MATLAB variable files", len(config.matlab_variables))
     for idx, path in enumerate(config.matlab_variables):
         logger.debug("[matlab_registry] Parsing variable file %d/%d: %s", idx + 1, len(config.matlab_variables), path)
         var_name = parse_matlab_variable(path)
@@ -101,7 +101,7 @@ def load_from_config(config: SciStackConfig) -> dict:
         else:
             logger.warning("[matlab_registry] Could not parse MATLAB variable classdef from %s", path)
 
-    logger.info("[matlab_registry] Step 5: MATLAB registry loading complete - %d functions, %d variables",
+    logger.info("[matlab_registry] MATLAB registry loading complete - %d functions, %d variables",
                 len(_matlab_functions), len(_matlab_variables))
     return {
         "matlab_functions": sorted(_matlab_functions.keys()),

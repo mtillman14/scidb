@@ -100,16 +100,16 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         If the located pyproject.toml has no ``[tool.scistack]`` section or
         the section is invalid.
     """
-    logger.info("[config] Step 1: Locating config file (project_path=%s, db_path=%s)", project_path, db_path)
+    logger.info("[config] Locating config file (project_path=%s, db_path=%s)", project_path, db_path)
     toml_path = _locate_pyproject(project_path, db_path)
     project_root = toml_path.parent
-    logger.info("[config] Step 2: Found config at %s", toml_path)
+    logger.info("[config] Found config at %s", toml_path)
 
-    logger.info("[config] Step 3: Loading TOML file")
+    logger.info("[config] Loading TOML file")
     with open(toml_path, "rb") as f:
         data = tomllib.load(f)
 
-    logger.info("[config] Step 4: Extracting [tool.scistack] section")
+    logger.info("[config] Extracting [tool.scistack] section")
     section = _extract_scistack_section(data, toml_path.name)
     if section is None:
         logger.info("[config] %s has no [tool.scistack] section; using defaults.", toml_path)
@@ -118,7 +118,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         logger.debug("[config] Found config section with keys: %s", list(section.keys()))
 
     # --- modules ---
-    logger.info("[config] Step 5: Processing modules list")
+    logger.info("[config] Processing modules list")
     raw_modules = section.get("modules", [])
     if not isinstance(raw_modules, list):
         raise ValueError("[tool.scistack] modules must be a list of file paths.")
@@ -164,7 +164,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     logger.info("[config] Resolved %d module files total", len(modules))
 
     # --- variable_file ---
-    logger.info("[config] Step 6: Processing variable_file")
+    logger.info("[config] Processing variable_file")
     variable_file: Path | None = None
     raw_vf = section.get("variable_file")
     if raw_vf is not None:
@@ -174,21 +174,21 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         logger.debug("[config] No variable_file configured")
 
     # --- packages ---
-    logger.info("[config] Step 7: Processing packages list")
+    logger.info("[config] Processing packages list")
     packages = section.get("packages", [])
     if not isinstance(packages, list):
         raise ValueError("[tool.scistack] packages must be a list of package names.")
     logger.debug("[config] Found %d packages: %s", len(packages), packages)
 
     # --- auto_discover ---
-    logger.info("[config] Step 8: Processing auto_discover setting")
+    logger.info("[config] Processing auto_discover setting")
     auto_discover = section.get("auto_discover", True)
     if not isinstance(auto_discover, bool):
         raise ValueError("[tool.scistack] auto_discover must be true or false.")
     logger.debug("[config] auto_discover = %s", auto_discover)
 
     # --- MATLAB section ([tool.scistack.matlab] or [matlab] in scistack.toml) ---
-    logger.info("[config] Step 9: Processing MATLAB configuration")
+    logger.info("[config] Processing MATLAB configuration")
     matlab_section = section.get("matlab", {})
     if matlab_section:
         logger.debug("[config] Found MATLAB section with keys: %s", list(matlab_section.keys()))
@@ -213,7 +213,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     # function. This handles the common case where matlab.functions points
     # at a parent directory (e.g. "src/") that contains the variables dir
     # (e.g. "src/vars/") as a subtree.
-    logger.info("[config] Step 10: Deduplicating MATLAB functions vs variables")
+    logger.info("[config] Deduplicating MATLAB functions vs variables")
     var_path_set = {p.resolve() for p in matlab_variables}
     original_fn_count = len(matlab_functions)
     matlab_functions = [
@@ -228,7 +228,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         )
 
     # Derive addpath from parent directories of all MATLAB file paths.
-    logger.info("[config] Step 11: Deriving MATLAB addpath from file locations")
+    logger.info("[config] Deriving MATLAB addpath from file locations")
     addpath_set: set[Path] = set()
     for p in matlab_functions:
         addpath_set.add(p.parent)
@@ -239,7 +239,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     matlab_addpath = sorted(addpath_set)
     logger.debug("[config] MATLAB addpath contains %d directories", len(matlab_addpath))
 
-    logger.info("[config] Step 12: Building final configuration")
+    logger.info("[config] Building final configuration")
     config = SciStackConfig(
         project_root=project_root,
         modules=modules,

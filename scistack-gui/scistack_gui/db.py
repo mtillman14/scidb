@@ -119,22 +119,22 @@ def init_db(db_path: Path) -> DatabaseManager:
     logger.info("[db] init_db: initializing database from %s", db_path)
     global _db, _db_path, _db_open
 
-    logger.info("[db] Step 1: reading schema keys from database")
+    logger.info("[db] reading schema keys from database")
     schema_keys = read_schema_keys(db_path)
-    logger.info("[db] Step 1: found %d schema key(s): %s", len(schema_keys), schema_keys)
+    logger.info("[db] found %d schema key(s): %s", len(schema_keys), schema_keys)
 
-    logger.info("[db] Step 2: configuring database connection")
+    logger.info("[db] configuring database connection")
     _db = scidb.configure_database(db_path, schema_keys)
     _db_path = db_path
     _db_open = True
-    logger.info("[db] Step 2: database connection established")
+    logger.info("[db] database connection established")
 
     # Migrate manual_nodes / manual_edges from JSON into DuckDB (one-time, idempotent).
-    logger.info("[db] Step 3: migrating legacy JSON layout to DuckDB (if needed)")
+    logger.info("[db] migrating legacy JSON layout to DuckDB (if needed)")
     from scistack_gui import pipeline_store
     layout_path = db_path.with_suffix(".layout.json")
     pipeline_store.migrate_from_json(_db, layout_path)
-    logger.info("[db] Step 3: migration complete")
+    logger.info("[db] migration complete")
 
     logger.info("[db] init_db complete: database ready at %s", db_path)
     return _db
@@ -148,15 +148,15 @@ def create_db(db_path: Path, schema_keys: list[str]) -> DatabaseManager:
     logger.info("[db] create_db: creating new database at %s with schema keys: %s", db_path, schema_keys)
     global _db, _db_path, _db_open
 
-    logger.info("[db] Step 1: validating database does not exist")
+    logger.info("[db] validating database does not exist")
     if db_path.exists():
         raise FileExistsError(f"Database already exists: {db_path}")
 
-    logger.info("[db] Step 2: validating schema keys")
+    logger.info("[db] validating schema keys")
     if not schema_keys:
         raise ValueError("schema_keys must not be empty")
 
-    logger.info("[db] Step 3: configuring new database with %d schema key(s)", len(schema_keys))
+    logger.info("[db] configuring new database with %d schema key(s)", len(schema_keys))
     _db = scidb.configure_database(db_path, schema_keys)
     _db_path = db_path
     _db_open = True

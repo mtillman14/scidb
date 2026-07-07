@@ -22,13 +22,19 @@ import time
 import logging
 from pathlib import Path
 
-# Configure logging to stderr so it doesn't corrupt the JSON-RPC stream.
-logging.basicConfig(
-    stream=sys.stderr,
-    level=logging.DEBUG,
-    format="[scistack] %(levelname)s %(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
+# Logging: the scistacklog facade owns the scistack layer loggers — its
+# console sink already writes to stderr (never stdout, which carries the
+# JSON-RPC stream). Raise the console sink to DEBUG so the VS Code Output
+# Channel gets full detail. A root basicConfig would double-print every
+# layer record (propagate=True), so only non-scistack loggers get a plain
+# stderr handler of their own.
+from scidb.log import Log as _Log
+
+_Log.attach()
+_Log.set_level("DEBUG", sink="console")
+# Explicit name: under `python -m scistack_gui.server` __name__ is
+# "__main__", which would fall outside the scistack_gui layer logger.
+logger = logging.getLogger("scistack_gui.server")
 
 # Optional: start a debugpy listener so VS Code can attach and hit breakpoints
 # inside user functions executed by /api/run. Enable by setting

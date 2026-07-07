@@ -19,10 +19,10 @@ def get_layout() -> dict:
 def put_layout(node_id: str, x: float, y: float,
                node_type: str | None = None, label: str | None = None) -> dict:
     from scistack_gui import layout as layout_store
-    logger.info("[layout_service] Step 1: put_layout called (node_id=%r, type=%r, label=%r, position=(%.1f, %.1f))",
+    logger.info("[layout_service] put_layout called (node_id=%r, type=%r, label=%r, position=(%.1f, %.1f))",
                 node_id, node_type, label, x, y)
     if node_type and label:
-        logger.info("[layout_service] Step 2: Creating/updating manual node")
+        logger.info("[layout_service] Creating/updating manual node")
         if node_type == "functionNode":
             from scistack_gui import matlab_registry
             if matlab_registry.is_matlab_function(label):
@@ -37,19 +37,19 @@ def put_layout(node_id: str, x: float, y: float,
             logger.debug("[layout_service] Node added to DAG: node_id=%r, type=%r, label=%r",
                          node_id, node_type, label)
         layout_store.write_manual_node(node_id, x, y, node_type, label)
-        logger.info("[layout_service] Step 3: Manual node created/updated successfully")
+        logger.info("[layout_service] Manual node created/updated successfully")
     else:
-        logger.info("[layout_service] Step 2: Updating node position only (no type/label)")
+        logger.info("[layout_service] Updating node position only (no type/label)")
         layout_store.write_node_position(node_id, x, y)
-        logger.info("[layout_service] Step 3: Node position updated successfully")
+        logger.info("[layout_service] Node position updated successfully")
     return {"ok": True}
 
 
 def delete_layout(node_id: str) -> dict:
     from scistack_gui import layout as layout_store
-    logger.info("[layout_service] Step 1: delete_layout called (node_id=%r)", node_id)
+    logger.info("[layout_service] delete_layout called (node_id=%r)", node_id)
     layout_store.delete_node(node_id)
-    logger.info("[layout_service] Step 2: Node deleted successfully")
+    logger.info("[layout_service] Node deleted successfully")
     return {"ok": True}
 
 
@@ -57,7 +57,7 @@ def put_edge(edge_id: str, source: str, target: str,
              source_handle: str | None = None,
              target_handle: str | None = None) -> dict:
     from scistack_gui import layout as layout_store
-    logger.info("[layout_service] Step 1: put_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
+    logger.info("[layout_service] put_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
                 edge_id, source, target, source_handle, target_handle)
     layout_store.write_manual_edge({
         "id": edge_id,
@@ -66,15 +66,15 @@ def put_edge(edge_id: str, source: str, target: str,
         "sourceHandle": source_handle,
         "targetHandle": target_handle,
     })
-    logger.info("[layout_service] Step 2: Edge created successfully")
+    logger.info("[layout_service] Edge created successfully")
     return {"ok": True}
 
 
 def delete_edge(edge_id: str) -> dict:
     from scistack_gui import layout as layout_store
-    logger.info("[layout_service] Step 1: delete_edge called (edge_id=%r)", edge_id)
+    logger.info("[layout_service] delete_edge called (edge_id=%r)", edge_id)
     layout_store.delete_manual_edge(edge_id)
-    logger.info("[layout_service] Step 2: Edge deleted successfully")
+    logger.info("[layout_service] Edge deleted successfully")
     return {"ok": True}
 
 
@@ -127,17 +127,17 @@ def delete_path_input(name: str) -> dict:
 
 def put_pending_constant(name: str, value: str) -> dict:
     from scistack_gui import layout as layout_store
-    logger.info("[layout_service] Step 1: put_pending_constant called (name=%r, value=%r)", name, value)
+    logger.info("[layout_service] put_pending_constant called (name=%r, value=%r)", name, value)
     layout_store.add_pending_constant(name, value)
-    logger.info("[layout_service] Step 2: Pending constant value added successfully")
+    logger.info("[layout_service] Pending constant value added successfully")
     return {"ok": True}
 
 
 def delete_pending_constant(name: str, value: str) -> dict:
     from scistack_gui import layout as layout_store
-    logger.info("[layout_service] Step 1: delete_pending_constant called (name=%r, value=%r)", name, value)
+    logger.info("[layout_service] delete_pending_constant called (name=%r, value=%r)", name, value)
     layout_store.remove_pending_constant(name, value)
-    logger.info("[layout_service] Step 2: Pending constant value removed successfully")
+    logger.info("[layout_service] Pending constant value removed successfully")
     return {"ok": True}
 
 

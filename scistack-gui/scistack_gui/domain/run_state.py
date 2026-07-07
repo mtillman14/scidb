@@ -52,7 +52,7 @@ def propagate_run_states(
     # Downgrade "green" → "grey" for call sites that have unrun pending
     # constant values.  fn_constants is keyed per call site, so a call site
     # that doesn't use the pending constant is unaffected.
-    logger.debug("[run_state] Step 1: Checking for pending constants that affect green nodes")
+    logger.debug("[run_state] Checking for pending constants that affect green nodes")
     if fn_constants and pending_constants:
         downgrade_count = 0
         for fkey in fn_own_state:
@@ -74,7 +74,7 @@ def propagate_run_states(
     # --- DAG propagation ---
     # var_producers[var_type] = set of FnKeys producing this variable.
     # The variable's state is the worst (min) of all producer states.
-    logger.info("[run_state] Step 2: Building variable producer map and propagating states through DAG")
+    logger.info("[run_state] Building variable producer map and propagating states through DAG")
     var_producers: dict[str, set[FnKey]] = {}
     for fkey, out_types in fn_outputs.items():
         for ot in out_types:
@@ -140,7 +140,7 @@ def propagate_run_states(
 
     logger.info("[run_state] DAG propagation complete after %d iteration(s)", iteration)
 
-    logger.info("[run_state] Step 3: Building final result mapping")
+    logger.info("[run_state] Building final result mapping")
     result: dict[str, str] = {}
     for fkey, state in fn_effective_state.items():
         fn_name, call_id = fkey

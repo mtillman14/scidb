@@ -216,7 +216,7 @@ def _build_graph(db: DatabaseManager) -> dict:
     Delegates pure logic to domain.graph_builder and domain.edge_resolver;
     this function orchestrates data fetching and side effects.
     """
-    logger.info("[pipeline] Step 1: Starting graph build orchestration")
+    logger.info("[pipeline] Starting graph build orchestration")
 
     from scistack_gui import pipeline_store as _ps
     from scistack_gui import matlab_registry as _mr
@@ -227,14 +227,14 @@ def _build_graph(db: DatabaseManager) -> dict:
     logger.debug("[pipeline] loaded %d hidden node IDs", len(hidden_ids))
 
     # --- Fetch aggregated data from scidb (replaces steps 2-5) ---
-    logger.info("[pipeline] Step 2: Fetching aggregated variants from scidb")
+    logger.info("[pipeline] Fetching aggregated variants from scidb")
     scidb_agg = db.get_aggregated_variants()
     logger.info("[pipeline] fetched data for %d functions, %d variables, %d constants, %d path inputs",
                 len(scidb_agg["functions"]), len(scidb_agg["variables"]),
                 len(scidb_agg["constants"]), len(scidb_agg["path_inputs"]))
 
     # Convert scidb format to AggregatedData format for compatibility
-    logger.info("[pipeline] Step 3: Converting to AggregatedData format")
+    logger.info("[pipeline] Converting to AggregatedData format")
     from collections import defaultdict
     agg = gb.AggregatedData()
 
@@ -270,10 +270,10 @@ def _build_graph(db: DatabaseManager) -> dict:
             "functions": set(tuple(f) for f in pi_data["functions"]),
         }
 
-    logger.info("[pipeline] Step 4: Filtering hidden nodes")
+    logger.info("[pipeline] Filtering hidden nodes")
     gb.filter_hidden(agg, hidden_ids)
 
-    logger.info("[pipeline] Step 5: Using record counts from scidb")
+    logger.info("[pipeline] Using record counts from scidb")
     record_counts = {vtype: vdata["record_count"]
                      for vtype, vdata in scidb_agg["variables"].items()}
 
@@ -287,7 +287,7 @@ def _build_graph(db: DatabaseManager) -> dict:
         logger.debug("[pipeline] removed %d pending constant value(s) that are now in database", len(removals))
 
     # --- Compute run states ---
-    logger.info("[pipeline] Step 6: Computing run states (delegating to run_state)")
+    logger.info("[pipeline] Computing run states (delegating to run_state)")
     run_states = _compute_run_states(
         db, agg.fn_input_params, agg.fn_outputs,
         agg.fn_constants, pending_constants,
@@ -297,7 +297,7 @@ def _build_graph(db: DatabaseManager) -> dict:
     # --- Build fn_params_map and saved_configs ---
     # fn_params_map and saved_configs are keyed by fn_name (the signature
     # and saved settings don't vary across call sites).
-    logger.info("[pipeline] Step 7: Building function parameter maps and saved configs")
+    logger.info("[pipeline] Building function parameter maps and saved configs")
     fn_names = {fn for fn, _ in agg.fn_input_params.keys()}
     logger.debug("[pipeline] building parameter maps for %d unique function(s)", len(fn_names))
     fn_params_map: dict[str, list[str]] = {}
@@ -388,13 +388,13 @@ def _build_graph(db: DatabaseManager) -> dict:
     )
 
     # --- Overlay saved path inputs ---
-    logger.info("[pipeline] Step 8: Overlaying saved path inputs")
+    logger.info("[pipeline] Overlaying saved path inputs")
     saved_path_inputs = layout_store.read_all_path_input_names()
     logger.debug("[pipeline] loaded %d saved path input(s)", len(saved_path_inputs))
     gb.overlay_saved_path_inputs(agg.path_inputs, saved_path_inputs)
 
     # --- Build nodes (pure) ---
-    logger.info("[pipeline] Step 9: Building nodes (delegating to graph_builder)")
+    logger.info("[pipeline] Building nodes (delegating to graph_builder)")
     nodes = gb.build_variable_nodes(agg.all_var_types, record_counts, run_states)
     var_node_count = len(nodes)
     nodes += gb.build_constant_nodes(agg.const_counts, pending_constants)
@@ -413,7 +413,7 @@ def _build_graph(db: DatabaseManager) -> dict:
                 len(nodes), var_node_count, const_node_count, path_input_node_count, fn_node_count)
 
     # --- Build edges (pure) ---
-    logger.info("[pipeline] Step 10: Building edges (delegating to graph_builder)")
+    logger.info("[pipeline] Building edges (delegating to graph_builder)")
     manual_edges_list = manual_edges_for_fn_lookup
     edges = gb.build_edges(
         agg.fn_input_params, agg.fn_outputs, agg.const_fns,
@@ -423,19 +423,19 @@ def _build_graph(db: DatabaseManager) -> dict:
     logger.info("[pipeline] built %d edges", len(edges))
 
     # --- Merge manual nodes ---
-    logger.info("[pipeline] Step 11: Merging manual nodes (delegating to graph_builder)")
+    logger.info("[pipeline] Merging manual nodes (delegating to graph_builder)")
     saved_positions = layout_store.read_layout()["positions"]
     logger.debug("[pipeline] loaded %d saved position(s)", len(saved_positions))
     to_add, graduations = gb.merge_manual_nodes(nodes, manual_nodes, saved_positions)
 
     # Execute graduation side effects.
-    logger.info("[pipeline] Step 12: Executing %d graduation action(s)", len(graduations))
+    logger.info("[pipeline] Executing %d graduation action(s)", len(graduations))
     for action in graduations:
         layout_store.graduate_manual_node(action.old_id, action.new_id)
         logger.debug("[pipeline] graduated manual node: %s -> %s", action.old_id, action.new_id)
 
     # Build and append manual nodes that should be added.
-    logger.info("[pipeline] Step 13: Building %d manual node(s) to add", len(to_add))
+    logger.info("[pipeline] Building %d manual node(s) to add", len(to_add))
     existing_node_labels = {n["id"]: n["data"]["label"] for n in nodes}
     for node_id in to_add:
         meta = manual_nodes[node_id]
@@ -495,7 +495,7 @@ def _build_graph(db: DatabaseManager) -> dict:
         logger.debug("[pipeline] built manual node: %s (type=%s, label=%s)",
                      node_id, meta["type"], meta["label"])
 
-    logger.info("[pipeline] Step 14: Graph build complete - assembling final result")
+    logger.info("[pipeline] Graph build complete - assembling final result")
     node_types = {}
     for n in nodes:
         t = n["type"]

@@ -73,29 +73,29 @@ def read_layout() -> dict:
 
 
 def write_node_position(node_id: str, x: float, y: float) -> None:
-    logger.info("[layout] Step 1: write_node_position called (node_id=%r, x=%.1f, y=%.1f)", node_id, x, y)
+    logger.info("[layout] write_node_position called (node_id=%r, x=%.1f, y=%.1f)", node_id, x, y)
     data = _load()
-    logger.info("[layout] Step 2: Writing position to JSON")
+    logger.info("[layout] Writing position to JSON")
     data["positions"][node_id] = {"x": x, "y": y}
     _save(data)
-    logger.info("[layout] Step 3: Node position written successfully")
+    logger.info("[layout] Node position written successfully")
 
 
 def write_manual_node(node_id: str, x: float, y: float,
                       node_type: str, label: str) -> None:
     # Position goes to JSON; structural info goes to DB.
-    logger.info("[layout] Step 1: write_manual_node called (node_id=%r, type=%r, label=%r, x=%.1f, y=%.1f)",
+    logger.info("[layout] write_manual_node called (node_id=%r, type=%r, label=%r, x=%.1f, y=%.1f)",
                 node_id, node_type, label, x, y)
-    logger.info("[layout] Step 2: Writing position to JSON")
+    logger.info("[layout] Writing position to JSON")
     data = _load()
     data["positions"][node_id] = {"x": x, "y": y}
     _save(data)
-    logger.info("[layout] Step 3: Writing node metadata to DuckDB")
+    logger.info("[layout] Writing node metadata to DuckDB")
     db = get_db()
     pipeline_store.write_manual_node(db, node_id, node_type, label)
     # If the user is re-adding a node that was previously hidden, unhide it.
     # Also unhide the canonical DB-derived ID for this type/label.
-    logger.info("[layout] Step 4: Unhiding node (in case it was previously deleted)")
+    logger.info("[layout] Unhiding node (in case it was previously deleted)")
     pipeline_store.unhide_node(db, node_id)
     prefix_map = {
         "variableNode": "var__",
@@ -105,7 +105,7 @@ def write_manual_node(node_id: str, x: float, y: float,
     }
     prefix = prefix_map.get(node_type)
     if prefix:
-        logger.debug("[layout] Step 5: Unhiding canonical DB-derived nodes for type=%r, label=%r", node_type, label)
+        logger.debug("[layout] Unhiding canonical DB-derived nodes for type=%r, label=%r", node_type, label)
         if node_type == "functionNode":
             # DB-derived function nodes use composite ``fn__{label}__{call_id}``
             # IDs — there can be multiple canonical nodes per label.  Unhide
@@ -118,7 +118,7 @@ def write_manual_node(node_id: str, x: float, y: float,
             canonical_id = f"{prefix}{label}"
             pipeline_store.unhide_node(db, canonical_id)
             logger.debug("[layout] Unhid canonical node %r", canonical_id)
-    logger.info("[layout] Step 6: Manual node written successfully")
+    logger.info("[layout] Manual node written successfully")
 
 
 def get_manual_nodes() -> dict[str, dict]:
@@ -131,18 +131,18 @@ def delete_node(node_id: str) -> None:
     For DB-derived nodes (var__, fn__, const__, pathInput__), also mark them
     as hidden so _build_graph won't recreate them from pipeline history.
     """
-    logger.info("[layout] Step 1: delete_node called (node_id=%r)", node_id)
-    logger.info("[layout] Step 2: Removing position from JSON")
+    logger.info("[layout] delete_node called (node_id=%r)", node_id)
+    logger.info("[layout] Removing position from JSON")
     data = _load()
     data["positions"].pop(node_id, None)
     _save(data)
-    logger.info("[layout] Step 3: Deleting node metadata from DuckDB")
+    logger.info("[layout] Deleting node metadata from DuckDB")
     db = get_db()
     pipeline_store.delete_node(db, node_id)
     # Hide DB-derived nodes so they don't reappear from list_pipeline_variants().
-    logger.info("[layout] Step 4: Marking node as hidden (so it won't be auto-recreated)")
+    logger.info("[layout] Marking node as hidden (so it won't be auto-recreated)")
     pipeline_store.hide_node(db, node_id)
-    logger.info("[layout] Step 5: Node deleted successfully")
+    logger.info("[layout] Node deleted successfully")
 
 
 def read_constants() -> list[str]:
@@ -229,28 +229,28 @@ def read_manual_edges() -> list[dict]:
 
 
 def write_manual_edge(edge: dict) -> None:
-    logger.info("[layout] Step 1: write_manual_edge called (edge_id=%r, source=%r, target=%r)",
+    logger.info("[layout] write_manual_edge called (edge_id=%r, source=%r, target=%r)",
                 edge.get("id"), edge.get("source"), edge.get("target"))
     pipeline_store.write_manual_edge(get_db(), edge)
-    logger.info("[layout] Step 2: Edge written to DuckDB successfully")
+    logger.info("[layout] Edge written to DuckDB successfully")
 
 
 def delete_manual_edge(edge_id: str) -> None:
-    logger.info("[layout] Step 1: delete_manual_edge called (edge_id=%r)", edge_id)
+    logger.info("[layout] delete_manual_edge called (edge_id=%r)", edge_id)
     pipeline_store.delete_manual_edge(get_db(), edge_id)
-    logger.info("[layout] Step 2: Edge deleted from DuckDB successfully")
+    logger.info("[layout] Edge deleted from DuckDB successfully")
 
 
 def add_pending_constant(const_name: str, value: str) -> None:
-    logger.info("[layout] Step 1: add_pending_constant called (name=%r, value=%r)", const_name, value)
+    logger.info("[layout] add_pending_constant called (name=%r, value=%r)", const_name, value)
     pipeline_store.add_pending_constant(get_db(), const_name, value)
-    logger.info("[layout] Step 2: Pending constant added to DuckDB successfully")
+    logger.info("[layout] Pending constant added to DuckDB successfully")
 
 
 def remove_pending_constant(const_name: str, value: str) -> None:
-    logger.info("[layout] Step 1: remove_pending_constant called (name=%r, value=%r)", const_name, value)
+    logger.info("[layout] remove_pending_constant called (name=%r, value=%r)", const_name, value)
     pipeline_store.remove_pending_constant(get_db(), const_name, value)
-    logger.info("[layout] Step 2: Pending constant removed from DuckDB successfully")
+    logger.info("[layout] Pending constant removed from DuckDB successfully")
 
 
 def get_pending_constants() -> dict[str, set[str]]:

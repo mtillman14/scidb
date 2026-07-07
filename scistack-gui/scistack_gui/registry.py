@@ -60,14 +60,14 @@ def register_module(module, *, module_path: Path | None = None) -> None:
     If module_path is provided, it is stored so that refresh_module() can
     re-import the file later without restarting the server.
     """
-    logger.info("[registry] Step 1: Registering module from %s", module_path or "<unknown>")
+    logger.info("[registry] Registering module from %s", module_path or "<unknown>")
     global _module_path
     if module_path is not None:
         _module_path = module_path
         logger.debug("[registry] Stored module path for refresh: %s", module_path)
 
     _scan_module_functions(module, source=str(module_path or "<unknown>"))
-    logger.info("[registry] Step 2: Module registration complete - %d functions registered", len(_functions))
+    logger.info("[registry] Module registration complete - %d functions registered", len(_functions))
 
 
 def refresh_module() -> dict:
@@ -77,7 +77,7 @@ def refresh_module() -> dict:
     Returns a summary dict with the old and new function/variable counts
     so the caller can log what changed.
     """
-    logger.info("[registry] Step 1: Starting module refresh from %s", _module_path)
+    logger.info("[registry] Starting module refresh from %s", _module_path)
     if _module_path is None:
         raise RuntimeError(
             "No module was loaded at startup (--module not passed). "
@@ -89,25 +89,25 @@ def refresh_module() -> dict:
     logger.debug("[registry] Before refresh: %d functions, %d variables", len(old_fns), len(old_vars))
 
     # Clear the function registry so removed functions don't linger.
-    logger.info("[registry] Step 2: Clearing function registry")
+    logger.info("[registry] Clearing function registry")
     _functions.clear()
     _function_sources.clear()
 
     # Re-execute the module file. This will re-define all functions and
     # BaseVariable subclasses (which auto-register via the metaclass).
-    logger.info("[registry] Step 3: Re-importing module from %s", _module_path)
+    logger.info("[registry] Re-importing module from %s", _module_path)
     spec = importlib.util.spec_from_file_location(_module_name, _module_path)
     user_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(user_mod)
 
-    logger.info("[registry] Step 4: Scanning module for functions")
+    logger.info("[registry] Scanning module for functions")
     _scan_module_functions(user_mod, source=str(_module_path))
 
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
     logger.debug("[registry] After refresh: %d functions, %d variables", len(new_fns), len(new_vars))
 
-    logger.info("[registry] Step 5: Module refresh complete")
+    logger.info("[registry] Module refresh complete")
     return _diff_summary(old_fns, new_fns, old_vars, new_vars)
 
 
@@ -128,7 +128,7 @@ def load_from_config(config: SciStackConfig) -> dict:
 
     Returns a summary dict with discovered function/variable names.
     """
-    logger.info("[registry] Step 1: Loading from config at %s", config.project_root)
+    logger.info("[registry] Loading from config at %s", config.project_root)
     global _config
     _config = config
 
@@ -136,27 +136,27 @@ def load_from_config(config: SciStackConfig) -> dict:
     old_vars = set(BaseVariable._all_subclasses.keys())
     logger.debug("[registry] Before load: %d functions, %d variables", len(old_fns), len(old_vars))
 
-    logger.info("[registry] Step 2: Clearing function registry")
+    logger.info("[registry] Clearing function registry")
     _functions.clear()
     _function_sources.clear()
 
-    logger.info("[registry] Step 3: Loading %d file modules", len(config.modules))
+    logger.info("[registry] Loading %d file modules", len(config.modules))
     _load_file_modules(config.modules)
 
-    logger.info("[registry] Step 4: Loading %d packages", len(config.packages))
+    logger.info("[registry] Loading %d packages", len(config.packages))
     _load_packages(config.packages)
 
     if config.auto_discover:
-        logger.info("[registry] Step 5: Auto-discovering entry points")
+        logger.info("[registry] Auto-discovering entry points")
         _load_entry_points()
     else:
-        logger.info("[registry] Step 5: Skipping entry point discovery (disabled)")
+        logger.info("[registry] Skipping entry point discovery (disabled)")
 
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
     logger.debug("[registry] After load: %d functions, %d variables", len(new_fns), len(new_vars))
 
-    logger.info("[registry] Step 6: Config loading complete")
+    logger.info("[registry] Config loading complete")
     return _diff_summary(old_fns, new_fns, old_vars, new_vars)
 
 

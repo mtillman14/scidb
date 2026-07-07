@@ -609,6 +609,10 @@ def dispatch(args: argparse.Namespace) -> int:
         return 1
     if args.verbose:
         Log.set_level("DEBUG")
+    else:
+        # stdout carries the command's results; keep stderr quiet unless
+        # something is actually wrong. The file sink keeps the INFO narrative.
+        Log.set_level("WARN", sink="console")
     try:
         db_path, source = resolve_db_path(args.db)
         if not Path(db_path).is_file():

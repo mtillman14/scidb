@@ -78,14 +78,14 @@ def migrate_from_json(db, layout_path: Path) -> None:
 
     Safe to call repeatedly — checks the migration sentinel before acting.
     """
-    logger.info("[pipeline_store] Step 1: migrate_from_json called (layout_path=%s)", layout_path)
+    logger.info("[pipeline_store] migrate_from_json called (layout_path=%s)", layout_path)
     _ensure_tables(db)
 
     if not layout_path.exists():
         logger.debug("[pipeline_store] Layout file does not exist, skipping migration")
         return
 
-    logger.info("[pipeline_store] Step 2: Loading layout JSON file")
+    logger.info("[pipeline_store] Loading layout JSON file")
     with layout_path.open() as f:
         try:
             data = json.load(f)
@@ -97,7 +97,7 @@ def migrate_from_json(db, layout_path: Path) -> None:
         logger.debug("[pipeline_store] Migration already completed (sentinel found), skipping")
         return  # Already migrated.
 
-    logger.info("[pipeline_store] Step 3: Migrating manual_nodes and manual_edges to DuckDB")
+    logger.info("[pipeline_store] Migrating manual_nodes and manual_edges to DuckDB")
     manual_nodes: dict = data.get("manual_nodes", {})
     manual_edges: list = data.get("manual_edges", [])
     logger.debug("[pipeline_store] Found %d manual nodes and %d manual edges in JSON",
@@ -119,7 +119,7 @@ def migrate_from_json(db, layout_path: Path) -> None:
                          edge.get("sourceHandle"), edge.get("targetHandle"))
             migrated_edges += 1
 
-    logger.info("[pipeline_store] Step 4: Writing migration sentinel to JSON and removing migrated data")
+    logger.info("[pipeline_store] Writing migration sentinel to JSON and removing migrated data")
     # Clear migrated keys from JSON and write sentinel.
     data.pop("manual_nodes", None)
     data.pop("manual_edges", None)
@@ -128,7 +128,7 @@ def migrate_from_json(db, layout_path: Path) -> None:
         json.dump(data, f, indent=2)
 
     logger.info(
-        "[pipeline_store] Step 5: Migration complete - migrated %d nodes and %d edges from JSON to DuckDB",
+        "[pipeline_store] Migration complete - migrated %d nodes and %d edges from JSON to DuckDB",
         migrated_nodes, migrated_edges,
     )
 
@@ -156,12 +156,12 @@ def get_manual_nodes(db) -> dict[str, dict]:
 
 
 def write_manual_node(db, node_id: str, node_type: str, label: str) -> None:
-    logger.info("[pipeline_store] Step 1: write_manual_node called (node_id=%r, type=%r, label=%r)",
+    logger.info("[pipeline_store] write_manual_node called (node_id=%r, type=%r, label=%r)",
                 node_id, node_type, label)
     _ensure_tables(db)
-    logger.info("[pipeline_store] Step 2: Upserting node into _pipeline_nodes table")
+    logger.info("[pipeline_store] Upserting node into _pipeline_nodes table")
     _upsert_node(db, node_id, node_type, label)
-    logger.info("[pipeline_store] Step 3: Node written to DuckDB successfully")
+    logger.info("[pipeline_store] Node written to DuckDB successfully")
 
 
 def update_node_config(db, node_id: str, config: dict) -> None:
@@ -174,11 +174,11 @@ def update_node_config(db, node_id: str, config: dict) -> None:
 
 
 def delete_node(db, node_id: str) -> None:
-    logger.info("[pipeline_store] Step 1: delete_node called (node_id=%r)", node_id)
+    logger.info("[pipeline_store] delete_node called (node_id=%r)", node_id)
     _duck(db)._execute(
         "DELETE FROM _pipeline_nodes WHERE node_id = ?", [node_id]
     )
-    logger.info("[pipeline_store] Step 2: Node deleted from _pipeline_nodes table")
+    logger.info("[pipeline_store] Node deleted from _pipeline_nodes table")
 
 
 def graduate_manual_node(db, old_id: str, new_id: str) -> None:
@@ -224,12 +224,12 @@ def get_manual_edges(db) -> list[dict]:
 
 
 def write_manual_edge(db, edge: dict) -> None:
-    logger.info("[pipeline_store] Step 1: write_manual_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
+    logger.info("[pipeline_store] write_manual_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
                 edge.get("id"), edge.get("source"), edge.get("target"),
                 edge.get("sourceHandle") or edge.get("source_handle"),
                 edge.get("targetHandle") or edge.get("target_handle"))
     _ensure_tables(db)
-    logger.info("[pipeline_store] Step 2: Upserting edge into _pipeline_edges table")
+    logger.info("[pipeline_store] Upserting edge into _pipeline_edges table")
     _upsert_edge(
         db,
         edge["id"],
@@ -238,15 +238,15 @@ def write_manual_edge(db, edge: dict) -> None:
         edge.get("sourceHandle") or edge.get("source_handle"),
         edge.get("targetHandle") or edge.get("target_handle"),
     )
-    logger.info("[pipeline_store] Step 3: Edge written to DuckDB successfully")
+    logger.info("[pipeline_store] Edge written to DuckDB successfully")
 
 
 def delete_manual_edge(db, edge_id: str) -> None:
-    logger.info("[pipeline_store] Step 1: delete_manual_edge called (edge_id=%r)", edge_id)
+    logger.info("[pipeline_store] delete_manual_edge called (edge_id=%r)", edge_id)
     _duck(db)._execute(
         "DELETE FROM _pipeline_edges WHERE edge_id = ?", [edge_id]
     )
-    logger.info("[pipeline_store] Step 2: Edge deleted from _pipeline_edges table")
+    logger.info("[pipeline_store] Edge deleted from _pipeline_edges table")
 
 
 # ---------------------------------------------------------------------------
@@ -254,26 +254,26 @@ def delete_manual_edge(db, edge_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def add_pending_constant(db, const_name: str, value: str) -> None:
-    logger.info("[pipeline_store] Step 1: add_pending_constant called (const_name=%r, value=%r)",
+    logger.info("[pipeline_store] add_pending_constant called (const_name=%r, value=%r)",
                 const_name, value)
     _ensure_tables(db)
-    logger.info("[pipeline_store] Step 2: Inserting pending constant into _pipeline_pending_constants table")
+    logger.info("[pipeline_store] Inserting pending constant into _pipeline_pending_constants table")
     _duck(db)._execute(
         "INSERT INTO _pipeline_pending_constants (constant_name, value) VALUES (?, ?) "
         "ON CONFLICT DO NOTHING",
         [const_name, value],
     )
-    logger.info("[pipeline_store] Step 3: Pending constant added successfully")
+    logger.info("[pipeline_store] Pending constant added successfully")
 
 
 def remove_pending_constant(db, const_name: str, value: str) -> None:
-    logger.info("[pipeline_store] Step 1: remove_pending_constant called (const_name=%r, value=%r)",
+    logger.info("[pipeline_store] remove_pending_constant called (const_name=%r, value=%r)",
                 const_name, value)
     _duck(db)._execute(
         "DELETE FROM _pipeline_pending_constants WHERE constant_name = ? AND value = ?",
         [const_name, value],
     )
-    logger.info("[pipeline_store] Step 2: Pending constant removed from _pipeline_pending_constants table")
+    logger.info("[pipeline_store] Pending constant removed from _pipeline_pending_constants table")
 
 
 def get_pending_constants(db) -> dict[str, set[str]]:
