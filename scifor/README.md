@@ -100,3 +100,16 @@ See the [API reference](../docs/api/for-each.md) and [batch processing guide](..
 scifor is the engine that powers `scidb.for_each()`. When used through SciDB, inputs are loaded from the database and outputs are saved back automatically. When used standalone (as `scifor.for_each()`), it works with plain MATLAB tables or pandas DataFrames — no database needed.
 
 If you're already using SciDB, you're already using scifor under the hood. If you just want the loop orchestration without the database, use the `scifor` namespace directly.
+
+## Logging
+
+scifor logs through the shared [`scistacklog`](../scistacklog/README.md) facade with `layer="scifor"`. At the default (INFO) level a run produces a concise narrative: a banner with truncated value previews (`subject=12 values [s01, …, s12]`), a progress line each time the outermost iterated key advances (rate-limited so fast runs stay silent), and an end-of-run summary that aggregates failures by reason:
+
+```
+for_each(compute_psd) done in 74.0s: completed=114, failed=3, total=120
+failed: 3 × "ValueError: bad channel count" — subject=s03, session=2; … (+N more)
+```
+
+The first occurrence of each distinct failure reason is logged at WARN with the full traceback. Per-iteration `[run]`/`[skip]`/`[done]` lines are DEBUG — enable them with `Log.set_level("DEBUG")` or `SCIDB_LOG_LEVEL=DEBUG`. Dry-run output goes to stdout (it is the requested result, not logging).
+
+Standalone (no scidb) usage gets the same console output automatically; when used through SciDB, the records also land in `scidb.log`.

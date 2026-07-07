@@ -77,3 +77,22 @@ RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
 (raw,) = RawSignal.load(subject=1, session="A")  # generator; unpack for single result
 all_versions = list(RawSignal.load(subject=1, session="A", version="all"))
 ```
+## Logging
+
+Every scidb operation logs through the shared [`scistacklog`](../scistacklog/README.md) facade. `configure_database()` points the file sink at `scidb.log` next to the database file and writes a run-context header (package versions, Python version, pid), so each log file is self-describing.
+
+Two sinks with independent levels, both defaulting to INFO:
+
+- **console** (stderr): the pipeline narrative — for_each banner, periodic progress, run summary with failure reasons, `[timing]` summaries.
+- **file** (`scidb.log`): the same narrative, with date + millisecond timestamps and the originating layer (`[scidb]`, `[scifor]`, `[matlab]`, …) on every line; one record per line.
+
+For debugging, raise a sink to DEBUG to capture the full execution trace (named internal steps with durations, per-iteration `[run]`/`[skip]` lines, per-phase `[timing]` tables, column/dtype dumps):
+
+```python
+from scidb import Log
+
+Log.set_level("DEBUG", sink="file")   # full detail in scidb.log only
+Log.set_level("DEBUG")                # both sinks
+```
+
+or set the `SCIDB_LOG_LEVEL` environment variable, or pass `-v` to the `scidb` CLI.

@@ -232,7 +232,7 @@ for_each(
 )
 ```
 
-This loads `RawEMG` for each subject/session combination, runs `bandpass_filter`, and saves the result as `FilteredEMG` — multiple iterations, zero boilerplate. If a subject is missing data, that iteration is skipped gracefully. In the future, logging support is planned to document what ran successfully and what failed, and why.
+This loads `RawEMG` for each subject/session combination, runs `bandpass_filter`, and saves the result as `FilteredEMG` — multiple iterations, zero boilerplate. If a subject is missing data, that iteration is skipped gracefully, and every run is documented as it happens: the console shows a concise narrative (run banner, periodic progress, and an end-of-run summary of what completed, what failed and why, and what was skipped as already up to date), while `scidb.log` next to the database records the same story with timestamps and the originating scistack layer on every line. For debugging, set `SCIDB_LOG_LEVEL=DEBUG` (or `Log.set_level("DEBUG", sink="file")`) to capture the full execution trace — per-iteration detail, internal steps with durations, and `[timing]` breakdowns of the hot paths.
 
 Need one input to stay fixed while others iterate? Use `Fixed`:
 
