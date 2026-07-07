@@ -342,8 +342,6 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         scifor_opts{end+1} = 'share_limits';
         scifor_opts{end+1} = opts.share_limits;
     end
-    scifor_opts{end+1} = '_log_fn';
-    scifor_opts{end+1} = @(msg) scidb.Log.info('%s', msg);
 
     % --- Endpoint fn wrapping (MATLAB side of Step 1.55/1.56) ---
     % plot_: a returned graphics handle is exported to the combo's resolved

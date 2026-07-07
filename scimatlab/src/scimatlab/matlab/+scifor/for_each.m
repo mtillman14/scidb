@@ -171,12 +171,8 @@ function varargout = for_each(fn, inputs, varargin)
             placeholder_keys = string(pi.placeholder_keys());
             if ~isempty(discovered_combos) && all(ismember(meta_keys, placeholder_keys))
                 opts.all_combos = project_combos(discovered_combos, meta_keys);
-                msg = sprintf('[scifor] PathInput discovery: using %d disk combos', ...
+                scidb.Log.debug('pathinput_discovery: using %d disk combos', ...
                     numel(opts.all_combos));
-                fprintf('%s\n', msg);
-                if ~isempty(opts.log_fn)
-                    opts.log_fn(msg);
-                end
             end
         end
 
@@ -185,7 +181,7 @@ function varargout = for_each(fn, inputs, varargin)
         for i = 1:numel(meta_values)
             if isempty(meta_values{i})
                 if key_has_source(inputs, meta_keys(i), pi)
-                    fprintf('[warn] no values found for ''%s'' in inputs, 0 iterations\n', ...
+                    scidb.Log.warn('no values found for ''%s'' in inputs, 0 iterations', ...
                         meta_keys(i));
                 else
                     error('scifor:for_each', ...
@@ -390,10 +386,14 @@ function varargout = for_each(fn, inputs, varargin)
 
     total = numel(combos);
 
-    % --- Start banner ---
-    meta_parts_banner = cell(1, numel(meta_keys));
+    % --- Run banner: one INFO line with a truncated per-key value preview;
+    %     the full value lists follow at DEBUG (mirrors Python scifor). ---
+    meta_parts_banner = {};
     for mk = 1:numel(meta_keys)
-        meta_parts_banner{mk} = sprintf('%s=[%d values]', meta_keys(mk), numel(meta_values{mk}));
+        if ~startsWith(meta_keys(mk), "__")
+            meta_parts_banner{end+1} = sprintf('%s=%s', meta_keys(mk), ...
+                format_value_preview(meta_values{mk})); %#ok<AGROW>
+        end
     end
     if isempty(meta_parts_banner)
         meta_summary = 'no metadata';
@@ -405,32 +405,16 @@ function varargout = for_each(fn, inputs, varargin)
     else
         iter_str = sprintf('for_each(%s) — %d iterations', fn_name, total);
     end
-    fprintf('\n%s\n', repmat('=', 1, 64));
-    fprintf('  %s\n', iter_str);
-    fprintf('  %s\n', meta_summary);
-    fprintf('%s\n', repmat('=', 1, 64));
-    if ~isempty(opts.log_fn)
-        opts.log_fn(repmat('=', 1, 64));
-        opts.log_fn(iter_str);
-        opts.log_fn(meta_summary);
-        opts.log_fn(repmat('=', 1, 64));
-    end
+    scidb.Log.info('%s: %s', iter_str, meta_summary);
 
     % --- Detailed config: inputs ---
     inputs_str = format_inputs(inputs, input_names, data_idx);
-    fprintf('  inputs: %s\n', inputs_str);
-    if ~isempty(opts.log_fn)
-        opts.log_fn(sprintf('inputs: %s', inputs_str));
-    end
+    scidb.Log.info('inputs: %s', inputs_str);
 
     % --- Detailed config: metadata actual values ---
     for mk2 = 1:numel(meta_keys)
         if ~startsWith(meta_keys(mk2), "__")
-            vals_str = format_meta_values(meta_values{mk2});
-            fprintf('  %s=%s\n', meta_keys(mk2), vals_str);
-            if ~isempty(opts.log_fn)
-                opts.log_fn(sprintf('%s=%s', meta_keys(mk2), vals_str));
-            end
+            scidb.Log.debug('%s=%s', meta_keys(mk2), format_meta_values(meta_values{mk2}));
         end
     end
 
@@ -453,11 +437,7 @@ function varargout = for_each(fn, inputs, varargin)
         opt_parts{end+1} = sprintf('where=%s', class(where_filter));
     end
     if ~isempty(opt_parts)
-        opts_str = strjoin(opt_parts, ', ');
-        fprintf('  options: %s\n', opts_str);
-        if ~isempty(opts.log_fn)
-            opts.log_fn(sprintf('options: %s', opts_str));
-        end
+        scidb.Log.info('options: %s', strjoin(opt_parts, ', '));
     end
 
     % --- Dry-run header ---
@@ -477,6 +457,32 @@ function varargout = for_each(fn, inputs, varargin)
     for o = 1:n_outputs
         collected_per_output{o} = {};
     end
+
+    % Failure aggregation for the end-of-run summary (mirrors Python scifor):
+    % reason -> cellstr of combo strings; first occurrence of each distinct
+    % reason logs at WARN so the default (INFO) log answers "what failed".
+    failure_reasons = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    failure_order = {};
+
+    % Periodic progress: one line per outermost-key transition, but never at
+    % the very first combo, never inside the start delay (fast runs stay
+    % silent), and never more often than the minimum interval.
+    PROGRESS_MIN_INTERVAL_S = 2.0;
+    PROGRESS_START_DELAY_S = 5.0;
+    progress_key = '';
+    for mk3 = 1:numel(meta_keys)
+        if ~startsWith(meta_keys(mk3), "__")
+            progress_key = char(meta_keys(mk3));
+            break;
+        end
+    end
+    progress_last_value = [];
+    progress_seen = 0;
+    progress_total = count_distinct_combo_values(combos, meta_keys, progress_key);
+    % Elapsed-seconds at the last progress emission (0 = loop start), so the
+    % min-interval guard also spaces the FIRST line away from loop start.
+    progress_last_emit = 0;
+    loop_t0 = tic;
 
     % share_limits prepass (port of Python scifor's _compute_shared_limits):
     % per named input, group its table by the held-fixed schema keys and
@@ -525,6 +531,26 @@ function varargout = for_each(fn, inputs, varargin)
             end
         end
         metadata_str = strjoin(meta_parts, ', ');
+
+        % --- Periodic progress on outermost-key transitions ---
+        if ~isempty(progress_key) && ~dry_run && isfield(metadata, progress_key)
+            pv = metadata.(progress_key);
+            if progress_seen == 0 || ~isequal(pv, progress_last_value)
+                progress_last_value = pv;
+                progress_seen = progress_seen + 1;
+                elapsed_now = toc(loop_t0);
+                if progress_seen > 1 ...
+                        && elapsed_now >= PROGRESS_START_DELAY_S ...
+                        && (elapsed_now - progress_last_emit) >= PROGRESS_MIN_INTERVAL_S
+                    progress_last_emit = elapsed_now;
+                    scidb.Log.info(['progress: %s=%s (%d/%d) — %d/%d combos ' ...
+                        '(%.1f%%), completed=%d, failed=%d, elapsed=%.1fs'], ...
+                        progress_key, char(string(pv)), progress_seen, ...
+                        progress_total, c - 1, total, ...
+                        100.0 * (c - 1) / total, completed, skipped, elapsed_now);
+                end
+            end
+        end
 
         % --- Dry-run iteration ---
         if dry_run
@@ -595,17 +621,9 @@ function varargout = for_each(fn, inputs, varargin)
                     iterate_tables{p} = prepare_iterate_table( ...
                         var_spec, metadata, effective_keys, where_filter);
                 catch err
-                    if strcmp(err.identifier, 'scifor:NoData')
-                        skip_msg = sprintf('[skip] %s: no data for %s', ...
-                            metadata_str, input_names{p});
-                    else
-                        skip_msg = sprintf('[skip] %s: failed to filter %s: %s', ...
-                            metadata_str, input_names{p}, err.message);
-                    end
-                    fprintf('%s\n', skip_msg);
-                    if ~isempty(opts.log_fn)
-                        opts.log_fn(skip_msg);
-                    end
+                    [failure_reasons, failure_order] = record_iteration_failure( ...
+                        failure_reasons, failure_order, err, metadata_str, ...
+                        sprintf('failed to filter %s', input_names{p}));
                     filter_failed = true;
                     break;
                 end
@@ -617,17 +635,9 @@ function varargout = for_each(fn, inputs, varargin)
             try
                 loaded{p} = prepare_input(var_spec, metadata, effective_keys, wants_table, where_filter);
             catch err
-                if strcmp(err.identifier, 'scifor:NoData')
-                    skip_msg = sprintf('[skip] %s: no data for %s', ...
-                        metadata_str, input_names{p});
-                else
-                    skip_msg = sprintf('[skip] %s: failed to filter %s: %s', ...
-                        metadata_str, input_names{p}, err.message);
-                end
-                fprintf('%s\n', skip_msg);
-                if ~isempty(opts.log_fn)
-                    opts.log_fn(skip_msg);
-                end
+                [failure_reasons, failure_order] = record_iteration_failure( ...
+                    failure_reasons, failure_order, err, metadata_str, ...
+                    sprintf('failed to filter %s', input_names{p}));
                 filter_failed = true;
                 break;
             end
@@ -666,10 +676,7 @@ function varargout = for_each(fn, inputs, varargin)
             run_msg = sprintf('[run] %s: %s(%s)', metadata_str, fn_name, ...
                 strjoin(string(input_names'), ', '));
         end
-        fprintf('%s\n', run_msg);
-        if ~isempty(opts.log_fn)
-            opts.log_fn(run_msg);
-        end
+        scidb.Log.debug('%s', run_msg);
 
         % share_limits injection: append each named input's group limits as
         % trailing positional args (Python injects named kwargs; MATLAB has
@@ -719,12 +726,9 @@ function varargout = for_each(fn, inputs, varargin)
                strcmp(err.identifier, 'scifor:for_each:forColumnsBadReturn')
                 rethrow(err);
             end
-            skip_msg = sprintf('[skip] %s: %s raised: %s', ...
-                metadata_str, fn_name, err.message);
-            fprintf('%s\n', skip_msg);
-            if ~isempty(opts.log_fn)
-                opts.log_fn(skip_msg);
-            end
+            [failure_reasons, failure_order] = record_iteration_failure( ...
+                failure_reasons, failure_order, err, metadata_str, ...
+                sprintf('%s raised', fn_name));
             skipped = skipped + 1;
             continue;
         end
@@ -772,12 +776,8 @@ function varargout = for_each(fn, inputs, varargin)
                         end
                     end
                 catch err2
-                    err_msg = sprintf('[error] %s: cannot distribute output %d: %s', ...
+                    scidb.Log.warn('%s: cannot distribute output %d: %s', ...
                         metadata_str, o, err2.message);
-                    fprintf('%s\n', err_msg);
-                    if ~isempty(opts.log_fn)
-                        opts.log_fn(err_msg);
-                    end
                     continue;
                 end
             end
@@ -791,16 +791,9 @@ function varargout = for_each(fn, inputs, varargin)
         completed = completed + 1;
     end
 
-    % --- Summary ---
-    fprintf('%s\n', repmat('-', 1, 64));
+    % --- End-of-run summary ---
     if dry_run
-        fprintf('  [dry-run] would process %d iterations\n', total);
-        fprintf('%s\n\n', repmat('=', 1, 64));
-        if ~isempty(opts.log_fn)
-            opts.log_fn(repmat('-', 1, 64));
-            opts.log_fn(sprintf('[dry-run] would process %d iterations', total));
-            opts.log_fn(repmat('=', 1, 64));
-        end
+        fprintf('[dry-run] would process %d iterations\n', total);
         for o = 1:nargout
             varargout{o} = [];
         end
@@ -808,15 +801,22 @@ function varargout = for_each(fn, inputs, varargin)
             varargout{1} = [];
         end
     else
-        done_msg = sprintf('for_each(%s) done: completed=%d, skipped=%d, total=%d', ...
-            fn_name, completed, skipped, total);
-        fprintf('  done: completed=%d, skipped=%d, total=%d\n', ...
-            completed, skipped, total);
-        fprintf('%s\n\n', repmat('=', 1, 64));
-        if ~isempty(opts.log_fn)
-            opts.log_fn(repmat('-', 1, 64));
-            opts.log_fn(done_msg);
-            opts.log_fn(repmat('=', 1, 64));
+        scidb.Log.info('for_each(%s) done in %.1fs: completed=%d, failed=%d, total=%d', ...
+            fn_name, toc(loop_t0), completed, skipped, total);
+        % One line per distinct failure reason (combos capped at 5), so the
+        % default (INFO) log answers "what failed and why".
+        SUMMARY_COMBOS_MAX = 5;
+        for fr = 1:numel(failure_order)
+            reason = failure_order{fr};
+            combos_for_reason = failure_reasons(reason);
+            n_shown = min(numel(combos_for_reason), SUMMARY_COMBOS_MAX);
+            shown = strjoin(combos_for_reason(1:n_shown), '; ');
+            if numel(combos_for_reason) > n_shown
+                shown = sprintf('%s (+%d more)', shown, ...
+                    numel(combos_for_reason) - n_shown);
+            end
+            scidb.Log.info('failed: %d × "%s" — %s', ...
+                numel(combos_for_reason), reason, shown);
         end
         if n_outputs == 0
             % Zero-output function: nothing to collect
@@ -1833,7 +1833,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.all_combos = [];
     opts.nest_table_outputs = false;
     opts.resolve_pathinput = true;
-    opts.log_fn = [];
+    opts.log_fn = [];  % deprecated, ignored (kept so parsing stays stable)
     opts.resolved_path_outputs = struct();
     opts.share_limits = struct();
 
@@ -1911,7 +1911,9 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2;
                     continue;
                 case "_log_fn"
-                    opts.log_fn = varargin{i+1};
+                    % Deprecated — ignored. scifor logs through scidb.Log
+                    % (scistacklog facade) directly; accepted so existing
+                    % call sites don't break.
                     i = i + 2;
                     continue;
             end
@@ -2072,6 +2074,79 @@ function s = format_meta_values(vals)
         end
     end
     s = ['[' strjoin(parts, ', ') ']'];
+end
+
+
+function s = format_value_preview(vals)
+%FORMAT_VALUE_PREVIEW  "12 values [1, 2, 3, …, 12]" — truncated preview.
+%   Mirrors Python scifor's _format_value_list for the run banner.
+    PREVIEW_MAX = 4;
+    n = numel(vals);
+    full = format_meta_values(vals);
+    inner = full(2:end-1);
+    if n > PREVIEW_MAX
+        head_vals = vals(1:PREVIEW_MAX - 1);
+        head = format_meta_values(head_vals);
+        tail = format_meta_values(vals(end));
+        inner = sprintf('%s, …, %s', head(2:end-1), tail(2:end-1));
+    end
+    if n == 1
+        s = sprintf('1 value [%s]', inner);
+    else
+        s = sprintf('%d values [%s]', n, inner);
+    end
+end
+
+
+function n = count_distinct_combo_values(combos, meta_keys, progress_key)
+%COUNT_DISTINCT_COMBO_VALUES  Distinct values of one key across the combos.
+%   Used for the "(k/N)" part of the periodic progress line.
+    n = 0;
+    if isempty(progress_key)
+        return;
+    end
+    seen = {};
+    for i = 1:numel(combos)
+        combo = combos{i};
+        if isstruct(combo)
+            if ~isfield(combo, progress_key)
+                continue;
+            end
+            v = combo.(progress_key);
+        else
+            idx = find(meta_keys == string(progress_key), 1);
+            if isempty(idx) || idx > numel(combo)
+                continue;
+            end
+            v = combo{idx};
+        end
+        key = char(string(v));
+        if ~any(strcmp(seen, key))
+            seen{end+1} = key; %#ok<AGROW>
+        end
+    end
+    n = numel(seen);
+end
+
+
+function [failure_reasons, failure_order] = record_iteration_failure( ...
+        failure_reasons, failure_order, err, metadata_str, context)
+%RECORD_ITERATION_FAILURE  Track a per-iteration failure for the summary.
+%   Every failure logs a [skip] line at DEBUG with the MATLAB error report;
+%   the first occurrence of each distinct reason also logs at WARN, so the
+%   default (INFO) log still answers "what failed and why".
+    reason = sprintf('%s: %s', err.identifier, err.message);
+    if isKey(failure_reasons, reason)
+        failure_reasons(reason) = [failure_reasons(reason), {metadata_str}];
+    else
+        failure_reasons(reason) = {metadata_str};
+        failure_order{end+1} = reason;
+        scidb.Log.warn(['iteration failed: %s — %s: %s ' ...
+            '(first occurrence; report follows)\n%s'], ...
+            metadata_str, context, err.message, ...
+            getReport(err, 'extended', 'hyperlinks', 'off'));
+    end
+    scidb.Log.debug('[skip] %s: %s: %s', metadata_str, context, err.message);
 end
 
 
