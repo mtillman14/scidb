@@ -34,6 +34,12 @@ class PathOutput:
       Using ``{ColName}`` requires at least one iterate input; for_each raises if
       there is none.
 
+    Because substitution covers *every* combo-metadata key, higher layers can
+    supply additional placeholder values by adding keys to the combo: scidb
+    uses this to resolve branch_param placeholders (``{low_hz}``,
+    ``{bandpass.low_hz}``, ``{variant}``) so each pipeline-variant group gets
+    its own artifact path. scifor itself needs no knowledge of them.
+
     The result keeps the template's type: a ``Path`` in yields a ``Path`` out, a
     ``str`` yields a ``str``.
 

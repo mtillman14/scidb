@@ -130,10 +130,36 @@ artifact.
   `_save_results`, where the record_id exists; draft mode: in
   `_for_each_save_resolved`), never in the renderer — so MATLAB-rendered
   figures (stage 4) inherit it for free. Failures warn and continue.
-- Known limitation: `PathOutput` templates cannot reference branch_params,
-  so multiple variant groups at one schema location resolve to the SAME
-  artifact path — the last-rendered group's stamp wins. A vsig/branch-param
-  placeholder is future work.
+
+## PathOutput branch_param placeholders (per-group artifact paths)
+
+`PathOutput` templates may reference branch_params with the same `{}` syntax
+as schema keys, so each variant group writes its OWN file:
+
+```python
+PathOutput("plots/{subject}_{low_hz}.png")            # bare name, suffix-matched
+PathOutput("plots/{subject}_{bandpass.low_hz}.png")   # namespaced
+PathOutput("plots/{subject}_{variant}.png")           # 8-char group digest
+```
+
+- Bare names follow the `Variant()`/`branch_param()` matching contract
+  (suffix match; ambiguity across two namespaced keys → hard error; a key
+  with conflicting values across this call's inputs → hard error).
+  `{variant}` digests the group's canonical signature — stable across runs,
+  defined even with zero variants.
+- Mechanics (NOTE 3, zero scifor changes): `PathOutput.resolve` is a literal
+  `str.replace` per combo key, so scidb injects per-group values into the
+  expanded combos at Step 12 / rid expansion, and strips those keys before
+  save/introspect (they never become branch_params or result columns). An
+  unmatched placeholder warns and leaves the literal `{name}` in the path.
+- **Collision guard**: when one resolved path is shared by combos that agree
+  on schema identity but differ in variant identity, for_each raises BEFORE
+  anything renders, naming the differing branch_param and the one-line fix.
+  Schema-key-omission collisions (e.g. a template without `{trial}`) are
+  deliberately not errors — pre-existing overwrite behavior. `{ColName}`
+  templates are covered (the for_columns axis is concrete before prepare).
+  Editing a template changes the call's `__inputs` identity → endpoints
+  re-render once. Tests: `scidb/tests/test_pathoutput_variants.py`.
 
 ## Deliberately out of scope
 
@@ -142,7 +168,6 @@ artifact.
 - MATLAB endpoint parity (D7 — stage 4).
 - csv-stats' `data_column="_"` all-columns loop (a `for_columns` analog;
   future).
-- `PathOutput` placeholders for branch_params / variant groups (see above).
 
 ## Tests
 

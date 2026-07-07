@@ -1,6 +1,9 @@
 """DB-backed for_each wrapper — loads inputs, delegates loop to scifor, saves outputs."""
 
+import hashlib
 import json
+import os
+import re
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -165,6 +168,9 @@ class _ForEachState:
     iterated_keys_ordered: Any  # list | None
     fixed_rid_values: dict
     current_schema_keys: list
+    # PathOutput branch_param placeholder keys injected into combos (stripped
+    # from the result table before save/return; see _for_each_save_resolved).
+    path_extra_keys: Any = None  # set | None
 
 
 # ---------------------------------------------------------------------------
@@ -546,11 +552,17 @@ def for_each(
                     # Couldn't get signature, don't inject metadata
                     _fn_params = set()
 
+        _path_extra = state.path_extra_keys or set()
+
         def fn(**kwargs):  # noqa: F811 — intentional rebind
             idx = _call_idx[0]
             _call_idx[0] = idx + 1
             current_combo = _ordered_combos[idx] if idx < len(_ordered_combos) else {}
-            load_kw = {k: v for k, v in current_combo.items() if not k.startswith("__")}
+            # Exclude injected PathOutput placeholder keys: as load kwargs they
+            # would act as branch_params FILTERS (with sanitized-string values)
+            # and silently empty a PerComboLoader load.
+            load_kw = {k: v for k, v in current_combo.items()
+                       if not k.startswith("__") and k not in _path_extra}
             resolved = {}
             for k, v in kwargs.items():
                 if isinstance(v, PerComboLoader):
@@ -670,6 +682,171 @@ def _apply_introspect(result_tbl, state, where):
     df["_where"] = repr(where) if where is not None else None
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# PathOutput variant placeholders (per-group artifact paths; no clobbering)
+# ---------------------------------------------------------------------------
+# PathOutput resolution is a literal str.replace of "{key}" per combo-metadata
+# key (scifor/pathoutput.py::resolve — NOT str.format, so dotted names are
+# legal). Branch params therefore need no new syntax: scidb injects per-group
+# values into the expanded combos under the exact placeholder text, scifor's
+# generic resolver substitutes them, and scidb strips the injected keys before
+# save/introspect so they never pollute records or branch_params.
+
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+_VARIANT_TOKEN = "variant"
+
+
+def _pathoutput_placeholders(inputs: dict, exclude_keys: set) -> "tuple[set, list]":
+    """Placeholder names used by PathOutput inputs that are NOT combo-supplied
+    (schema keys / metadata iterables / ColName), plus the PathOutput specs.
+    """
+    names: set = set()
+    path_outputs: list = []
+    for v in inputs.values():
+        if isinstance(v, _scifor.PathOutput):
+            path_outputs.append(v)
+            names |= set(_PLACEHOLDER_RE.findall(str(v.template)))
+    names.discard("ColName")
+    return {n for n in names if n not in exclude_keys}, path_outputs
+
+
+def _sanitize_path_value(value: Any) -> str:
+    """Path-safe rendering of a branch_param value for filename substitution."""
+    s = str(value)
+    for ch in (os.sep, "/", "\x00"):
+        s = s.replace(ch, "-")
+    return s
+
+
+def _merge_group_bp(bp_dicts: "list[dict]") -> "tuple[dict, set]":
+    """Merge per-record branch_params dicts; track keys with conflicting values."""
+    merged: dict = {}
+    conflicted: set = set()
+    for bp in bp_dicts:
+        for k, v in (bp or {}).items():
+            if k in merged and merged[k] != v:
+                conflicted.add(k)
+            merged[k] = v
+    return merged, conflicted
+
+
+def _resolve_bp_placeholder(name: str, merged_bp: dict, conflicted: set,
+                            signature_text: str) -> "str | None":
+    """Resolve one PathOutput placeholder from a variant group's branch_params.
+
+    Bare names suffix-match namespaced keys (the Variant()/branch_param()
+    contract); ambiguity is a hard error naming the candidates. ``{variant}``
+    is an 8-char digest of the group's canonical signature — the shorthand
+    for many-param sweeps. Returns None for a key absent from the group
+    (caller warns; the literal ``{name}`` stays in the path).
+    """
+    if name == _VARIANT_TOKEN:
+        return hashlib.sha256(signature_text.encode("utf-8")).hexdigest()[:8]
+    if name in merged_bp:
+        matches = [name]
+    else:
+        matches = [k for k in merged_bp if str(k).endswith("." + name)]
+    if len(matches) > 1:
+        raise ValueError(
+            f"PathOutput placeholder '{{{name}}}' is ambiguous: it suffix-matches "
+            f"{sorted(matches)}. Use the namespaced form, e.g. "
+            f"'{{{sorted(matches)[0]}}}'."
+        )
+    if not matches:
+        return None
+    key = matches[0]
+    if key in conflicted:
+        raise ValueError(
+            f"PathOutput placeholder '{{{name}}}' matches branch_param '{key}', "
+            f"which has CONFLICTING values across this call's inputs — one path "
+            f"cannot represent both. Pin the inputs (Variant) or use '{{variant}}'."
+        )
+    return _sanitize_path_value(merged_bp[key])
+
+
+def _inject_path_placeholders(fc: dict, names: set, merged_bp: dict,
+                              conflicted: set, signature_text: str,
+                              missing_out: set) -> None:
+    """Inject resolved placeholder values into an expanded combo dict."""
+    for name in names:
+        val = _resolve_bp_placeholder(name, merged_bp, conflicted, signature_text)
+        if val is None:
+            missing_out.add(name)
+        elif name not in fc:
+            fc[name] = val
+
+
+def _guard_pathoutput_collisions(path_outputs: list, full_combos: list,
+                                 colname_columns: "list | None",
+                                 rid_to_bp: dict,
+                                 placeholder_names: set) -> None:
+    """Hard-error when one resolved artifact path is shared by combos that
+    agree on their SCHEMA/iterable identity but differ in VARIANT identity
+    (``__vsig_*`` / ``__rid_*``) — silent file loss with a one-line fix to
+    name. Collisions from omitted schema keys are deliberately not errors
+    (pre-existing, possibly intentional overwrites); in full iteration, combos
+    at different schema locations also differ in ``__rid_*``, so variant
+    difference alone must NOT trigger the guard.
+
+    ``colname_columns``: the concrete for_columns axis (resolved before
+    prepare), so ``{ColName}`` templates are covered by previewing the
+    combos × columns cross product. Injected placeholder keys are excluded
+    from the base identity (they derive from variant identity).
+    """
+    def _base_identity(fc: dict) -> tuple:
+        return tuple(sorted(
+            (k, str(v)) for k, v in fc.items()
+            if not str(k).startswith("__") and k not in placeholder_names
+        ))
+
+    def _variant_keys(fc: dict) -> dict:
+        return {k: v for k, v in fc.items()
+                if str(k).startswith(("__vsig_", "__rid_"))}
+
+    def _group_bp(fc: dict) -> dict:
+        bp: dict = {}
+        for k, v in fc.items():
+            if str(k).startswith("__vsig_") and isinstance(v, str):
+                try:
+                    bp.update(json.loads(v))
+                except (ValueError, TypeError):
+                    pass
+            elif str(k).startswith("__rid_"):
+                bp.update(rid_to_bp.get(v, {}))
+        return bp
+
+    for po in path_outputs:
+        columns = colname_columns if (po.has_column_token and colname_columns) \
+            else [None]
+        seen: dict = {}
+        for fc in full_combos:
+            for col in columns:
+                resolved = str(po.resolve(fc, col))
+                key = (resolved, col)
+                prev = seen.get(key)
+                if prev is None:
+                    seen[key] = fc
+                    continue
+                if _base_identity(prev) != _base_identity(fc):
+                    continue  # schema-driven collision: user's business
+                if _variant_keys(prev) == _variant_keys(fc):
+                    continue  # identical combo re-reference
+                bp_a, bp_b = _group_bp(prev), _group_bp(fc)
+                diff_keys = sorted(
+                    k for k in set(bp_a) | set(bp_b) if bp_a.get(k) != bp_b.get(k)
+                )
+                suggestion = ("{" + str(diff_keys[0]).rsplit(".", 1)[-1] + "}"
+                              if diff_keys else "{variant}")
+                raise ValueError(
+                    f"PathOutput {str(po.template)!r} resolves to the SAME path "
+                    f"{resolved!r} for multiple variant groups"
+                    + (f" (differing branch_params: {diff_keys})" if diff_keys else "")
+                    + f" — each group's file would overwrite the previous one. "
+                    f"Add a distinguishing placeholder, e.g. '...{suggestion}...' "
+                    f"or '...{{variant}}...'."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -1409,6 +1586,16 @@ def _for_each_prepare(
         [k for k in metadata_iterables if k not in set(current_schema_keys)]
     ))
 
+    # PathOutput variant placeholders: names referenced by templates that are
+    # NOT combo-supplied — these resolve from each expanded combo's variant
+    # group branch_params and are injected below (then stripped before save).
+    _path_placeholder_names, _path_outputs = _pathoutput_placeholders(
+        inputs, set(current_schema_keys) | set(metadata_iterables))
+    _path_missing_placeholders: set = set()
+    if _path_placeholder_names:
+        Log.info(f"[scidb] PathOutput branch_param placeholder(s) detected: "
+                 f"{sorted(_path_placeholder_names)}")
+
     # For each rid_key, map combo_tuple → [rid_values at that combo]
     rid_per_combo: dict = {}
     for rid_col in rid_keys:
@@ -1797,6 +1984,16 @@ def _for_each_prepare(
                     group_rids = _sig_rids_by_combo.get(c, {}).get(ck, {}).get(s, [])
                     if group_rids:
                         rids_by_param["__rid_" + c[len("__vsig_"):]] = group_rids
+                if _path_placeholder_names:
+                    # Group bp = the parsed split-input signatures + any Fixed
+                    # inputs' bp; {variant} digests the signature tuple itself.
+                    _bp_dicts = [json.loads(s) for s in sig_combo]
+                    _bp_dicts += [rid_to_bp.get(r, {})
+                                  for r in fixed_rid_values.values() if r]
+                    _merged, _confl = _merge_group_bp(_bp_dicts)
+                    _inject_path_placeholders(
+                        fc, _path_placeholder_names, _merged, _confl,
+                        "|".join(sig_combo), _path_missing_placeholders)
                 full_combos.append(fc)
                 _combo_to_rids[
                     tuple(str(fc.get(k, "")) for k in _combo_key_cols)
@@ -1881,12 +2078,32 @@ def _for_each_prepare(
                     # Add Fixed input record_ids to combo
                     for fixed_param, fixed_rid in fixed_rid_values.items():
                         full_combo[f"__rid_{fixed_param}"] = fixed_rid
+                    if _path_placeholder_names:
+                        _bp_dicts = [
+                            rid_to_bp.get(full_combo[k], {})
+                            for k in full_combo if str(k).startswith("__rid_")
+                        ]
+                        _merged, _confl = _merge_group_bp(_bp_dicts)
+                        _inject_path_placeholders(
+                            full_combo, _path_placeholder_names, _merged, _confl,
+                            json.dumps(_merged, sort_keys=True, default=str),
+                            _path_missing_placeholders)
                     full_combos.append(full_combo)
             else:
                 full_combo = {**combo}
                 # Add Fixed input record_ids to combo
                 for fixed_param, fixed_rid in fixed_rid_values.items():
                     full_combo[f"__rid_{fixed_param}"] = fixed_rid
+                if _path_placeholder_names:
+                    _bp_dicts = [
+                        rid_to_bp.get(full_combo[k], {})
+                        for k in full_combo if str(k).startswith("__rid_")
+                    ]
+                    _merged, _confl = _merge_group_bp(_bp_dicts)
+                    _inject_path_placeholders(
+                        full_combo, _path_placeholder_names, _merged, _confl,
+                        json.dumps(_merged, sort_keys=True, default=str),
+                        _path_missing_placeholders)
                 full_combos.append(full_combo)
 
         if _pruned_colsel:
@@ -1924,6 +2141,32 @@ def _for_each_prepare(
                 "input's __record_id was lost before variant tracking (Step 11). "
                 "Check the per-input logs above."
             )
+
+    # PathOutput placeholders: warn once per unresolved name (the literal
+    # ``{name}`` stays in the path), then guard against variant-group path
+    # collisions BEFORE anything renders — a shared path means each group's
+    # file silently overwrites the previous one.
+    if _path_missing_placeholders:
+        _msg = (
+            f"[scidb] PathOutput placeholder(s) "
+            f"{sorted('{' + n + '}' for n in _path_missing_placeholders)} did not "
+            f"match any branch_param of this call's variant group(s) — the "
+            f"literal placeholder text stays in the resolved path. Available "
+            f"branch_param keys come from upstream constants (e.g. "
+            f"'bandpass.low_hz', bare-name '{{low_hz}}')."
+        )
+        warnings.warn(_msg, UserWarning, stacklevel=2)
+        Log.warn(_msg)
+    if _path_outputs and full_combos:
+        _colname_columns = None
+        for _spec in inputs.values():
+            _cs = _iterate_column_selection(_spec)
+            if _cs is not None and _cs.columns:
+                _colname_columns = list(_cs.columns)
+                break
+        _guard_pathoutput_collisions(
+            _path_outputs, full_combos, _colname_columns, rid_to_bp,
+            _path_placeholder_names)
 
     # Step 14: Apply pre-combo hook (e.g. skip_computed from scihist): filter out any
     # combos where the hook returns True.
@@ -2000,6 +2243,7 @@ def _for_each_prepare(
         iterated_keys_ordered=_iterated_keys_ordered,
         fixed_rid_values=fixed_rid_values,
         current_schema_keys=current_schema_keys,
+        path_extra_keys=_path_placeholder_names or None,
     )
 
 
@@ -2032,6 +2276,18 @@ def _for_each_save_resolved(
 
     if result_tbl is None:
         return None
+
+    # Strip PathOutput placeholder columns injected at combo expansion: they
+    # exist only so scifor's path resolution can substitute them. Left in,
+    # they would surface in the user-facing table and — worse — be picked up
+    # as dynamic-discriminator branch_params on save (the group's REAL
+    # namespaced bp already inherits via combo_to_rids).
+    if state.path_extra_keys:
+        _extra_cols = [c for c in result_tbl.columns if c in state.path_extra_keys]
+        if _extra_cols:
+            result_tbl = result_tbl.drop(columns=_extra_cols)
+            Log.info(f"[scidb] stripped {len(_extra_cols)} PathOutput placeholder "
+                     f"column(s) from results: {_extra_cols}")
 
     # Step 19: Save results
     if save and outputs and not result_tbl.empty:

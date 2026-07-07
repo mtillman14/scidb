@@ -152,10 +152,12 @@ untouched; classic-xref producers = reportlab + matplotlib), sidecar
 `<artifact>.provenance.json` fallback otherwise. Record-mode stamp in
 `_save_results` (record_id + meta + artifact path coexist there); draft-mode
 stamp in `_for_each_save_resolved`. `read_artifact_stamp`/`stamp_artifact`
-exported. Known limitation: PathOutput templates can't reference
-branch_params, so multiple variant groups at one location share an artifact
-path — last group's stamp wins (future: a vsig placeholder). Tests:
-`scidb/tests/test_artifact_stamp.py`.
+exported. The variant-group path-clobbering limitation was CLOSED 2026-07-07:
+PathOutput templates now take branch_param placeholders (`{low_hz}`,
+`{bandpass.low_hz}`, `{variant}`) with a collision guard that errors before
+rendering — see [plotting-leaf-nodes.md](plotting-leaf-nodes.md) and
+`.claude/plan-pathoutput-variant-placeholders.md`. Tests:
+`scidb/tests/test_artifact_stamp.py`, `scidb/tests/test_pathoutput_variants.py`.
 
 ### D5. Stats vocabulary: integrate csv-stats, no universal key convention — **IMPLEMENTED** (2026-07-06, pending user test run)
 
