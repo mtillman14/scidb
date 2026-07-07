@@ -373,93 +373,22 @@ def for_each(
         Log.info("[scidb] Step 1: no EachOf expansion needed")
 
     # --- Step 1.55/1.56: Endpoint leaf detection (plot_/stat_ prefixes) ---
-    # Endpoint functions are the leaf nodes of a pipeline (figures and
-    # statistics; see docs/claude/endpoints-viz-and-stats-design.md). Both
-    # kinds honor the ``finalized`` draft/record flag (D3): draft (default)
-    # writes nothing to the database.
-    #
-    # plot_: the returned matplotlib Figure is saved to the combo's PathOutput
-    # path and the effective return becomes that path string — stored as a
-    # queryable VARCHAR record in record mode. Drafts still render the file
-    # (the figure IS the thing the user wants to look at).
-    #
-    # stat_: the returned dict (e.g. a csv-stats result) is normalized to a
-    # canonical JSON string — the record's data in record mode. Drafts
-    # pretty-print instead, and resolve any PathOutput to None so downstream
-    # report writers (csv-stats ``filename=None``) skip their artifact.
-    #
-    # Combo metadata injection is enabled for both so endpoint functions may
-    # accept schema keys (subject, trial, …) as kwargs (e.g. for titles).
+    # Policy (detection, PathOutput requirement, stat as_table default, draft
+    # save suppression, warnings) is shared with the MATLAB bridge via
+    # _endpoint_policy — one source of truth for both paths. Only the fn
+    # WRAPPING is language-specific: Python wraps here; MATLAB wraps its own
+    # fn in +scidb/for_each.m. See docs/claude/endpoints-viz-and-stats-design.md.
     _orig_fn_name = getattr(fn, "__name__", "")
-    _endpoint_kind = ("plot" if _orig_fn_name.startswith("plot_")
-                      else "stat" if _orig_fn_name.startswith("stat_") else None)
-    _is_endpoint = _endpoint_kind is not None
-    if _orig_fn_name.startswith("plot_"):
-        from scifor import PathOutput
-        _path_param = next(
-            (name for name, v in inputs.items() if isinstance(v, PathOutput)), None
-        )
-        if _path_param is None:
-            raise ValueError(
-                f"Plotting function '{_orig_fn_name}' (plot_ prefix) requires a "
-                f"PathOutput input naming where to save the figure, e.g. "
-                f"inputs={{..., 'filename': PathOutput('plots/{{subject}}.png')}}."
-            )
+    _endpoint_kind, _path_param, as_table, _save_suppressed = _endpoint_policy(
+        _orig_fn_name, inputs, finalized, as_table)
+    if _endpoint_kind == "plot":
         fn = _make_plot_wrapper(fn, _path_param)
         _inject_combo_metadata = True
-        Log.info(
-            f"[scidb] Step 1.55: '{_orig_fn_name}' detected as plotting function; "
-            f"figure saved to PathOutput input '{_path_param}'"
-            + (", path stored as record" if finalized else " (draft: not recorded)")
-        )
-    elif _orig_fn_name.startswith("stat_"):
-        from scifor import PathOutput
-        _path_param = next(
-            (name for name, v in inputs.items() if isinstance(v, PathOutput)), None
-        )
+    elif _endpoint_kind == "stat":
         fn = _make_stat_wrapper(fn, _path_param, finalized)
         _inject_combo_metadata = True
-        # Statistics run on the long-format table: group/repeated-measures
-        # columns (the schema keys) must reach the function — exactly
-        # csv-stats' input contract. Without as_table, a single-data-column
-        # aggregate is delivered as a bare ndarray with the schema columns
-        # stripped. Default it ON for stat_ functions; an explicit user
-        # as_table (including False) is respected.
-        if as_table is None:
-            as_table = True
-            Log.info("[scidb] Step 1.56: as_table defaulted to True for stat_ function "
-                     "(schema columns delivered for grouping)")
-        Log.info(
-            f"[scidb] Step 1.56: '{_orig_fn_name}' detected as statistics function; "
-            + ("result JSON stored as record" if finalized
-               else "draft: result printed, not recorded")
-            + (f"; PathOutput input '{_path_param}'"
-               + (" resolved normally" if finalized else " resolved to None")
-               if _path_param else "")
-        )
-
-    if _is_endpoint and not finalized:
-        # DRAFT mode (D3): suppress the entire save phase — no records, no
-        # lineage, no graph. The in-memory result table is still returned.
-        # Recording later requires a re-run with finalized=True (drafts leave
-        # no record to promote; endpoints are cheap to re-run by construction).
-        if save:
-            save = False
-        _draft_msg = (
-            f"[draft] {_orig_fn_name}: finalized=False — "
-            f"{'figures rendered' if _orig_fn_name.startswith('plot_') else 'results printed'} "
-            f"but NOT recorded. Pass finalized=True to save with lineage."
-        )
-        print(_draft_msg)
-        Log.info(_draft_msg)
-    elif finalized and not _is_endpoint:
-        _msg = (
-            f"[scidb] finalized=True ignored for '{_orig_fn_name}': the flag "
-            f"only applies to endpoint functions (plot_/stat_ prefixes); "
-            f"processing functions always record."
-        )
-        warnings.warn(_msg, UserWarning, stacklevel=2)
-        Log.warn(_msg)
+    if _save_suppressed and save:
+        save = False
 
     # --- Step 1.6: generates_file detection + skip_computed ---
     # No function wrapping: plain functions flow straight through to scifor, which
@@ -713,8 +642,17 @@ def _pathoutput_placeholders(inputs: dict, exclude_keys: set) -> "tuple[set, lis
 
 
 def _sanitize_path_value(value: Any) -> str:
-    """Path-safe rendering of a branch_param value for filename substitution."""
-    s = str(value)
+    """Path-safe rendering of a branch_param value for filename substitution.
+
+    Integral floats render WITHOUT the trailing ``.0``: MATLAB constants
+    cross the bridge as doubles (``low_hz=20`` arrives as ``20.0``), and the
+    artifact filename must not depend on which language ran the pipeline
+    (``r_20.pdf`` from both, matching MATLAB's ``%g`` and Python-int runs).
+    """
+    if isinstance(value, float) and value.is_integer():
+        s = str(int(value))
+    else:
+        s = str(value)
     for ch in (os.sep, "/", "\x00"):
         s = s.replace(ch, "-")
     return s
@@ -3083,6 +3021,83 @@ def _make_plot_wrapper(fn: Any, path_param: str) -> Any:
     return wrapped
 
 
+def _endpoint_policy(fn_name: str, inputs: dict, finalized: bool, as_table):
+    """Endpoint (plot_/stat_) policy shared by scidb.for_each AND the MATLAB
+    bridge's for_each_prepare — one source of truth for detection, the
+    plot-requires-PathOutput contract, the stat_ as_table default, draft
+    save-suppression, and the finalized warnings. Callers do their own
+    language-specific fn wrapping.
+
+    Returns ``(endpoint_kind, path_param, as_table, save_suppressed)`` where
+    endpoint_kind is "plot" | "stat" | None and path_param names the (first)
+    PathOutput input, if any.
+    """
+    from scifor import PathOutput
+
+    endpoint_kind = ("plot" if fn_name.startswith("plot_")
+                     else "stat" if fn_name.startswith("stat_") else None)
+    path_param = None
+    if endpoint_kind is not None:
+        path_param = next(
+            (name for name, v in inputs.items() if isinstance(v, PathOutput)), None
+        )
+    if endpoint_kind == "plot":
+        if path_param is None:
+            raise ValueError(
+                f"Plotting function '{fn_name}' (plot_ prefix) requires a "
+                f"PathOutput input naming where to save the figure, e.g. "
+                f"inputs={{..., 'filename': PathOutput('plots/{{subject}}.png')}}."
+            )
+        Log.info(
+            f"[scidb] Step 1.55: '{fn_name}' detected as plotting function; "
+            f"figure saved to PathOutput input '{path_param}'"
+            + (", path stored as record" if finalized else " (draft: not recorded)")
+        )
+    elif endpoint_kind == "stat":
+        # Statistics run on the long-format table: group/repeated-measures
+        # columns (the schema keys) must reach the function — exactly
+        # csv-stats' input contract. Without as_table, a single-data-column
+        # aggregate is delivered as a bare ndarray with the schema columns
+        # stripped. Default it ON for stat_ functions; an explicit user
+        # as_table (including False) is respected.
+        if as_table is None:
+            as_table = True
+            Log.info("[scidb] Step 1.56: as_table defaulted to True for stat_ function "
+                     "(schema columns delivered for grouping)")
+        Log.info(
+            f"[scidb] Step 1.56: '{fn_name}' detected as statistics function; "
+            + ("result JSON stored as record" if finalized
+               else "draft: result printed, not recorded")
+            + (f"; PathOutput input '{path_param}'"
+               + (" resolved normally" if finalized else " resolved to None")
+               if path_param else "")
+        )
+
+    save_suppressed = endpoint_kind is not None and not finalized
+    if save_suppressed:
+        # DRAFT mode (D3): suppress the entire save phase — no records, no
+        # lineage, no graph. The in-memory result table is still returned.
+        # Recording later requires a re-run with finalized=True (drafts leave
+        # no record to promote; endpoints are cheap to re-run by construction).
+        _draft_msg = (
+            f"[draft] {fn_name}: finalized=False — "
+            f"{'figures rendered' if endpoint_kind == 'plot' else 'results printed'} "
+            f"but NOT recorded. Pass finalized=True to save with lineage."
+        )
+        print(_draft_msg)
+        Log.info(_draft_msg)
+    elif finalized and endpoint_kind is None:
+        _msg = (
+            f"[scidb] finalized=True ignored for '{fn_name}': the flag "
+            f"only applies to endpoint functions (plot_/stat_ prefixes); "
+            f"processing functions always record."
+        )
+        warnings.warn(_msg, UserWarning, stacklevel=2)
+        Log.warn(_msg)
+
+    return endpoint_kind, path_param, as_table, save_suppressed
+
+
 def _jsonify_stat(obj: Any) -> Any:
     """Recursively convert a stat-result structure to JSON-native types.
 
@@ -3136,36 +3151,60 @@ def _make_stat_wrapper(fn: Any, path_param: "str | None", finalized: bool) -> An
             kwargs[path_param] = None
         result = fn(**kwargs)
 
-        if isinstance(result, str):
-            try:
-                parsed = json.loads(result)
-            except (TypeError, ValueError) as exc:
-                raise TypeError(
-                    f"Statistics function '{getattr(fn, '__name__', 'stat_fn')}' "
-                    f"returned a string that is not valid JSON: {exc}"
-                ) from exc
-        elif isinstance(result, dict):
-            parsed = result
-        else:
-            raise TypeError(
-                f"Statistics function '{getattr(fn, '__name__', 'stat_fn')}' must "
-                f"return a dict (e.g. a csv-stats result) or a JSON string; got "
-                f"{type(result).__name__}."
-            )
-
-        parsed = _jsonify_stat(parsed)
-        if isinstance(parsed, dict):
-            parsed.pop("date", None)
-            if finalized and path_param is not None and kwargs.get(path_param) is not None:
-                parsed["report_path"] = str(kwargs[path_param])
-
-        payload = json.dumps(parsed, sort_keys=True, default=str)
+        report_path = (str(kwargs[path_param])
+                       if finalized and path_param is not None
+                       and kwargs.get(path_param) is not None else None)
+        payload = normalize_stat_payload(
+            result, report_path, finalized,
+            fn_name=getattr(fn, "__name__", "stat_fn"))
         if not finalized:
-            pretty = json.dumps(parsed, indent=2, sort_keys=True, default=str)
+            pretty = json.dumps(json.loads(payload), indent=2, sort_keys=True)
             print(f"[stat draft] {getattr(fn, '__name__', 'stat_fn')}:\n{pretty}")
         return payload
 
     return wrapped
+
+
+def normalize_stat_payload(result: Any, report_path: "str | None",
+                           finalized: bool, fn_name: str = "stat_fn") -> str:
+    """Canonicalize a stat_ result into the stored JSON payload string.
+
+    Shared by the Python stat_ wrapper and the MATLAB bridge
+    (``scimatlab.bridge.normalize_stat_result``) so both paths store
+    byte-identical payloads for the same result — skip_computed's content
+    identity and reproducibility depend on this living in ONE place (MATLAB's
+    ``jsonencode`` differs from ``json.dumps`` in key order and float
+    formatting, so MATLAB results are re-canonicalized here).
+
+    Contract: ``result`` is a dict or a JSON string (anything else raises
+    TypeError); numpy values are converted; the top-level wall-clock ``date``
+    key is STRIPPED (the DB save timestamp is the time authority);
+    ``report_path`` (record mode only) is embedded for artifact discovery.
+    """
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"Statistics function '{fn_name}' "
+                f"returned a string that is not valid JSON: {exc}"
+            ) from exc
+    elif isinstance(result, dict):
+        parsed = result
+    else:
+        raise TypeError(
+            f"Statistics function '{fn_name}' must "
+            f"return a dict (e.g. a csv-stats result) or a JSON string; got "
+            f"{type(result).__name__}."
+        )
+
+    parsed = _jsonify_stat(parsed)
+    if isinstance(parsed, dict):
+        parsed.pop("date", None)
+        if finalized and report_path:
+            parsed["report_path"] = str(report_path)
+
+    return json.dumps(parsed, sort_keys=True, default=str)
 
 
 # ---------------------------------------------------------------------------

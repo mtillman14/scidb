@@ -161,11 +161,45 @@ PathOutput("plots/{subject}_{variant}.png")           # 8-char group digest
   Editing a template changes the call's `__inputs` identity → endpoints
   re-render once. Tests: `scidb/tests/test_pathoutput_variants.py`.
 
+## MATLAB path (D7)
+
+Everything above works from MATLAB with the same shape — the policy,
+normalization, save suppression, stamping, placeholder resolution, and
+collision guard all run Python-side (prepare/save), so correctness lives in
+one place. MATLAB specifics:
+
+```matlab
+scidb.for_each(@plot_timeseries, ...
+    struct('signal', RawSignal(), ...
+           'filename', scifor.PathOutput("plots/{subject}_{low_hz}.png")), ...
+    {PlotFigure()}, finalized=true, subject=["1" "2"], trial=["1" "2" "3"]);
+```
+
+- Endpoint detection needs a **NAMED** `plot_*`/`stat_*` function handle
+  (`func2str(@(x)...)` starts with `@`; a warning fires if `finalized` is
+  passed with an anonymous handle).
+- A `plot_` fn returns a graphics handle → exported via `exportgraphics`
+  (`print -dsvg` for `.svg`) to the combo's pre-resolved path and closed;
+  or returns a path char (saved it itself). Figure handles never cross the
+  bridge — only path strings.
+- A `stat_` fn returns a struct (or JSON char) → `jsonencode` → bridge
+  `normalize_stat_result`, so MATLAB- and Python-run stats store
+  **byte-identical** payloads (cross-language skip_computed works). Draft
+  passes `[]` as the report path.
+- PathOutput branch_param placeholders are resolved **Python-side** during
+  prepare (dotted keys can't be MATLAB struct fields); the finished per-combo
+  paths cross the bridge. Pure-MATLAB `scifor.for_each` calls get native
+  schema-key + `{ColName}` resolution only.
+- `share_limits` (MATLAB port): limits arrive as **trailing positional args**
+  in `share_limits` field order — declare `function f(signal, filename,
+  signal_limits)`; a fn whose `nargin` has no capacity runs unchanged.
+- `scidb.AcrossVariants(X)` mirrors the Python wrapper (builder only; pooling
+  happens in Python prepare).
+
 ## Deliberately out of scope
 
 - Auto-creating `PathOutput` parent directories (must exist).
 - Framework faceting (D2 — delegated to plotting libraries).
-- MATLAB endpoint parity (D7 — stage 4).
 - csv-stats' `data_column="_"` all-columns loop (a `for_columns` analog;
   future).
 

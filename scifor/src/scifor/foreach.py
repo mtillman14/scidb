@@ -117,27 +117,36 @@ def for_each(
         elif _log_fn:
             _log_fn("[scifor] Step 2: no empty lists to resolve (using pre-built combos or explicit values)")
 
-    # Step 3: Validate distribute parameter and resolve target key
+    # Step 3: Validate distribute parameter and resolve target key.
+    # Internal discriminator keys (scidb's __rid_* record-id and __vsig_*
+    # variant-signature schema extensions) are not experimental LEVELS — they
+    # must be invisible to distribute resolution, or an aggregation over a
+    # variant-tracked input would see the discriminator as the deepest key
+    # and refuse to distribute.
     distribute_key = None
     if distribute:
         if _log_fn:
             _log_fn("[scifor] Step 3: validating distribute parameter")
-        iter_keys_in_schema = [k for k in schema_keys if k in metadata_iterables]
+        real_schema_keys = [
+            k for k in schema_keys
+            if "__rid_" not in str(k) and "__vsig_" not in str(k)
+        ]
+        iter_keys_in_schema = [k for k in real_schema_keys if k in metadata_iterables]
         if not iter_keys_in_schema:
             raise ValueError(
                 "distribute=True requires at least one metadata_iterable "
                 "that is a schema key. Call set_schema() or configure_database() first."
             )
         deepest_iterated = iter_keys_in_schema[-1]
-        deepest_idx = schema_keys.index(deepest_iterated)
+        deepest_idx = real_schema_keys.index(deepest_iterated)
 
-        if deepest_idx + 1 >= len(schema_keys):
+        if deepest_idx + 1 >= len(real_schema_keys):
             raise ValueError(
                 f"distribute=True but '{deepest_iterated}' is the deepest schema key. "
                 f"There is no lower level to distribute to. "
-                f"Schema order: {schema_keys}"
+                f"Schema order: {real_schema_keys}"
             )
-        distribute_key = schema_keys[deepest_idx + 1]
+        distribute_key = real_schema_keys[deepest_idx + 1]
         if _log_fn:
             _log_fn(f"[scifor] distribute target resolved: '{distribute_key}' (one level below '{deepest_iterated}')")
     elif _log_fn:

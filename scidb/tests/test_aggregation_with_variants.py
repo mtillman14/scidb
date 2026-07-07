@@ -628,6 +628,32 @@ class TestNoVariantParity:
 
 
 # ---------------------------------------------------------------------------
+# 8b. distribute under aggregation (regression: vsig keys must be invisible
+#     to distribute's schema-level resolution)
+# ---------------------------------------------------------------------------
+
+class TestDistributeWithAggregation:
+    def test_distribute_ignores_vsig_schema_extension(self, db):
+        """Aggregation extends the scifor schema with __vsig_*; distribute
+        must still resolve 'session' (the real level below 'subject') as its
+        target rather than seeing the discriminator as the deepest key.
+        Mirrors MATLAB's test_distribute_from_loaded_variable."""
+        RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01")
+
+        def double_values(signal):
+            return np.asarray(signal).ravel() * 2
+
+        result = for_each(double_values, {"signal": RawSignal}, [Filtered],
+                          subject=["S01"], distribute=True, save=True)
+
+        assert result is not None and len(result) == 3
+        # Row k of [2, 4, 6] lands at session k.
+        for sess, expected in zip(["1", "2", "3"], [2.0, 4.0, 6.0]):
+            rec = Filtered.load(subject="S01", session=sess)
+            assert float(np.asarray(rec.data).ravel()[0]) == expected
+
+
+# ---------------------------------------------------------------------------
 # 9. skip_computed binds variant groups to their consumed-rid sets
 # ---------------------------------------------------------------------------
 

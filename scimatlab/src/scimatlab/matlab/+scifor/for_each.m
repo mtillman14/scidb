@@ -210,27 +210,34 @@ function varargout = for_each(fn, inputs, varargin)
     end
 
     % --- Validate distribute parameter and resolve target key ---
+    % Internal discriminator keys (scidb's __rid_*/__vsig_* schema
+    % extensions, arriving sanitized as x__rid_*/x__vsig_* through the
+    % bridge) are not experimental LEVELS — hide them from distribute
+    % resolution, or an aggregation over a variant-tracked input would see
+    % the discriminator as the deepest key and refuse to distribute.
     distribute_key = '';
     if distribute
-        if isempty(schema_keys)
+        real_schema_keys = schema_keys( ...
+            ~contains(schema_keys, "__rid_") & ~contains(schema_keys, "__vsig_"));
+        if isempty(real_schema_keys)
             error('scifor:for_each', ...
                 'distribute=true requires schema keys. Call set_schema() first.');
         end
 
-        iter_keys_in_schema = schema_keys(ismember(schema_keys, meta_keys));
+        iter_keys_in_schema = real_schema_keys(ismember(real_schema_keys, meta_keys));
         if isempty(iter_keys_in_schema)
             error('scifor:for_each', ...
                 'distribute=true requires at least one metadata_iterable that is a schema key.');
         end
         deepest_iterated = iter_keys_in_schema(end);
-        deepest_idx = find(schema_keys == deepest_iterated, 1);
+        deepest_idx = find(real_schema_keys == deepest_iterated, 1);
 
-        if deepest_idx >= numel(schema_keys)
+        if deepest_idx >= numel(real_schema_keys)
             error('scifor:for_each', ...
                 'distribute=true but ''%s'' is the deepest schema key. There is no lower level to distribute to. Schema order: %s', ...
-                deepest_iterated, strjoin(schema_keys, ', '));
+                deepest_iterated, strjoin(real_schema_keys, ', '));
         end
-        distribute_key = schema_keys(deepest_idx + 1);
+        distribute_key = real_schema_keys(deepest_idx + 1);
     end
 
     % --- Resolve static ColName(tbl) wrappers before the data/constant split.
@@ -471,6 +478,15 @@ function varargout = for_each(fn, inputs, varargin)
         collected_per_output{o} = {};
     end
 
+    % share_limits prepass (port of Python scifor's _compute_shared_limits):
+    % per named input, group its table by the held-fixed schema keys and
+    % compute each group's global numeric [min max] across all data columns.
+    shared_limits_map = struct();
+    if ~isempty(fieldnames(opts.share_limits))
+        shared_limits_map = compute_shared_limits( ...
+            opts.share_limits, inputs, input_names, data_idx, schema_keys);
+    end
+
     for c = 1:numel(combos)
         combo = combos{c};
 
@@ -528,7 +544,21 @@ function varargout = for_each(fn, inputs, varargin)
                 % Constant — pass value directly to user function,
                 % or resolve PathInput if _resolve_pathinput is set
                 val = inputs.(input_names{p});
-                if opts.resolve_pathinput && isa(val, 'scifor.PathInput')
+                if isa(val, 'scifor.PathOutput')
+                    % Output-path template. Prefer the Python-pre-resolved
+                    % per-combo path (scidb bridge path: covers branch_param
+                    % placeholders); fall back to native schema-key
+                    % resolution for pure-MATLAB scifor calls. {ColName}
+                    % stays in the string here; run_column_iteration
+                    % substitutes it per column.
+                    pname = input_names{p};
+                    if isfield(opts.resolved_path_outputs, pname)
+                        paths = opts.resolved_path_outputs.(pname);
+                        loaded{p} = char(string(paths{c}));
+                    else
+                        loaded{p} = val.resolve(metadata);
+                    end
+                elseif opts.resolve_pathinput && isa(val, 'scifor.PathInput')
                     loaded{p} = val.load(meta_nv{:});
                 elseif opts.resolve_pathinput && isa(val, 'scifor.Fixed') && isa(val.data, 'scifor.PathInput')
                     % Fixed(PathInput) — apply fixed overrides, then resolve
@@ -641,6 +671,17 @@ function varargout = for_each(fn, inputs, varargin)
             opts.log_fn(run_msg);
         end
 
+        % share_limits injection: append each named input's group limits as
+        % trailing positional args (Python injects named kwargs; MATLAB has
+        % no kwargs, so the fn declares trailing `<input>_limits` parameters
+        % in share_limits field order). Skipped when the fn's declared arg
+        % count has no capacity (varargin counts as capacity).
+        call_args = loaded;
+        if ~isempty(fieldnames(shared_limits_map))
+            call_args = [loaded, build_limit_args( ...
+                shared_limits_map, metadata, fn, n_inputs)];
+        end
+
         try
             if has_iterate
                 % for_columns: run fn once per column and reassemble into a
@@ -650,17 +691,17 @@ function varargout = for_each(fn, inputs, varargin)
                     as_table_set, input_names)};
             elseif n_outputs == 0
                 % Zero-output function (e.g. plotting side-effects only)
-                fn(loaded{:});
+                fn(call_args{:});
                 result = {};
             elseif n_outputs > 1
                 fn_nargout = nargout(fn);
                 if fn_nargout >= n_outputs || fn_nargout < 0
                     % True multi-output function
                     result = cell(1, n_outputs);
-                    [result{1:n_outputs}] = fn(loaded{:});
+                    [result{1:n_outputs}] = fn(call_args{:});
                 else
                     % Single-output function returning a cell array to unpack
-                    raw = fn(loaded{:});
+                    raw = fn(call_args{:});
                     if iscell(raw) && numel(raw) >= n_outputs
                         result = raw(1:n_outputs);
                     else
@@ -669,7 +710,7 @@ function varargout = for_each(fn, inputs, varargin)
                     end
                 end
             else
-                result = {fn(loaded{:})};
+                result = {fn(call_args{:})};
             end
         catch err
             % Structural for_columns errors are deterministic across combos and
@@ -953,9 +994,15 @@ function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_t
     % Constant positions holding a deferred ColName() marker resolve to the name
     % of the column currently being iterated (recomputed each pass below).
     deferred_colname_positions = [];
+    % Char/string constants carrying a literal {ColName} token (pre-resolved
+    % PathOutput paths keep the token for per-column substitution here).
+    colname_token_positions = [];
     for k = 1:numel(base_args)
         if isa(base_args{k}, 'scifor.ColName') && base_args{k}.is_deferred()
             deferred_colname_positions(end+1) = k; %#ok<AGROW>
+        elseif (ischar(base_args{k}) || isstring(base_args{k})) && ...
+                contains(string(base_args{k}), "{ColName}")
+            colname_token_positions(end+1) = k; %#ok<AGROW>
         end
     end
     out_names = {};
@@ -965,6 +1012,11 @@ function result_tbl = run_column_iteration(fn, base_args, iterate_pos, iterate_t
         call_args = base_args;
         for di = 1:numel(deferred_colname_positions)
             call_args{deferred_colname_positions(di)} = col;
+        end
+        for di = 1:numel(colname_token_positions)
+            k_tok = colname_token_positions(di);
+            call_args{k_tok} = strrep( ...
+                char(string(base_args{k_tok})), '{ColName}', col);
         end
         for pi = 1:numel(iter_positions)
             p = iter_positions(pi);
@@ -1782,6 +1834,8 @@ function [meta_args, opts] = split_options(varargin)
     opts.nest_table_outputs = false;
     opts.resolve_pathinput = true;
     opts.log_fn = [];
+    opts.resolved_path_outputs = struct();
+    opts.share_limits = struct();
 
     meta_args = {};
     i = 1;
@@ -1839,6 +1893,21 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "_resolve_pathinput"
                     opts.resolve_pathinput = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "_resolved_path_outputs"
+                    % {param -> cellstr of per-combo paths}, aligned with
+                    % _all_combos. Python pre-resolves PathOutput templates
+                    % (incl. branch_param placeholders whose dotted names
+                    % cannot be MATLAB struct fields); MATLAB just applies.
+                    opts.resolved_path_outputs = varargin{i+1};
+                    i = i + 2;
+                    continue;
+                case "share_limits"
+                    % struct: input name -> string array of schema keys to
+                    % hold fixed (MATLAB port of Python scifor's
+                    % _compute_shared_limits prepass).
+                    opts.share_limits = varargin{i+1};
                     i = i + 2;
                     continue;
                 case "_log_fn"
@@ -2043,4 +2112,147 @@ function tbl = sort_by_schema_columns(tbl, sort_cols)
     end
     [~, order] = sortrows(sort_matrix);
     tbl = tbl(order, :);
+end
+
+
+% =========================================================================
+% share_limits (MATLAB port of Python scifor's _compute_shared_limits)
+% =========================================================================
+
+function map = compute_shared_limits(share_limits, inputs, input_names, data_idx, schema_keys)
+%COMPUTE_SHARED_LIMITS  Per named input: group its table by the held-fixed
+%   keys and compute each group's global numeric [min max] across all data
+%   columns (flattening array-valued cells). Mirrors the Python prepass.
+    map = struct();
+    sl_names = fieldnames(share_limits);
+    for i = 1:numel(sl_names)
+        name = sl_names{i};
+        idx = find(strcmp(input_names, name), 1);
+        if isempty(idx) || ~data_idx(idx)
+            continue;
+        end
+        spec = inputs.(name);
+        if isa(spec, 'scifor.Fixed')
+            t = spec.data;
+        elseif isa(spec, 'scifor.ColumnSelection')
+            t = spec.data;
+        else
+            t = spec;
+        end
+        if ~istable(t)
+            continue;
+        end
+        gkeys = cellstr(string(share_limits.(name)));
+        present = gkeys(ismember(gkeys, t.Properties.VariableNames));
+        data_cols = setdiff(t.Properties.VariableNames, ...
+            cellstr(string(schema_keys)), 'stable');
+        keep = ~startsWith(string(data_cols), "x__") & ...
+               ~startsWith(string(data_cols), "__");
+        data_cols = data_cols(keep);
+        if isempty(data_cols)
+            continue;
+        end
+        limits = containers.Map('KeyType', 'char', 'ValueType', 'any');
+        if isempty(present)
+            % containers.Map rejects '' as a char key; use a sentinel that
+            % build_limit_args mirrors for the no-group case.
+            [mn, mx] = numeric_extent(t, data_cols);
+            if ~isempty(mn)
+                limits('<all>') = [mn mx];
+            end
+        else
+            keystrs = strings(height(t), 1);
+            for r = 1:height(t)
+                parts = strings(1, numel(present));
+                for g = 1:numel(present)
+                    v = t.(present{g});
+                    parts(g) = string(v(r));
+                end
+                keystrs(r) = strjoin(parts, "|");
+            end
+            ukeys = unique(keystrs, 'stable');
+            for u = 1:numel(ukeys)
+                sub = t(keystrs == ukeys(u), :);
+                [mn, mx] = numeric_extent(sub, data_cols);
+                if ~isempty(mn)
+                    limits(char(ukeys(u))) = [mn mx];
+                end
+            end
+        end
+        entry = struct();
+        entry.group_keys = present;
+        entry.limits = limits;
+        map.(name) = entry;
+    end
+end
+
+
+function [mn, mx] = numeric_extent(t, data_cols)
+%NUMERIC_EXTENT  Global numeric min/max over the named columns of a table,
+%   flattening numeric-array cells; [] when nothing numeric is found.
+    mn = [];
+    mx = [];
+    for i = 1:numel(data_cols)
+        col = t.(data_cols{i});
+        if iscell(col)
+            for r = 1:numel(col)
+                v = col{r};
+                if isnumeric(v) && ~isempty(v)
+                    v = double(v(:));
+                    v = v(~isnan(v));
+                    if isempty(v); continue; end
+                    if isempty(mn); mn = min(v); mx = max(v);
+                    else; mn = min(mn, min(v)); mx = max(mx, max(v));
+                    end
+                end
+            end
+        elseif isnumeric(col) && ~isempty(col)
+            v = double(col(:));
+            v = v(~isnan(v));
+            if isempty(v); continue; end
+            if isempty(mn); mn = min(v); mx = max(v);
+            else; mn = min(mn, min(v)); mx = max(mx, max(v));
+            end
+        end
+    end
+end
+
+
+function args = build_limit_args(map, metadata, fn, n_inputs)
+%BUILD_LIMIT_ARGS  Trailing positional limit args for this combo, in
+%   share_limits field order. Empty when the fn's declared argument count
+%   has no capacity for them (varargin => nargin(fn) < 0 => capacity).
+    args = {};
+    names = fieldnames(map);
+    try
+        cap = nargin(fn);
+    catch
+        cap = -1;
+    end
+    if cap >= 0 && cap < n_inputs + numel(names)
+        return;
+    end
+    for i = 1:numel(names)
+        entry = map.(names{i});
+        present = entry.group_keys;
+        if isempty(present)
+            gkey = '<all>';  % sentinel mirrored from compute_shared_limits
+        else
+            parts = strings(1, numel(present));
+            for g = 1:numel(present)
+                gk = present{g};
+                if isfield(metadata, gk)
+                    parts(g) = string(metadata.(gk));
+                else
+                    parts(g) = "";
+                end
+            end
+            gkey = char(strjoin(parts, "|"));
+        end
+        if ~isempty(gkey) && isKey(entry.limits, gkey)
+            args{end+1} = entry.limits(gkey); %#ok<AGROW>
+        else
+            args{end+1} = []; %#ok<AGROW>
+        end
+    end
 end

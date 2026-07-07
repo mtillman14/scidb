@@ -214,7 +214,7 @@ document the pattern rather than building machinery.
 Good enough for now; an explicit marker (decorator / `for_each` flag) can be
 added later without breaking the prefix convention.
 
-### D7. MATLAB parity strategy — **DECIDED**
+### D7. MATLAB parity strategy — **IMPLEMENTED** (2026-07-07, pending user MATLAB test run)
 
 Principle: **figure handles never cross the bridge; only the path string
 does** (same split as PathInput resolution — MATLAB touches the local
@@ -233,6 +233,38 @@ environment, Python owns correctness).
 - `share_limits` prepass lives in scifor → needs a MATLAB-scifor port when viz
   work lands there (same pattern as the `for_columns` port).
 - Draft/record flag passes through the bridge as a plain parameter.
+
+**As built** (plan: `.claude/plan-matlab-endpoint-parity.md`):
+
+- Endpoint POLICY extracted to `scidb.foreach._endpoint_policy` (one source
+  of truth; `scidb.for_each` and `bridge.for_each_prepare` both call it);
+  stat_ JSON canonicalization extracted to `normalize_stat_payload`, exposed
+  as bridge entry `normalize_stat_result` so MATLAB- and Python-run stats
+  store byte-identical payloads (skip_computed's cross-language identity).
+- `+scifor/PathOutput.m` (new; native `{key}` resolve for pure-MATLAB use);
+  bridge `path_output` kind; **paths pre-resolved Python-side per combo**
+  (`resolved_path_outputs`, aligned with full_combos — dotted branch_param
+  placeholder keys can't be MATLAB struct fields, so finished strings cross
+  instead; `{ColName}` stays for MATLAB's for_columns strrep). Placeholder
+  injection + collision guard run in prepare → MATLAB inherits both.
+- `+scidb/for_each.m`: `finalized` opt; `plot_endpoint_call` (graphics handle
+  → `exportgraphics`/`print -dsvg` + close → path char) and
+  `stat_endpoint_call` (struct → jsonencode → bridge normalize; draft passes
+  `[]` for the report path + pretty-prints) wrappers; anonymous-handle
+  warning (func2str gives '@...', endpoint detection needs NAMED fns).
+- Draft save-suppression happens in `for_each_save` (Python-side, from
+  prepare's cached policy); stamping (D4) inherited via
+  `_for_each_save_resolved(endpoint_kind=...)`.
+- `+scidb/AcrossVariants.m` builder + bridge `across_variants` kind;
+  `__vsig_*` combo keys sanitized at the boundary like `__rid_*`.
+- `share_limits` MATLAB port in `+scifor/for_each.m`
+  (`compute_shared_limits`/`build_limit_args`): trailing positional
+  `<input>_limits` args, gated on `nargin` capacity (weaker than Python's
+  kwarg inspection — documented contract).
+- Tests: `scimatlab/tests/test_bridge_endpoints.py` (Python-side, pytest);
+  MATLAB: `TestForEachPlotEndpoint`, `TestForEachStatEndpoint`,
+  `TestAcrossVariants`, `TestShareLimits` (+ helpers `plot_signal_line`,
+  `plot_self_saving`, `stat_row_count`, `sum_all`, `count_specs`).
 
 ## Reporting surface (the payoff — build last)
 
@@ -270,6 +302,7 @@ Design together (done above), implement staged:
    `scidb/tests/test_artifact_stamp.py`.
 4. **MATLAB parity** (D7) — plot wrapper in MATLAB for_each, bridge flag,
    share_limits port as needed.
+   **DONE** (2026-07-07, pending user MATLAB test run) — see D7 "As built".
 5. **Report/CLI surface.**
 
 ## Remaining open questions

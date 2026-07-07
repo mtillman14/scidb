@@ -141,6 +141,13 @@ def _reconstruct_input_for_keys(spec):
             root = None
         regex_flag = bool(spec.get("regex", False))
         return PathInput(spec["template"], root_folder=root, regex=regex_flag)
+    if kind == "path_output":
+        from scifor import PathOutput
+        return PathOutput(spec["template"])
+    if kind == "across_variants":
+        from scidb.across_variants import AcrossVariants
+        inner = _reconstruct_input_for_keys(spec["inner"])
+        return AcrossVariants(inner)
     return spec
 
 
@@ -394,6 +401,7 @@ def for_each_prepare(
     db=None,
     dry_run: bool = False,
     skip_computed: bool = False,
+    finalized: bool = False,
 ):
     """Bridge entry: run scidb.for_each's prepare phase in Python.
 
@@ -429,6 +437,12 @@ def for_each_prepare(
         in MATLAB's loop. The hook is fed the MATLAB-computed ``fn_hash`` so
         its function-hash comparison matches what the save path stored.
         No-op (with a warning) when no database is available.
+    finalized : bool
+        Endpoint (``plot_``/``stat_`` fn_name prefix) draft/record flag (D3).
+        Policy is computed by scidb's ``_endpoint_policy`` (shared with the
+        Python path): drafts suppress the save phase in ``for_each_save``;
+        stat_ functions default ``as_table`` on. MATLAB does its own fn
+        wrapping using the returned ``endpoint_kind``/``path_param``.
 
     Returns
     -------
@@ -440,6 +454,15 @@ def for_each_prepare(
         extended_metadata_iterables : dict
         fn_name : str
         fn_hash : str
+        endpoint_kind : str          — "plot" | "stat" | "" (non-endpoint)
+        path_param : str             — name of the PathOutput input, or ""
+        as_table_effective : ...     — as_table after endpoint policy (stat_
+                                       defaults it True); MATLAB forwards
+                                       this to its scifor loop
+        resolved_path_outputs : dict — {param: [path_per_combo]} aligned with
+                                       full_combos; ``{ColName}`` tokens are
+                                       left in the strings for MATLAB's
+                                       for_columns loop to substitute
 
     Raises
     ------
@@ -505,6 +528,15 @@ def for_each_prepare(
         as_table_arg = as_table
     else:
         as_table_arg = list(as_table)
+
+    # Endpoint policy (plot_/stat_ prefixes + finalized): shared with the
+    # Python path via scidb's _endpoint_policy — detection, the
+    # plot-requires-PathOutput contract, the stat_ as_table default, draft
+    # save suppression (applied in for_each_save), and warnings. MATLAB does
+    # the language-specific fn wrapping itself from the returned kind.
+    from scidb.foreach import _endpoint_policy
+    endpoint_kind, endpoint_path_param, as_table_arg, save_suppressed = \
+        _endpoint_policy(str(fn_name), inputs, bool(finalized), as_table_arg)
 
     # Where: accept None or a Filter object. (Empty string sometimes
     # arrives from MATLAB when no filter was supplied; treat it as None.)
@@ -657,9 +689,15 @@ def for_each_prepare(
     for fixed_param in state.fixed_rid_values:
         rk = f"__rid_{fixed_param}"
         rid_rename_map.setdefault(rk, _sanitize_rid_key(rk))
-    # Check extended_metadata_iterables for any __rid_* keys (lightweight check)
+    # Aggregation auto-split (D1): combos and DataFrame columns carry
+    # __vsig_* variant-signature discriminators — same leading-underscore
+    # problem as __rid_*, same fix (rid_keys_for_schema holds the vsig
+    # columns in aggregation mode).
+    for k in state.rid_keys_for_schema or []:
+        rid_rename_map.setdefault(k, _sanitize_rid_key(k))
+    # Check extended_metadata_iterables for any __rid_*/__vsig_* keys
     for k in state.extended_metadata_iterables:
-        if k.startswith("__rid_") and k not in rid_rename_map:
+        if k.startswith(("__rid_", "__vsig_")) and k not in rid_rename_map:
             rid_rename_map[k] = _sanitize_rid_key(k)
 
     # Loaded inputs: rename DataFrame columns (and inside wrappers)
@@ -668,9 +706,28 @@ def for_each_prepare(
         for name, val in state.loaded_inputs.items()
     }
 
-    # Full combos: rename keys (single pass with list comprehension)
+    # Pre-resolve PathOutputs per combo Python-side (the PathInput
+    # "Python decides, MATLAB applies" pattern): injected branch_param
+    # placeholder keys (which may be dotted, e.g. ``bandpass.low_hz``) can
+    # never cross as MATLAB struct fields, so the RESOLVED path strings
+    # cross instead, aligned with full_combos. ``{ColName}`` tokens are left
+    # unresolved for MATLAB's for_columns loop (literal replace composes).
+    from scifor import PathOutput as _SciforPathOutput
+    resolved_path_outputs = {}
+    for _name, _spec in inputs.items():
+        if isinstance(_spec, _SciforPathOutput):
+            resolved_path_outputs[_name] = [
+                str(_spec.resolve(combo, None)) for combo in state.full_combos
+            ]
+            assert len(resolved_path_outputs[_name]) == len(state.full_combos)
+
+    # Full combos: rename keys (single pass with list comprehension), and
+    # DROP injected PathOutput placeholder keys — MATLAB never needs them
+    # (paths are pre-resolved above) and dotted names are invalid fields.
+    _path_extras = state.path_extra_keys or set()
     matlab_full_combos = [
-        {rid_rename_map.get(k, k): v for k, v in combo.items()}
+        {rid_rename_map.get(k, k): v for k, v in combo.items()
+         if k not in _path_extras}
         for combo in state.full_combos
     ]
 
@@ -707,6 +764,8 @@ def for_each_prepare(
         "db": db,
         "rid_rename_map": rid_rename_map,
         "where": where,
+        "endpoint_kind": endpoint_kind,
+        "save_suppressed": save_suppressed,
     }
 
     from scidb.log import Log as _BridgeLog
@@ -723,6 +782,10 @@ def for_each_prepare(
         "extended_metadata_iterables": matlab_meta_iters,
         "fn_name": state.fn_name,
         "fn_hash": fn_hash,
+        "endpoint_kind": endpoint_kind or "",
+        "path_param": endpoint_path_param or "",
+        "as_table_effective": as_table_arg,
+        "resolved_path_outputs": resolved_path_outputs,
     }
 
 
@@ -789,6 +852,14 @@ def for_each_describe_loaded_input(val):
             ),
             "regex": bool(getattr(val, "regex", False)),
         }
+    from scifor import PathOutput as _SciforPathOutput
+    if isinstance(val, _SciforPathOutput):
+        # PathOutput crosses as its template; the ACTUAL per-combo values
+        # come from prepare's ``resolved_path_outputs`` (Python pre-resolves
+        # so injected branch_param placeholder keys never cross the bridge).
+        # MATLAB rebuilds scifor.PathOutput(template) as the fallback for
+        # pure-MATLAB resolution.
+        return {"kind": "path_output", "template": str(val.template)}
     return {"kind": "raw", "value": val}
 
 
@@ -837,6 +908,13 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
     outputs = cached["outputs"]
     db = cached["db"]
     rid_rename_map = cached.get("rid_rename_map", {})
+    endpoint_kind = cached.get("endpoint_kind") or None
+    # Endpoint DRAFT (finalized=False): policy computed once in prepare via
+    # _endpoint_policy; the save phase is suppressed here Python-side so
+    # MATLAB never re-implements the rule. Draft artifact stamping still
+    # runs inside _for_each_save_resolved.
+    if cached.get("save_suppressed"):
+        save = False
 
     # Reverse the bridge-boundary sanitization on the way back: MATLAB
     # produced result tables whose columns include the sanitized names
@@ -891,6 +969,7 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
         save=bool(save),
         db=db if db is not None and not isinstance(db, type(None)) else None,
         lineage_fixed_rids=None,
+        endpoint_kind=endpoint_kind,
     )
 
     if introspect and result_tbl is not None and not result_tbl.empty:
@@ -915,6 +994,26 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
             )
 
     return result_tbl
+
+
+def normalize_stat_result(json_str: str, report_path: str = "",
+                          finalized: bool = False,
+                          fn_name: str = "stat_fn") -> str:
+    """Bridge entry: canonicalize a MATLAB stat_ result into the stored
+    JSON payload — the exact bytes the Python stat_ wrapper would store for
+    the same result (``scidb.foreach.normalize_stat_payload``).
+
+    MATLAB's ``jsonencode`` differs from Python's ``json.dumps`` (key order,
+    float formatting), so the MATLAB stat_ wrapper jsonencode's the user's
+    struct and routes it through here; skip_computed's content identity
+    across the two languages depends on this single normalization point.
+    ``report_path`` is "" for none (draft or no PathOutput).
+    """
+    from scidb.foreach import normalize_stat_payload
+    return normalize_stat_payload(
+        str(json_str), str(report_path) or None, bool(finalized),
+        fn_name=str(fn_name),
+    )
 
 
 def pathinput_project_root() -> str:

@@ -34,6 +34,15 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %       db            - Optional DatabaseManager for load/save operations
 %       where         - Optional scidb.Filter for input loading
 %       as_table      - Controls which inputs are passed as full tables
+%       finalized     - Endpoint (plot_/stat_ NAMED functions) draft/record
+%                       flag. Default false = DRAFT: plot_ figures still
+%                       render to their PathOutput path, stat_ results are
+%                       printed, but NOTHING is recorded. Pass true to save
+%                       records with full lineage (+ artifact stamping).
+%       share_limits  - struct: input name -> string array of schema keys to
+%                       hold fixed; each group's [min max] is appended as a
+%                       trailing positional arg (declare `<input>_limits`
+%                       trailing parameters in share_limits field order).
 %       (any other)   - Metadata iterables (numeric or string arrays)
 %
 %   Returns:
@@ -73,6 +82,14 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         end
     else
         fn_hash = '';
+    end
+
+    % Endpoint (plot_/stat_) detection needs a NAMED function handle:
+    % func2str(@(x)...) starts with '@' and can never match the prefix.
+    if opts.finalized && startsWith(fn_name, '@')
+        scidb.Log.warn(['finalized=true passed with an anonymous function ' ...
+            'handle: endpoint detection requires a NAMED plot_*/stat_* ' ...
+            'function, so the flag will be ignored.']);
     end
 
     scidb.Log.info('===== for_each(%s) start =====', fn_name);
@@ -157,7 +174,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
                'as_table', py_as_table, ...
                'db', py_db, ...
                'dry_run', logical(dry_run), ...
-               'skip_computed', logical(opts.skip_computed)));
+               'skip_computed', logical(opts.skip_computed), ...
+               'finalized', logical(opts.finalized)));
     scidb.Log.info('for_each_prepare returned in %.3fs', toc(prep_t0));
 
     % Dry-run: Python ran the scifor.for_each(dry_run=true) call itself
@@ -167,6 +185,53 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     end
 
     handle = int64(prep{'handle'});
+
+    % --- Endpoint policy results (computed Python-side by _endpoint_policy,
+    %     shared with the Python path). MATLAB does the fn WRAPPING below;
+    %     draft save-suppression happens Python-side in for_each_save. ---
+    endpoint_kind = char(prep{'endpoint_kind'});
+    endpoint_path_param = char(prep{'path_param'});
+
+    % as_table after endpoint policy (stat_ defaults it on): forward the
+    % effective value to MATLAB's scifor loop, which does its own table
+    % delivery independent of Python's.
+    as_table_eff = as_table_raw;
+    try
+        v_at = prep{'as_table_effective'};
+        if isa(v_at, 'py.bool') || islogical(v_at)
+            as_table_eff = logical(v_at);
+        elseif isa(v_at, 'py.list')
+            at_cells = cell(v_at);
+            at_strs = strings(1, numel(at_cells));
+            for ati = 1:numel(at_cells)
+                at_strs(ati) = string(char(at_cells{ati}));
+            end
+            as_table_eff = at_strs;
+        end
+    catch
+        % leave as user-supplied on any conversion surprise
+    end
+
+    % Pre-resolved PathOutput paths, aligned with full_combos (Python
+    % resolves branch_param placeholders whose dotted names cannot cross
+    % as MATLAB struct fields; {ColName} stays for the for_columns loop).
+    resolved_paths = struct();
+    try
+        py_rpo = prep{'resolved_path_outputs'};
+        rpo_keys = cell(py.list(py_rpo.keys()));
+        for ri = 1:numel(rpo_keys)
+            k_rpo = char(rpo_keys{ri});
+            vals = cell(py.list(py_rpo{k_rpo}));
+            cs = cell(1, numel(vals));
+            for vi = 1:numel(vals)
+                cs{vi} = char(vals{vi});
+            end
+            resolved_paths.(k_rpo) = cs;
+        end
+    catch rpo_err
+        scidb.Log.warn('for_each: could not convert resolved_path_outputs: %s', ...
+            rpo_err.message);
+    end
 
     % --- Convert prepared inputs to a MATLAB struct for scifor.
     %     Each loaded value may be a DataFrame, a Python scifor.Fixed /
@@ -261,16 +326,49 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         scifor_opts{end+1} = '_resolve_pathinput';
         scifor_opts{end+1} = true;
     end
-    if ~isempty(as_table_raw)
+    if ~isempty(as_table_eff)
         scifor_opts{end+1} = 'as_table';
-        scifor_opts{end+1} = as_table_raw;
+        scifor_opts{end+1} = as_table_eff;
     end
     if opts.distribute
         scifor_opts{end+1} = 'distribute';
         scifor_opts{end+1} = true;
     end
+    if ~isempty(fieldnames(resolved_paths))
+        scifor_opts{end+1} = '_resolved_path_outputs';
+        scifor_opts{end+1} = resolved_paths;
+    end
+    if ~isempty(fieldnames(opts.share_limits))
+        scifor_opts{end+1} = 'share_limits';
+        scifor_opts{end+1} = opts.share_limits;
+    end
     scifor_opts{end+1} = '_log_fn';
     scifor_opts{end+1} = @(msg) scidb.Log.info('%s', msg);
+
+    % --- Endpoint fn wrapping (MATLAB side of Step 1.55/1.56) ---
+    % plot_: a returned graphics handle is exported to the combo's resolved
+    % path and closed (memory bound across combos); the effective return is
+    % the path char, which flows through the bridge save path exactly like
+    % Python's _make_plot_wrapper output (record/lineage/stamping all happen
+    % Python-side). stat_: the returned struct/JSON is canonicalized by the
+    % bridge (normalize_stat_result) so MATLAB- and Python-run stats store
+    % byte-identical payloads.
+    if strcmp(endpoint_kind, 'plot') || strcmp(endpoint_kind, 'stat')
+        endpoint_path_idx = [];
+        if ~isempty(endpoint_path_param)
+            endpoint_path_idx = find(strcmp(input_names, endpoint_path_param), 1);
+        end
+        user_fn = fn;
+        if strcmp(endpoint_kind, 'plot')
+            fn = @(varargin) plot_endpoint_call(user_fn, endpoint_path_idx, ...
+                fn_name, varargin{:});
+        else
+            fn = @(varargin) stat_endpoint_call(user_fn, endpoint_path_idx, ...
+                logical(opts.finalized), fn_name, varargin{:});
+        end
+        scidb.Log.info('for_each(%s): wrapped as %s endpoint (finalized=%d)', ...
+            fn_name, endpoint_kind, opts.finalized);
+    end
 
     % --- MATLAB inner loop: scifor.for_each ---
     scidb.Log.debug('scifor.for_each: %d combo(s), %d input(s), %d output(s)', ...
@@ -768,6 +866,13 @@ function val = build_scifor_input_from_desc(desc)
             % for_columns column name per iteration.
             val = scifor.ColName();
 
+        case 'path_output'
+            % Output-path template. The actual per-combo values come from
+            % prepare's resolved_path_outputs (Python pre-resolves so
+            % branch_param placeholder keys never cross the bridge); the
+            % MATLAB scifor.PathOutput is the native-resolution fallback.
+            val = scifor.PathOutput(char(desc{'template'}));
+
         case 'raw'
             val = scidb.internal.from_python(desc{'value'});
 
@@ -838,6 +943,95 @@ function tf = is_metadata_compatible(val) %#ok<DEFNU>
 end
 
 
+function out = plot_endpoint_call(user_fn, path_idx, fn_name, varargin)
+%PLOT_ENDPOINT_CALL  MATLAB side of the plot_ endpoint wrapper.
+%   Mirrors Python's _make_plot_wrapper: a returned graphics handle is
+%   exported to the combo's resolved PathOutput path and closed; a returned
+%   char/string passes through (the fn saved it itself). The effective
+%   return is always the path char — records, lineage, skip_computed, and
+%   artifact stamping all happen Python-side from that string.
+    r = user_fn(varargin{:});
+    if ischar(r) || isstring(r)
+        out = char(string(r));
+        return;
+    end
+    if ~isempty(path_idx) && path_idx <= numel(varargin)
+        out_path = char(string(varargin{path_idx}));
+    else
+        out_path = '';
+    end
+    if isempty(out_path)
+        error('scidb:for_each', ...
+            ['Plotting function ''%s'' returned a figure but no PathOutput ' ...
+             'path was resolved for this combo.'], fn_name);
+    end
+    if ~isempty(r) && all(isgraphics(r))
+        fig = ancestor(r(1), 'figure');
+        export_endpoint_figure(fig, out_path);
+        close(fig);
+        out = out_path;
+        return;
+    end
+    error('scidb:for_each', ...
+        ['Plotting function ''%s'' must return a graphics handle (figure/' ...
+         'axes) or a path char; got %s.'], fn_name, class(r));
+end
+
+
+function export_endpoint_figure(fig, out_path)
+%EXPORT_ENDPOINT_FIGURE  Save a figure by target extension.
+%   exportgraphics covers raster + PDF; it cannot write SVG, so .svg routes
+%   through print -dsvg.
+    [~, ~, ext] = fileparts(out_path);
+    switch lower(ext)
+        case '.svg'
+            print(fig, '-dsvg', out_path);
+        otherwise
+            exportgraphics(fig, out_path);
+    end
+end
+
+
+function out = stat_endpoint_call(user_fn, path_idx, finalized, fn_name, varargin)
+%STAT_ENDPOINT_CALL  MATLAB side of the stat_ endpoint wrapper.
+%   Mirrors Python's _make_stat_wrapper: in DRAFT mode the resolved
+%   PathOutput arg is replaced with [] (report writers should skip their
+%   artifact) and the result is pretty-printed; the result struct (or JSON
+%   char) is canonicalized by the bridge (normalize_stat_payload) so MATLAB
+%   and Python runs of the same stat store BYTE-IDENTICAL payloads —
+%   skip_computed's cross-language identity depends on that single
+%   normalization point.
+    report_path = '';
+    if ~isempty(path_idx) && path_idx <= numel(varargin)
+        if finalized
+            report_path = char(string(varargin{path_idx}));
+        else
+            varargin{path_idx} = [];
+        end
+    end
+    r = user_fn(varargin{:});
+    if isstruct(r) || isa(r, 'containers.Map')
+        json_str = jsonencode(r);
+    elseif ischar(r) || isstring(r)
+        json_str = char(string(r));
+    else
+        error('scidb:for_each', ...
+            ['Statistics function ''%s'' must return a struct (e.g. a stats ' ...
+             'result) or a JSON char; got %s.'], fn_name, class(r));
+    end
+    out = char(py.scimatlab.bridge.normalize_stat_result( ...
+        json_str, report_path, finalized, fn_name));
+    if ~finalized
+        try
+            pretty = jsonencode(jsondecode(out), 'PrettyPrint', true);
+        catch
+            pretty = out;  % PrettyPrint requires R2021a+; fall back to compact
+        end
+        fprintf('[stat draft] %s:\n%s\n', fn_name, pretty);
+    end
+end
+
+
 function spec = describe_input_for_python(val)
 %DESCRIBE_INPUT_FOR_PYTHON  Build a kind-tagged Python dict describing one
 %   for_each input, for the for_each_prepare bridge.
@@ -860,6 +1054,22 @@ function spec = describe_input_for_python(val)
         spec = py.dict(pyargs('kind', 'fixed', ...
             'inner', inner_desc, ...
             'fixed_metadata', fmeta_py));
+
+    elseif isa(val, 'scidb.AcrossVariants')
+        % AcrossVariants is a prepare-time pooling marker (D1 opt-out):
+        % ship the inner spec; the Python bridge rebuilds
+        % scidb.AcrossVariants(inner), and all pooling/bp-column behavior
+        % happens in Python's Step 12.
+        inner_desc = describe_input_for_python(val.var_type);
+        spec = py.dict(pyargs('kind', 'across_variants', 'inner', inner_desc));
+
+    elseif isa(val, 'scifor.PathOutput')
+        % Output-path template. Python prepare reconstructs a real
+        % scifor.PathOutput so endpoint detection, branch_param placeholder
+        % injection, and the collision guard all run; the finished per-combo
+        % paths come back via resolved_path_outputs.
+        spec = py.dict(pyargs('kind', 'path_output', ...
+            'template', char(val.template)));
 
     elseif isa(val, 'scidb.Variant')
         % Variant is an orthogonal, load-time branch_params filter. Ship the
@@ -947,6 +1157,8 @@ function [meta_args, opts] = split_options(varargin)
     opts.where = [];
     opts.introspect = false;
     opts.skip_computed = false;
+    opts.finalized = false;
+    opts.share_limits = struct();
     opts.fn_name_override = '';
     opts.fn_hash_override = '';
 
@@ -955,7 +1167,8 @@ function [meta_args, opts] = split_options(varargin)
     % with the cases below.
     reserved_opts = ["dryrun", "save", "preload", "astable", "db", ...
                      "parallel", "distribute", "where", "introspect", ...
-                     "skipcomputed", "fnname", "fnhash"];
+                     "skipcomputed", "finalized", "sharelimits", ...
+                     "fnname", "fnhash"];
 
     meta_args = {};
     i = 1;
@@ -1005,6 +1218,12 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2; continue;
                 case "skip_computed"
                     opts.skip_computed = logical(varargin{i+1});
+                    i = i + 2; continue;
+                case "finalized"
+                    opts.finalized = logical(varargin{i+1});
+                    i = i + 2; continue;
+                case "share_limits"
+                    opts.share_limits = varargin{i+1};
                     i = i + 2; continue;
                 case "_fn_name"
                     opts.fn_name_override = char(varargin{i+1});
