@@ -676,7 +676,7 @@ class SciDuck:
         self.dataset_schema = list(dataset_schema)
         self.read_only = bool(read_only)
         self._lock = threading.Lock()
-        logger.info("DuckDB lock ACQUIRED (read_only=%s): %s", self.read_only, self.db_path)
+        logger.debug("DuckDB lock ACQUIRED (read_only=%s): %s", self.read_only, self.db_path)
         self.con = duckdb.connect(self.db_path, read_only=self.read_only)
         if self.read_only:
             self._validate_schema_columns()
@@ -1427,11 +1427,11 @@ class SciDuck:
     def close(self):
         """Close the DuckDB connection."""
         self.con.close()
-        logger.info("DuckDB lock RELEASED: %s", self.db_path)
+        logger.debug("DuckDB lock RELEASED: %s", self.db_path)
 
     def reopen(self):
         """Reopen the DuckDB connection after close(), preserving read_only mode."""
-        logger.info("DuckDB lock ACQUIRED (reopen, read_only=%s): %s",
+        logger.debug("DuckDB lock ACQUIRED (reopen, read_only=%s): %s",
                     getattr(self, "read_only", False), self.db_path)
         self.con = duckdb.connect(str(self.db_path),
                                   read_only=getattr(self, "read_only", False))

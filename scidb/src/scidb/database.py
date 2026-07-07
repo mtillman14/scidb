@@ -472,12 +472,32 @@ def configure_database(
     from .log import Log
     log_path = Path(dataset_db_path).parent / "scidb.log"
     Log.set_path(str(log_path))
+    # Run-context header: makes every log file self-describing (which
+    # versions produced it) when debugging an archived log or a colleague's.
     Log.info(
         f"configure_database: path={dataset_db_path}, "
-        f"schema_keys={list(dataset_schema_keys)}"
+        f"schema_keys={list(dataset_schema_keys)} | {_run_context()}"
     )
 
     return db
+
+
+def _run_context() -> str:
+    """One-line host/version fingerprint for the log header."""
+    import os
+    import platform
+    from importlib import metadata
+
+    versions = []
+    for pkg in ("scidb", "scifor", "sciduckdb", "scilineage", "scistacklog"):
+        try:
+            versions.append(f"{pkg}={metadata.version(pkg)}")
+        except Exception:
+            pass
+    return (
+        f"python={platform.python_version()}, pid={os.getpid()}"
+        + (", " + ", ".join(versions) if versions else "")
+    )
 
 
 def get_database() -> "DatabaseManager":
@@ -944,10 +964,10 @@ class DatabaseManager:
             return [None] * len(data_items)
 
         col_types_str = ", ".join(f"{c}: {t}" for c, t in data_col_types.items())
-        Log.info(f"save_batch({type_name}): {len(data_items)} items, "
-                 f"mode={dtype_meta.get('mode', 'single_column')}, "
-                 f"data: {_describe_data(first_data)}, "
-                 f"DuckDB columns: [{col_types_str}]")
+        Log.debug(f"save_batch({type_name}): {len(data_items)} items, "
+                  f"mode={dtype_meta.get('mode', 'single_column')}, "
+                  f"data: {_describe_data(first_data)}, "
+                  f"DuckDB columns: [{col_types_str}]")
 
         # --- Validate each record against the reference schema ---
         # A single record whose value doesn't fit the batch's columns (empty
@@ -1006,7 +1026,7 @@ class DatabaseManager:
             ''')
             self._create_variable_view(variable_class)
 
-        timings["1_setup"] = time.perf_counter() - t0
+        timings["setup"] = time.perf_counter() - t0
 
         # --- Detect PyArrow fast path for batch insert ---
         # The Arrow path below indexes `data_val[col]` for each column name,
@@ -1055,7 +1075,7 @@ class DatabaseManager:
                 if combo_key not in unique_schema_combos:
                     unique_schema_combos[combo_key] = schema_keys
 
-        timings["2_split_metadata"] = time.perf_counter() - t1
+        timings["split_metadata"] = time.perf_counter() - t1
 
         # Resolve schema_ids for all unique combos (batch)
         t2 = time.perf_counter()
@@ -1063,7 +1083,7 @@ class DatabaseManager:
             {k: {col: _schema_str(v) for col, v in vals.items()}
              for k, vals in unique_schema_combos.items()}
         )
-        timings["3_schema_resolution"] = time.perf_counter() - t2
+        timings["schema_resolution"] = time.perf_counter() - t2
 
         # --- Per-row Python computation (no SQL) ---
         t4 = time.perf_counter()
@@ -1110,7 +1130,7 @@ class DatabaseManager:
                 try:
                     import pandas as _pd_diag
                     if isinstance(data_val, _pd_diag.DataFrame):
-                        Log.info(
+                        Log.debug(
                             f"[content_hash] {type_name}: first-record input is "
                             f"DataFrame columns={list(data_val.columns)} "
                             f"dtypes={[str(d) for d in data_val.dtypes]} "
@@ -1119,7 +1139,7 @@ class DatabaseManager:
                             f"content_hash={content_hash}"
                         )
                     else:
-                        Log.info(
+                        Log.debug(
                             f"[content_hash] {type_name}: first-record input "
                             f"type={type(data_val).__name__} -> "
                             f"content_hash={content_hash}"
@@ -1164,11 +1184,11 @@ class DatabaseManager:
             data_table_rows = _bulk_df_to_storage_rows(_df_bulk, _df_bulk_rids, dtype_meta)
             t4_storage += time.perf_counter() - _t
 
-        timings["4_per_row_hashing"] = time.perf_counter() - t4
-        timings["4a_canonical_hash"] = t4_hash
-        timings["4b_record_id"] = t4_record_id
-        timings["4c_storage_row"] = t4_storage
-        timings["4d_meta_row"] = t4_meta
+        timings["per_row_hashing"] = time.perf_counter() - t4
+        timings["canonical_hash"] = t4_hash
+        timings["record_id"] = t4_record_id
+        timings["storage_row"] = t4_storage
+        timings["meta_row"] = t4_meta
 
         # --- Find which data rows are new (dedup check) ---
         t5 = time.perf_counter()
@@ -1192,7 +1212,7 @@ class DatabaseManager:
             # PRIMARY KEY: ON CONFLICT DO NOTHING handles dedup in the INSERT.
             new_data_rows = data_table_rows
 
-        timings["5_dedup_check"] = time.perf_counter() - t5
+        timings["dedup_check"] = time.perf_counter() - t5
 
         # --- Batch inserts ---
         t6 = time.perf_counter()
@@ -1218,19 +1238,19 @@ class DatabaseManager:
                 arrow_table = pa.table(arrow_data)
                 all_columns = list(arrow_data.keys())
                 col_str = ", ".join(f'"{c}"' for c in all_columns)
-                timings["6a_data_df_create"] = time.perf_counter() - t6a
+                timings["data_df_create"] = time.perf_counter() - t6a
 
                 t6b = time.perf_counter()
                 self._duck.con.execute(
                     f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM arrow_table '
                     f'ON CONFLICT (record_id) DO NOTHING'
                 )
-                timings["6b_data_insert"] = time.perf_counter() - t6b
+                timings["data_insert"] = time.perf_counter() - t6b
             elif new_data_rows:
                 all_columns = ["record_id"] + list(data_col_types.keys())
                 data_df = pd.DataFrame(new_data_rows, columns=all_columns)
                 col_str = ", ".join(f'"{c}"' for c in all_columns)
-                timings["6a_data_df_create"] = time.perf_counter() - t6a
+                timings["data_df_create"] = time.perf_counter() - t6a
 
                 t6b = time.perf_counter()
                 if is_dataframe:
@@ -1242,10 +1262,10 @@ class DatabaseManager:
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df '
                         f'ON CONFLICT (record_id) DO NOTHING'
                     )
-                timings["6b_data_insert"] = time.perf_counter() - t6b
+                timings["data_insert"] = time.perf_counter() - t6b
             else:
-                timings["6a_data_df_create"] = time.perf_counter() - t6a
-                timings["6b_data_insert"] = 0.0
+                timings["data_df_create"] = time.perf_counter() - t6a
+                timings["data_insert"] = 0.0
 
             # Append save-event rows (audit trail — every execution logged).
             # metadata_rows is (record_id, timestamp, variable_name, schema_id,
@@ -1261,7 +1281,7 @@ class DatabaseManager:
                 "SELECT * FROM save_df "
                 "ON CONFLICT (record_id, timestamp) DO NOTHING"
             )
-            timings["6c1_record_save_insert"] = time.perf_counter() - t6c
+            timings["record_save_insert"] = time.perf_counter() - t6c
             # The type/schema/content metadata lives on the bipartite entities table
             # (_record); map metadata_rows to the _record column order.
             t6c2 = time.perf_counter()
@@ -1270,8 +1290,8 @@ class DatabaseManager:
                 self._duck,
                 [(r[0], r[1], r[2], r[3], r[4], r[5], False) for r in metadata_rows],
             )
-            timings["6c2_record_entities_insert"] = time.perf_counter() - t6c2
-            timings["6c_meta_insert"] = time.perf_counter() - t6c
+            timings["record_entities_insert"] = time.perf_counter() - t6c2
+            timings["meta_insert"] = time.perf_counter() - t6c
 
             # Upsert _variables (one row per variable)
             t6d = time.perf_counter()
@@ -1285,11 +1305,11 @@ class DatabaseManager:
                 "ON CONFLICT (variable_name) DO UPDATE SET dtype = excluded.dtype",
                 [type_name, effective_level, json.dumps(dtype_meta), ""],
             )
-            timings["6d_variables_upsert"] = time.perf_counter() - t6d
+            timings["variables_upsert"] = time.perf_counter() - t6d
 
             t6e = time.perf_counter()
             self._duck._commit()
-            timings["6e_commit"] = time.perf_counter() - t6e
+            timings["commit"] = time.perf_counter() - t6e
         except Exception:
             try:
                 self._duck._execute("ROLLBACK")
@@ -1297,7 +1317,7 @@ class DatabaseManager:
                 pass
             raise
 
-        timings["6_batch_inserts"] = time.perf_counter() - t6
+        timings["batch_inserts"] = time.perf_counter() - t6
         timings["total"] = time.perf_counter() - t0
 
         n = len(data_items)
@@ -1472,7 +1492,7 @@ class DatabaseManager:
 
         # Unrecognized version_id → treat as record_id lookup
         if version_id not in ("latest", "all"):
-            Log.info(f"_find_record({type_name}): treating version_id={version_id!r} as record_id")
+            Log.debug(f"_find_record({type_name}): treating version_id={version_id!r} as record_id")
             sql = (
                 f"SELECT {meta_select}, {schema_col_select} "
                 f"{meta_from}"
@@ -1946,7 +1966,7 @@ class DatabaseManager:
         """
         type_name = variable_class.__name__
         user_keys = {k: v for k, v in metadata.items() if not k.startswith("__")}
-        Log.info(f"save_variable({type_name}): metadata={user_keys}")
+        Log.debug(f"save_variable({type_name}): metadata={user_keys}")
 
         raw_data = data.data if isinstance(data, BaseVariable) else data
 
@@ -2739,7 +2759,7 @@ class DatabaseManager:
         """
         type_name = variable_class.__name__
         user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
-        Log.info(f"load({type_name}): metadata={user_summary}")
+        Log.debug(f"load({type_name}): metadata={user_summary}")
         _t_load_all_total = time.perf_counter()
         table_name = self._ensure_registered(variable_class, auto_register=False)
 
@@ -2771,7 +2791,7 @@ class DatabaseManager:
             if branch_params_filter:
                 _n_before = len(records)
                 records = _filter_records_by_branch_params(records, branch_params_filter, self._duck)
-                Log.info(
+                Log.debug(
                     f"load({type_name}): branch_params_filter {branch_params_filter} "
                     f"kept {len(records)}/{_n_before} records"
                 )
@@ -2798,7 +2818,7 @@ class DatabaseManager:
                 return
         t_find = time.perf_counter() - _t_find
 
-        Log.info(f"load({type_name}): found {len(records)} record(s)")
+        Log.debug(f"load({type_name}): found {len(records)} record(s)")
 
         # --- Bulk loading path ---
 

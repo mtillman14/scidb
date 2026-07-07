@@ -124,27 +124,31 @@ classdef TestForEachSchemaFiltering < matlab.unittest.TestCase
             testCase.verifyEqual(numel(all_results), 3);
         end
 
-        function test_info_message_printed(testCase)
-            % Verify [info] message is printed when combos are removed
+        function test_info_message_logged(testCase)
+            % The combo-filtering notice is an INFO record in scidb.log
+            % (console output moved to stderr in the logging redesign, which
+            % evalc cannot capture — assert on the log file instead).
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 2, 'session', 'B');
 
-            output = evalc( ...
-                'scidb.for_each(@double_values, struct(''x'', RawSignal()), {ProcessedSignal()}, ''subject'', [], ''session'', [])');
-            testCase.verifySubstring(output, '[info] filtered');
-            testCase.verifySubstring(output, 'from 4 to 2');
+            scidb.for_each(@double_values, struct('x', RawSignal()), ...
+                {ProcessedSignal()}, 'subject', [], 'session', []);
+            log_text = fileread(char(scidb.Log.get_path()));
+            testCase.verifySubstring(log_text, 'filtered 2 non-existent schema combinations');
+            testCase.verifySubstring(log_text, 'from 4 to 2');
         end
 
         function test_no_info_message_when_nothing_filtered(testCase)
-            % All combos exist — no [info] message
+            % All combos exist — no filtering notice in scidb.log
             RawSignal().save([1 2 3], 'subject', 1, 'session', 'A');
             RawSignal().save([4 5 6], 'subject', 1, 'session', 'B');
             RawSignal().save([7 8 9], 'subject', 2, 'session', 'A');
             RawSignal().save([10 11 12], 'subject', 2, 'session', 'B');
 
-            output = evalc( ...
-                'scidb.for_each(@double_values, struct(''x'', RawSignal()), {ProcessedSignal()}, ''subject'', [], ''session'', [])');
-            testCase.verifyTrue(~contains(output, '[info] filtered'));
+            scidb.for_each(@double_values, struct('x', RawSignal()), ...
+                {ProcessedSignal()}, 'subject', [], 'session', []);
+            log_text = fileread(char(scidb.Log.get_path()));
+            testCase.verifyTrue(~contains(log_text, 'non-existent schema combinations'));
             all_results = ProcessedSignal().load();
             testCase.verifyEqual(numel(all_results), 4);
         end
