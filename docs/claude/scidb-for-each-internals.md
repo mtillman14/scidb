@@ -469,7 +469,7 @@ For each loaded DataFrame input that has a `__record_id` column:
 
 3. **Strip `__branch_params`**: The `__branch_params` column is dropped from all DataFrames. Its information has been captured in `rid_to_bp` and is no longer needed in the DataFrame. Leaving it in would confuse scifor's data-column detection.
 
-### Step 12: Expand combos with record-ID variants (lines 355–458)
+### Step 12: Expand combos with record-ID variants
 
 **The problem this step solves:**
 
@@ -481,19 +481,33 @@ scidb needs to expand each base combo into one combo per variant. If subject 1, 
 
 Later, when scifor filters the DataFrame for each combo, the `__rid_signal` column acts as an additional filter — selecting exactly one row (one variant) per combo.
 
-**But first: aggregation mode detection (lines 368–389):**
+**But first: aggregation mode detection:**
 
 There is one important exception. If you are intentionally *not* iterating over all schema keys — for example, iterating over `subject` but not `session` when the schema is `[subject, session]` — you are performing an aggregation. You *want* the function to receive multiple rows (all sessions for a subject) as a single multi-row DataFrame.
 
-In this case, separating records by variant would defeat the purpose. If you are computing "mean across all sessions for subject 1", you want all rows for subject 1, regardless of which upstream variant they came from. So aggregation mode:
+The detection is simple: if the set of iterated schema keys is a strict subset of all schema keys, enter aggregation mode (`_aggregation_mode` in `foreach.py`). Iterating over *zero* schema keys also qualifies — that is the "grand aggregation" case where the function receives all rows in a single call.
+
+**Aggregation AUTO-SPLITS by branch_param signature (D1, implemented).** Skipping *per-record* rid expansion does not mean pooling variants: if a schema location holds multiple branch_param variants of an input, aggregation runs **one call per distinct branch_params group** — equivalent to the user writing `EachOf(Variant(...), Variant(...))`, but implemented at signature granularity with no per-alternative reload. Pooling distinct variants into one table (the pre-D1 behavior, "variant smushing") double-counted aggregates and destroyed variant identity. Mechanics:
+
+- Each record's `rid_to_bp` dict canonicalizes to a **signature** (sorted-key JSON). Every split input gets a `__vsig_{param}` column (rows → their group's signature) — the same `__`-prefixed-schema-key seam as `__rid_*`, so scifor filters by it but hides it from the user's function.
+- Base combos expand over the observed signature combinations (Cartesian across multi-variant inputs, mirroring full-iteration rid expansion). Single-signature inputs expand 1:1 — **no behavior change when there are no variants**. A split input with no data at a combo expands with the empty signature, so the combo still flows through and skips gracefully.
+- The scifor schema is extended with the `__vsig_*` keys (Step 15) and restored afterward (Step 18), exactly like `__rid_*` keys in full iteration.
+- `_combo_to_rids` is keyed by iterated keys **plus** the `__vsig_*` values (result rows carry the `__vsig_*` columns, so the save path builds the same key), mapping each group to only *its* contributing rids: the save-path branch_params merge is **conflict-free by construction** (the "branch_params key … overwritten" warning no longer fires for split aggregations), and `__upstream` gives each group's output a distinct identity — two groups at one schema location save as two variants, loadable via `branch_param("bandpass", low_hz=20)`-style filters.
+- **Ragged variant groups warn and proceed**: a group covering fewer schema locations than others (e.g. `low_hz=30` computed for only some sessions) aggregates only the rows it has, with a `RAGGED`-labeled `warnings.warn` + `Log.warn` naming the group and missing locations.
+- `introspect=True` surfaces each row's group as `_branch_params_{param}` (parsed from the signature); `__vsig_*` columns are stripped from introspection output.
+
+**`AcrossVariants(X)` — the explicit pooling opt-in** (multiverse / specification-curve analysis, the one legitimate cross-variant use case): loading is identical to the bare input, no `__vsig` column is added, and each namespaced branch_param key (e.g. `bandpass.low_hz`) is attached as an ordinary DataFrame column so the function can group by specification. Collisions with existing data columns warn and preserve the data column. In full-iteration mode `AcrossVariants` is a warned no-op (each combo already sees one variant). It rejects `Merge`/`EachOf`/`ColumnSelection` at construction and carries its own `to_key()` (`AcrossVariants(Filtered)`) so pooled and split runs never collide.
+
+**skip_computed binds groups to their consumed-rid sets.** Aggregation combos carry no `__rid_*` keys, so the per-param staleness comparison in `_should_skip` never fires; instead the gate (`_find_skip_gate_record`) only accepts a candidate whose invocation consumed **exactly** the combo's expected rid set (from `_combo_to_rids`, handed to the hook via the `_agg_binding_ref` attribute filled just before Step 14). This prevents a new variant group from cross-skipping against another group's output, and also fixes a pre-existing hole: an aggregation whose underlying record set *grew* (e.g. a new session) now recomputes instead of silently skipping.
+
+Aggregation mode also still:
 
 - Strips `__rid_*` columns from all DataFrames (the function should not see them)
-- Skips rid expansion entirely
-- Uses `base_combos` directly (no variant disambiguation)
+- Drops schema columns *below* the lowest iterated level when they are entirely NULL (a variable stored at a higher schema level loads with all-NULL columns for finer-grained keys; in aggregation mode those carry no per-row meaning and would clutter the user-facing table / surface as empty cell columns on the MATLAB bridge)
 
-The detection is simple: if the set of iterated schema keys is a strict subset of all schema keys, enter aggregation mode.
+`Variant(var_type, low_hz=20)` (load-time pinning) remains available to run only one group; see [variant-branch-param-pinning.md](variant-branch-param-pinning.md). Design rationale: decision D1 in [endpoints-viz-and-stats-design.md](endpoints-viz-and-stats-design.md). Tests: `scidb/tests/test_aggregation_with_variants.py`.
 
-**Full iteration mode (lines 390–458):**
+**Full iteration mode:**
 
 When all schema keys are being iterated, scidb performs variant expansion:
 

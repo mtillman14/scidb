@@ -46,6 +46,7 @@ from .exceptions import (
 from .foreach import for_each
 from .fixed import Fixed
 from .variant import Variant, branch_param
+from .across_variants import AcrossVariants
 from .merge import Merge
 from .column_selection import ColumnSelection
 from .colname import ColName
@@ -103,6 +104,7 @@ __all__ = [
     "pipeline",
     "Fixed",
     "Variant",
+    "AcrossVariants",
     "branch_param",
     "Merge",
     "ColumnSelection",

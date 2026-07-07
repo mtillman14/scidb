@@ -344,11 +344,13 @@ class TestVariantFixesAggregationSmushing:
             for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
                      subject=["S01"], session=["1", "2"])
 
-        # Without pinning, full aggregation pools all 4 records (2 sessions × 2 variants):
-        # low_hz=20 → 20+20 = 40, low_hz=50 → 50+50 = 100, total 140.
+        # Without pinning, full aggregation AUTO-SPLITS per variant group (D1):
+        # low_hz=20 → 20+20 = 40, low_hz=50 → 50+50 = 100 — one call each.
+        # (Pre-D1 it pooled all 4 records into a single 140.0 "smush".)
         unpinned = for_each(aggregate_sum, {"signal": FilteredEMG}, [Aggregated],
                             save=False)
-        assert unpinned["Aggregated"].iloc[0] == 140.0
+        assert len(unpinned) == 2
+        assert sorted(float(v) for v in unpinned["Aggregated"]) == [40.0, 100.0]
 
         # Pinned to low_hz=20: aggregation only sees the 2 matching records → 40.
         pinned = for_each(aggregate_sum, {"signal": Variant(FilteredEMG, low_hz=20)},

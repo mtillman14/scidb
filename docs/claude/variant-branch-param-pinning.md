@@ -8,8 +8,9 @@ location. Downstream, there was no concise way to say "use *only* the `low_hz=20
 variant of this input":
 
 - A plain input (`FilteredEMG`) loads **all** variants. In per-combo mode this
-  raises `AmbiguousVersionError`; in **aggregation mode** it silently pools every
-  variant into one table ("variant smushing").
+  raises `AmbiguousVersionError`; in **aggregation mode** it historically pooled
+  every variant into one table ("variant smushing" — since fixed by the D1
+  auto-split; see "Out of scope" below).
 - `Fixed(..., session="BL")` overrides **schema metadata**, not branch_params.
 - `where=` filters by **schema-id** / stored `__where` provenance, not by an
   upstream branch_param value.
@@ -147,9 +148,14 @@ Python loader (so correctness lives in one place):
 
 - **Ordering operators** on branch_params (`low_hz > 15`) — needs a richer
   per-input spec than a dict plus an operator-aware matcher.
-- **Auto-grouping aggregation by branch_params** — the deeper fix to foreach
-  Step 12 so variants stay separate *without* explicit pinning. `Variant`
-  mitigates the symptom; this would remove the footgun entirely.
+- ~~**Auto-grouping aggregation by branch_params**~~ — **IMPLEMENTED** (D1,
+  2026-07): aggregation mode now auto-splits by branch_param signature
+  (one call per group, `__vsig_*` discriminator columns), so variants stay
+  separate *without* explicit pinning; `AcrossVariants(X)` is the explicit
+  pooling opt-in. See the aggregation section of
+  [scidb-for-each-internals.md](scidb-for-each-internals.md) and
+  [endpoints-viz-and-stats-design.md](endpoints-viz-and-stats-design.md).
+  `Variant` remains useful to run only ONE group (load-time narrowing).
 
 ## Related
 
