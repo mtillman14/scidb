@@ -385,7 +385,9 @@ def for_each(
     # Combo metadata injection is enabled for both so endpoint functions may
     # accept schema keys (subject, trial, …) as kwargs (e.g. for titles).
     _orig_fn_name = getattr(fn, "__name__", "")
-    _is_endpoint = _orig_fn_name.startswith(("plot_", "stat_"))
+    _endpoint_kind = ("plot" if _orig_fn_name.startswith("plot_")
+                      else "stat" if _orig_fn_name.startswith("stat_") else None)
+    _is_endpoint = _endpoint_kind is not None
     if _orig_fn_name.startswith("plot_"):
         from scifor import PathOutput
         _path_param = next(
@@ -607,7 +609,7 @@ def for_each(
         Log.debug(f"for_each({fn_name}): completed={_run_summary['completed']}, "
                   f"failed={_run_summary['skipped']}, total={_run_summary['total']}")
 
-    # --- Steps 18-19: schema restore + save ---
+    # --- Steps 18-19: schema restore + save (+ endpoint artifact stamping) ---
     result_tbl = _for_each_save_resolved(
         state=state,
         result_tbl=result_tbl,
@@ -617,6 +619,7 @@ def for_each(
         db=db,
         lineage_fixed_rids=_lineage_fixed_rids,
         generates_file=_is_generates_file,
+        endpoint_kind=_endpoint_kind,
     )
 
     if introspect and result_tbl is not None and not result_tbl.empty:
@@ -2010,10 +2013,15 @@ def _for_each_save_resolved(
     db,
     lineage_fixed_rids,
     generates_file: bool = False,
+    endpoint_kind: "str | None" = None,
 ):
     """Run scidb.for_each's Step 18 (schema restore) and Step 19 (save).
 
     Returns ``result_tbl`` unchanged after performing the save side effect.
+    For endpoint runs (``endpoint_kind`` in {"plot", "stat"}), artifacts get a
+    provenance stamp (D4): record mode stamps inside ``_save_results`` (where
+    the record_id is known); draft mode stamps here with the same blob minus
+    the record_id.
     """
     # Step 18: Restore scifor's schema
     if state.rid_keys_for_schema:
@@ -2051,6 +2059,8 @@ def _for_each_save_resolved(
             combo_to_rids_keys=state.iterated_keys_ordered,
             input_selectors=input_selectors,
             generates_file=generates_file,
+            endpoint_kind=endpoint_kind,
+            stamp_param_names=[rc[len("__rid_"):] for rc in (state.rid_keys or [])],
         )
         save_elapsed = time.perf_counter() - save_t0
         Log.info(f"[scidb] Step 19 complete: saved {len(result_tbl)} result(s) in {save_elapsed:.3f}s")
@@ -2060,6 +2070,12 @@ def _for_each_save_resolved(
         Log.info("[scidb] Step 19: skipping save (no outputs specified)")
     elif result_tbl.empty:
         Log.info("[scidb] Step 19: skipping save (result table is empty)")
+
+    # Endpoint DRAFT stamping (D4): the save was suppressed (finalized=False,
+    # or explicit save=False), but draft artifacts get the same provenance
+    # blob a finalized run would embed — draft:true in place of a record_id.
+    if endpoint_kind and not (save and outputs) and not result_tbl.empty:
+        _stamp_draft_endpoint_artifacts(endpoint_kind, result_tbl, state, db)
 
     return result_tbl
 
@@ -2896,6 +2912,151 @@ def _make_stat_wrapper(fn: Any, path_param: "str | None", finalized: bool) -> An
     return wrapped
 
 
+# ---------------------------------------------------------------------------
+# Endpoint artifact provenance stamping (D4)
+# ---------------------------------------------------------------------------
+
+def _endpoint_artifact_path(endpoint_kind: "str | None", data_value: Any) -> "str | None":
+    """The artifact file a result row points at, or None.
+
+    plot_: the output value IS the path string. stat_: the output value is the
+    result JSON; its ``report_path`` (present only in record mode with a
+    PathOutput) names the PDF report. Drafts of stat_ resolve PathOutput to
+    None, so they yield no path — nothing to stamp.
+    """
+    if endpoint_kind == "plot":
+        return data_value if isinstance(data_value, str) and data_value else None
+    if endpoint_kind == "stat" and isinstance(data_value, str):
+        try:
+            parsed = json.loads(data_value)
+        except (ValueError, TypeError):
+            return None
+        rp = parsed.get("report_path") if isinstance(parsed, dict) else None
+        return rp if isinstance(rp, str) and rp else None
+    return None
+
+
+def _stamp_db_name(db: Any) -> "str | None":
+    """Basename of the active database file for the stamp blob."""
+    if db is None:
+        try:
+            from .database import get_database
+            db = get_database()
+        except Exception:
+            return None
+    p = getattr(db, "dataset_db_path", None)
+    return _Path(p).name if p is not None else None
+
+
+def _collapse_upstream_param(key: str, param_names: "list[str]") -> str:
+    """Map an ``__upstream`` key back to its input param name.
+
+    Aggregation stores multiple rids per param as indexed keys
+    (``__rid_df_0``, ``__rid_df_1``, …); the blob groups them under ``df``.
+    """
+    k = key[len("__rid_"):] if str(key).startswith("__rid_") else str(key)
+    if k in param_names:
+        return k
+    for p in sorted(param_names, key=len, reverse=True):
+        if k.startswith(p + "_") and k[len(p) + 1:].isdigit():
+            return p
+    return k
+
+
+def _build_stamp_blob(*, fn_name: str, inputs_map: dict, schema: dict, db: Any,
+                      record_id: "str | None") -> dict:
+    """The provenance blob embedded in endpoint artifacts (D4).
+
+    ``record_id`` is the primary key (the bipartite graph reaches everything
+    else from it); the rest is human-readable redundancy that survives DB
+    loss. Drafts carry the FULL blob with ``draft: true`` in place of the
+    record_id — a draft figure is fully traceable to its exact input records.
+    """
+    blob = {
+        "scidb_stamp": 1,
+        "function": fn_name,
+        "inputs": inputs_map,
+        "schema": schema,
+        "database": _stamp_db_name(db),
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    if record_id is not None:
+        blob["record_id"] = str(record_id)
+    else:
+        blob["draft"] = True
+    return blob
+
+
+def _stamp_inputs_from_meta(meta: dict, param_names: "list[str]") -> dict:
+    """Consumed input rids per param, from save metadata (record mode)."""
+    inputs_map: dict = {}
+    gvb = meta.get("__graph_var_bindings")
+    if gvb:
+        for entry in gvb:
+            param, rid = entry[0], entry[1]
+            if rid is not None:
+                inputs_map.setdefault(str(param), []).append(str(rid))
+        return inputs_map
+    upstream = meta.get("__upstream") or {}
+    if isinstance(upstream, str):
+        try:
+            upstream = json.loads(upstream)
+        except (ValueError, TypeError):
+            upstream = {}
+    for key, rid in upstream.items():
+        if rid is None:
+            continue
+        inputs_map.setdefault(_collapse_upstream_param(key, param_names), []).append(str(rid))
+    return inputs_map
+
+
+def _stamp_draft_endpoint_artifacts(endpoint_kind: str, result_tbl,
+                                    state: "_ForEachState", db: Any) -> None:
+    """Draft-mode stamping pass: the save phase is suppressed, but draft
+    artifacts get the SAME blob a finalized run would embed (decided
+    2026-07-06), with ``draft: true`` in place of the record_id. Runs from
+    ``_for_each_save_resolved``, which executes in both modes.
+    """
+    import pandas as pd
+    from .artifact_stamp import stamp_artifact
+
+    if not state.output_names:
+        return
+    out_name = state.output_names[0]
+    param_names = [rc[len("__rid_"):] for rc in (state.rid_keys or [])]
+    schema_keys = list(state.current_schema_keys or [])
+    stamped = 0
+    for row in result_tbl.to_dict("records"):
+        apath = _endpoint_artifact_path(endpoint_kind, row.get(out_name))
+        if not apath:
+            continue
+        inputs_map: dict = {}
+        for col, val in row.items():
+            if not str(col).startswith("__rid_"):
+                continue
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                continue
+            inputs_map.setdefault(col[len("__rid_"):], []).append(str(val))
+        if not inputs_map and state.combo_to_rids is not None \
+                and state.iterated_keys_ordered is not None:
+            key = tuple(str(row.get(k, "")) for k in state.iterated_keys_ordered)
+            for rid_col, rids in state.combo_to_rids.get(key, {}).items():
+                param = _collapse_upstream_param(rid_col, param_names)
+                inputs_map[param] = [str(r) for r in rids]
+        schema = {
+            k: row[k] for k in schema_keys
+            if k in row and row[k] is not None
+            and not (isinstance(row[k], float) and pd.isna(row[k]))
+        }
+        blob = _build_stamp_blob(fn_name=state.fn_name, inputs_map=inputs_map,
+                                 schema=schema, db=db, record_id=None)
+        stamp_artifact(apath, blob)
+        stamped += 1
+    if stamped:
+        Log.info(f"[artifact-stamp] draft: stamped {stamped} artifact(s) "
+                 f"for {state.fn_name} (full provenance, no record)")
+
+
 def _iterate_column_selection(spec: Any) -> "ColumnSelection | None":
     """Return the iterate-mode ColumnSelection inside a spec (bare or Fixed), else None."""
     if isinstance(spec, ColumnSelection) and spec.iterate:
@@ -3280,6 +3441,8 @@ def _save_results(
     combo_to_rids_keys: "list | None" = None,
     input_selectors: "dict | None" = None,
     generates_file: bool = False,
+    endpoint_kind: "str | None" = None,
+    stamp_param_names: "list | None" = None,
 ) -> None:
     """Save results from the result table to output variable types using batch operations.
 
@@ -3623,6 +3786,26 @@ def _save_results(
                     graph_records.append(_GraphRecord(
                         _out_cls.__name__, _out_sv, output_idx, _rid, _meta,
                     ))
+                    # Endpoint artifact stamping (D4, record mode): the one
+                    # point where the artifact path (in _data), the consumed
+                    # rids (in _meta), and the saved record_id all coexist.
+                    if endpoint_kind:
+                        _apath = _endpoint_artifact_path(endpoint_kind, _data)
+                        if _apath:
+                            from .artifact_stamp import stamp_artifact
+                            _blob = _build_stamp_blob(
+                                fn_name=fn_name,
+                                inputs_map=_stamp_inputs_from_meta(
+                                    _meta, stamp_param_names or []),
+                                schema={
+                                    k: v for k, v in _meta.items()
+                                    if k in schema_keys_set and v is not None
+                                    and not str(k).startswith("__")
+                                },
+                                db=db,
+                                record_id=_rid,
+                            )
+                            stamp_artifact(_apath, _blob)
 
             # Log summary (first few records)
             for i, ((data, meta), rid) in enumerate(zip(items[:3], record_ids[:3])):

@@ -47,6 +47,7 @@ from .foreach import for_each
 from .fixed import Fixed
 from .variant import Variant, branch_param
 from .across_variants import AcrossVariants
+from .artifact_stamp import stamp_artifact, read_artifact_stamp
 from .merge import Merge
 from .column_selection import ColumnSelection
 from .colname import ColName
@@ -105,6 +106,8 @@ __all__ = [
     "Fixed",
     "Variant",
     "AcrossVariants",
+    "stamp_artifact",
+    "read_artifact_stamp",
     "branch_param",
     "Merge",
     "ColumnSelection",

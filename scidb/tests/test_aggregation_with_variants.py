@@ -496,8 +496,15 @@ class TestAcrossVariants:
     def test_across_variants_identity_differs_from_split(self, db):
         assert AcrossVariants(Filtered).to_key() == "AcrossVariants(Filtered)"
 
+    @pytest.mark.filterwarnings("ignore:branch_params key.*overwritten")
     def test_branch_param_column_collision_warns(self, db):
-        """A stored data column named like the bp key warns and is preserved."""
+        """A stored data column named like the bp key warns and is preserved.
+
+        The setup deliberately names a DATA column exactly like the namespaced
+        branch_param key (``bandpass2.low_hz``), so the setup saves themselves
+        fire the (correct) overwritten warning — filtered here; the test's
+        subject is the AcrossVariants collision warning.
+        """
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
 
         def bandpass2(signal, low_hz):

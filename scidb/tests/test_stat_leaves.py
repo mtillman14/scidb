@@ -157,11 +157,16 @@ class TestStatPathOutput:
         assert received["filename"] is None
 
     def test_record_passes_path_and_embeds_report_path(self, db, tmp_path):
+        import matplotlib.pyplot as plt
+
         _seed_step_lengths(db)
         received = {}
 
         def stat_summary(df, filename):
             received["filename"] = filename
+            fig = plt.figure()  # write a real report PDF (as csv-stats would)
+            fig.savefig(str(filename))
+            plt.close(fig)
             return {"test": "demo"}
 
         for_each(stat_summary,
@@ -171,8 +176,14 @@ class TestStatPathOutput:
 
         assert isinstance(received["filename"], str)
         assert received["filename"].endswith("report.pdf")
-        parsed = _json.loads(TTestResult.load().data)
+        rec = TTestResult.load()
+        parsed = _json.loads(rec.data)
         assert parsed["report_path"].endswith("report.pdf")
+
+        # The report artifact carries its embedded provenance stamp (D4).
+        from scidb import read_artifact_stamp
+        blob = read_artifact_stamp(parsed["report_path"])
+        assert blob is not None and blob["record_id"] == rec.record_id
 
 
 # ---------------------------------------------------------------------------

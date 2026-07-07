@@ -28,7 +28,7 @@ def db(tmp_path):
 
 
 class TestData(BaseVariable):
-    pass
+    __test__ = False  # fixture data type, not a test class (silences pytest collection warning)
 
 
 class TestLoadAllOrdering:

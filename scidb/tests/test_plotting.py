@@ -90,6 +90,11 @@ def test_plot_saves_files_and_registers_paths(db, tmp_path):
     assert isinstance(path, str)
     assert path.endswith("1_2.png")
 
+    # (c) The recorded figure carries its embedded provenance stamp (D4).
+    from scidb import read_artifact_stamp
+    blob = read_artifact_stamp(path)
+    assert blob is not None and blob["record_id"] == rec.record_id
+
 
 def test_plot_draft_renders_but_records_nothing(db, tmp_path):
     """Default finalized=False: figure files rendered, NO database writes."""

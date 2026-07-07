@@ -108,14 +108,41 @@ for_each(stat_step_length,
   call. Family-wise p-value correction remains a second-stage step consuming
   `TTestResult.load(as_df=True)` (results are ordinary data).
 
+## Artifact provenance stamping (D4)
+
+Every endpoint artifact gets an embedded JSON provenance blob
+(`scidb/artifact_stamp.py`; `read_artifact_stamp` / `stamp_artifact` exported):
+the artifact's own `record_id`, producing `function`, consumed input
+record_ids per param (`inputs`), the row's `schema` combo, `database` name,
+and `timestamp`. **Drafts embed the full blob with `draft: true` in place of
+the record_id** — a draft figure on disk is fully traceable to its exact
+input records. `stat_` PDF reports (the `report_path` artifact) are stamped
+identically; `stat_` drafts resolve PathOutput to None, so they have no
+artifact.
+
+- Formats (all stdlib-only): PNG `tEXt` chunk, SVG `<metadata>` element,
+  PDF **incremental update** (original bytes untouched; classic-xref
+  producers — reportlab and matplotlib both qualify). Anything else, or a
+  parse failure, falls back to a `<artifact>.provenance.json` **sidecar**
+  (embedded metadata travels with the file; a sidecar can be left behind by
+  a copy — it is strictly the fallback).
+- Stamping lives in the scidb save phase (record mode: inside
+  `_save_results`, where the record_id exists; draft mode: in
+  `_for_each_save_resolved`), never in the renderer — so MATLAB-rendered
+  figures (stage 4) inherit it for free. Failures warn and continue.
+- Known limitation: `PathOutput` templates cannot reference branch_params,
+  so multiple variant groups at one schema location resolve to the SAME
+  artifact path — the last-rendered group's stamp wins. A vsig/branch-param
+  placeholder is future work.
+
 ## Deliberately out of scope
 
 - Auto-creating `PathOutput` parent directories (must exist).
 - Framework faceting (D2 — delegated to plotting libraries).
-- Artifact metadata stamping (D4 — stage 3).
 - MATLAB endpoint parity (D7 — stage 4).
 - csv-stats' `data_column="_"` all-columns loop (a `for_columns` analog;
   future).
+- `PathOutput` placeholders for branch_params / variant groups (see above).
 
 ## Tests
 

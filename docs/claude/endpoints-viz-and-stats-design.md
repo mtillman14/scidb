@@ -125,26 +125,37 @@ one thing a plotting library working on a single figure cannot do.
   `finalized=False` (default) = draft, `finalized=True` = record. Passed
   through the MATLAB bridge as a plain flag.
 
-### D4. Artifact-embedded provenance: figure record_id + redundancy — **DECIDED**
+### D4. Artifact-embedded provenance: figure record_id + redundancy — **IMPLEMENTED** (2026-07-06, pending user test run)
 
-Embed a small JSON blob in the figure file:
+Embed a small JSON blob in the artifact file — **both** endpoint kinds:
+`plot_` figures AND `stat_` PDF reports (the `report_path` artifact):
 
-- `record_id` of the figure's own DB record — the primary key; via the
+- `record_id` of the artifact's own DB record — the primary key; via the
   bipartite provenance graph it reaches the producing invocation, function
   hash, input record_ids, and branch_params. Embedding derived hashes as
   primary keys would be redundant indirection.
 - Human-readable redundancy (survives DB loss/detachment): producing function
-  name, **input record_ids** (the data in the figure), database filename,
-  timestamp.
-- Draft renders have no record → stamp `draft: true` + function name + input
-  record_ids only.
+  name, **input record_ids** (the data in the figure), the schema combo,
+  database filename, timestamp.
+- Draft renders have no record → the **FULL blob** with `draft: true` in
+  place of the record_id (decided 2026-07-06; supersedes the earlier
+  minimal-draft idea) — a draft figure is fully traceable to its exact input
+  records. `stat_` drafts resolve PathOutput to None → no artifact to stamp.
 
 **Implementation locus: the scidb save path (Python), not the renderer.**
-PNG `tEXt` chunk insertion is small and dependency-free; it is the correct
-scistack layer (CLAUDE.md NOTE 3); and it works identically for
-MATLAB-rendered figures, whose path crosses the bridge anyway
-(`exportgraphics` cannot write custom metadata). PNG first; SVG (XML) easy;
-PDF later if needed.
+It is the correct scistack layer (CLAUDE.md NOTE 3); the record_id only
+exists after the save; and it works identically for MATLAB-rendered figures,
+whose path crosses the bridge anyway (`exportgraphics` cannot write custom
+metadata). As built (`scidb/artifact_stamp.py`, all stdlib): PNG `tEXt`
+chunk, SVG `<metadata>` element, PDF incremental update (original bytes
+untouched; classic-xref producers = reportlab + matplotlib), sidecar
+`<artifact>.provenance.json` fallback otherwise. Record-mode stamp in
+`_save_results` (record_id + meta + artifact path coexist there); draft-mode
+stamp in `_for_each_save_resolved`. `read_artifact_stamp`/`stamp_artifact`
+exported. Known limitation: PathOutput templates can't reference
+branch_params, so multiple variant groups at one location share an artifact
+path — last group's stamp wins (future: a vsig placeholder). Tests:
+`scidb/tests/test_artifact_stamp.py`.
 
 ### D5. Stats vocabulary: integrate csv-stats, no universal key convention — **IMPLEMENTED** (2026-07-06, pending user test run)
 
@@ -251,6 +262,10 @@ Design together (done above), implement staged:
    [plotting-leaf-nodes.md](plotting-leaf-nodes.md) (now covers both kinds).
 3. **Viz enhancements** — artifact metadata stamping (D4). No faceting work
    (D2). (`finalized` for `plot_` landed with stage 2.)
+   **DONE** (2026-07-06, pending user test run): `artifact_stamp.py`
+   (PNG/SVG/PDF + sidecar), record- and draft-mode stamping passes, full-blob
+   drafts. Plan: `.claude/plan-artifact-provenance-stamp.md`; tests:
+   `scidb/tests/test_artifact_stamp.py`.
 4. **MATLAB parity** (D7) — plot wrapper in MATLAB for_each, bridge flag,
    share_limits port as needed.
 5. **Report/CLI surface.**
