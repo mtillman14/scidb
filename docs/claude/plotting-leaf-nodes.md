@@ -1,31 +1,45 @@
-# Plotting leaf nodes (`plot_` functions)
+# Endpoint leaf nodes: `plot_` and `stat_` functions, and `finalized`
 
 Plots and statistics are the **leaf nodes** of a processing pipeline: they
-consume saved variables and emit an artifact (an image file) rather than new
-data to process further. scidb gives plotting functions first-class support so
-they participate in the same `for_each` iteration, lineage, and `skip_computed`
-machinery as any other step — while storing the plot's **path**, not its bytes.
+consume saved variables and emit a figure or a statistical result rather than
+data to process further. scidb gives both first-class support so they
+participate in the same `for_each` iteration, aggregation auto-split, lineage,
+and `skip_computed` machinery as any other step. Design decisions: D2–D5 in
+[endpoints-viz-and-stats-design.md](endpoints-viz-and-stats-design.md).
 
-## Authoring a plot function
+Detection is by name prefix (`foreach.py` Steps 1.55/1.56): `plot_*` is a
+plotting leaf, `stat_*` a statistics leaf.
 
-A function is treated as a plotting leaf when its name starts with `plot_`.
-It must be given a `PathOutput` input naming where the figure goes, and it
-returns a matplotlib `Figure`:
+## `finalized` — draft vs. record (D3)
+
+Both endpoint kinds honor `for_each(..., finalized: bool)`:
+
+- **`finalized=False` (DEFAULT — draft):** nothing is written to the database
+  (no records, no lineage, no graph; the save phase is suppressed wholesale).
+  The in-memory result table is still returned. A `plot_` figure IS still
+  rendered to its path — looking at it is the point of a draft — while a
+  `stat_` result is pretty-printed to the console and any `PathOutput`
+  resolves to `None` (so e.g. csv-stats' `filename=None` contract disables
+  its PDF report). Style-tweak and explore freely: zero DB clutter.
+- **`finalized=True` (record):** outputs saved as queryable records with full
+  provenance; `skip_computed` works. Switching a draft to a record **requires
+  a re-run** — drafts leave no record to promote, endpoints are cheap to
+  re-run by construction, and the re-run guarantees the record reflects
+  exactly the code+data that produced it.
+- Drafts never skip (`skip_computed` has no record to gate against).
+- Passing `finalized=True` with a non-endpoint function warns and is ignored
+  (processing functions always record).
+
+## Plotting leaves (`plot_`)
+
+A `plot_` function must be given a `PathOutput` input naming where the figure
+goes (required — raises without it), and returns a matplotlib `Figure`:
 
 ```python
-from scidb import for_each, PathOutput, BaseVariable
-
-class PlotFigure(BaseVariable):
-    schema_version = 1
-
 def plot_timeseries(signal, filename, subject=None, signal_limits=None):
     fig, ax = plt.subplots()
     ax.plot(signal)
-    if subject is not None:
-        ax.set_title(f"subject {subject}")
-    if signal_limits is not None:
-        ax.set_ylim(*signal_limits)
-    return fig            # framework saves + closes it, stores the path
+    return fig            # framework saves + closes it
 
 for_each(
     plot_timeseries,
@@ -33,60 +47,81 @@ for_each(
             "filename": PathOutput("plots/{subject}_{trial}.png")},
     outputs=[PlotFigure],
     share_limits={"signal": ["subject"]},
+    finalized=True,                       # record; omit while iterating on style
     subject=["1", "2"], trial=["1", "2", "3"],
 )
 
 PlotFigure.load(subject="1", trial="2")   # -> "plots/1_2.png"
 ```
 
-## What the framework does
+- **Figure wrapper** (`_make_plot_wrapper`): saves the returned Figure to the
+  resolved `PathOutput` path (`fig.savefig`), **closes** it (bounds memory
+  across combos), and returns the path **string** — which in record mode flows
+  through the normal lineage + save path as a queryable `VARCHAR` record. A
+  `str`/`Path` return passes through (fn saved it itself).
+- **`share_limits={"input": [keys_to_hold_fixed]}`** — scifor prepass giving
+  every combo in a group a shared `{input}_limits=(min, max)` kwarg (only
+  injected if the signature accepts it). General, not plot-specific.
+- Faceting is deliberately NOT framework work (D2): non-iterated schema keys
+  arrive as DataFrame columns, which is exactly seaborn's faceting contract.
 
-Detection and wrapping live in `scidb/foreach.py`:
+## Statistics leaves (`stat_`)
 
-- **Detection** (`Step 1.55`): `fn.__name__.startswith("plot_")`. The single
-  `PathOutput` input is located; if absent, `for_each` raises.
-- **Figure wrapper** (`_make_plot_wrapper`): wraps the user fn so that, per
-  combo, it calls the fn, saves the returned Figure to the resolved
-  `PathOutput` path (`fig.savefig`), **closes** the figure (`plt.close`, to
-  bound memory across many combos), and returns the path **string**. If the fn
-  already returns a `str`/`Path` (it saved the figure itself), that passes
-  through. The wrapper uses `functools.wraps`, so the original name, signature,
-  and `__wrapped__` are preserved for combo-metadata injection and function
-  hashing.
-- **Combo-metadata injection** is enabled for plot functions, so they may
-  accept schema keys (`subject`, `trial`, …) as kwargs (guarded — only injected
-  if the signature accepts them).
-- **Storage**: the returned path string flows through the *normal* lineage +
-  save path (not the lineage-only `generated:` mode), so each plot is a
-  queryable `VARCHAR` record with full call-site provenance and a
-  `lineage_hash`. `skip_computed=True` therefore skips re-rendering a plot whose
-  inputs/function are unchanged.
+A `stat_` function returns a **dict** (e.g. a csv-stats result) or a ready
+JSON **string**; anything else raises `TypeError`. The wrapper
+(`_make_stat_wrapper`) normalizes numpy values, **strips the top-level
+`"date"` key** (csv-stats stamps a wall-clock timestamp; identical reruns
+must store identical bytes — the DB save timestamp is the time authority),
+and stores a canonical JSON string as the record data.
 
-## Shared axis limits (`share_limits`)
+```python
+class StepLengthTTest(BaseVariable):
+    pass
 
-`share_limits={"input": [schema_keys_to_hold_fixed]}` makes every combo in a
-group share an axis range. The prepass lives in **scifor** (`scifor/foreach.py`,
-`_compute_shared_limits`), which holds the loaded DataFrames and combos:
+def stat_step_length(df, filename):
+    from csvstats.ttest import ttest_dep
+    return ttest_dep(df, "session", "StepLength",
+                     repeated_measures_column="subject", filename=filename)
 
-- Group the named input's data by the held-fixed keys (e.g. `subject`).
-- Compute each group's global numeric `(min, max)` across all *other* iterated
-  keys (e.g. across every `trial`), flattening array-valued cells.
-- Inject `{input}_limits=(min, max)` into each call — **only if** the function
-  accepts that keyword (or has `**kwargs`).
+for_each(stat_step_length,
+         inputs={"df": StepLength,
+                 "filename": PathOutput("reports/step_length_ttest.pdf")},
+         outputs=[StepLengthTTest],
+         finalized=True)      # no iteration kwargs: grand aggregation fans in
+```
 
-So `share_limits={"signal": ["subject"]}` gives every per-trial plot within a
-subject the same `signal_limits`, and a different one per subject. It is general
-(not plot-specific): any function accepting `{input}_limits` receives it.
+- **`as_table` defaults ON for `stat_`**: statistics need the long-format
+  table — schema keys (subject, session, …) as ordinary columns, which is
+  exactly csv-stats' `group_column`/`repeated_measures_column` contract.
+  An explicit user `as_table` (including `False`) is respected.
+- **`PathOutput` is OPTIONAL for `stat_`** (unlike `plot_`): the record is
+  the deliverable; the PDF report is a sidecar. In record mode the resolved
+  path passes through to the fn (hand it to csv-stats' `filename=`) and is
+  embedded as `"report_path"` in the stored JSON so the artifact is
+  discoverable from the record. In draft mode it resolves to `None`.
+- **No csv-stats dependency in scidb**: the integration is convention-level —
+  any dict works. csv-stats (import path `csvstats`) is the recommended
+  companion; its results are exercised in an `importorskip` test.
+- **Variant auto-split composes** (D1): a `stat_` over an input with multiple
+  upstream branch_param variants runs **one test per variant group**, each
+  record carrying its group's branch_params — multiverse comparison in one
+  call. Family-wise p-value correction remains a second-stage step consuming
+  `TTestResult.load(as_df=True)` (results are ordinary data).
 
-## Deliberately out of scope (v1)
+## Deliberately out of scope
 
-- **Auto-creating output directories** — the `PathOutput` parent dir must
-  exist; `fig.savefig` errors otherwise.
-- **`stat_` functions** — a parallel convention for statistics leaves is a
-  natural follow-on but not implemented.
+- Auto-creating `PathOutput` parent directories (must exist).
+- Framework faceting (D2 — delegated to plotting libraries).
+- Artifact metadata stamping (D4 — stage 3).
+- MATLAB endpoint parity (D7 — stage 4).
+- csv-stats' `data_column="_"` all-columns loop (a `for_columns` analog;
+  future).
 
 ## Tests
 
-`scidb/tests/test_plotting.py`: files written + path records queryable;
-`share_limits` produces identical per-subject limits that differ across
-subjects; a second identical run skips re-rendering via `skip_computed`.
+`scidb/tests/test_plotting.py` — files written + path records queryable
+(finalized), draft renders-without-recording, `share_limits`, skip_computed.
+`scidb/tests/test_stat_leaves.py` — JSON record + date-stripping + numpy
+normalization, draft print/no-write, PathOutput None/report_path, return
+contract, one-stat-per-variant-group, skip_computed, non-endpoint warning,
+csv-stats end-to-end (importorskip).

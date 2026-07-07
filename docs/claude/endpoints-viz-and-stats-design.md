@@ -104,7 +104,7 @@ affordance (shared axis ranges across separately-iterated figures) and may
 later grow siblings (shared color scales) — coordination *across* files is the
 one thing a plotting library working on a single figure cannot do.
 
-### D3. Draft vs. record mode; draft default; record requires a re-run — **DECIDED**
+### D3. Draft vs. record mode; draft default; record requires a re-run — **IMPLEMENTED** (2026-07-06, pending user test run)
 
 - **Draft mode (default):** render the figure to its path (so the user can
   look at it), write **nothing** to the DB — no record, no lineage. Styling
@@ -146,7 +146,7 @@ MATLAB-rendered figures, whose path crosses the bridge anyway
 (`exportgraphics` cannot write custom metadata). PNG first; SVG (XML) easy;
 PDF later if needed.
 
-### D5. Stats vocabulary: integrate csv-stats, no universal key convention — **DECIDED**
+### D5. Stats vocabulary: integrate csv-stats, no universal key convention — **IMPLEMENTED** (2026-07-06, pending user test run)
 
 No lowest-common-denominator key convention (`statistic`/`p`/`df`/...) — there
 are too many test types for one schema. Instead integrate the user's
@@ -162,9 +162,34 @@ are too many test types for one schema. Instead integrate the user's
   fields vary by test type — store the string as the record's data. Fitted
   model objects are **not** stored (summary-only) until a concrete need
   appears.
-- **TODO:** capture csv-stats' actual result-object API here before
-  implementing — the user will provide it when the stats phase starts (the
-  format changes based on the test; PyPI unreachable from the dev sandbox).
+- **csv-stats API (captured 2026-07-06 from v0.1.10, installed in
+  `/workspace/.venv/lib/python3.11/site-packages/csvstats/`):**
+  - Import path is **`csvstats`** (the README's `csv_stats` is a docs bug).
+  - Functions: `ttest_ind(data, group_column, data_column, filename=...,
+    render_plot=False, popmean=0)`, `ttest_dep(..., repeated_measures_column,
+    ...)`, `anova1way/2way/3way(...)`. All return a plain **dict** with
+    test-specific keys (`test`, `t_statistic`/`F`, `p`/`p_value` (rounded 4),
+    `df_between`/`df_within`, nested `summary_statistics` {grouped, overall},
+    assumption tests (normality / homogeneity / sphericity), `post_hoc`,
+    `date`).
+  - **`data` accepts a DataFrame directly** — the aggregated long-format
+    DataFrame from for_each (schema keys as columns) is exactly its input
+    contract: schema keys serve as `group_column` /
+    `repeated_measures_column`. D1's auto-split keeps variants out of the
+    test. Near-zero glue needed.
+  - **Side effect: `filename` defaults to a PDF name, NOT None** — by default
+    it writes a rendered-JSON PDF report to CWD (`.json` filename writes JSON;
+    `filename=None` disables). The `stat_` wrapper must pass `filename=None`
+    in draft mode and route the PDF through `PathOutput` in record mode (the
+    PDF is an artifact exactly like a `plot_` figure; the dict is the data
+    record). `convert_types` handles numpy → JSON.
+  - `data_column="_"` loops over all columns (natural `for_columns` analog).
+  - **`result["date"]` is a wall-clock timestamp inside the result dict** —
+    nondeterministic across identical reruns; the `stat_` save path should
+    strip or segregate it so stored results are reproducible.
+  - Upstream bugs found while reading (fix in csv-stats, not scistack):
+    `utils/save_stats.py::dict_to_json` calls `json.dump(f, result)` with
+    swapped arguments (crashes for `.json` filenames); README import path.
 
 Family-wise operations remain inherently two-stage: run tests per combo →
 correct across the family. Because results are ordinary data, this is
@@ -217,8 +242,15 @@ Design together (done above), implement staged:
 2. **`stat_` leaves** — detection, draft-print/record behavior, csv-stats
    integration (after capturing its API), tests. Small delta; stress-tests
    endpoint semantics with a second consumer immediately.
-3. **Viz enhancements** — draft/record mode for `plot_` (D3), artifact
-   metadata stamping (D4). No faceting work (D2).
+   **DONE** (2026-07-06, pending user test run): Step 1.56 detection,
+   `_make_stat_wrapper` (JSON normalization, date-stripping, report_path),
+   `finalized` flag implemented for BOTH `stat_` and `plot_` (D3 pulled
+   forward from stage 3 since the flag is shared), `as_table` defaulted on
+   for `stat_`. Plan: `.claude/plan-stat-leaves.md`; tests:
+   `scidb/tests/test_stat_leaves.py` + updated `test_plotting.py`; docs:
+   [plotting-leaf-nodes.md](plotting-leaf-nodes.md) (now covers both kinds).
+3. **Viz enhancements** — artifact metadata stamping (D4). No faceting work
+   (D2). (`finalized` for `plot_` landed with stage 2.)
 4. **MATLAB parity** (D7) — plot wrapper in MATLAB for_each, bridge flag,
    share_limits port as needed.
 5. **Report/CLI surface.**

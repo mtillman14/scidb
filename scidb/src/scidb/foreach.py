@@ -187,6 +187,7 @@ def for_each(
     schema_filter: "dict[str, list] | None" = None,
     schema_level: "list[str] | None" = None,
     share_limits: "dict[str, list[str]] | None" = None,
+    finalized: bool = False,
     _inject_combo_metadata: bool = False,
     _pre_combo_hook: "Callable[[dict], bool] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
@@ -236,6 +237,17 @@ def for_each(
                     be combined with explicit **metadata_iterables.
         schema_level: Optional list of schema keys to iterate when using
                     schema_filter. Defaults to all schema keys.
+        finalized: Endpoint (``plot_``/``stat_``) functions only. Default False
+                    = DRAFT mode: nothing is written to the database — a
+                    ``plot_`` figure is still rendered to its PathOutput path,
+                    a ``stat_`` result is pretty-printed (and any PathOutput is
+                    resolved to None so e.g. csv-stats skips its PDF report).
+                    Pass True to RECORD: outputs saved with full lineage,
+                    skip_computed honored; a ``stat_`` PathOutput is resolved
+                    normally and its path embedded as ``report_path`` in the
+                    stored JSON. Recording requires a re-run of the endpoint
+                    (drafts leave no record to promote). Warned and ignored
+                    for non-endpoint functions.
         _inject_combo_metadata: If True, inject current-combo metadata keys
                     as extra kwargs to fn (used by scihist for generates_file).
         _pre_combo_hook: Internal use only. Called with each fully-expanded
@@ -335,6 +347,7 @@ def for_each(
                 track_lineage=track_lineage,
                 skip_computed=skip_computed,
                 share_limits=share_limits,
+                finalized=finalized,
                 _inject_combo_metadata=_inject_combo_metadata,
                 _pre_combo_hook=_pre_combo_hook,
                 _progress_fn=_progress_fn,
@@ -353,14 +366,26 @@ def for_each(
     else:
         Log.info("[scidb] Step 1: no EachOf expansion needed")
 
-    # --- Step 1.55: Plotting leaf detection (plot_ prefix) ---
-    # A function whose name starts with "plot_" is a plotting leaf node. Wrap it
-    # so its returned matplotlib Figure is saved to the combo's PathOutput path
-    # and the function's effective return becomes that path string — which then
-    # flows through the normal lineage + save path and is stored as a queryable
-    # VARCHAR record. Combo metadata injection is enabled so plot functions may
+    # --- Step 1.55/1.56: Endpoint leaf detection (plot_/stat_ prefixes) ---
+    # Endpoint functions are the leaf nodes of a pipeline (figures and
+    # statistics; see docs/claude/endpoints-viz-and-stats-design.md). Both
+    # kinds honor the ``finalized`` draft/record flag (D3): draft (default)
+    # writes nothing to the database.
+    #
+    # plot_: the returned matplotlib Figure is saved to the combo's PathOutput
+    # path and the effective return becomes that path string — stored as a
+    # queryable VARCHAR record in record mode. Drafts still render the file
+    # (the figure IS the thing the user wants to look at).
+    #
+    # stat_: the returned dict (e.g. a csv-stats result) is normalized to a
+    # canonical JSON string — the record's data in record mode. Drafts
+    # pretty-print instead, and resolve any PathOutput to None so downstream
+    # report writers (csv-stats ``filename=None``) skip their artifact.
+    #
+    # Combo metadata injection is enabled for both so endpoint functions may
     # accept schema keys (subject, trial, …) as kwargs (e.g. for titles).
     _orig_fn_name = getattr(fn, "__name__", "")
+    _is_endpoint = _orig_fn_name.startswith(("plot_", "stat_"))
     if _orig_fn_name.startswith("plot_"):
         from scifor import PathOutput
         _path_param = next(
@@ -376,8 +401,57 @@ def for_each(
         _inject_combo_metadata = True
         Log.info(
             f"[scidb] Step 1.55: '{_orig_fn_name}' detected as plotting function; "
-            f"figure saved to PathOutput input '{_path_param}', path stored as record"
+            f"figure saved to PathOutput input '{_path_param}'"
+            + (", path stored as record" if finalized else " (draft: not recorded)")
         )
+    elif _orig_fn_name.startswith("stat_"):
+        from scifor import PathOutput
+        _path_param = next(
+            (name for name, v in inputs.items() if isinstance(v, PathOutput)), None
+        )
+        fn = _make_stat_wrapper(fn, _path_param, finalized)
+        _inject_combo_metadata = True
+        # Statistics run on the long-format table: group/repeated-measures
+        # columns (the schema keys) must reach the function — exactly
+        # csv-stats' input contract. Without as_table, a single-data-column
+        # aggregate is delivered as a bare ndarray with the schema columns
+        # stripped. Default it ON for stat_ functions; an explicit user
+        # as_table (including False) is respected.
+        if as_table is None:
+            as_table = True
+            Log.info("[scidb] Step 1.56: as_table defaulted to True for stat_ function "
+                     "(schema columns delivered for grouping)")
+        Log.info(
+            f"[scidb] Step 1.56: '{_orig_fn_name}' detected as statistics function; "
+            + ("result JSON stored as record" if finalized
+               else "draft: result printed, not recorded")
+            + (f"; PathOutput input '{_path_param}'"
+               + (" resolved normally" if finalized else " resolved to None")
+               if _path_param else "")
+        )
+
+    if _is_endpoint and not finalized:
+        # DRAFT mode (D3): suppress the entire save phase — no records, no
+        # lineage, no graph. The in-memory result table is still returned.
+        # Recording later requires a re-run with finalized=True (drafts leave
+        # no record to promote; endpoints are cheap to re-run by construction).
+        if save:
+            save = False
+        _draft_msg = (
+            f"[draft] {_orig_fn_name}: finalized=False — "
+            f"{'figures rendered' if _orig_fn_name.startswith('plot_') else 'results printed'} "
+            f"but NOT recorded. Pass finalized=True to save with lineage."
+        )
+        print(_draft_msg)
+        Log.info(_draft_msg)
+    elif finalized and not _is_endpoint:
+        _msg = (
+            f"[scidb] finalized=True ignored for '{_orig_fn_name}': the flag "
+            f"only applies to endpoint functions (plot_/stat_ prefixes); "
+            f"processing functions always record."
+        )
+        warnings.warn(_msg, UserWarning, stacklevel=2)
+        Log.warn(_msg)
 
     # --- Step 1.6: generates_file detection + skip_computed ---
     # No function wrapping: plain functions flow straight through to scifor, which
@@ -629,18 +703,31 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
         if k in schema_keys:
             conds.append(f's."{k}" = ?')
             params.append(_schema_str(v))
+    # LEFT JOIN _schema: a grand-aggregation output (zero iterated schema keys)
+    # is saved at the ROOT level with a NULL schema_id — an inner join would
+    # silently drop it from the gate, forcing eternal recompute. With no
+    # schema_combo conds the record passes; with conds, NULL schema columns
+    # fail the equality naturally.
     rows = db._duck._fetchall(
         "SELECT io.output_record_id FROM _invocation inv "
         "JOIN _invocation_output io ON io.invocation_id = inv.invocation_id "
         "JOIN _record r ON r.record_id = io.output_record_id "
         "JOIN _record_save rm ON rm.record_id = io.output_record_id "
-        "JOIN _schema s ON r.schema_id = s.schema_id "
+        "LEFT JOIN _schema s ON r.schema_id = s.schema_id "
         f"WHERE {' AND '.join(conds)} ORDER BY rm.timestamp DESC",
         params,
     )
+    _rejections: list = []
     for (rid,) in rows:
         sig = provenance_query.stored_invocation_signature(db._duck, rid)
-        if sig is None or sig.get("const_hashes", {}) != target_const_hashes:
+        if sig is None:
+            _rejections.append(f"{rid[:12]}: no producing invocation")
+            continue
+        if sig.get("const_hashes", {}) != target_const_hashes:
+            _rejections.append(
+                f"{rid[:12]}: const_hashes mismatch "
+                f"(stored={sig.get('const_hashes', {})}, target={target_const_hashes})"
+            )
             continue
         if expected_input_rids is not None:
             stored_rids = {
@@ -650,8 +737,28 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
             stored_rids -= {str(r) for r in fixed_rids}
             stored_rids.discard(str(rid))
             if stored_rids != expected_input_rids:
+                _extra = sorted(stored_rids - expected_input_rids)[:3]
+                _missing = sorted(expected_input_rids - stored_rids)[:3]
+                _rejections.append(
+                    f"{rid[:12]}: rid-set mismatch (stored {len(stored_rids)} vs "
+                    f"expected {len(expected_input_rids)}; stored-only={_extra}, "
+                    f"expected-only={_missing})"
+                )
                 continue
         return rid
+    # Gate diagnostics (NOTE 2): a silent None here is indistinguishable from a
+    # legitimate first run, so record WHY each candidate was rejected.
+    if _rejections:
+        Log.info(
+            f"[skip-gate] {type_name} at {schema_combo or '(root)'} for "
+            f"{fn_name!r}: {len(rows)} candidate(s), none matched — "
+            + " | ".join(_rejections[:5])
+        )
+    elif expected_input_rids is not None:
+        Log.info(
+            f"[skip-gate] {type_name} at {schema_combo or '(root)'} for "
+            f"{fn_name!r}: NO candidate records found (query returned 0 rows)"
+        )
     return None
 
 
@@ -2700,6 +2807,91 @@ def _make_plot_wrapper(fn: Any, path_param: str) -> Any:
             f"Plotting function '{getattr(fn, '__name__', 'plot_fn')}' must return "
             f"a matplotlib Figure or a path; got {type(result).__name__}."
         )
+
+    return wrapped
+
+
+def _jsonify_stat(obj: Any) -> Any:
+    """Recursively convert a stat-result structure to JSON-native types.
+
+    numpy scalars and arrays convert via ``tolist()`` (same recipe as
+    csv-stats' ``convert_types``); dict keys are stringified. Anything still
+    non-serializable is caught by ``json.dumps(default=str)`` at the caller.
+    """
+    if isinstance(obj, dict):
+        return {str(k): _jsonify_stat(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonify_stat(v) for v in obj]
+    tolist = getattr(obj, "tolist", None)
+    if callable(tolist):
+        try:
+            return _jsonify_stat(tolist())
+        except Exception:
+            return str(obj)
+    return obj
+
+
+def _make_stat_wrapper(fn: Any, path_param: "str | None", finalized: bool) -> Any:
+    """Wrap a statistics (``stat_``) function so its result dict becomes a
+    canonical JSON string (the stored record data in record mode).
+
+    Contract (see docs/claude/endpoints-viz-and-stats-design.md, D3/D5):
+
+    - ``fn`` must return a **dict** (csv-stats' native return) or a ready
+      JSON **string**; anything else raises TypeError.
+    - The top-level ``"date"`` key is STRIPPED: csv-stats stamps a wall-clock
+      timestamp inside every result, which would make identical reruns store
+      different bytes. The database's own save timestamp is the time
+      authority.
+    - Draft (``finalized=False``): any PathOutput input is resolved to None
+      before calling ``fn`` — handing it straight to csv-stats'
+      ``filename=None`` disables the PDF side effect — and the result is
+      pretty-printed for interactive exploration.
+    - Record (``finalized=True``): the PathOutput path (if any) passes
+      through for the fn's report writer, and is embedded as
+      ``"report_path"`` in the stored JSON so the artifact is discoverable
+      from the record.
+
+    ``functools.wraps`` preserves the original name, signature, and
+    ``__wrapped__`` so combo-metadata injection and function hashing
+    (skip_computed / lineage) all resolve to the user's function.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapped(**kwargs):
+        if path_param is not None and not finalized:
+            kwargs[path_param] = None
+        result = fn(**kwargs)
+
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"Statistics function '{getattr(fn, '__name__', 'stat_fn')}' "
+                    f"returned a string that is not valid JSON: {exc}"
+                ) from exc
+        elif isinstance(result, dict):
+            parsed = result
+        else:
+            raise TypeError(
+                f"Statistics function '{getattr(fn, '__name__', 'stat_fn')}' must "
+                f"return a dict (e.g. a csv-stats result) or a JSON string; got "
+                f"{type(result).__name__}."
+            )
+
+        parsed = _jsonify_stat(parsed)
+        if isinstance(parsed, dict):
+            parsed.pop("date", None)
+            if finalized and path_param is not None and kwargs.get(path_param) is not None:
+                parsed["report_path"] = str(kwargs[path_param])
+
+        payload = json.dumps(parsed, sort_keys=True, default=str)
+        if not finalized:
+            pretty = json.dumps(parsed, indent=2, sort_keys=True, default=str)
+            print(f"[stat draft] {getattr(fn, '__name__', 'stat_fn')}:\n{pretty}")
+        return payload
 
     return wrapped
 
