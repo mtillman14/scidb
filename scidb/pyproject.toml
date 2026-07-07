@@ -33,6 +33,7 @@ dependencies = [
     "scicanonicalhash>=0.1.0",
     "sciduckdb>=0.1.0",
     "scifor>=0.1.0",
+    "scistacklog>=0.1.0",
 ]
 
 [project.optional-dependencies]

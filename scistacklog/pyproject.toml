@@ -7,9 +7,9 @@ source = "vcs"
 raw-options = { search_parent_directories = true }
 
 [project]
-name = "scifor"
+name = "scistacklog"
 dynamic = ["version"]
-description = "Standalone for_each batch execution utilities for data pipelines"
+description = "Shared logging facade for the scistack framework (dual-sink console/file logging with layer tags)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
@@ -17,11 +17,9 @@ authors = [
     { name = "SciStack Contributors" }
 ]
 keywords = [
-    "batch",
+    "logging",
     "pipeline",
-    "execution",
     "data-science",
-    "automation",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -34,18 +32,14 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
+    "Topic :: System :: Logging",
     "Typing :: Typed",
 ]
-dependencies = [
-    "scistacklog>=0.1.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "pandas",
-    "numpy",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -54,7 +48,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/scifor"]
+packages = ["src/scistacklog"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

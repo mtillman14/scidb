@@ -50,6 +50,10 @@ classdef TestForEachTimingInstrumentation < matlab.unittest.TestCase
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
                 ["subject", "session", "speed", "trial"]);
 
+            % The file sink defaults to INFO; raise it so the archived log
+            % keeps the DEBUG per-phase timing tables this test documents.
+            scidb.Log.set_level('DEBUG', 'file');
+
             % Stable archive dir for the scidb.log copy.  Located at the
             % workspace root so multiple runs accumulate side-by-side and
             % survive the test_dir teardown that wipes the temp folder.

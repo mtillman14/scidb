@@ -1,17 +1,19 @@
 classdef Log
 %SCIDB.LOG  Unified logger that delegates to Python scidb.log.Log.
 %
-%   scidb.Log.set_level('DEBUG')   — show all messages
-%   scidb.Log.set_level('INFO')    — show INFO, WARN, ERROR (default)
-%   scidb.Log.set_level('WARN')    — show WARN, ERROR only
-%   scidb.Log.set_level('ERROR')   — show ERROR only
+%   scidb.Log.set_level('DEBUG')          — show all messages (both sinks)
+%   scidb.Log.set_level('INFO')           — show INFO, WARN, ERROR (default)
+%   scidb.Log.set_level('DEBUG', 'file')  — full detail in scidb.log only
+%   scidb.Log.set_level('WARN')           — show WARN, ERROR only
 %
 %   scidb.Log.debug('Processing %d items', n)
 %   scidb.Log.info('Loaded %s', type_name)
 %   scidb.Log.warn('No data for %s', key)
 %   scidb.Log.err('Failed: %s', msg)
 %
-%   Output format: [HH:MM:SS.FFF] [LEVEL] message
+%   Two sinks with independent levels (see the scistacklog package):
+%   console (stderr): HH:MM:SS [layer] message
+%   file (scidb.log): YYYY-MM-DD HH:MM:SS.FFF LEVEL [layer] message
 %
 %   All logging calls delegate to the Python scidb.log.Log class to ensure
 %   unified log level settings and output. Writes to scidb.log next to the
@@ -29,8 +31,10 @@ classdef Log
 
     methods (Static)
 
-        function set_level(level)
-        %SET_LEVEL  Set the global log level.
+        function set_level(level, sink)
+        %SET_LEVEL  Set the log level of one or both sinks.
+        %   scidb.Log.set_level(level)          — both sinks
+        %   scidb.Log.set_level(level, sink)    — 'console' | 'file' | 'both'
         %   Accepts a string ('DEBUG','INFO','WARN','ERROR') or numeric (0-3).
         %   Delegates to Python logging to unify log level settings.
             if isnumeric(level)
@@ -43,9 +47,15 @@ classdef Log
                 end
             end
             % Set Python log level (source of truth)
-            py.scidb.log.Log.set_level(char(level));
-            % Cache in MATLAB for fast get_level() calls
-            level_num = scidb.Log.parse_level(char(upper(string(level))));
+            if nargin < 2
+                py.scidb.log.Log.set_level(char(level));
+            else
+                py.scidb.log.Log.set_level(char(level), char(sink));
+            end
+            % Cache the effective level (min of the two sinks) for fast
+            % get_level() calls — a message suppressed by both sinks never
+            % needs to cross the Python bridge.
+            level_num = double(py.scidb.log.Log.get_level());
             setappdata(0, 'scidb_log_level', level_num);
         end
 
@@ -79,38 +89,42 @@ classdef Log
 
         function debug(fmt, varargin)
         %DEBUG  Log a message at DEBUG level.
-        %   Delegates to Python logging for unified output.
+        %   Delegates to Python logging for unified output; MATLAB-originated
+        %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.DEBUG
                 msg = sprintf(fmt, varargin{:});
-                py.scidb.log.Log.debug(msg);
+                py.scidb.log.Log.debug(msg, pyargs('layer', 'matlab'));
             end
         end
 
         function info(fmt, varargin)
         %INFO  Log a message at INFO level.
-        %   Delegates to Python logging for unified output.
+        %   Delegates to Python logging for unified output; MATLAB-originated
+        %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.INFO
                 msg = sprintf(fmt, varargin{:});
-                py.scidb.log.Log.info(msg);
+                py.scidb.log.Log.info(msg, pyargs('layer', 'matlab'));
             end
         end
 
         function warn(fmt, varargin)
         %WARN  Log a message at WARN level.
-        %   Delegates to Python logging for unified output.
+        %   Delegates to Python logging for unified output; MATLAB-originated
+        %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.WARN
                 msg = sprintf(fmt, varargin{:});
-                py.scidb.log.Log.warn(msg);
+                py.scidb.log.Log.warn(msg, pyargs('layer', 'matlab'));
             end
         end
 
         function err(fmt, varargin)
         %ERR  Log a message at ERROR level.
         %   Named 'err' to avoid conflict with MATLAB's built-in 'error'.
-        %   Delegates to Python logging for unified output.
+        %   Delegates to Python logging for unified output; MATLAB-originated
+        %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.ERROR
                 msg = sprintf(fmt, varargin{:});
-                py.scidb.log.Log.error(msg);
+                py.scidb.log.Log.error(msg, pyargs('layer', 'matlab'));
             end
         end
 

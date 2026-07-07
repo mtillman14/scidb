@@ -3,6 +3,7 @@
 # A 200 means the package exists on PyPI; 404 means it is NOT uploaded yet.
 
 packages=(
+  scistacklog
   scifor
   scistack-gui
   sciduckdb

@@ -39,6 +39,10 @@ classdef TestSaveTimingInstrumentation < matlab.unittest.TestCase
                 fullfile(testCase.test_dir, 'test.duckdb'), ...
                 ["subject", "session", "speed", "trial"]);
 
+            % The file sink defaults to INFO; raise it so the archived log
+            % keeps the DEBUG per-phase timing tables this test documents.
+            scidb.Log.set_level('DEBUG', 'file');
+
             this_dir = fileparts(mfilename('fullpath'));
             testCase.log_archive_dir = fullfile(this_dir, '..', '..', '..', '..', 'timing-logs');
             if ~isfolder(testCase.log_archive_dir)

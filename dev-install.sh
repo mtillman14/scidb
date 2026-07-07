@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "Installing all SciStack packages in editable mode..."
 
 # Layer 0: no internal deps
+pip install -e $SCRIPT_DIR/scistacklog
 pip install -e $SCRIPT_DIR/scicanonicalhash
 pip install -e $SCRIPT_DIR/path-gen
 pip install -e $SCRIPT_DIR/scifor
