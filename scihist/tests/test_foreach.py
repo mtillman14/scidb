@@ -283,24 +283,29 @@ class TestForEachDryRun:
 class TestForEachErrorHandling:
     """Tests for error handling."""
 
-    def test_skip_on_function_error(self, capsys):
-        """Should skip iteration if function raises."""
+    def test_skip_on_function_error(self, caplog):
+        """Should skip iteration if function raises.
+
+        Per-iteration [skip] lines are DEBUG records on the "scifor" logger
+        (not stdout) since the logging redesign."""
+        import logging
 
         def failing_process(x):
             raise ValueError("Processing failed")
 
-        for_each(
-            failing_process,
-            inputs={"x": MockVariableA},
-            outputs=[MockOutput],
-            subject=[1],
-        )
+        with caplog.at_level(logging.DEBUG, logger="scifor"):
+            for_each(
+                failing_process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                subject=[1],
+            )
 
         assert len(MockOutput.saved_data) == 0
 
-        captured = capsys.readouterr()
-        assert "[skip]" in captured.out
-        assert "Processing failed" in captured.out
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("[skip]" in m for m in messages)
+        assert any("Processing failed" in m for m in messages)
 
     def test_continues_after_error(self, capsys):
         """Should continue processing after error."""
@@ -625,8 +630,11 @@ class TestForEachAllLevels:
         saved_sessions = [d["metadata"]["session"] for d in MockOutput.saved_data]
         assert sorted(saved_sessions) == ["A", "B", "C"]
 
-    def test_empty_db_results_in_zero_iterations(self, capsys):
-        """If the database has no values for a key, 0 iterations should run."""
+    def test_empty_db_results_in_zero_iterations(self, caplog):
+        """If the database has no values for a key, 0 iterations should run.
+
+        The empty-key notice is a WARN log record since the logging redesign."""
+        import logging
 
         def process(x):
             return "result"
@@ -642,8 +650,9 @@ class TestForEachAllLevels:
         )
 
         assert len(MockOutput.saved_data) == 0
-        captured = capsys.readouterr()
-        assert "[warn]" in captured.out
+        warn_records = [r for r in caplog.records
+                        if r.levelno >= logging.WARNING]
+        assert any("no values found" in r.getMessage() for r in warn_records)
 
     def test_no_db_raises_helpful_error(self):
         """If no db is available, should raise a clear error."""
@@ -1016,27 +1025,33 @@ class TestForEachDistribute:
         assert call_count[0] == 1  # Function was called
         assert len(MockOutput.saved_data) == 0  # But nothing saved
 
-    def test_distribute_unsupported_type(self, capsys):
-        """Unsupported type should print error and continue."""
+    def test_distribute_unsupported_type(self, caplog):
+        """Unsupported type should log a warning and continue.
+
+        The "cannot distribute" diagnostic is a WARN record on the "scifor"
+        logger (not stdout) since the logging redesign."""
+        import logging
+
         db = self._make_mock_db(["subject", "trial", "cycle"])
 
         def process(x):
             return 42  # scalar, not distributable
 
-        for_each(
-            process,
-            inputs={"x": MockVariableA},
-            outputs=[MockOutput],
-            db=db,
-            distribute=True,
-            subject=[1],
-            trial=[1],
-        )
+        with caplog.at_level(logging.DEBUG, logger="scifor"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                distribute=True,
+                subject=[1],
+                trial=[1],
+            )
 
         assert len(MockOutput.saved_data) == 0
-        captured = capsys.readouterr()
-        assert "[error]" in captured.out
-        assert "does not support" in captured.out
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("cannot distribute" in m for m in messages)
+        assert any("does not support" in m for m in messages)
 
     def test_distribute_constant_name_conflict(self):
         """Should raise ValueError if distribute key conflicts with constant input."""
@@ -1450,8 +1465,9 @@ class TestForEachSchemaFiltering:
 
         assert len(MockOutput.saved_data) == 4
 
-    def test_info_message_printed(self, capsys):
-        """Verify [info] filtered... output when combos are removed."""
+    def test_info_message_logged(self, caplog):
+        """The combo-filtering notice is an INFO log record when combos are removed."""
+        import logging
 
         def process(x):
             return "result"
@@ -1464,20 +1480,24 @@ class TestForEachSchemaFiltering:
             schema_keys=["subject", "session"],
         )
 
-        for_each(
-            process,
-            inputs={"x": MockVariableA},
-            outputs=[MockOutput],
-            db=db,
-            subject=[],
-            session=[],
+        with caplog.at_level(logging.INFO, logger="scidb"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                subject=[],
+                session=[],
+            )
+
+        assert any(
+            "filtered 3 non-existent schema combinations (from 4 to 1)" in r.getMessage()
+            for r in caplog.records
         )
 
-        captured = capsys.readouterr()
-        assert "[info] filtered 3 non-existent schema combinations (from 4 to 1)" in captured.out
-
-    def test_no_info_message_when_nothing_filtered(self, capsys):
-        """All combos exist — no [info] message."""
+    def test_no_info_message_when_nothing_filtered(self, caplog):
+        """All combos exist — no filtering notice."""
+        import logging
 
         def process(x):
             return "result"
@@ -1490,17 +1510,18 @@ class TestForEachSchemaFiltering:
             schema_keys=["subject", "session"],
         )
 
-        for_each(
-            process,
-            inputs={"x": MockVariableA},
-            outputs=[MockOutput],
-            db=db,
-            subject=[],
-            session=[],
-        )
+        with caplog.at_level(logging.INFO, logger="scidb"):
+            for_each(
+                process,
+                inputs={"x": MockVariableA},
+                outputs=[MockOutput],
+                db=db,
+                subject=[],
+                session=[],
+            )
 
-        captured = capsys.readouterr()
-        assert "[info] filtered" not in captured.out
+        assert not any("filtered" in r.getMessage() and "non-existent" in r.getMessage()
+                       for r in caplog.records)
         assert len(MockOutput.saved_data) == 4
 
     def test_integer_to_string_coercion(self):

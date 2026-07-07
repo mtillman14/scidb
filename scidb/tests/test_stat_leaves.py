@@ -120,20 +120,26 @@ class TestStatRecord:
 # ---------------------------------------------------------------------------
 
 class TestStatDraft:
-    def test_draft_prints_and_records_nothing(self, db, capsys):
+    def test_draft_prints_and_records_nothing(self, db, capsys, caplog):
+        import logging
+
         _seed_step_lengths(db)
 
         def stat_summary(df):
             return {"test": "demo", "p_value": 0.04}
 
-        result = for_each(stat_summary, {"df": StepLen}, [TTestResult])
+        with caplog.at_level(logging.INFO, logger="scidb"):
+            result = for_each(stat_summary, {"df": StepLen}, [TTestResult])
 
         assert result is not None and len(result) == 1
         assert db.list_versions(TTestResult) == []
+        # The draft payload is the deliverable — it stays on stdout.
         out = capsys.readouterr().out
         assert "[stat draft] stat_summary" in out
         assert '"p_value": 0.04' in out
-        assert "[draft]" in out and "finalized=True" in out  # the how-to hint
+        # The not-recorded notice + how-to hint is an INFO log record.
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("[draft]" in m and "finalized=True" in m for m in messages)
 
 
 # ---------------------------------------------------------------------------
@@ -191,17 +197,22 @@ class TestStatPathOutput:
 # ---------------------------------------------------------------------------
 
 class TestStatReturnContract:
-    def test_non_dict_return_rejected(self, db, capsys):
+    def test_non_dict_return_rejected(self, db, caplog):
+        import logging
+
         _seed_step_lengths(db)
 
         def stat_bad(df):
             return [1, 2, 3]
 
-        result = for_each(stat_bad, {"df": StepLen}, [TTestResult],
-                          finalized=True)
-        # scifor catches per-combo exceptions and skips the combo.
+        # scifor catches per-combo exceptions, skips the combo, and logs the
+        # failure (WARN first occurrence + summary) on the "scifor" logger.
+        with caplog.at_level(logging.INFO, logger="scifor"):
+            result = for_each(stat_bad, {"df": StepLen}, [TTestResult],
+                              finalized=True)
         assert result is None or len(result) == 0
-        assert "must return a dict" in capsys.readouterr().out
+        assert any("must return a dict" in r.getMessage()
+                   for r in caplog.records)
 
     def test_json_string_return_passes_through(self, db):
         _seed_step_lengths(db)
@@ -213,16 +224,20 @@ class TestStatReturnContract:
         parsed = _json.loads(TTestResult.load().data)
         assert parsed["test"] == "prejson"
 
-    def test_invalid_string_rejected(self, db, capsys):
+    def test_invalid_string_rejected(self, db, caplog):
+        import logging
+
         _seed_step_lengths(db)
 
         def stat_broken(df):
             return "not json at all"
 
-        result = for_each(stat_broken, {"df": StepLen}, [TTestResult],
-                          finalized=True)
+        with caplog.at_level(logging.INFO, logger="scifor"):
+            result = for_each(stat_broken, {"df": StepLen}, [TTestResult],
+                              finalized=True)
         assert result is None or len(result) == 0
-        assert "not valid JSON" in capsys.readouterr().out
+        assert any("not valid JSON" in r.getMessage()
+                   for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

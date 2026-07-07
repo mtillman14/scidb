@@ -1,10 +1,17 @@
-"""Pure for_each loop — works with DataFrames only, no I/O."""
+"""Pure for_each loop — works with DataFrames only, no I/O.
 
-import sys
+Logging: emits through the scistacklog facade with ``layer="scifor"``.
+INFO carries the run narrative (banner, periodic progress, end-of-run
+summary with failure reasons); DEBUG carries per-iteration detail
+([run]/[skip]/[done] lines, internal flow). Dry-run output goes to stdout
+via print() — it is the requested result, not logging.
+"""
+
 import time
-import traceback
 from itertools import product
 from typing import Any, Callable
+
+from scistacklog import Log
 
 from .colname import ColName
 from .column_selection import ColumnSelection
@@ -12,6 +19,49 @@ from .fixed import Fixed
 from .merge import Merge
 from .pathoutput import PathOutput
 from .schema import get_schema
+
+# Periodic progress guards (module-level so tests can monkeypatch).
+# A progress line is emitted when the outermost iterated key's value changes,
+# but never at the very first combo, never within the first
+# _PROGRESS_START_DELAY_S of the loop (fast runs emit none), and never more
+# often than _PROGRESS_MIN_INTERVAL_S (degenerate shapes: huge or only key).
+_PROGRESS_MIN_INTERVAL_S = 2.0
+_PROGRESS_START_DELAY_S = 5.0
+# Value-list preview length in the banner, and combos listed per failure
+# reason in the end-of-run summary.
+_VALUES_PREVIEW_MAX = 4
+_SUMMARY_COMBOS_MAX = 5
+
+
+def _format_value_list(values) -> str:
+    """``12 values [1, 2, 3, …, 12]`` — truncated preview of an iterable."""
+    n = len(values)
+    shown = [repr(v) for v in values]
+    if n > _VALUES_PREVIEW_MAX:
+        shown = shown[: _VALUES_PREVIEW_MAX - 1] + ["…", repr(values[-1])]
+    return f"{n} value{'s' if n != 1 else ''} [{', '.join(shown)}]"
+
+
+def _record_iteration_failure(failure_reasons: dict, warned_reasons: set,
+                              exc: Exception, metadata_str: str,
+                              context: str) -> None:
+    """Track a per-iteration failure for the end-of-run summary.
+
+    Every failure logs a [skip] line at DEBUG with its traceback; the first
+    occurrence of each distinct reason also logs at WARN with the traceback,
+    so the default (INFO) log still answers "what failed and why".
+    """
+    reason = f"{type(exc).__name__}: {exc}"
+    failure_reasons.setdefault(reason, []).append(metadata_str)
+    if reason not in warned_reasons:
+        warned_reasons.add(reason)
+        Log.warn(
+            f"iteration failed: {metadata_str} — {context}: {exc} "
+            f"(first occurrence; traceback follows)",
+            layer="scifor", exc_info=True,
+        )
+    Log.debug(f"[skip] {metadata_str}: {context}: {exc}",
+              layer="scifor", exc_info=True)
 
 
 def for_each(
@@ -63,6 +113,9 @@ def for_each(
                       (``share_limits={"signal": ["subject"]}``).
         _all_combos: Pre-built list of metadata dicts; skips itertools.product().
                      Used by DB wrappers that pre-filter schema combinations.
+        _log_fn: Deprecated — ignored. scifor now logs through the
+                 scistacklog facade (layer="scifor") directly; kept only so
+                 existing call sites don't break.
         **metadata_iterables: Iterables of metadata values to combine.
 
     Returns:
@@ -94,28 +147,25 @@ def for_each(
     else:
         resolved_output_names = list(output_names)
     n_outputs = len(resolved_output_names)
-    if _log_fn:
-        _log_fn(f"[scifor] Step 1: resolved {n_outputs} output name(s): {resolved_output_names}")
+    Log.debug("resolve_output_names: %d output name(s): %s",
+              n_outputs, resolved_output_names, layer="scifor")
 
     # Step 2: Resolve empty lists [] in standalone mode (scan DataFrame inputs)
     if _all_combos is None:
         needs_resolve = [k for k, v in metadata_iterables.items()
                          if isinstance(v, list) and len(v) == 0]
         if needs_resolve:
-            if _log_fn:
-                _log_fn(f"[scifor] Step 2: resolving empty lists for {needs_resolve} from DataFrame inputs")
+            Log.debug("resolve_empty_lists: scanning DataFrame inputs for %s",
+                      needs_resolve, layer="scifor")
             for key in needs_resolve:
                 values = _distinct_values_from_inputs(inputs, key)
                 if not values:
-                    print(f"[warn] no values found for '{key}' in input DataFrames, 0 iterations")
-                    if _log_fn:
-                        _log_fn(f"[warn] no values found for '{key}' in input DataFrames")
+                    Log.warn(f"no values found for '{key}' in input DataFrames, "
+                             f"0 iterations", layer="scifor")
                 else:
-                    if _log_fn:
-                        _log_fn(f"[scifor] resolved '{key}' to {len(values)} values: {values}")
+                    Log.debug("resolved '%s' to %d values: %s",
+                              key, len(values), values, layer="scifor")
                 metadata_iterables[key] = values
-        elif _log_fn:
-            _log_fn("[scifor] Step 2: no empty lists to resolve (using pre-built combos or explicit values)")
 
     # Step 3: Validate distribute parameter and resolve target key.
     # Internal discriminator keys (scidb's __rid_* record-id and __vsig_*
@@ -125,8 +175,6 @@ def for_each(
     # and refuse to distribute.
     distribute_key = None
     if distribute:
-        if _log_fn:
-            _log_fn("[scifor] Step 3: validating distribute parameter")
         real_schema_keys = [
             k for k in schema_keys
             if "__rid_" not in str(k) and "__vsig_" not in str(k)
@@ -147,29 +195,24 @@ def for_each(
                 f"Schema order: {real_schema_keys}"
             )
         distribute_key = real_schema_keys[deepest_idx + 1]
-        if _log_fn:
-            _log_fn(f"[scifor] distribute target resolved: '{distribute_key}' (one level below '{deepest_iterated}')")
-    elif _log_fn:
-        _log_fn("[scifor] Step 3: distribute=False, skipping validation")
+        Log.debug("resolve_distribute_target: '%s' (one level below '%s')",
+                  distribute_key, deepest_iterated, layer="scifor")
 
-    # Step 4: Resolve static ColName(df) wrappers before the data/constant split.
+    # Resolve static ColName(df) wrappers before the data/constant split.
     # Deferred ColName() markers (no DataFrame) are left in place — they resolve
-    # per-column inside the for_columns iteration loop (validated at Step 6.5).
-    if _log_fn:
-        static_count = sum(
-            1 for v in inputs.values() if isinstance(v, ColName) and not v.is_deferred
+    # per-column inside the for_columns iteration loop (validated below).
+    static_count = sum(
+        1 for v in inputs.values() if isinstance(v, ColName) and not v.is_deferred
+    )
+    deferred_count = sum(
+        1 for v in inputs.values() if isinstance(v, ColName) and v.is_deferred
+    )
+    if static_count or deferred_count:
+        Log.debug(
+            "resolve_colnames: %d static ColName(df) wrapper(s); deferring "
+            "%d no-arg ColName() marker(s) to for_columns iteration",
+            static_count, deferred_count, layer="scifor",
         )
-        deferred_count = sum(
-            1 for v in inputs.values() if isinstance(v, ColName) and v.is_deferred
-        )
-        if static_count or deferred_count:
-            _log_fn(
-                f"[scifor] Step 4: resolving {static_count} static ColName(df) "
-                f"wrapper(s); deferring {deferred_count} no-arg ColName() marker(s) "
-                f"to for_columns iteration"
-            )
-        else:
-            _log_fn("[scifor] Step 4: no ColName wrappers to resolve")
     inputs = _resolve_colnames(inputs, schema_keys)
 
     # Step 5: Separate data inputs from constants
@@ -180,8 +223,8 @@ def for_each(
             data_inputs[param_name] = var_spec
         else:
             constant_inputs[param_name] = var_spec
-    if _log_fn:
-        _log_fn(f"[scifor] Step 5: classified {len(data_inputs)} data input(s), {len(constant_inputs)} constant(s)")
+    Log.debug("classify_inputs: %d data input(s), %d constant(s)",
+              len(data_inputs), len(constant_inputs), layer="scifor")
 
     # Check distribute doesn't conflict with a constant input name
     if distribute_key is not None and distribute_key in constant_inputs:
@@ -196,11 +239,8 @@ def for_each(
         as_table_set = set(as_table)
     else:
         as_table_set = set()
-    if _log_fn:
-        if as_table_set:
-            _log_fn(f"[scifor] Step 6: as_table inputs: {sorted(as_table_set)}")
-        else:
-            _log_fn("[scifor] Step 6: as_table=False, all data inputs will have schema columns stripped")
+    if as_table_set:
+        Log.debug("as_table inputs: %s", sorted(as_table_set), layer="scifor")
 
     # Step 6.5: Detect iterate-mode ColumnSelection inputs (for_columns).
     # These fan out column-wise: fn runs once per column and the per-column
@@ -274,24 +314,25 @@ def for_each(
             )
         if distribute_key is not None:
             raise ValueError("for_columns cannot be combined with distribute=True.")
-        if _log_fn:
-            _log_fn(
-                f"[scifor] Step 6.5: column iteration over {len(iterate_columns)} "
-                f"column(s) {iterate_columns} for input(s) {iterate_params}"
-            )
+        Log.debug(
+            "resolve_iterate_columns: column iteration over %d column(s) %s "
+            "for input(s) %s",
+            len(iterate_columns), iterate_columns, iterate_params,
+            layer="scifor",
+        )
 
-    # Step 7: Build combo list
+    # Build combo list
     if _all_combos is not None:
         all_combos = _all_combos
         keys = list(metadata_iterables.keys())
-        if _log_fn:
-            _log_fn(f"[scifor] Step 7: using {len(all_combos)} pre-built combos (from DB wrapper)")
+        Log.debug("expand_combos: using %d pre-built combos (from DB wrapper)",
+                  len(all_combos), layer="scifor")
     else:
         keys = list(metadata_iterables.keys())
         value_lists = [metadata_iterables[k] for k in keys]
         all_combos = [dict(zip(keys, combo)) for combo in product(*value_lists)]
-        if _log_fn:
-            _log_fn(f"[scifor] Step 7: built {len(all_combos)} combos from Cartesian product of {keys}")
+        Log.debug("expand_combos: built %d combos from Cartesian product of %s",
+                  len(all_combos), keys, layer="scifor")
 
     total = len(all_combos)
     fn_name = getattr(fn, "__name__", repr(fn))
@@ -305,48 +346,37 @@ def for_each(
         )
         # Param names the function will accept the *_limits kwargs under.
         _limits_accepted = _accepted_param_names(fn)
-        if _log_fn:
-            _log_fn(
-                f"[scifor] Step 7.5: computed shared limits for "
-                f"{list(shared_limits_map.keys())} (fn accepts: "
-                f"{sorted(_limits_accepted) if _limits_accepted is not None else 'any (**kwargs)'})"
-            )
+        Log.debug(
+            "compute_shared_limits: %s (fn accepts: %s)",
+            list(shared_limits_map.keys()),
+            sorted(_limits_accepted) if _limits_accepted is not None else "any (**kwargs)",
+            layer="scifor",
+        )
     else:
         _limits_accepted = None
 
-    # Step 8: Print summary banner
-    if _log_fn:
-        _log_fn(f"[scifor] Step 8: printing summary banner for {total} iterations")
+    # Run banner: one INFO line with a truncated per-key value preview; the
+    # full value lists and input details follow at DEBUG.
     display_keys = [k for k in keys if not k.startswith("__")]
     meta_summary = ", ".join(
-        f"{k}=[{len(metadata_iterables[k])} values]"
+        f"{k}={_format_value_list(metadata_iterables[k])}"
         for k in display_keys
     ) if display_keys else "no metadata"
-    print(f"\n{'=' * 64}")
-    print(f"  for_each({fn_name}) — {total} iteration{'s' if total != 1 else ''}")
-    print(f"  {meta_summary}")
-    print(f"{'=' * 64}")
-    if _log_fn is not None:
-        _log_fn("=" * 64)
-        _log_fn(f"for_each({fn_name}) — {total} iteration{'s' if total != 1 else ''}")
-        _log_fn(meta_summary)
-        _log_fn("=" * 64)
+    Log.info(
+        f"for_each({fn_name}) — {total} iteration{'s' if total != 1 else ''}: "
+        f"{meta_summary}",
+        layer="scifor",
+    )
 
-    # Detailed config: inputs
     _inputs_str = _format_inputs(inputs)
-    print(f"  inputs: {_inputs_str}")
-    if _log_fn is not None:
-        _log_fn(f"inputs: {_inputs_str}")
+    Log.info(f"inputs: {_inputs_str}", layer="scifor")
 
-    # Detailed config: metadata actual values
     for k in display_keys:
         vals = metadata_iterables[k]
         formatted = ", ".join(repr(v) for v in vals)
-        print(f"  {k}=[{formatted}]")
-        if _log_fn is not None:
-            _log_fn(f"{k}=[{formatted}]")
+        Log.debug("%s=[%s]", k, formatted, layer="scifor")
 
-    # Detailed config: non-default options
+    # Non-default options
     _opts_parts = []
     if dry_run:
         _opts_parts.append("dry_run=True")
@@ -357,12 +387,10 @@ def for_each(
     if where is not None:
         _opts_parts.append(f"where={where!r}")
     if _opts_parts:
-        _opts_str = ", ".join(_opts_parts)
-        print(f"  options: {_opts_str}")
-        if _log_fn is not None:
-            _log_fn(f"options: {_opts_str}")
+        Log.info(f"options: {', '.join(_opts_parts)}", layer="scifor")
 
     if dry_run:
+        # Dry-run output is the requested result, not logging: print to stdout.
         print(f"[dry-run] for_each({fn_name})")
         print(f"[dry-run] {total} iterations over: {keys}")
         print(f"[dry-run] inputs: {_format_inputs(inputs)}")
@@ -374,22 +402,36 @@ def for_each(
     skipped = 0
     collected_rows: list[tuple[dict, tuple]] = []
     was_cancelled = False
+    # Failure aggregation for the end-of-run summary: reason -> combo strings.
+    failure_reasons: dict[str, list[str]] = {}
+    warned_reasons: set[str] = set()
 
-    # Step 9: Main loop
-    if _log_fn:
-        _log_fn(f"[scifor] Step 9: starting main loop over {total} combo(s)")
+    # Periodic progress state: a line per outermost-key transition (guarded).
+    progress_key = display_keys[0] if display_keys else None
+    if progress_key is not None:
+        try:
+            progress_total = len(dict.fromkeys(
+                c.get(progress_key) for c in all_combos
+            ))
+        except TypeError:  # unhashable values — fall back to declared list
+            progress_total = len(metadata_iterables.get(progress_key, []))
+    else:
+        progress_total = 0
+    _no_value = object()
+    progress_last_value = _no_value
+    progress_seen = 0
+    progress_last_emit = 0.0
+    loop_t0 = time.perf_counter()
 
     for combo_idx, metadata in enumerate(all_combos):
         # Cooperative cancel: check between combos (before any work for this combo).
         if _cancel_check is not None and _cancel_check():
             was_cancelled = True
-            cancel_msg = (
-                f"[cancelled] for_each({fn_name}) at combo {combo_idx + 1}/{total} "
-                f"(completed={completed}, skipped={skipped})"
+            Log.info(
+                f"for_each({fn_name}) cancelled at combo {combo_idx + 1}/{total} "
+                f"(completed={completed}, failed={skipped})",
+                layer="scifor",
             )
-            print(cancel_msg)
-            if _log_fn is not None:
-                _log_fn(cancel_msg)
             if _progress_fn is not None:
                 _progress_fn({
                     "event": "cancelled",
@@ -401,6 +443,29 @@ def for_each(
             break
 
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
+
+        # Periodic progress: emit on outermost-key transitions, but never at
+        # the very first combo, never inside the start delay (fast runs stay
+        # silent), and never more often than the minimum interval.
+        if progress_key is not None and not dry_run:
+            progress_value = metadata.get(progress_key, _no_value)
+            if progress_value != progress_last_value:
+                progress_last_value = progress_value
+                progress_seen += 1
+                elapsed_now = time.perf_counter() - loop_t0
+                if (progress_seen > 1
+                        and elapsed_now >= _PROGRESS_START_DELAY_S
+                        and elapsed_now - progress_last_emit >= _PROGRESS_MIN_INTERVAL_S):
+                    progress_last_emit = elapsed_now
+                    Log.info(
+                        f"progress: {progress_key}={progress_value} "
+                        f"({progress_seen}/{progress_total}) — "
+                        f"{combo_idx}/{total} combos "
+                        f"({100.0 * combo_idx / total:.1f}%), "
+                        f"completed={completed}, failed={skipped}, "
+                        f"elapsed={elapsed_now:.1f}s",
+                        layer="scifor",
+                    )
 
         if _progress_fn is not None:
             _progress_fn({
@@ -435,17 +500,10 @@ def for_each(
                     var_spec, metadata, schema_keys, wants_table, where
                 )
             except Exception as e:
-                msg = f"[skip] {metadata_str}: failed to filter {param_name}: {e}"
-                print(msg)
-                if _log_fn is not None:
-                    _log_fn(msg)
-                # DIAG: log filter error to file
-                import sys as _sys
-                with open("/tmp/scihist_diag.log", "a") as _f:
-                    _f.write(f"[DIAG] FILTER ERROR for {param_name}: {e}\n")
-                    import traceback as _tb
-                    _tb.print_exc(file=_f)
-                traceback.print_exc()
+                _record_iteration_failure(
+                    failure_reasons, warned_reasons, e, metadata_str,
+                    f"failed to filter {param_name}",
+                )
                 filter_failed = True
                 break
 
@@ -486,13 +544,10 @@ def for_each(
             if _input_is_empty(val)
         ]
         if _empty_inputs:
-            empty_msg = (
-                f"[empty-combo] {metadata_str}: input(s) "
-                f"{', '.join(_empty_inputs)} had 0 rows"
+            Log.debug(
+                "[empty-combo] %s: input(s) %s had 0 rows",
+                metadata_str, ", ".join(_empty_inputs), layer="scifor",
             )
-            print(empty_msg)
-            if _log_fn is not None:
-                _log_fn(empty_msg)
 
         # Call the function
         all_param_names = (
@@ -505,9 +560,7 @@ def for_each(
                    f"({', '.join(all_param_names)})")
         else:
             msg = f"[run] {metadata_str}: {fn_name}({', '.join(all_param_names)})"
-        print(msg)
-        if _log_fn is not None:
-            _log_fn(msg)
+        Log.debug(msg, layer="scifor")
 
         # Merge constants into function arguments
         filtered_inputs.update(constant_inputs)
@@ -535,37 +588,25 @@ def for_each(
                 call_inputs = _resolve_path_outputs(filtered_inputs, metadata, None)
                 result = _call_fn(fn, call_inputs, n_outputs)
             fn_elapsed = time.perf_counter() - fn_t0
-            done_msg = f"[done] {metadata_str}: {fn_name} completed in {fn_elapsed:.3f}s"
-            print(done_msg)
-            if _log_fn is not None:
-                _log_fn(done_msg)
+            Log.debug("[done] %s: %s completed in %.3fs",
+                      metadata_str, fn_name, fn_elapsed, layer="scifor")
         except ColumnFunctionError as e:
             # The function failed on specific columns. This is deterministic
             # across combos (a bad column is bad everywhere), so surface it as a
-            # hard error naming every offending column — to stderr and the log —
-            # rather than silently skipping the whole combo.
-            full = f"[error] {metadata_str}: {e}"
-            print(full, file=sys.stderr)
-            if _log_fn is not None:
-                _log_fn(full)
-            with open("/tmp/scihist_diag.log", "a") as _f:
-                _f.write(f"[DIAG] COLUMN FUNCTION ERROR:\n{full}\n")
+            # hard error naming every offending column rather than silently
+            # skipping the whole combo.
+            Log.error(f"[error] {metadata_str}: {e}",
+                      layer="scifor", exc_info=True)
             raise
         except ForColumnsError:
             # Structural for_columns errors are deterministic across combos and
             # indicate a return-contract bug — surface immediately, don't skip.
             raise
         except Exception as e:
-            msg = f"[skip] {metadata_str}: {fn_name} raised: {e}"
-            print(msg)
-            if _log_fn is not None:
-                _log_fn(msg)
-            # DIAG: log function error to file
-            with open("/tmp/scihist_diag.log", "a") as _f:
-                _f.write(f"[DIAG] FUNCTION ERROR: {e}\n")
-                import traceback as _tb
-                _tb.print_exc(file=_f)
-            traceback.print_exc()
+            _record_iteration_failure(
+                failure_reasons, warned_reasons, e, metadata_str,
+                f"{fn_name} raised",
+            )
             skipped += 1
             if _progress_fn is not None:
                 _progress_fn({
@@ -589,10 +630,8 @@ def for_each(
                 try:
                     pieces = _split_for_distribute(output_value)
                 except TypeError as e:
-                    msg = f"[error] {metadata_str}: cannot distribute: {e}"
-                    print(msg)
-                    if _log_fn is not None:
-                        _log_fn(msg)
+                    Log.warn(f"{metadata_str}: cannot distribute: {e}",
+                             layer="scifor")
                     continue
 
                 for i, piece in enumerate(pieces):
@@ -612,28 +651,42 @@ def for_each(
                 "metadata": metadata,
             })
 
-    # Summary
-    print(f"{'─' * 64}")
+    # End-of-run summary
     if dry_run:
-        print(f"  [dry-run] would process {total} iterations")
-        print(f"{'=' * 64}\n")
+        print(f"[dry-run] would process {total} iterations")
         return None
-    else:
-        cancelled_suffix = ", cancelled" if was_cancelled else ""
-        done_msg = (
-            f"for_each({fn_name}) done: completed={completed}, "
-            f"skipped={skipped}, total={total}{cancelled_suffix}"
+
+    elapsed = time.perf_counter() - loop_t0
+    cancelled_suffix = ", cancelled" if was_cancelled else ""
+    Log.info(
+        f"for_each({fn_name}) done in {elapsed:.1f}s: completed={completed}, "
+        f"failed={skipped}, total={total}{cancelled_suffix}",
+        layer="scifor",
+    )
+    # One line per distinct failure reason, so the default (INFO) log always
+    # answers "what failed and why" without per-iteration lines.
+    for reason, combos in failure_reasons.items():
+        shown = combos[:_SUMMARY_COMBOS_MAX]
+        more = f" (+{len(combos) - len(shown)} more)" if len(combos) > len(shown) else ""
+        Log.info(
+            f'failed: {len(combos)} × "{reason}" — {"; ".join(shown)}{more}',
+            layer="scifor",
         )
-        print(f"  done: completed={completed}, skipped={skipped}, total={total}{cancelled_suffix}")
-        print(f"{'=' * 64}\n")
-        if _log_fn is not None:
-            _log_fn("─" * 64)
-            _log_fn(done_msg)
-            _log_fn("=" * 64)
-        # Step 10: Build output DataFrame
-        if _log_fn:
-            _log_fn(f"[scifor] Step 10: building output DataFrame from {len(collected_rows)} result row(s)")
-        return _results_to_output_dataframe(collected_rows, resolved_output_names, _log_fn)
+    if _progress_fn is not None:
+        _progress_fn({
+            "event": "summary",
+            "current": total,  # keeps positional consumers (GUI) safe
+            "total": total,
+            "completed": completed,
+            "failed": skipped,
+            "skipped": skipped,  # legacy key: consumers that tally every event
+            "cancelled": was_cancelled,
+            "failure_reasons": failure_reasons,
+        })
+
+    Log.debug("building output DataFrame from %d result row(s)",
+              len(collected_rows), layer="scifor")
+    return _results_to_output_dataframe(collected_rows, resolved_output_names)
 
 
 def _call_fn(fn, kwargs, n_outputs):
@@ -1374,13 +1427,9 @@ def _get_raw_df(var_spec: Any) -> "pd.DataFrame | None":
 def _results_to_output_dataframe(
     collected_rows: list[tuple[dict, tuple]],
     output_names: list[str],
-    _log_fn: "Callable[[str], None] | None" = None,
 ) -> "pd.DataFrame":
     """Build a combined DataFrame from all for_each results."""
     import pandas as pd
-
-    if _log_fn:
-        _log_fn(f"[scifor] _results_to_output_dataframe: processing {len(collected_rows)} row(s)")
 
     if not collected_rows:
         return pd.DataFrame()
@@ -1393,8 +1442,6 @@ def _results_to_output_dataframe(
     )
 
     if all_dataframes:
-        if _log_fn:
-            _log_fn("[scifor] using flatten mode (all outputs are DataFrames)")
         parts = []
         for metadata, result_tuple in collected_rows:
             combined_data = pd.concat(
@@ -1406,12 +1453,11 @@ def _results_to_output_dataframe(
                 [meta_df.reset_index(drop=True), combined_data], axis=1
             ))
         result = pd.concat(parts, ignore_index=True)
-        if _log_fn:
-            _log_fn(f"[scifor] flatten mode: built DataFrame with {len(result)} row(s), {len(result.columns)} column(s)")
+        Log.debug("collect_results (flatten mode): DataFrame with %d row(s), "
+                  "%d column(s)", len(result), len(result.columns),
+                  layer="scifor")
         return result
     else:
-        if _log_fn:
-            _log_fn("[scifor] using scalar mode (at least one output is not a DataFrame)")
         rows = []
         for metadata, result_tuple in collected_rows:
             row = dict(metadata)
@@ -1419,8 +1465,9 @@ def _results_to_output_dataframe(
                 row[name] = value
             rows.append(row)
         result = pd.DataFrame(rows)
-        if _log_fn:
-            _log_fn(f"[scifor] scalar mode: built DataFrame with {len(result)} row(s), {len(result.columns)} column(s)")
+        Log.debug("collect_results (scalar mode): DataFrame with %d row(s), "
+                  "%d column(s)", len(result), len(result.columns),
+                  layer="scifor")
         return result
 
 

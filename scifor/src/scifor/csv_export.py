@@ -18,11 +18,14 @@ schema columns, which become the join keys.
 
 from typing import Any
 
+from scistacklog import Log
+
 
 def merge_to_dataframe(
     merge: Any,
     where=None,
     _log_fn: "Any" = None,
+    verbose: bool = False,
     **metadata: Any,
 ) -> "Any":
     """Inner-join a ``Merge``'s constituents and return the joined DataFrame.
@@ -31,7 +34,10 @@ def merge_to_dataframe(
         merge: A ``scifor.Merge`` instance.
         where: Optional scifor ColName/Col filter applied once to the joined
             table (so it may reference columns from any constituent).
-        _log_fn: Optional ``Callable[[str], None]`` for diagnostics (NOTE 2).
+        _log_fn: Deprecated — ignored. Diagnostics go through the scistacklog
+            facade (layer="scifor"): DEBUG normally, INFO when verbose=True.
+        verbose: If True, join diagnostics are logged at INFO (visible at the
+            default level) instead of DEBUG.
         **metadata: Row filters applied per constituent on any matching schema
             column. A scalar matches by equality; a list/tuple/set matches by
             membership. Keys absent from a given constituent are skipped.
@@ -52,8 +58,10 @@ def merge_to_dataframe(
     from .schema import get_schema
 
     def _log(msg: str) -> None:
-        if _log_fn is not None:
-            _log_fn(f"[scifor] {msg}")
+        if verbose:
+            Log.info(msg, layer="scifor")
+        else:
+            Log.debug(msg, layer="scifor")
 
     schema_keys = get_schema()
     _log(f"merge: schema keys = {schema_keys or '(unset)'}")
@@ -126,6 +134,7 @@ def export_merge_csv(
     filename: str,
     where=None,
     _log_fn: "Any" = None,
+    verbose: bool = False,
     **metadata: Any,
 ) -> None:
     """Inner-join a ``Merge``'s constituents and write the result to ``filename``.
@@ -137,13 +146,11 @@ def export_merge_csv(
             f"to_csv() filename must be a string ending with '.csv', got {filename!r}."
         )
 
-    df = merge_to_dataframe(merge, where=where, _log_fn=_log_fn, **metadata)
+    df = merge_to_dataframe(merge, where=where, verbose=verbose, **metadata)
 
-    if _log_fn is not None:
-        _log_fn(
-            f"[scifor] to_csv: writing {df.shape[0]} row(s) x {df.shape[1]} "
-            f"col(s) to {filename!r}"
-        )
+    _write_log = Log.info if verbose else Log.debug
+    _write_log("to_csv: writing %d row(s) x %d col(s) to %r",
+               df.shape[0], df.shape[1], filename, layer="scifor")
     df.to_csv(filename, index=False)
 
 

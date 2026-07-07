@@ -964,8 +964,14 @@ def test_noniterate_excl_columns_drops_data_column():
 # Error handling
 # ---------------------------------------------------------------------------
 
-def test_function_error_skips(capsys):
-    """Function errors skip the iteration gracefully."""
+def test_function_error_skips(caplog):
+    """Function errors skip the iteration gracefully.
+
+    Per-iteration [skip] lines are DEBUG records on the "scifor" logger
+    (not stdout) since the logging redesign.
+    """
+    import logging
+
     set_schema(["subject"])
     df = pd.DataFrame({"subject": [1, 2], "value": [10.0, 20.0]})
     call_count = [0]
@@ -976,9 +982,9 @@ def test_function_error_skips(capsys):
             raise ValueError("bad")
         return x
 
-    result = for_each(fn, inputs={"x": df}, subject=[1, 2])
-    out = capsys.readouterr().out
-    assert "[skip]" in out
+    with caplog.at_level(logging.DEBUG, logger="scifor"):
+        result = for_each(fn, inputs={"x": df}, subject=[1, 2])
+    assert any("[skip]" in r.getMessage() for r in caplog.records)
     assert len(result) == 1  # only subject=2 succeeded
 
 

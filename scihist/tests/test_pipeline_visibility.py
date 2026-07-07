@@ -8,6 +8,8 @@ some combos are missing, because the pipeline graph never learns about the
 function that produced them.
 """
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -36,13 +38,23 @@ class Figure(BaseVariable):
 
 # ---------------------------------------------------------------------------
 # Helpers
+#
+# Per-combo [skip]/[recompute] lines are log records on the "scidb" logger
+# (DEBUG-destined per the logging redesign), so the tests capture them via
+# caplog rather than stdout.
 # ---------------------------------------------------------------------------
 
-def _skip_lines(text: str) -> list[str]:
-    return [l for l in text.splitlines() if l.startswith("[skip]")]
+def _messages(caplog) -> list[str]:
+    # skip_computed decisions come from the "scidb" logger; filter by name so
+    # scifor's per-iteration records (which also propagate to root) don't
+    # inflate the counts.
+    return [r.getMessage() for r in caplog.records if r.name == "scidb"]
 
-def _recompute_lines(text: str) -> list[str]:
-    return [l for l in text.splitlines() if l.startswith("[recompute]")]
+def _skip_lines(caplog) -> list[str]:
+    return [m for m in _messages(caplog) if m.startswith("[skip]")]
+
+def _recompute_lines(caplog) -> list[str]:
+    return [m for m in _messages(caplog) if m.startswith("[recompute]")]
 
 
 # ===========================================================================
@@ -156,7 +168,7 @@ class TestListPipelineVariantsVisibility:
 class TestSkipComputedWithFnVersionKeys:
     """skip_computed must still work after __fn/__fn_hash are in version_keys."""
 
-    def test_skip_works_after_fn_version_keys_added(self, db, capsys):
+    def test_skip_works_after_fn_version_keys_added(self, db, caplog):
         """Records with __fn in version_keys are found by skip_computed lookup."""
         @pipeline
         def double(x):
@@ -165,16 +177,16 @@ class TestSkipComputedWithFnVersionKeys:
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
         for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
                  subject=[1], trial=[1])
-        capsys.readouterr()
+        caplog.clear()
 
         # Second run — must skip
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
-        out = capsys.readouterr().out
-        assert len(_skip_lines(out)) == 1
-        assert not _recompute_lines(out)
+        with caplog.at_level(logging.DEBUG, logger="scidb"):
+            for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
+                     subject=[1], trial=[1])
+        assert len(_skip_lines(caplog)) == 1
+        assert not _recompute_lines(caplog)
 
-    def test_skip_works_with_constants(self, db, capsys):
+    def test_skip_works_with_constants(self, db, caplog):
         """skip_computed correctly finds records when constants + __fn are in version_keys."""
         @pipeline
         def scale(x, factor):
@@ -183,15 +195,15 @@ class TestSkipComputedWithFnVersionKeys:
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
         for_each(scale, inputs={"x": RawData, "factor": 2},
                  outputs=[ProcessedData], subject=[1], trial=[1])
-        capsys.readouterr()
+        caplog.clear()
 
-        for_each(scale, inputs={"x": RawData, "factor": 2},
-                 outputs=[ProcessedData], subject=[1], trial=[1])
-        out = capsys.readouterr().out
-        assert len(_skip_lines(out)) == 1
-        assert not _recompute_lines(out)
+        with caplog.at_level(logging.DEBUG, logger="scidb"):
+            for_each(scale, inputs={"x": RawData, "factor": 2},
+                     outputs=[ProcessedData], subject=[1], trial=[1])
+        assert len(_skip_lines(caplog)) == 1
+        assert not _recompute_lines(caplog)
 
-    def test_input_change_still_recomputes(self, db, capsys):
+    def test_input_change_still_recomputes(self, db, caplog):
         """Changing upstream data still triggers recompute (not broken by __fn in lookup)."""
         call_count = [0]
 
@@ -207,15 +219,15 @@ class TestSkipComputedWithFnVersionKeys:
 
         # Change input
         RawData.save(np.array([10, 20, 30]), subject=1, trial=1)
-        capsys.readouterr()
+        caplog.clear()
 
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
-        out = capsys.readouterr().out
-        assert _recompute_lines(out)
+        with caplog.at_level(logging.DEBUG, logger="scidb"):
+            for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
+                     subject=[1], trial=[1])
+        assert _recompute_lines(caplog)
         assert call_count[0] == 2
 
-    def test_function_change_still_computes(self, db, capsys):
+    def test_function_change_still_computes(self, db, caplog):
         """Changing the function name means no existing record matches __fn,
         so the combo is treated as missing (computed, not skipped)."""
         call_count = [0]
@@ -232,14 +244,15 @@ class TestSkipComputedWithFnVersionKeys:
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
         for_each(process_v1, inputs={"x": RawData}, outputs=[ProcessedData],
                  subject=[1], trial=[1])
-        capsys.readouterr()
+        caplog.clear()
 
-        for_each(process_v2, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
+        with caplog.at_level(logging.DEBUG, logger="scidb"):
+            for_each(process_v2, inputs={"x": RawData}, outputs=[ProcessedData],
+                     subject=[1], trial=[1])
         # process_v2 has a different __fn, so no existing record matches →
         # skip_computed sees "output missing" and lets it run
         assert call_count[0] == 1
-        assert not _skip_lines(capsys.readouterr().out)
+        assert not _skip_lines(caplog)
 
     def test_load_still_works_with_schema_keys_only(self, db):
         """BaseVariable.load(subject=1, trial=1) returns correct data despite __fn in version_keys."""
@@ -254,7 +267,7 @@ class TestSkipComputedWithFnVersionKeys:
         loaded = ProcessedData.load(subject=1, trial=1)
         np.testing.assert_array_equal(loaded.data, np.array([2, 4, 6]))
 
-    def test_multiple_subjects_skip_and_recompute_mixed(self, db, capsys):
+    def test_multiple_subjects_skip_and_recompute_mixed(self, db, caplog):
         """With 3 subjects, changing one still correctly skips the other two."""
         call_count = [0]
 
@@ -272,13 +285,13 @@ class TestSkipComputedWithFnVersionKeys:
 
         # Change only subject=2
         RawData.save(np.array([999]), subject=2, trial=1)
-        capsys.readouterr()
+        caplog.clear()
 
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1, 2, 3], trial=[1])
-        out = capsys.readouterr().out
+        with caplog.at_level(logging.DEBUG, logger="scidb"):
+            for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
+                     subject=[1, 2, 3], trial=[1])
 
-        assert len(_skip_lines(out)) == 2
-        assert len(_recompute_lines(out)) == 1
-        assert any("subject=2" in l for l in _recompute_lines(out))
+        assert len(_skip_lines(caplog)) == 2
+        assert len(_recompute_lines(caplog)) == 1
+        assert any("subject=2" in l for l in _recompute_lines(caplog))
         assert call_count[0] == 4  # 3 original + 1 recompute

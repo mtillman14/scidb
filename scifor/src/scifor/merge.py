@@ -68,7 +68,8 @@ class Merge:
         Args:
             filename: Output path; must end with ``.csv``.
             where: Optional scifor ColName/Col filter applied to every constituent.
-            verbose: If True, print diagnostic logging of the join (NOTE 2).
+            verbose: If True, log the join diagnostics at INFO (visible at
+                the default log level) instead of DEBUG (NOTE 2).
             **metadata: Per-constituent row filters on matching schema columns.
 
         Example:
@@ -81,7 +82,7 @@ class Merge:
             self,
             filename,
             where=where,
-            _log_fn=print if verbose else None,
+            verbose=verbose,
             **metadata,
         )
 
@@ -95,7 +96,8 @@ class Merge:
 
         Args:
             where: Optional scifor ColName/Col filter applied to the joined table.
-            verbose: If True, print diagnostic logging of the join (NOTE 2).
+            verbose: If True, log the join diagnostics at INFO (visible at
+                the default log level) instead of DEBUG (NOTE 2).
             **metadata: Per-constituent row filters on matching schema columns.
 
         Example:
@@ -107,7 +109,7 @@ class Merge:
         return merge_to_dataframe(
             self,
             where=where,
-            _log_fn=print if verbose else None,
+            verbose=verbose,
             **metadata,
         )
 

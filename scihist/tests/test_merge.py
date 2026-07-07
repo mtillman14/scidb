@@ -532,8 +532,13 @@ class TestMergeComposability:
 
 class TestMergeErrors:
 
-    def test_constituent_load_fails(self, capsys):
-        """When a constituent fails to load, iteration is skipped."""
+    def test_constituent_load_fails(self, caplog):
+        """When a constituent fails to load, iteration is skipped.
+
+        Per-iteration [skip] lines are DEBUG records on the "scifor" logger
+        (not stdout) since the logging redesign."""
+        import logging
+
         StepLength._data = np.array([1.0])
 
         class FailingVar:
@@ -544,16 +549,16 @@ class TestMergeErrors:
         def process(data):
             return "result"
 
-        for_each(
-            process,
-            inputs={"data": Merge(StepLength, FailingVar)},
-            outputs=[MockOutput],
-            subject=[1],
-        )
+        with caplog.at_level(logging.DEBUG, logger="scifor"):
+            for_each(
+                process,
+                inputs={"data": Merge(StepLength, FailingVar)},
+                outputs=[MockOutput],
+                subject=[1],
+            )
 
         assert len(MockOutput.saved_data) == 0
-        output = capsys.readouterr().out
-        assert "[skip]" in output
+        assert any("[skip]" in r.getMessage() for r in caplog.records)
 
     def test_constituent_returns_multiple(self):
         """Multiple matches from a constituent should raise ValueError."""
