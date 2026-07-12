@@ -293,12 +293,20 @@ class PathInput:
             rendered = rendered.replace("{" + key + "}", text)
         return self._absolutize(Path(rendered)), spellings
 
-    def _fallback_root_and_segments(self) -> "tuple[Path, list[str]]":
-        """Split the template for the numeric-fallback walk, mirroring the
-        literal resolution's anchoring (absolute template wins, then
-        root_folder, then project root)."""
+    def _root_and_segments(self) -> "tuple[Path, list[str]]":
+        """Split the template into a walk root and relative segments.
+
+        Shared by ``discover()`` and the numeric-fallback scan, mirroring
+        the literal resolution's anchoring: an absolute template wins
+        (POSIX ``/``, Windows drive ``Y:``, or UNC ``\\\\server\\share``),
+        then ``root_folder``, then the project root.
+        """
         normalised = self.path_template.replace("\\", "/")
         segments = [s for s in normalised.split("/") if s]
+        if normalised.startswith("//") and len(segments) >= 2:
+            # UNC path: the share (\\server\share) is the walk root — its
+            # components are not listable directories on their own.
+            return Path(f"//{segments[0]}/{segments[1]}"), segments[2:]
         if normalised.startswith("/"):
             return Path("/"), segments
         if segments and re.fullmatch(r"[A-Za-z]:", segments[0]):
@@ -368,7 +376,7 @@ class PathInput:
         integer value.  Returns complete matches as ``(path, captures)``
         where *captures* maps each numeric key to the digit string found on
         disk (used to learn pad widths)."""
-        root, segments = self._fallback_root_and_segments()
+        root, segments = self._root_and_segments()
         if not segments:
             return []
         results: list = []
@@ -523,13 +531,13 @@ class PathInput:
 
         Returns a list of dicts (one per valid complete path), where each dict
         maps placeholder keys to their string values.
-        """
-        root = Path(self.root_folder) if self.root_folder is not None else _find_project_root()
 
-        # Split template into path segments
-        # Normalise separators to '/'
-        normalised = self.path_template.replace("\\", "/")
-        segments = [s for s in normalised.split("/") if s]
+        Absolute templates (POSIX ``/``, Windows drive ``Y:``, UNC
+        ``\\\\server\\share``) anchor the walk at their own root, matching
+        load()'s resolution semantics; ``root_folder`` and the project root
+        only apply to relative templates.
+        """
+        root, segments = self._root_and_segments()
 
         if not segments:
             return []

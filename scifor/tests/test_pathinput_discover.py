@@ -314,3 +314,54 @@ class TestLoad:
         pi = PathInput("{x}/b/{y}/file.txt", root_folder=tmp_path)
         combos = pi.discover()
         assert combos == [{"x": "a", "y": "c"}]
+
+
+class TestDiscoverAbsoluteTemplates:
+    """Absolute templates anchor discovery at their own root (the MATLAB
+    ``fullfile(...)`` pattern produces absolute templates with no
+    root_folder — discovery must match load()'s anchoring, not walk from
+    the project root)."""
+
+    def test_absolute_posix_template(self, tmp_path):
+        d = tmp_path / "EMG"
+        d.mkdir()
+        (d / "6MWT-001.mat").touch()
+        (d / "6MWT-004.mat").touch()
+        (d / "6MWT-001.adicht").touch()  # different extension: no match
+        (d / "Bike-1.mat").touch()       # different stem: no match
+
+        pi = PathInput(f"{tmp_path}/EMG/6MWT-{{pass}}.mat")
+        combos = pi.discover()
+        assert sorted(c["pass"] for c in combos) == ["001", "004"]
+
+    def test_absolute_template_load_roundtrip(self, tmp_path):
+        d = tmp_path / "EMG"
+        d.mkdir()
+        (d / "6MWT-001.mat").touch()
+
+        pi = PathInput(f"{tmp_path}/EMG/6MWT-{{pass}}.mat")
+        combos = pi.discover()
+        assert len(combos) == 1
+        # The discovered combo literal-resolves back to the real file.
+        assert pi.load(**combos[0]) == (d / "6MWT-001.mat").resolve()
+
+    def test_windows_drive_template_parsing(self):
+        pi = PathInput(r"Y:\data\EMG\6MWT-{pass}.mat")
+        root, segments = pi._root_and_segments()
+        assert str(root).rstrip("/\\") == "Y:"
+        assert segments == ["data", "EMG", "6MWT-{pass}.mat"]
+
+    def test_unc_template_parsing(self):
+        pi = PathInput(r"\\fs2.smpp.local\RTO\GitRepos\{subject}\data.mat")
+        root, segments = pi._root_and_segments()
+        assert str(root).replace("\\", "/") == "//fs2.smpp.local/RTO"
+        assert segments == ["GitRepos", "{subject}", "data.mat"]
+
+    def test_relative_template_still_uses_root_folder(self, tmp_path):
+        d = tmp_path / "EMG"
+        d.mkdir()
+        (d / "6MWT-001.mat").touch()
+
+        pi = PathInput("EMG/6MWT-{pass}.mat", root_folder=str(tmp_path))
+        combos = pi.discover()
+        assert [c["pass"] for c in combos] == ["001"]
