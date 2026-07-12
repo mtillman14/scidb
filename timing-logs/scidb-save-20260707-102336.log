@@ -1,0 +1,44 @@
+[10:23:36.378] [INFO] configure_database: path=/private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tpeb54142f_11d1_47f4_ae8a_df80dba0b38b/test.duckdb, schema_keys=['subject', 'session', 'speed', 'trial']
+[10:23:36.379] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: /private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tpeb54142f_11d1_47f4_ae8a_df80dba0b38b/test.duckdb
+[10:23:36.437] [INFO] [timing] save_from_table(ScalarVar): data_convert=0.028s, mode=flatten, n=7000
+[10:23:36.442] [DEBUG] [timing] save_batch_bridge(ScalarVar): n=7000, mode=list, split=0.000s, assembly=0.003s
+[10:23:36.442] [INFO] save_batch(ScalarVar): 7000 items, mode=single_column, data: list len=2, DuckDB columns: [value: DOUBLE[]]
+[10:23:36.498] [INFO] [content_hash] ScalarVar: first-record input type=list -> content_hash=5483129cab6a7030
+[10:23:36.676] [INFO] [timing] save_batch(ScalarVar): 7000 items (7000 new rows, 7000 total storage rows), 7000 schemas, 0.234s
+[10:23:36.677] [DEBUG]   save_batch 1_setup                        0.015s
+[10:23:36.677] [DEBUG]   save_batch 2_split_metadata               0.015s
+[10:23:36.677] [DEBUG]   save_batch 3_schema_resolution            0.026s
+[10:23:36.677] [DEBUG]   save_batch 4_per_row_hashing              0.138s
+[10:23:36.677] [DEBUG]   save_batch 4a_canonical_hash              0.054s
+[10:23:36.677] [DEBUG]   save_batch 4b_record_id                   0.067s
+[10:23:36.677] [DEBUG]   save_batch 4c_storage_row                 0.003s
+[10:23:36.677] [DEBUG]   save_batch 4d_meta_row                    0.001s
+[10:23:36.677] [DEBUG]   save_batch 5_dedup_check                  0.000s
+[10:23:36.677] [DEBUG]   save_batch 6a_data_df_create              0.001s
+[10:23:36.677] [DEBUG]   save_batch 6b_data_insert                 0.007s
+[10:23:36.677] [DEBUG]   save_batch 6c1_record_save_insert         0.008s
+[10:23:36.677] [DEBUG]   save_batch 6c2_record_entities_insert     0.014s
+[10:23:36.677] [DEBUG]   save_batch 6c_meta_insert                 0.021s
+[10:23:36.677] [DEBUG]   save_batch 6d_variables_upsert            0.001s
+[10:23:36.677] [DEBUG]   save_batch 6e_commit                      0.010s
+[10:23:36.677] [DEBUG]   save_batch 6_batch_inserts                0.040s
+[10:23:36.677] [DEBUG]   save_batch total                          0.234s
+[10:23:36.679] [INFO] [timing] save_batch_bridge(ScalarVar): n=7000, mode=list, split=0.000s, total=0.240s
+[10:23:36.691] [INFO] load(ScalarVar): metadata={'subject': 1, 'session': 1, 'speed': 1, 'trial': 1}
+[10:23:36.694] [DEBUG] _find_record(ScalarVar): SQL returned 1 records, version_id=latest
+[10:23:36.700] [INFO] [timing] _find_record(ScalarVar, version_id='latest'): total=0.008s, sql=0.003s (1 rows), collapse=0.004s, vk_filter=0.000s, bp_filter=0.000s, sort=0.001s, returned=1 rows
+[10:23:36.700] [INFO] load(ScalarVar): found 1 record(s)
+[10:23:36.701] [INFO] [timing] load(ScalarVar): pre-yield setup: find=0.009s, dtype_lookup=0.000s, chunks_total=0.001s (sql=0.000s, deserialize=0.000s, n_chunks=1, mode=single_column)
+[10:23:36.702] [INFO] [timing] load(ScalarVar): TOTAL=0.011s (find=0.009s, chunks=0.001s, yield_body=0.000s for 1 records, caller_overhead~=0.001s)
+[10:23:36.734] [INFO] load(ScalarVar): metadata={'subject': 20, 'session': 5, 'speed': 10, 'trial': 1}
+[10:23:36.736] [DEBUG] _find_record(ScalarVar): SQL returned 1 records, version_id=latest
+[10:23:36.742] [INFO] [timing] _find_record(ScalarVar, version_id='latest'): total=0.008s, sql=0.003s (1 rows), collapse=0.004s, vk_filter=0.000s, bp_filter=0.000s, sort=0.001s, returned=1 rows
+[10:23:36.742] [INFO] load(ScalarVar): found 1 record(s)
+[10:23:36.743] [INFO] [timing] load(ScalarVar): pre-yield setup: find=0.008s, dtype_lookup=0.000s, chunks_total=0.001s (sql=0.000s, deserialize=0.000s, n_chunks=1, mode=single_column)
+[10:23:36.743] [INFO] [timing] load(ScalarVar): TOTAL=0.010s (find=0.008s, chunks=0.001s, yield_body=0.000s for 1 records, caller_overhead~=0.000s)
+[10:23:36.763] [INFO] load(ScalarVar): metadata={'subject': 20, 'session': 5, 'speed': 10, 'trial': 7}
+[10:23:36.766] [DEBUG] _find_record(ScalarVar): SQL returned 1 records, version_id=latest
+[10:23:36.771] [INFO] [timing] _find_record(ScalarVar, version_id='latest'): total=0.008s, sql=0.002s (1 rows), collapse=0.004s, vk_filter=0.000s, bp_filter=0.000s, sort=0.001s, returned=1 rows
+[10:23:36.771] [INFO] load(ScalarVar): found 1 record(s)
+[10:23:36.772] [INFO] [timing] load(ScalarVar): pre-yield setup: find=0.008s, dtype_lookup=0.000s, chunks_total=0.001s (sql=0.000s, deserialize=0.000s, n_chunks=1, mode=single_column)
+[10:23:36.773] [INFO] [timing] load(ScalarVar): TOTAL=0.010s (find=0.008s, chunks=0.001s, yield_body=0.000s for 1 records, caller_overhead~=0.001s)

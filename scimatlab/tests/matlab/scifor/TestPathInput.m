@@ -203,6 +203,47 @@ classdef TestPathInput < matlab.unittest.TestCase
                 'scifor:PathInput:MultipleMatches');
         end
 
+        %% Zero-padded numeric fallback (no regex syntax needed)
+
+        function test_padded_fallback_numeric_double(testCase)
+            % A plain MATLAB double finds the zero-padded file natively.
+            pi = scifor.PathInput("{subject}/6mwt-{trial}.xlsx", ...
+                'root_folder', testCase.tmp_dir);
+            path = pi.load('subject', 1, 'trial', 1);
+            expected = string(fullfile(testCase.tmp_dir, '1', '6mwt-001.xlsx'));
+            testCase.verifyEqual(path, expected);
+        end
+
+        function test_padded_fallback_multi_digit(testCase)
+            pi = scifor.PathInput("{subject}/6mwt-{trial}.xlsx", ...
+                'root_folder', testCase.tmp_dir);
+            path = pi.load('subject', 1, 'trial', 10);
+            expected = string(fullfile(testCase.tmp_dir, '1', '6mwt-010.xlsx'));
+            testCase.verifyEqual(path, expected);
+        end
+
+        function test_padded_fallback_ambiguous_errors(testCase)
+            % Both 6mwt-1.xlsx and 6mwt-001.xlsx numerically equal 1.  Pass
+            % "01" so the literally-resolved 6mwt-01.xlsx is missing and the
+            % numeric fallback sees the two-way tie.
+            amb_dir = fullfile(testCase.tmp_dir, '1');
+            fclose(fopen(fullfile(amb_dir, '6mwt-1.xlsx'), 'w'));
+            pi = scifor.PathInput("{subject}/6mwt-{trial}.xlsx", ...
+                'root_folder', testCase.tmp_dir);
+            testCase.verifyError(@() pi.load('subject', 1, 'trial', "01"), ...
+                'scifor:PathInput:MultipleMatches');
+        end
+
+        function test_padded_fallback_no_match_returns_literal(testCase)
+            % Historical behavior preserved: missing files still return the
+            % literally-resolved path (the caller's function surfaces it).
+            pi = scifor.PathInput("{subject}/6mwt-{trial}.xlsx", ...
+                'root_folder', testCase.tmp_dir);
+            path = pi.load('subject', 1, 'trial', 99);
+            expected = string(fullfile(testCase.tmp_dir, '1', '6mwt-99.xlsx'));
+            testCase.verifyEqual(path, expected);
+        end
+
         %% placeholder_keys tests
 
         function test_placeholder_keys_simple(testCase)

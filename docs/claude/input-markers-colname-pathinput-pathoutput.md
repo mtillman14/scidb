@@ -46,7 +46,10 @@ metadata into a template and resolves it to a real path the function then
 - it is **loadable** (`_is_loadable`) — wrapped in a `PerComboLoader` whose
   `.load(**combo)` resolves the path per combo;
 - `regex=True` matches the last segment against existing files and raises
-  `FileNotFoundError` on zero matches.
+  `FileNotFoundError` on zero matches;
+- zero-padded numeric filenames (`6MWT-001.mat` from `trial=1`) are handled
+  natively by a numeric-equivalence fallback in `load()` — see
+  `docs/claude/pathinput-zero-padded-matching.md`.
 
 All of that is about *finding inputs to read*. Pointing a `PathInput` at an
 output path is wrong: discovery finds nothing and regex mode errors.

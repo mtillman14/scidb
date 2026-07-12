@@ -7,6 +7,27 @@ import string as _string
 from pathlib import Path
 from typing import Any
 
+from scistacklog import Log
+
+
+def _numeric_like(value: Any) -> bool:
+    """True when *value* denotes an integer regardless of representation.
+
+    Covers Python ints, integral floats (MATLAB doubles cross the bridge as
+    ``1.0``), and digit strings (the MATLAB wrapper's ``num2str`` marshaling
+    produces ``"1"``).  Bools are excluded — ``True`` is not the number 1 in
+    a filename.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return value.is_integer()
+    if isinstance(value, str):
+        return value.isdigit()
+    return False
+
 
 def _find_project_root(start: Path | None = None) -> Path:
     """Walk up from *start* (or cwd) to find the nearest project root.
@@ -64,6 +85,10 @@ class PathInput:
         self.root_folder = Path(root_folder) if root_folder is not None else None
         self.regex = bool(regex)
         self.__name__ = f"PathInput({path_template!r})"
+        # Numeric-fallback caches (see load()): learned zero-pad width per
+        # placeholder key, and per-directory listings validated by mtime.
+        self._pad_width: dict[str, int] = {}
+        self._dir_cache: dict[str, tuple[int, list[str]]] = {}
 
     def to_key(self) -> str:
         """Return a structured JSON string for version_keys serialization.
@@ -101,6 +126,16 @@ class PathInput:
         ``^pattern$`` over the files (not directories) in the parent
         directory.  Exactly one file must match — zero matches raise
         ``FileNotFoundError`` and multiple matches raise ``RuntimeError``.
+
+        Zero-padded numeric filenames are handled natively in non-regex
+        mode: when the literally-resolved path does not exist and at least
+        one metadata value is numeric-like (int, integral float, or digit
+        string), the template is re-matched against the filesystem with
+        each numeric placeholder matching any digit run of equal integer
+        value — so ``trial=1`` finds ``6MWT-001.mat``.  Exactly one such
+        match is returned; multiple numerically-equal matches raise
+        ``RuntimeError``; zero matches fall back to returning the literal
+        path unchanged (preserving the historical non-checking behavior).
         """
         resolved_str = self.path_template
         for key, value in metadata.items():
@@ -108,11 +143,51 @@ class PathInput:
         resolved_path = Path(resolved_str)
 
         if not self.regex:
-            if self.root_folder is not None:
-                return (self.root_folder / resolved_path).resolve()
-            if not resolved_path.is_absolute():
-                return (_find_project_root() / resolved_path).resolve()
-            return resolved_path.resolve()
+            literal = self._absolutize(resolved_path)
+            if literal.exists():
+                return literal
+
+            numeric_keys = {k: int(v) for k, v in metadata.items()
+                            if _numeric_like(v)}
+            if not numeric_keys:
+                return literal
+
+            # Shortcut: re-render with previously learned pad widths and
+            # try a single stat before scanning any directory.
+            padded = self._padded_literal(metadata, numeric_keys)
+            if padded is not None and padded != literal and padded.exists():
+                Log.debug(
+                    "pathinput_numeric_fallback: pad-width cache hit: %s",
+                    padded, layer="scifor",
+                )
+                return padded
+
+            Log.debug(
+                "pathinput_numeric_fallback: literal path missing, scanning "
+                "for numeric-equivalent match: %s", literal, layer="scifor",
+            )
+            matches = self._numeric_fallback_scan(metadata, numeric_keys)
+            if len(matches) == 1:
+                path, bindings = matches[0]
+                for key, captured in bindings.items():
+                    self._pad_width[key] = len(captured)
+                Log.debug(
+                    "pathinput_numeric_fallback: matched %s (captures: %s)",
+                    path, bindings, layer="scifor",
+                )
+                return path.resolve()
+            if len(matches) > 1:
+                names = ", ".join(sorted(str(p) for p, _ in matches))
+                raise RuntimeError(
+                    f"PathInput numeric fallback matched {len(matches)} files "
+                    f"for template {self.path_template!r} with metadata "
+                    f"{metadata!r}: {names}"
+                )
+            Log.debug(
+                "pathinput_numeric_fallback: no numeric-equivalent match, "
+                "returning literal path %s", literal, layer="scifor",
+            )
+            return literal
 
         # regex=True: treat the last segment as a regex.  Split on '/'
         # only — backslashes belong to the regex pattern (e.g. ``\d``,
@@ -149,6 +224,148 @@ class PathInput:
                 f"in {dir_path}: {names}"
             )
         return matches[0].resolve()
+
+    def _absolutize(self, resolved_path: Path) -> Path:
+        """Anchor a substituted template path exactly like the historical
+        non-regex resolution: root_folder, else project root, else as-is."""
+        if self.root_folder is not None:
+            return (self.root_folder / resolved_path).resolve()
+        if not resolved_path.is_absolute():
+            return (_find_project_root() / resolved_path).resolve()
+        return resolved_path.resolve()
+
+    def _padded_literal(self, metadata: dict, numeric_keys: dict) -> "Path | None":
+        """Render the template with cached zero-pad widths applied to numeric
+        keys.  Returns None when no width has been learned yet."""
+        if not any(k in self._pad_width for k in numeric_keys):
+            return None
+        rendered = self.path_template
+        for key, value in metadata.items():
+            if key in numeric_keys:
+                text = str(numeric_keys[key]).zfill(self._pad_width.get(key, 0))
+            else:
+                text = str(value)
+            rendered = rendered.replace("{" + key + "}", text)
+        return self._absolutize(Path(rendered))
+
+    def _fallback_root_and_segments(self) -> "tuple[Path, list[str]]":
+        """Split the template for the numeric-fallback walk, mirroring the
+        literal resolution's anchoring (absolute template wins, then
+        root_folder, then project root)."""
+        normalised = self.path_template.replace("\\", "/")
+        segments = [s for s in normalised.split("/") if s]
+        if normalised.startswith("/"):
+            return Path("/"), segments
+        if segments and re.fullmatch(r"[A-Za-z]:", segments[0]):
+            return Path(segments[0] + "/"), segments[1:]
+        if self.root_folder is not None:
+            return self.root_folder, segments
+        return _find_project_root(), segments
+
+    def _fallback_segment_regex(
+        self, segment: str, metadata: dict, numeric_keys: dict
+    ) -> "tuple[str, list, bool] | None":
+        """Compile one template segment for the numeric fallback.
+
+        Returns ``(regex, checks, has_numeric)`` where *checks* is a list of
+        ``(group_name, key, int_value)`` equality constraints, or ``None``
+        when the segment cannot be Formatter-parsed (caller substitutes it
+        literally, matching load()'s tolerance of regex-ish braces).
+        """
+        try:
+            parts = list(_string.Formatter().parse(segment))
+        except ValueError:
+            return None
+        regex = ""
+        checks: list = []
+        has_numeric = False
+        key_counts: dict[str, int] = {}
+        for literal, field_name, _, _ in parts:
+            if literal:
+                regex += re.escape(literal)
+            if field_name is None:
+                continue
+            if field_name in numeric_keys:
+                key_counts[field_name] = key_counts.get(field_name, 0) + 1
+                count = key_counts[field_name]
+                group = field_name if count == 1 else f"{field_name}_{count}"
+                regex += f"(?P<{group}>\\d+)"
+                checks.append((group, field_name, numeric_keys[field_name]))
+                has_numeric = True
+            elif field_name in metadata:
+                regex += re.escape(str(metadata[field_name]))
+            else:
+                # Unknown key: literal-resolution leaves "{key}" untouched.
+                regex += re.escape("{" + field_name + "}")
+        return regex, checks, has_numeric
+
+    def _list_dir(self, directory: Path) -> list[str]:
+        """Directory listing memoized per instance, invalidated by mtime."""
+        key = str(directory)
+        try:
+            mtime = directory.stat().st_mtime_ns
+        except OSError:
+            return []
+        cached = self._dir_cache.get(key)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError:
+            return []
+        self._dir_cache[key] = (mtime, entries)
+        return entries
+
+    def _numeric_fallback_scan(
+        self, metadata: dict, numeric_keys: dict
+    ) -> "list[tuple[Path, dict[str, str]]]":
+        """Walk the template segments matching numeric placeholders by
+        integer value.  Returns complete matches as ``(path, captures)``
+        where *captures* maps each numeric key to the digit string found on
+        disk (used to learn pad widths)."""
+        root, segments = self._fallback_root_and_segments()
+        if not segments:
+            return []
+        results: list = []
+
+        def _substitute_literal(segment: str) -> str:
+            for key, value in metadata.items():
+                segment = segment.replace("{" + key + "}", str(value))
+            return segment
+
+        def _walk(current_dir: Path, seg_idx: int, captures: dict) -> None:
+            segment = segments[seg_idx]
+            is_last = seg_idx == len(segments) - 1
+            compiled = self._fallback_segment_regex(segment, metadata, numeric_keys)
+
+            if compiled is None or not compiled[2]:
+                # No numeric placeholder in this segment: descend literally.
+                candidate = current_dir / _substitute_literal(segment)
+                if is_last:
+                    if candidate.exists():
+                        results.append((candidate, dict(captures)))
+                elif candidate.is_dir():
+                    _walk(candidate, seg_idx + 1, captures)
+                return
+
+            regex, checks, _ = compiled
+            for entry in self._list_dir(current_dir):
+                m = re.fullmatch(regex, entry)
+                if m is None:
+                    continue
+                if any(int(m.group(g)) != v for g, _, v in checks):
+                    continue
+                new_captures = dict(captures)
+                for g, key, _ in checks:
+                    new_captures[key] = m.group(g)
+                entry_path = current_dir / entry
+                if is_last:
+                    results.append((entry_path, new_captures))
+                elif entry_path.is_dir():
+                    _walk(entry_path, seg_idx + 1, new_captures)
+
+        _walk(root, 0, {})
+        return results
 
     def placeholder_keys(self) -> list[str]:
         """Return the list of unique placeholder keys in the template."""
