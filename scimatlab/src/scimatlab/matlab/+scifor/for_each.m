@@ -585,7 +585,11 @@ function varargout = for_each(fn, inputs, varargin)
                         loaded{p} = val.resolve(metadata);
                     end
                 elseif opts.resolve_pathinput && isa(val, 'scifor.PathInput')
-                    loaded{p} = val.load(meta_nv{:});
+                    if isempty(opts.pathinput_loader)
+                        loaded{p} = val.load(meta_nv{:});
+                    else
+                        loaded{p} = opts.pathinput_loader(val, meta_nv);
+                    end
                 elseif opts.resolve_pathinput && isa(val, 'scifor.Fixed') && isa(val.data, 'scifor.PathInput')
                     % Fixed(PathInput) — apply fixed overrides, then resolve
                     fixed_nv = meta_nv;
@@ -606,7 +610,11 @@ function varargout = for_each(fn, inputs, varargin)
                             fixed_nv{end+1} = key_val; %#ok<AGROW>
                         end
                     end
-                    loaded{p} = val.data.load(fixed_nv{:});
+                    if isempty(opts.pathinput_loader)
+                        loaded{p} = val.data.load(fixed_nv{:});
+                    else
+                        loaded{p} = opts.pathinput_loader(val.data, fixed_nv);
+                    end
                 else
                     loaded{p} = val;
                 end
@@ -1833,6 +1841,9 @@ function [meta_args, opts] = split_options(varargin)
     opts.all_combos = [];
     opts.nest_table_outputs = false;
     opts.resolve_pathinput = true;
+    opts.pathinput_loader = [];  % optional loader(pi, meta_nv) callback; the
+                                 % scidb layer injects its schema-key-type
+                                 % policy here so scifor stays policy-free
     opts.log_fn = [];  % deprecated, ignored (kept so parsing stays stable)
     opts.resolved_path_outputs = struct();
     opts.share_limits = struct();
@@ -1893,6 +1904,10 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "_resolve_pathinput"
                     opts.resolve_pathinput = logical(varargin{i+1});
+                    i = i + 2;
+                    continue;
+                case "_pathinput_loader"
+                    opts.pathinput_loader = varargin{i+1};
                     i = i + 2;
                     continue;
                 case "_resolved_path_outputs"

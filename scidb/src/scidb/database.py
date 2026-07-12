@@ -50,6 +50,44 @@ def _schema_str(value):
     return str(value)
 
 
+def _canonical_numeric_value(key, value):
+    """Canonical value for a schema key declared ``"numeric"``.
+
+    Collapses every spelling of the same number to one identity: ints stay
+    ints, integral floats become ints (MATLAB doubles arrive as ``1.0``),
+    digit strings lose leading zeros (``"001"`` → 1), and float-like strings
+    normalize through ``float`` (``"1.50"`` → 1.5).  Values that cannot be
+    read as a number violate the declaration and raise SchemaKeyTypeError —
+    declared types are enforced, never guessed around.
+    """
+    from .exceptions import SchemaKeyTypeError
+
+    if isinstance(value, bool):
+        raise SchemaKeyTypeError(
+            f"Schema key '{key}' is declared numeric but got a bool: {value!r}"
+        )
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+    if isinstance(value, str):
+        s = value.strip()
+        if s.isdigit():
+            return int(s)
+        try:
+            f = float(s)
+            return int(f) if f.is_integer() else f
+        except ValueError:
+            pass
+    raise SchemaKeyTypeError(
+        f"Schema key '{key}' is declared numeric but got a non-numeric "
+        f"value: {value!r}"
+    )
+
+
+_VALID_SCHEMA_KEY_TYPES = ("numeric", "string")
+
+
 def _from_schema_str(value):
     """Convert a schema VARCHAR value back to a numeric type if possible.
 
@@ -434,6 +472,7 @@ def get_user_id() -> str | None:
 def configure_database(
     dataset_db_path: str | Path,
     dataset_schema_keys: list[str],
+    schema_key_types: "dict[str, str] | None" = None,
 ) -> "DatabaseManager":
     """
     Configure the global database connection.
@@ -448,6 +487,15 @@ def configure_database(
             logical location of data and are used for the folder hierarchy.
             Any metadata keys not in this list are treated as version parameters
             that distinguish different computational versions of the same data.
+        schema_key_types: Optional per-key type declaration, e.g.
+            ``{"trial": "numeric"}``.  ``"numeric"`` keys canonicalize every
+            spelling of the same number to one identity ("001", 1, and 1.0
+            all store as "1"; zero-padded filenames still resolve via
+            PathInput's numeric fallback).  ``"string"`` keys are verbatim —
+            spelling IS identity, and PathInput matches them exactly only.
+            Undeclared keys behave as strings until a PathInput resolution
+            has to bridge spellings (e.g. trial=1 matching "6MWT-001.mat"),
+            which raises SchemaKeyTypeError asking for a declaration.
 
     Returns:
         The DatabaseManager instance
@@ -455,6 +503,7 @@ def configure_database(
     db = DatabaseManager(
         dataset_db_path,
         dataset_schema_keys=dataset_schema_keys,
+        dataset_schema_key_types=schema_key_types,
     )
     for cls in BaseVariable._all_subclasses.values():
         db.register(cls)
@@ -476,7 +525,8 @@ def configure_database(
     # versions produced it) when debugging an archived log or a colleague's.
     Log.info(
         f"configure_database: path={dataset_db_path}, "
-        f"schema_keys={list(dataset_schema_keys)} | {_run_context()}"
+        f"schema_keys={list(dataset_schema_keys)}, "
+        f"schema_key_types={schema_key_types or {}} | {_run_context()}"
     )
 
     return db
@@ -536,6 +586,7 @@ class DatabaseManager:
         dataset_db_path: str | Path,
         dataset_schema_keys: list[str],
         read_only: bool = False,
+        dataset_schema_key_types: "dict[str, str] | None" = None,
     ):
         """
         Initialize database connection.
@@ -559,6 +610,23 @@ class DatabaseManager:
                 "not a set. Schema key order defines the dataset hierarchy."
             )
         self.dataset_schema_keys = list(dataset_schema_keys)
+
+        key_types = dict(dataset_schema_key_types or {})
+        unknown_keys = set(key_types) - set(self.dataset_schema_keys)
+        if unknown_keys:
+            raise ValueError(
+                f"schema_key_types declares keys that are not schema keys: "
+                f"{sorted(unknown_keys)}. Schema keys: {self.dataset_schema_keys}"
+            )
+        bad_types = {k: t for k, t in key_types.items()
+                     if t not in _VALID_SCHEMA_KEY_TYPES}
+        if bad_types:
+            raise ValueError(
+                f"schema_key_types values must be one of "
+                f"{_VALID_SCHEMA_KEY_TYPES}, got: {bad_types}"
+            )
+        self.dataset_schema_key_types = key_types
+
         self.read_only = bool(read_only)
         self._registered_types: dict[str, Type[BaseVariable]] = {}
 
@@ -580,6 +648,28 @@ class DatabaseManager:
 
         self._closed = False # Track connection open/closed state
         self._inspector = None  # lazy scidb.inspect.Inspector (see .inspect)
+
+    def canonicalize_metadata(self, metadata: dict) -> dict:
+        """Apply declared schema-key types to addressing metadata.
+
+        Keys declared ``"numeric"`` collapse every spelling of the same
+        number to one canonical identity (``"001"`` → 1 → stored ``"1"``);
+        list values (load()'s OR semantics) canonicalize element-wise.
+        ``"string"`` and undeclared keys pass through verbatim.  Returns a
+        new dict; the input is not mutated.
+        """
+        if not self.dataset_schema_key_types:
+            return metadata
+        out = dict(metadata)
+        for key, key_type in self.dataset_schema_key_types.items():
+            if key_type != "numeric" or key not in out or out[key] is None:
+                continue
+            value = out[key]
+            if isinstance(value, (list, tuple)):
+                out[key] = [_canonical_numeric_value(key, v) for v in value]
+            else:
+                out[key] = _canonical_numeric_value(key, value)
+        return out
 
     def _ensure_meta_tables(self):
         """Create internal metadata tables for type registration."""
@@ -925,6 +1015,14 @@ class DatabaseManager:
         """
         if not data_items:
             return []
+
+        # Declared-numeric schema keys canonicalize at every DB entry point —
+        # this covers the MATLAB bridge (save_batch_bridge) as well as the
+        # Python for_each save path with one seam.
+        if self.dataset_schema_key_types:
+            data_items = [
+                (d, self.canonicalize_metadata(m)) for d, m in data_items
+            ]
 
         timings = {}
         t0 = time.perf_counter()
@@ -1964,6 +2062,7 @@ class DatabaseManager:
         Returns:
             The record_id of the saved data
         """
+        metadata = self.canonicalize_metadata(metadata)
         type_name = variable_class.__name__
         user_keys = {k: v for k, v in metadata.items() if not k.startswith("__")}
         Log.debug(f"save_variable({type_name}): metadata={user_keys}")
@@ -2609,7 +2708,7 @@ class DatabaseManager:
         pd.DataFrame
             Empty DataFrame when no matching records exist.
         """
-        metadata = metadata or {}
+        metadata = self.canonicalize_metadata(metadata or {})
         type_name = variable_class.__name__
         table_name = type_name + "_data"
 
@@ -2757,6 +2856,7 @@ class DatabaseManager:
         Yields:
             BaseVariable instances matching the metadata
         """
+        metadata = self.canonicalize_metadata(metadata)
         type_name = variable_class.__name__
         user_summary = {k: v for k, v in metadata.items() if not k.startswith("__")}
         Log.debug(f"load({type_name}): metadata={user_summary}")

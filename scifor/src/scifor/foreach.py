@@ -603,6 +603,14 @@ def for_each(
             # indicate a return-contract bug — surface immediately, don't skip.
             raise
         except Exception as e:
+            if getattr(e, "scifor_fatal", False):
+                # Deterministic configuration errors marked fatal by a
+                # higher layer (e.g. scidb's SchemaKeyTypeError) would fail
+                # every combo identically — abort the run instead of
+                # skipping through N copies of the same failure.
+                Log.error(f"[fatal] {metadata_str}: {e}",
+                          layer="scifor", exc_info=True)
+                raise
             _record_iteration_failure(
                 failure_reasons, warned_reasons, e, metadata_str,
                 f"{fn_name} raised",

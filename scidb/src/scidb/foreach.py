@@ -470,6 +470,21 @@ def for_each(
         _orig_fn = fn
         _loaded_inputs_ref = state.loaded_inputs
 
+        # Declared schema-key types drive PathInput spelling enforcement in
+        # per-combo loads (string keys: exact only; undeclared keys that
+        # need a spelling bridge: SchemaKeyTypeError).
+        _kt_db = db
+        if _kt_db is None:
+            try:
+                from scidb.database import get_database
+                _kt_db = get_database()
+            except Exception:
+                _kt_db = None
+        _schema_key_types = getattr(_kt_db, 'dataset_schema_key_types', {}) or {}
+        _schema_keys_for_types = list(
+            getattr(_kt_db, 'dataset_schema_keys', []) or []
+        )
+
         # Get function parameters to check which metadata keys it accepts.
         _fn_params = None
         if _inject_combo_metadata:
@@ -498,7 +513,11 @@ def for_each(
             resolved = {}
             for k, v in kwargs.items():
                 if isinstance(v, PerComboLoader):
-                    resolved[k] = _resolve_per_combo_loader(v, load_kw)
+                    resolved[k] = _resolve_per_combo_loader(
+                        v, load_kw,
+                        key_types=_schema_key_types,
+                        schema_keys=_schema_keys_for_types,
+                    )
                 elif isinstance(v, PerComboLoaderMerge):
                     resolved[k] = _resolve_per_combo_merge(v, load_kw)
                 else:
@@ -1231,16 +1250,58 @@ def _for_each_prepare(
         except Exception:
             _resolved_db_for_str = None
     if _resolved_db_for_str is not None and hasattr(_resolved_db_for_str, 'dataset_schema_keys'):
-        from scidb.database import _schema_str
+        from scidb.database import _schema_str, _canonical_numeric_value
         _sk_set = set(_resolved_db_for_str.dataset_schema_keys)
+        _sk_types = getattr(_resolved_db_for_str, 'dataset_schema_key_types', {}) or {}
         stringify_count = 0
         for key in list(metadata_iterables.keys()):
             if key in _sk_set:
-                metadata_iterables[key] = [
-                    _schema_str(v) for v in metadata_iterables[key]
-                ]
+                values = metadata_iterables[key]
+                if _sk_types.get(key) == "numeric":
+                    # Declared-numeric keys canonicalize unconditionally —
+                    # every spelling of the same number ("001", 1, 1.0)
+                    # collapses to one identity before stringification.
+                    # dict.fromkeys dedupes spellings that collapsed.
+                    values = list(dict.fromkeys(
+                        _canonical_numeric_value(key, v) for v in values
+                    ))
+                metadata_iterables[key] = [_schema_str(v) for v in values]
                 stringify_count += 1
         Log.debug(f"stringified {stringify_count} schema key iterable(s)")
+
+        # Filesystem-discovered combos carry disk spellings ("001"); apply
+        # the same declared-numeric canonicalization so discovery-driven and
+        # explicit-iterable runs agree on schema-key identity.
+        if _discovered_combos is not None and _sk_types:
+            canon_keys = [k for k, t in _sk_types.items() if t == "numeric"]
+            for combo in _discovered_combos:
+                for k in canon_keys:
+                    if k in combo:
+                        combo[k] = _schema_str(
+                            _canonical_numeric_value(k, combo[k])
+                        )
+            if canon_keys:
+                # Canonicalization can collapse combos that differed only in
+                # spelling (both "6MWT-1.mat" and "6MWT-001.mat" on disk) —
+                # dedupe so the same identity is not iterated twice.
+                seen = set()
+                deduped = []
+                for combo in _discovered_combos:
+                    sig = tuple(sorted(combo.items()))
+                    if sig not in seen:
+                        seen.add(sig)
+                        deduped.append(combo)
+                if len(deduped) != len(_discovered_combos):
+                    Log.debug(
+                        f"deduped {len(_discovered_combos) - len(deduped)} "
+                        f"discovered combo(s) that collapsed under "
+                        f"canonicalization"
+                    )
+                _discovered_combos[:] = deduped
+                Log.debug(
+                    f"canonicalized numeric schema key(s) {canon_keys} in "
+                    f"{len(_discovered_combos)} discovered combo(s)"
+                )
     else:
         Log.debug("no database available for schema stringification, skipping")
 
@@ -3620,7 +3681,52 @@ def _load_var_type_as_spread(
 # Per-combo resolution helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_per_combo_loader(pcl: "PerComboLoader", load_kw: dict) -> Any:
+def _load_pathinput_checked(
+    pi: "PathInput", load_kw: dict, key_types: dict, schema_keys: "list | set",
+):
+    """Per-combo PathInput load enforcing declared schema-key types.
+
+    - ``"string"``-declared keys are excluded from the numeric-equivalence
+      fallback entirely: spelling is identity, so "1" never matches "001".
+    - ``"numeric"``-declared keys may resolve freely (their stored identity
+      is already canonical; only the filename lookup bridges spellings).
+    - An UNDECLARED schema key whose spelling had to be bridged raises
+      SchemaKeyTypeError: the dataset has proven the spelling ambiguous, so
+      the user must declare the key's type once.  Non-schema keys keep the
+      silent fallback (their spelling does not define dataset identity).
+    """
+    from .exceptions import SchemaKeyTypeError
+
+    key_types = key_types or {}
+    string_keys = {k for k, t in key_types.items() if t == "string"}
+    eligible = {k for k in load_kw if k not in string_keys}
+    path, resolutions = pi.load_with_captures(load_kw, numeric_match=eligible)
+    if resolutions:
+        numeric_keys = {k for k, t in key_types.items() if t == "numeric"}
+        offending = {
+            k: spelling for k, spelling in resolutions.items()
+            if k in set(schema_keys or []) and k not in numeric_keys
+        }
+        if offending:
+            key, spelling = next(iter(offending.items()))
+            raise SchemaKeyTypeError(
+                f"PathInput resolved {key}={load_kw[key]!r} to '{spelling}' "
+                f"on disk (template {pi.path_template!r}) — the spelling of "
+                f"schema key '{key}' is ambiguous (zero-padded filenames). "
+                f"Declare its type once to fix its identity: "
+                f"configure_database(..., schema_key_types={{'{key}': "
+                f"'numeric'}}) to treat values as numbers (canonical, no "
+                f"leading zeros), or 'string' to make spelling significant "
+                f"(exact matches only)."
+            )
+        Log.debug(f"pathinput resolved spellings (declared numeric): {resolutions}")
+    return path
+
+
+def _resolve_per_combo_loader(
+    pcl: "PerComboLoader", load_kw: dict,
+    key_types: "dict | None" = None, schema_keys: "list | None" = None,
+) -> Any:
     """Resolve a PerComboLoader per-combo by calling spec.load(**effective_kw)."""
     spec = pcl.spec
 
@@ -3631,6 +3737,10 @@ def _resolve_per_combo_loader(pcl: "PerComboLoader", load_kw: dict) -> Any:
         if isinstance(inner, ColumnSelection):
             columns = inner.columns
             inner = inner.var_type
+        if isinstance(inner, PathInput):
+            return _load_pathinput_checked(
+                inner, effective_kw, key_types or {}, schema_keys or []
+            )
         lv = inner.load(**effective_kw)
         raw = lv.data if hasattr(lv, 'data') else lv
         if columns:
@@ -3643,6 +3753,11 @@ def _resolve_per_combo_loader(pcl: "PerComboLoader", load_kw: dict) -> Any:
         raw = lv.data if hasattr(lv, 'data') else lv
         cls_name = getattr(spec.var_type, '__name__', type(spec.var_type).__name__)
         return _apply_per_combo_col_selection(raw, spec.columns, cls_name)
+
+    if isinstance(spec, PathInput):
+        return _load_pathinput_checked(
+            spec, load_kw, key_types or {}, schema_keys or []
+        )
 
     # Plain class
     lv = spec.load(**load_kw)

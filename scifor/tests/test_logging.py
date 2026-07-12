@@ -201,11 +201,37 @@ def test_no_progress_on_fast_runs_by_default(caplog):
 # ---------------------------------------------------------------------------
 
 def test_scifor_does_not_import_scidb():
-    """scifor must stay scidb-free: it logs via scistacklog directly."""
-    set_schema(["subject"])
-    df = pd.DataFrame({"subject": [1], "value": [1.0]})
-    for_each(lambda value: value.mean(), inputs={"value": df}, subject=[1])
-    assert "scidb" not in sys.modules
+    """scifor must stay scidb-free: it logs via scistacklog directly.
+
+    Runs in a fresh subprocess: sys.modules is session-global, so asserting
+    on it in-process fails spuriously whenever scidb tests ran earlier in
+    the same pytest session (combined-suite runs). A clean interpreter makes
+    the assertion causal — only scifor's own imports can trip it.
+    """
+    import subprocess
+    import textwrap
+
+    code = textwrap.dedent("""
+        import sys
+        import pandas as pd
+        from scifor import for_each, set_schema
+
+        set_schema(["subject"])
+        df = pd.DataFrame({"subject": [1], "value": [1.0]})
+        for_each(lambda value: value.mean(), inputs={"value": df}, subject=[1])
+        assert "scidb" not in sys.modules, sorted(
+            m for m in sys.modules if m.startswith("scidb"))
+    """)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, (
+        f"scifor imported scidb (or the probe failed):\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
 
 
 def test_no_diag_file_written():

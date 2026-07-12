@@ -325,6 +325,25 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     if ~isempty(find_pathinput(inputs))
         scifor_opts{end+1} = '_resolve_pathinput';
         scifor_opts{end+1} = true;
+        % Schema-key-type policy for per-combo PathInput loads (mirrors
+        % Python's _load_pathinput_checked; the MATLAB loop resolves
+        % PathInput itself, so the policy callback is injected here and
+        % scifor stays policy-free). string keys: exact only; undeclared
+        % keys needing a spelling bridge: scidb:SchemaKeyTypeError.
+        if isempty(opts.db)
+            py_db_kt = py.scidb.database.get_database();
+        else
+            py_db_kt = opts.db;
+        end
+        kt_struct = scidb.internal.pydict_to_struct( ...
+            py_db_kt.dataset_schema_key_types);
+        sk_strings = string(cellfun(@char, ...
+            cell(py.list(py_db_kt.dataset_schema_keys)), ...
+            'UniformOutput', false));
+        scifor_opts{end+1} = '_pathinput_loader';
+        scifor_opts{end+1} = @(pi_obj, meta_nv) ...
+            scidb.internal.load_pathinput_checked( ...
+                pi_obj, meta_nv, kt_struct, sk_strings);
     end
     if ~isempty(as_table_eff)
         scifor_opts{end+1} = 'as_table';

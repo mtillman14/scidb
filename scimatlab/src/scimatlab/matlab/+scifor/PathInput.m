@@ -119,6 +119,70 @@ classdef PathInput < handle
             filepath = string(char(py.str(py_path)));
         end
 
+        function [filepath, resolutions] = load_with_captures(obj, meta_nv, numeric_match)
+        %LOAD_WITH_CAPTURES  Resolve like load() and report bridged spellings.
+        %
+        %   [PATH, RESOLUTIONS] = pi.load_with_captures(META_NV, NUMERIC_MATCH)
+        %
+        %   META_NV is a name-value cell array ({'subject', 1, 'trial', 1});
+        %   NUMERIC_MATCH is a string array / cellstr of the keys eligible
+        %   for the numeric-equivalence fallback (keys outside it resolve
+        %   strictly literally — how scidb handles string-declared schema
+        %   keys).  RESOLUTIONS is a struct mapping each key whose on-disk
+        %   spelling differs from its given value (e.g. trial=1 matching
+        %   6MWT-001.mat yields struct('trial', "001")); empty struct when
+        %   the literal path resolved.
+        %
+        %   Forwards to Python's PathInput.load_with_captures with the same
+        %   value marshaling and error translation as load().
+
+            if mod(numel(meta_nv), 2) ~= 0
+                error('scifor:PathInput', ...
+                    'Metadata arguments must be name-value pairs.');
+            end
+
+            % Marshal metadata -> py.dict, same value rendering as load().
+            py_meta = py.dict();
+            for i = 1:2:numel(meta_nv)
+                key = char(string(meta_nv{i}));
+                if strcmpi(key, 'db')
+                    continue;
+                end
+                val = meta_nv{i+1};
+                if isnumeric(val) && isscalar(val)
+                    val_str = num2str(val);
+                else
+                    val_str = char(string(val));
+                end
+                py_meta.update(pyargs(key, val_str));
+            end
+
+            py_eligible = py.list(cellstr(string(numeric_match)));
+
+            try
+                res = obj.py_obj.load_with_captures(py_meta, ...
+                    pyargs('numeric_match', py_eligible));
+            catch err
+                msg = err.message;
+                if contains(msg, 'matched no files')
+                    error('scifor:PathInput:NoMatch', '%s', msg);
+                elseif contains(msg, 'matched') && contains(msg, 'files')
+                    error('scifor:PathInput:MultipleMatches', '%s', msg);
+                else
+                    rethrow(err);
+                end
+            end
+
+            filepath = string(char(py.str(res{1})));
+            resolutions = struct();
+            py_res = res{2};
+            ks = cell(py.list(py_res.keys()));
+            for ki = 1:numel(ks)
+                k = char(ks{ki});
+                resolutions.(k) = string(char(py_res{k}));
+            end
+        end
+
         function keys = placeholder_keys(obj)
         %PLACEHOLDER_KEYS  Return cell array of unique placeholder keys in the template.
             py_keys = obj.py_obj.placeholder_keys();

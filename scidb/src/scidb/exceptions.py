@@ -43,6 +43,23 @@ class AmbiguousParamError(SciStackError):
     pass
 
 
+class SchemaKeyTypeError(SciStackError):
+    """Raised when a schema key's spelling is ambiguous or violates its type.
+
+    Two situations:
+    - A PathInput numeric fallback had to bridge spellings (e.g. trial=1
+      matched "001" on disk) for a schema key with no declared type — the
+      dataset has proven the spelling ambiguous, so the user must declare
+      the key numeric or string via configure_database(schema_key_types=...).
+    - A key declared "numeric" received a value that is not numeric.
+    """
+
+    # scifor.for_each aborts the whole run on this error instead of
+    # recording a per-combo skip: the failure is a configuration problem
+    # that would repeat identically for every combo.
+    scifor_fatal = True
+
+
 class DatabaseLockedError(SciStackError):
     """Raised when the database file is locked by another session.
 

@@ -50,20 +50,24 @@ needs no MATLAB changes. Its marshaling (`num2str(1)` → `"1"`) is exactly the
 digit-string case the fallback covers. Error translation for the ambiguity
 case already worked via message sniffing.
 
-## What this deliberately does NOT do
+## Identity policy lives in scidb (added 2026-07-12, same day)
 
-- **No value conversion.** Discovered combos still carry `"001"` as strings
-  (feedback rule: never auto-int zero-padded schema keys). Only the filename
-  *lookup* is numeric-tolerant.
-- **Known caveat:** schema-key strings still differ by source for the same
-  file — discovery-driven runs store `trial="001"`, explicit `trial=1:12`
-  runs store `"1"`. Both now *resolve*; they are not unified. Adjacent to the
-  recorded latest-record-selection future issue; revisit canonicalization if
-  it bites.
-- Rejected alternatives: `{trial:03d}` format specs (Python-specific syntax
-  burden) and inferring a format from an example file (extra failure modes:
-  mixed widths, which example to trust, stale learned widths — direct
-  equality matching subsumes it).
+The mixed-spelling caveat this section used to describe (`"001"` from
+discovery vs `"1"` from explicit iterables) is now handled by **schema key
+type declarations** — see `docs/claude/schema-key-types.md`. Summary:
+
+- scifor stays policy-free: bare `load()` keeps the silent fallback, and the
+  richer `load_with_captures(metadata, numeric_match=...)` reports which
+  keys' spellings were bridged so scidb can enforce its policy.
+- scidb: undeclared schema key needing a spelling bridge →
+  `SchemaKeyTypeError` (declare once); declared `numeric` → unconditional
+  canonicalization ("001" ≡ 1 ≡ "1"); declared `string` → verbatim, exact
+  path matches only.
+
+Rejected alternatives (for the resolution mechanism): `{trial:03d}` format
+specs (Python-specific syntax burden) and inferring a format from an example
+file (mixed widths, which example to trust, stale learned widths — direct
+equality matching subsumes it).
 
 ## Key files
 

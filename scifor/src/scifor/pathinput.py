@@ -137,6 +137,33 @@ class PathInput:
         ``RuntimeError``; zero matches fall back to returning the literal
         path unchanged (preserving the historical non-checking behavior).
         """
+        return self.load_with_captures(metadata)[0]
+
+    def load_with_captures(
+        self,
+        metadata: dict,
+        db=None,
+        numeric_match: "set | None" = None,
+    ) -> "tuple[Path, dict[str, str]]":
+        """Resolve like ``load(**metadata)`` and report spelling resolutions.
+
+        Returns ``(path, resolutions)`` where *resolutions* maps each
+        metadata key whose on-disk spelling differs from ``str(value)`` —
+        i.e. the numeric fallback bridged spellings, e.g. ``trial=1``
+        matching ``6MWT-001.mat`` yields ``{"trial": "001"}``.  Empty when
+        the literal path resolved, no match was found, or in regex mode.
+
+        Args:
+            metadata: Template substitution values (dict form of load()'s
+                kwargs).
+            db: Accepted and ignored, mirroring load().
+            numeric_match: Keys eligible for the numeric-equivalence
+                fallback.  ``None`` (default) means every numeric-like key,
+                matching load()'s behavior.  Callers that consider a key's
+                spelling semantically significant (e.g. scidb's
+                string-declared schema keys) exclude it here so it only ever
+                matches literally.
+        """
         resolved_str = self.path_template
         for key, value in metadata.items():
             resolved_str = resolved_str.replace("{" + key + "}", str(value))
@@ -145,22 +172,30 @@ class PathInput:
         if not self.regex:
             literal = self._absolutize(resolved_path)
             if literal.exists():
-                return literal
+                return literal, {}
 
-            numeric_keys = {k: int(v) for k, v in metadata.items()
-                            if _numeric_like(v)}
+            numeric_keys = {
+                k: int(v) for k, v in metadata.items()
+                if _numeric_like(v)
+                and (numeric_match is None or k in numeric_match)
+            }
             if not numeric_keys:
-                return literal
+                return literal, {}
 
             # Shortcut: re-render with previously learned pad widths and
             # try a single stat before scanning any directory.
-            padded = self._padded_literal(metadata, numeric_keys)
+            padded, spellings = self._padded_literal(metadata, numeric_keys)
             if padded is not None and padded != literal and padded.exists():
+                resolutions = {
+                    k: sp for k, sp in spellings.items()
+                    if sp != str(metadata[k])
+                }
                 Log.debug(
-                    "pathinput_numeric_fallback: pad-width cache hit: %s",
-                    padded, layer="scifor",
+                    "pathinput_numeric_fallback: pad-width cache hit: %s "
+                    "(resolved spellings: %s)", padded, resolutions,
+                    layer="scifor",
                 )
-                return padded
+                return padded, resolutions
 
             Log.debug(
                 "pathinput_numeric_fallback: literal path missing, scanning "
@@ -171,11 +206,15 @@ class PathInput:
                 path, bindings = matches[0]
                 for key, captured in bindings.items():
                     self._pad_width[key] = len(captured)
+                resolutions = {
+                    k: cap for k, cap in bindings.items()
+                    if cap != str(metadata[k])
+                }
                 Log.debug(
                     "pathinput_numeric_fallback: matched %s (captures: %s)",
                     path, bindings, layer="scifor",
                 )
-                return path.resolve()
+                return path.resolve(), resolutions
             if len(matches) > 1:
                 names = ", ".join(sorted(str(p) for p, _ in matches))
                 raise RuntimeError(
@@ -187,7 +226,7 @@ class PathInput:
                 "pathinput_numeric_fallback: no numeric-equivalent match, "
                 "returning literal path %s", literal, layer="scifor",
             )
-            return literal
+            return literal, {}
 
         # regex=True: treat the last segment as a regex.  Split on '/'
         # only — backslashes belong to the regex pattern (e.g. ``\d``,
@@ -223,7 +262,7 @@ class PathInput:
                 f"PathInput regex pattern {pattern!r} matched {len(matches)} files "
                 f"in {dir_path}: {names}"
             )
-        return matches[0].resolve()
+        return matches[0].resolve(), {}
 
     def _absolutize(self, resolved_path: Path) -> Path:
         """Anchor a substituted template path exactly like the historical
@@ -234,19 +273,25 @@ class PathInput:
             return (_find_project_root() / resolved_path).resolve()
         return resolved_path.resolve()
 
-    def _padded_literal(self, metadata: dict, numeric_keys: dict) -> "Path | None":
+    def _padded_literal(
+        self, metadata: dict, numeric_keys: dict
+    ) -> "tuple[Path | None, dict[str, str]]":
         """Render the template with cached zero-pad widths applied to numeric
-        keys.  Returns None when no width has been learned yet."""
+        keys.  Returns ``(path, spellings)`` where *spellings* maps each
+        numeric key to the text substituted for it; ``(None, {})`` when no
+        width has been learned yet."""
         if not any(k in self._pad_width for k in numeric_keys):
-            return None
+            return None, {}
         rendered = self.path_template
+        spellings: dict[str, str] = {}
         for key, value in metadata.items():
             if key in numeric_keys:
                 text = str(numeric_keys[key]).zfill(self._pad_width.get(key, 0))
+                spellings[key] = text
             else:
                 text = str(value)
             rendered = rendered.replace("{" + key + "}", text)
-        return self._absolutize(Path(rendered))
+        return self._absolutize(Path(rendered)), spellings
 
     def _fallback_root_and_segments(self) -> "tuple[Path, list[str]]":
         """Split the template for the numeric-fallback walk, mirroring the

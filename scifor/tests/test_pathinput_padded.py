@@ -125,3 +125,41 @@ class TestFallbackBoundaries:
             r"{subject}/6MWT-0{0,2}1\.mat", root_folder=str(padded_tree), regex=True
         )
         assert pi.load(subject=1) == (padded_tree / "1" / "6MWT-001.mat").resolve()
+
+
+class TestLoadWithCaptures:
+    """The reporting API scidb uses to enforce declared schema-key types."""
+
+    def test_literal_hit_reports_nothing(self, padded_tree):
+        pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
+        path, resolutions = pi.load_with_captures({"subject": 1, "trial": "001"})
+        assert path.name == "6MWT-001.mat"
+        assert resolutions == {}
+
+    def test_fallback_reports_bridged_spelling(self, padded_tree):
+        pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
+        path, resolutions = pi.load_with_captures({"subject": 1, "trial": 1})
+        assert path.name == "6MWT-001.mat"
+        # subject's disk spelling "1" equals str(1) — only trial is reported.
+        assert resolutions == {"trial": "001"}
+
+    def test_pad_cache_hit_also_reports(self, padded_tree):
+        pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
+        pi.load_with_captures({"subject": 1, "trial": 1})   # learns width 3
+        path, resolutions = pi.load_with_captures({"subject": 1, "trial": 10})
+        assert path.name == "6MWT-010.mat"
+        assert resolutions == {"trial": "010"}
+
+    def test_numeric_match_excludes_key_from_fallback(self, padded_tree):
+        # A key outside numeric_match resolves strictly literally (how scidb
+        # handles string-declared schema keys: spelling is identity).
+        pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
+        path, resolutions = pi.load_with_captures(
+            {"subject": 1, "trial": 1}, numeric_match={"subject"}
+        )
+        assert path == (padded_tree / "1" / "6MWT-1.mat").resolve()  # literal miss
+        assert resolutions == {}
+
+    def test_load_still_returns_bare_path(self, padded_tree):
+        pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
+        assert pi.load(subject=1, trial=1).name == "6MWT-001.mat"
