@@ -83,6 +83,27 @@ stored identity to protect, and scifor never sees schema policy.
   - Standalone MATLAB scifor (no loader injected) keeps the silent
     fallback, same as standalone Python scifor.
 
+## MATLAB categorical schema-key columns (2026-07-13)
+
+MATLAB `categorical` stores category labels as text, so it erases whether a
+column's source values were numeric or string — `categorical([1;2])` and
+`categorical(["1";"2"])` are indistinguishable. A table whose schema-key
+columns were made categorical (`categorical=true` on a prior `for_each`/
+`load`) therefore used to come back with **string** keys in lexical order
+("10" < "2") when fed back into `scifor.for_each` with `key=[]`, silently
+changing schema-key identity.
+
+Fix (`+scifor/for_each.m::decategorize_schema_column`, called from
+`distinct_values_from_inputs`): when resolving `key=[]` from a categorical
+column, recover numerics **only when every label round-trips losslessly**
+through `str2double` (`"1"` → 1 → `"1"`, `"1.5"` → 1.5 → `"1.5"`). Any
+non-canonical spelling — zero-padded `"01"`, mixed `"1"`/`"01"`, text labels,
+missing values — keeps ALL labels as strings verbatim (no partial
+conversion). This is the same lossless rule as `_canonical_numeric_value`,
+applied as inference only where categorical has already destroyed the type;
+plain string columns are never touched. The type decision is logged at DEBUG.
+Python scifor is unaffected: pandas categoricals keep their values' dtypes.
+
 ## Tests
 
 - `scidb/tests/test_schema_key_types.py` — validation, canonical-value unit
@@ -93,6 +114,10 @@ stored identity to protect, and scifor never sees schema policy.
 - `scimatlab/tests/matlab/scidb/TestSchemaKeyTypes.m` — MATLAB mirror:
   declaration round-trip, numeric/string/undeclared for_each paths,
   discovery+explicit identity sharing (helper: `read_file_value.m`).
+- `scimatlab/tests/matlab/scifor/TestSciforForEachCategorical.m` section F —
+  categorical schema-key INPUT columns: numeric recovery + ordering,
+  zero-padded/mixed/text labels stay strings, categorical=true round-trip,
+  two-key nested-struct regression mirror.
 
 ## See also
 

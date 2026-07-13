@@ -1492,6 +1492,9 @@ function values = distinct_values_from_inputs(inputs, key)
         tbl = get_raw_table(inputs.(input_names{p}));
         if ~isempty(tbl) && ismember(char(key), tbl.Properties.VariableNames)
             col_data = tbl.(char(key));
+            if iscategorical(col_data)
+                col_data = decategorize_schema_column(col_data, key, input_names{p});
+            end
             if isnumeric(col_data)
                 unique_vals = unique(col_data);
                 for vi = 1:numel(unique_vals)
@@ -1519,6 +1522,34 @@ function values = distinct_values_from_inputs(inputs, key)
         values = num2cell(unique(cell2mat(all_values)));
     else
         values = unique(all_values);
+    end
+end
+
+
+function values = decategorize_schema_column(col_data, key, input_name)
+%DECATEGORIZE_SCHEMA_COLUMN  Recover a categorical schema-key column's values.
+%   MATLAB categorical stores category labels as text, erasing whether the
+%   source column was numeric or string (categorical([1;2]) and
+%   categorical(["1";"2"]) are indistinguishable). Schema-key identity must
+%   not change type as a side effect of a categorical conversion (e.g.
+%   categorical=true on an earlier for_each/load), so recover numerics only
+%   when EVERY label round-trips losslessly through str2double
+%   ("1" -> 1 -> "1"). Zero-padded labels ("01") fail the round-trip and stay
+%   strings verbatim — spelling is identity for undeclared keys (see
+%   docs/claude/schema-key-types.md).
+    labels = string(col_data);
+    nums = str2double(labels);
+    lossless = ~isempty(labels) && ~any(ismissing(labels)) ...
+        && all(~isnan(nums)) && all(string(nums) == labels);
+    if lossless
+        values = nums;
+        scidb.Log.debug(['schema key ''%s'' (input ''%s''): categorical ' ...
+            'column recovered as numeric'], key, input_name);
+    else
+        values = labels;
+        scidb.Log.debug(['schema key ''%s'' (input ''%s''): categorical ' ...
+            'column kept as strings (labels are not canonical numeric ' ...
+            'spellings)'], key, input_name);
     end
 end
 
