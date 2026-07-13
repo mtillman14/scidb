@@ -236,6 +236,24 @@ function varargout = for_each(fn, inputs, varargin)
         distribute_key = real_schema_keys(deepest_idx + 1);
     end
 
+    % --- Capture input schema-key column types for output round-trip ---
+    %   Output metadata columns must come back as EXACTLY the type of the
+    %   input column they were resolved from: double stays double, string
+    %   stays string, categorical stays categorical (categories/ordinality
+    %   preserved). Iteration itself uses canonical values (see
+    %   decategorize_schema_column) so filtering and ordering stay correct;
+    %   the cast back happens in build_single_output_table.
+    type_keys = effective_keys;
+    for tk = 1:numel(meta_keys)
+        if ~ismember(meta_keys(tk), type_keys)
+            type_keys(end+1) = meta_keys(tk); %#ok<AGROW>
+        end
+    end
+    if strlength(distribute_key) > 0 && ~ismember(distribute_key, type_keys)
+        type_keys(end+1) = distribute_key;
+    end
+    schema_col_types = capture_schema_column_types(inputs, type_keys);
+
     % --- Resolve static ColName(tbl) wrappers before the data/constant split.
     %     Deferred ColName() markers (no table) are left in place — they resolve
     %     per-column inside the for_columns iteration loop (validated below). ---
@@ -837,7 +855,7 @@ function varargout = for_each(fn, inputs, varargin)
             output_tables = cell(1, n_outputs);
             for o = 1:n_outputs
                 output_tables{o} = build_single_output_table( ...
-                    collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys, opts.nest_table_outputs);
+                    collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys, opts.nest_table_outputs, schema_col_types);
             end
             n_return = max(nargout, 1);
             for o = 1:n_return
@@ -1554,6 +1572,126 @@ function values = decategorize_schema_column(col_data, key, input_name)
 end
 
 
+function types = capture_schema_column_types(inputs, keys)
+%CAPTURE_SCHEMA_COLUMN_TYPES  Record each schema-key input column's type.
+%   Scans the raw table inputs and records, per key, the column class plus
+%   (for categorical) the category list and ordinality, so output metadata
+%   columns can round-trip as EXACTLY the input column type. A key whose
+%   input tables disagree on class is marked conflicting and left at the
+%   internal canonical type (warned at build time).
+    types = struct();
+    input_names = fieldnames(inputs);
+    for p = 1:numel(input_names)
+        tbl = get_raw_table(inputs.(input_names{p}));
+        if isempty(tbl)
+            continue;
+        end
+        for k = 1:numel(keys)
+            key = char(keys(k));
+            if ~ismember(key, tbl.Properties.VariableNames)
+                continue;
+            end
+            col = tbl.(key);
+            info = struct('class', class(col), 'conflict', false, ...
+                'categories', {{}}, 'ordinal', false);
+            if iscategorical(col)
+                info.categories = categories(col);
+                info.ordinal = isordinal(col);
+            end
+            if ~isfield(types, key)
+                types.(key) = info;
+                scidb.Log.debug(['schema key ''%s'' (input ''%s''): input ' ...
+                    'column type %s'], key, input_names{p}, info.class);
+            elseif ~strcmp(types.(key).class, info.class)
+                types.(key).conflict = true;
+            end
+        end
+    end
+end
+
+
+function tbl = restore_schema_column_types(tbl, col_types)
+%RESTORE_SCHEMA_COLUMN_TYPES  Cast metadata columns back to the input types
+%   captured by capture_schema_column_types. Keys without a captured type
+%   (explicit iterables with no table column) keep the iterable's own type.
+%   A cast that cannot be performed losslessly leaves the column unchanged
+%   and warns, so identity errors are visible rather than silent.
+    keys = fieldnames(col_types);
+    tbl_cols = tbl.Properties.VariableNames;
+    for i = 1:numel(keys)
+        key = keys{i};
+        if ~ismember(key, tbl_cols)
+            continue;
+        end
+        info = col_types.(key);
+        if info.conflict
+            scidb.Log.warn(['schema key ''%s'': input tables disagree on ' ...
+                'column type — leaving the output column as %s'], ...
+                key, class(tbl.(key)));
+            continue;
+        end
+        col = tbl.(key);
+        if strcmp(class(col), info.class)
+            continue;
+        end
+        try
+            tbl.(key) = cast_schema_column(col, info);
+            scidb.Log.debug(['schema key ''%s'': output column restored ' ...
+                'to input type %s'], key, info.class);
+        catch err
+            scidb.Log.warn(['schema key ''%s'': cannot restore input ' ...
+                'column type %s (%s) — leaving as %s'], ...
+                key, info.class, err.message, class(col));
+        end
+    end
+end
+
+
+function out = cast_schema_column(col, info)
+%CAST_SCHEMA_COLUMN  Cast one metadata column to a captured input type.
+%   Errors when the cast would not be lossless; the caller warns and keeps
+%   the column unchanged.
+    target = info.class;
+    numeric_classes = {'double', 'single', 'int8', 'int16', 'int32', ...
+        'int64', 'uint8', 'uint16', 'uint32', 'uint64'};
+    switch target
+        case 'categorical'
+            str_vals = string(col);
+            if ~isempty(info.categories) && ...
+                    all(ismember(str_vals, string(info.categories)))
+                % All values belong to the input's category set: keep the
+                % input's category order and ordinality.
+                out = categorical(str_vals, info.categories, ...
+                    'Ordinal', info.ordinal);
+            else
+                out = categorical(col);
+            end
+        case 'string'
+            out = string(col);
+        case 'cell'
+            out = cellstr(string(col));
+        case 'char'
+            out = char(string(col));
+        case 'logical'
+            out = logical(col);
+        case numeric_classes
+            if isnumeric(col)
+                out = cast(col, target);
+            else
+                str_vals = string(col);
+                nums = str2double(str_vals);
+                if any(isnan(nums)) || ~all(string(nums) == str_vals)
+                    error('scifor:for_each', ...
+                        'values are not canonical numeric spellings');
+                end
+                out = cast(nums, target);
+            end
+        otherwise
+            error('scifor:for_each', 'unsupported column type');
+    end
+end
+
+
 function pi = find_pathinput(inputs)
 %FIND_PATHINPUT  Return the first PathInput in inputs (unwrapping Fixed), or [].
     pi = [];
@@ -1660,7 +1798,7 @@ end
 % Return value helpers
 % =========================================================================
 
-function tbl = build_single_output_table(collected, output_name, categorical_flag, schema_keys, nest_table_outputs)
+function tbl = build_single_output_table(collected, output_name, categorical_flag, schema_keys, nest_table_outputs, col_types)
 %BUILD_SINGLE_OUTPUT_TABLE  Build one result table for a single output.
 %
 %   collected - cell array of {metadata_struct, value} pairs for one output
@@ -1668,6 +1806,8 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
 %   categorical_flag - if true, convert metadata columns to categorical
 %   schema_keys - string array of schema keys (for sort order)
 %   nest_table_outputs - if true, force nested mode even for table outputs
+%   col_types - struct from capture_schema_column_types: per-key input
+%       column type to restore on the output metadata columns
 %
 %   If all values are tables and nest_table_outputs is false →
 %       flatten mode (metadata + data columns).
@@ -1675,6 +1815,9 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
 
     if nargin < 5
         nest_table_outputs = false;
+    end
+    if nargin < 6
+        col_types = struct();
     end
 
     n_rows = numel(collected);
@@ -1753,6 +1896,10 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
         end
         tbl.(output_name) = scidb.internal.normalize_cell_column(col_data);
     end
+
+    % Round-trip metadata column types: cast each metadata column back to
+    % the exact type of the input table column it was resolved from.
+    tbl = restore_schema_column_types(tbl, col_types);
 
     % Sort by schema columns and convert to categorical if requested
     if categorical_flag

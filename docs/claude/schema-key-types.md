@@ -83,26 +83,43 @@ stored identity to protect, and scifor never sees schema policy.
   - Standalone MATLAB scifor (no loader injected) keeps the silent
     fallback, same as standalone Python scifor.
 
-## MATLAB categorical schema-key columns (2026-07-13)
+## MATLAB schema-key column TYPE round-trip (2026-07-13)
 
-MATLAB `categorical` stores category labels as text, so it erases whether a
-column's source values were numeric or string — `categorical([1;2])` and
-`categorical(["1";"2"])` are indistinguishable. A table whose schema-key
-columns were made categorical (`categorical=true` on a prior `for_each`/
-`load`) therefore used to come back with **string** keys in lexical order
-("10" < "2") when fed back into `scifor.for_each` with `key=[]`, silently
-changing schema-key identity.
+Contract (user-designed): output metadata columns from `scifor.for_each`
+come back as **exactly the input column's type** — double stays double,
+string stays string, categorical stays categorical (categories + ordinality
+preserved). Two cooperating pieces in `+scifor/for_each.m`:
 
-Fix (`+scifor/for_each.m::decategorize_schema_column`, called from
-`distinct_values_from_inputs`): when resolving `key=[]` from a categorical
-column, recover numerics **only when every label round-trips losslessly**
-through `str2double` (`"1"` → 1 → `"1"`, `"1.5"` → 1.5 → `"1.5"`). Any
-non-canonical spelling — zero-padded `"01"`, mixed `"1"`/`"01"`, text labels,
-missing values — keeps ALL labels as strings verbatim (no partial
-conversion). This is the same lossless rule as `_canonical_numeric_value`,
-applied as inference only where categorical has already destroyed the type;
-plain string columns are never touched. The type decision is logged at DEBUG.
-Python scifor is unaffected: pandas categoricals keep their values' dtypes.
+1. **Internal canonical iteration** (`decategorize_schema_column`, called
+   from `distinct_values_from_inputs`): MATLAB `categorical` stores labels
+   as text, erasing whether the source was numeric or string
+   (`categorical([1;2])` ≡ `categorical(["1";"2"])`). When resolving
+   `key=[]` from a categorical column, iterate by numerics **only when
+   every label round-trips losslessly** through `str2double`
+   (`"1"` → 1 → `"1"`) — this gives numeric (not lexical) iteration order
+   and lets explicit `key=1:n` iterables match. Any non-canonical spelling
+   (zero-padded `"01"`, mixed `"1"`/`"01"`, text, missing) keeps ALL labels
+   verbatim as strings. Same lossless rule as `_canonical_numeric_value`,
+   applied as inference only where categorical already destroyed the type;
+   plain string columns are never inferred on.
+2. **Output type restoration** (`capture_schema_column_types` before the
+   loop → `restore_schema_column_types` in `build_single_output_table`):
+   each schema/meta key's input column class is captured (plus categories +
+   ordinality for categorical) and the output metadata column is cast back
+   to it. Lossless-only: a cast that cannot round-trip warns and leaves the
+   column at the internal canonical type, as does a key whose input tables
+   disagree on class. Keys with no table column (pure explicit iterables)
+   keep the iterable's own type. `categorical=true` still force-converts
+   afterwards. Decisions are logged at DEBUG, failures/conflicts at WARN.
+
+Regression this fixes: numeric-backed categorical keys came back as
+lexically-sorted string columns ("10" < "2"), changing both schema-key
+identity and column type.
+
+**Python parity gap:** pandas keeps value dtypes inside categoricals, so the
+identity bug never existed there — but Python `for_each` outputs plain
+(non-categorical) metadata columns; categorical *dtype* does not round-trip.
+Not ported yet.
 
 ## Tests
 
@@ -115,9 +132,11 @@ Python scifor is unaffected: pandas categoricals keep their values' dtypes.
   declaration round-trip, numeric/string/undeclared for_each paths,
   discovery+explicit identity sharing (helper: `read_file_value.m`).
 - `scimatlab/tests/matlab/scifor/TestSciforForEachCategorical.m` section F —
-  categorical schema-key INPUT columns: numeric recovery + ordering,
-  zero-padded/mixed/text labels stay strings, categorical=true round-trip,
-  two-key nested-struct regression mirror.
+  schema-key column TYPE round-trip: double/string/categorical in → same
+  type out, numeric iteration order for numeric-backed categoricals,
+  zero-padded/mixed labels verbatim, ordinal + category-order preservation,
+  explicit-iterable typing, type-conflict tolerance, categorical=true
+  round-trip, two-key nested-struct regression mirror.
 
 ## See also
 

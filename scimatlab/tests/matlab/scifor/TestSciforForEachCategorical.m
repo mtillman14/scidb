@@ -198,21 +198,53 @@ classdef TestSciforForEachCategorical < matlab.unittest.TestCase
     end
 
     % =====================================================================
-    % F. Categorical schema-key columns as INPUT (regression 2026-07-13)
+    % F. Schema-key column type round-trip (regression 2026-07-13)
     %
-    %   categorical erases whether a column's source values were numeric or
-    %   string. Resolving key=[] from a categorical column must recover
-    %   numeric identity when every label is a canonical numeric spelling
-    %   ("1" -> 1), and must keep labels verbatim as strings otherwise
-    %   (zero-padded "01" stays "01"). Regression: numeric keys came back as
-    %   lexically-sorted strings ("10" < "2"), changing schema-key identity.
+    %   Output metadata columns must come back as EXACTLY the input column's
+    %   type: double stays double, string stays string, categorical stays
+    %   categorical. Internally a categorical column iterates by canonical
+    %   numeric values when every label is a canonical numeric spelling
+    %   ("1" -> 1), giving numeric (not lexical) iteration order; labels
+    %   that are not canonical spellings (zero-padded "01") iterate verbatim
+    %   as strings. Regression: numeric-backed categorical keys came back as
+    %   lexically-sorted string columns ("10" < "2"), changing both the
+    %   schema-key identity and the column type.
     % =====================================================================
 
     methods (Test)
 
-        function test_categorical_numeric_key_input_recovers_numeric(tc)
-        %   key=[] on a numeric-backed categorical column: values come back
-        %   numeric, in numeric (not lexical) order.
+        function test_double_key_column_roundtrips_double(tc)
+        %   key=[] on a double column: double out, numeric order.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;2;10], [10;20;30], ...
+                'VariableNames', {'subject','value'});
+            result = scifor.for_each(@(x) x, ...
+                struct('x', tbl), subject=[]);
+
+            tc.verifyClass(result.subject, 'double');
+            tc.verifyEqual(result.subject, [1;2;10]);
+            tc.verifyEqual(result.output, [10;20;30]);
+        end
+
+        function test_string_key_column_roundtrips_string(tc)
+        %   key=[] on a string column: string out, values verbatim — a
+        %   real string column is never converted, even when every value
+        %   looks numeric.
+            scifor.set_schema(["trial"]);
+
+            tbl = table(["1";"2"], [10;20], ...
+                'VariableNames', {'trial','value'});
+            result = scifor.for_each(@(x) x, ...
+                struct('x', tbl), trial=[]);
+
+            tc.verifyClass(result.trial, 'string');
+            tc.verifyEqual(result.trial, ["1";"2"]);
+        end
+
+        function test_categorical_numeric_key_column_roundtrips(tc)
+        %   key=[] on a numeric-backed categorical column: categorical out,
+        %   rows in numeric (not lexical) order, original categories kept.
             scifor.set_schema(["subject"]);
 
             tbl = table(categorical([1;2;10]), [10;20;30], ...
@@ -220,14 +252,16 @@ classdef TestSciforForEachCategorical < matlab.unittest.TestCase
             result = scifor.for_each(@(x) x, ...
                 struct('x', tbl), subject=[]);
 
-            tc.verifyTrue(isnumeric(result.subject));
-            tc.verifyEqual(result.subject, [1;2;10]);  % lexical would be 1,10,2
+            tc.verifyClass(result.subject, 'categorical');
+            % lexical iteration would give "1","10","2" / [10;30;20]
+            tc.verifyEqual(string(result.subject), ["1";"2";"10"]);
             tc.verifyEqual(result.output, [10;20;30]);
+            tc.verifyEqual(categories(result.subject), {'1';'2';'10'});
         end
 
-        function test_categorical_zero_padded_key_input_stays_string(tc)
-        %   Zero-padded labels are not canonical numeric spellings: they stay
-        %   strings verbatim — spelling is identity for undeclared keys.
+        function test_categorical_zero_padded_key_column_roundtrips(tc)
+        %   Zero-padded labels are not canonical numeric spellings: they
+        %   iterate verbatim, and the column comes back categorical.
             scifor.set_schema(["trial"]);
 
             tbl = table(categorical(["01";"02";"10"]), [1;2;3], ...
@@ -235,14 +269,14 @@ classdef TestSciforForEachCategorical < matlab.unittest.TestCase
             result = scifor.for_each(@(x) x, ...
                 struct('x', tbl), trial=[]);
 
-            tc.verifyTrue(isstring(result.trial));
-            tc.verifyEqual(result.trial, ["01";"02";"10"]);
+            tc.verifyClass(result.trial, 'categorical');
+            tc.verifyEqual(string(result.trial), ["01";"02";"10"]);
             tc.verifyEqual(result.output, [1;2;3]);
         end
 
-        function test_categorical_mixed_padding_key_input_stays_string(tc)
+        function test_categorical_mixed_padding_key_column_roundtrips(tc)
         %   "1" and "01" are distinct identities; one non-canonical label
-        %   keeps the whole key as strings (no partial conversion).
+        %   keeps the whole key verbatim (no partial numeric recovery).
             scifor.set_schema(["trial"]);
 
             tbl = table(categorical(["1";"01"]), [1;2], ...
@@ -250,59 +284,88 @@ classdef TestSciforForEachCategorical < matlab.unittest.TestCase
             result = scifor.for_each(@(x) x, ...
                 struct('x', tbl), trial=[]);
 
-            tc.verifyTrue(isstring(result.trial));
+            tc.verifyClass(result.trial, 'categorical');
             tc.verifyEqual(height(result), 2);
-            tc.verifyEqual(sort(result.trial), ["01";"1"]);
+            tc.verifyEqual(sort(string(result.trial)), ["01";"1"]);
         end
 
-        function test_categorical_nonnumeric_key_input_stays_string(tc)
-        %   Plain text labels stay strings.
+        function test_categorical_ordinal_key_column_roundtrips(tc)
+        %   Ordinality and category order survive the round trip.
+            scifor.set_schema(["phase"]);
+
+            phase = categorical(["pre";"post"], ["pre" "post"], 'Ordinal', true);
+            tbl = table(phase, [1;2], 'VariableNames', {'phase','value'});
+            result = scifor.for_each(@(x) x, ...
+                struct('x', tbl), phase=[]);
+
+            tc.verifyClass(result.phase, 'categorical');
+            tc.verifyTrue(isordinal(result.phase));
+            tc.verifyEqual(categories(result.phase), {'pre'; 'post'});
+        end
+
+        function test_explicit_values_with_categorical_column(tc)
+        %   Explicit numeric iterables still filter a categorical column
+        %   correctly, and the output column type follows the input column.
+            scifor.set_schema(["subject"]);
+
+            tbl = table(categorical([1;2]), [10;20], ...
+                'VariableNames', {'subject','value'});
+            result = scifor.for_each(@(x) x, ...
+                struct('x', tbl), subject=[1 2]);
+
+            tc.verifyClass(result.subject, 'categorical');
+            tc.verifyEqual(string(result.subject), ["1";"2"]);
+            tc.verifyEqual(result.output, [10;20]);
+        end
+
+        function test_explicit_values_without_table_keep_own_type(tc)
+        %   A key with no input table column keeps the iterable's own type
+        %   (no captured type to restore).
             scifor.set_schema(["group"]);
 
-            tbl = table(categorical(["ctrl";"exp"]), [1;2], ...
-                'VariableNames', {'group','value'});
-            result = scifor.for_each(@(x) x, ...
-                struct('x', tbl), group=[]);
+            result = scifor.for_each(@() 42, struct(), group=["A" "B"]);
 
-            tc.verifyTrue(isstring(result.group));
-            tc.verifyEqual(result.group, ["ctrl";"exp"]);
+            tc.verifyClass(result.group, 'string');
         end
 
-        function test_categorical_noninteger_key_input_recovers_numeric(tc)
-        %   Non-integer canonical spellings ("1.5") also round-trip.
-            scifor.set_schema(["level"]);
+        function test_conflicting_key_column_types_do_not_error(tc)
+        %   Two inputs disagreeing on a key's column type: no error; the
+        %   column is left at the internal canonical type (warn logged).
+            scifor.set_schema(["subject"]);
 
-            tbl = table(categorical([0.5;1.5]), [1;2], ...
-                'VariableNames', {'level','value'});
-            result = scifor.for_each(@(x) x, ...
-                struct('x', tbl), level=[]);
+            t1 = table([1;2], [10;20], 'VariableNames', {'subject','a'});
+            t2 = table(categorical([1;2]), [30;40], ...
+                'VariableNames', {'subject','b'});
+            result = scifor.for_each(@(x, y) x + y, ...
+                struct('x', t1, 'y', t2), subject=[]);
 
-            tc.verifyTrue(isnumeric(result.level));
-            tc.verifyEqual(result.level, [0.5;1.5]);
+            tc.verifyEqual(height(result), 2);
+            tc.verifyEqual(result.output, [40; 60]);
         end
 
-        function test_categorical_output_roundtrips_to_numeric_keys(tc)
-        %   categorical=true output fed back into for_each: numeric key
-        %   identity survives the round trip.
+        function test_categorical_output_roundtrips_categorical(tc)
+        %   categorical=true output fed back into for_each: the key comes
+        %   back categorical (matching the fed-in column), iterated in
+        %   numeric order.
             scifor.set_schema(["subject"]);
 
             tbl = table([1;2], [10;20], 'VariableNames', {'subject','value'});
             r1 = scifor.for_each(@(x) x, ...
                 struct('x', tbl), subject=[1 2], categorical=true);
-            tc.verifyTrue(iscategorical(r1.subject));
+            tc.verifyClass(r1.subject, 'categorical');
 
             r2 = scifor.for_each(@(x) x + 1, ...
                 struct('x', r1), subject=[]);
 
-            tc.verifyTrue(isnumeric(r2.subject));
-            tc.verifyEqual(r2.subject, [1;2]);
+            tc.verifyClass(r2.subject, 'categorical');
+            tc.verifyEqual(string(r2.subject), ["1";"2"]);
             tc.verifyEqual(r2.output, [11;21]);
         end
 
         function test_categorical_two_keys_nested_struct_output(tc)
         %   Mirrors the field regression: two categorical schema keys,
-        %   ColumnSelection input, struct outputs (nested mode). Keys must
-        %   come back numeric and in numeric order.
+        %   ColumnSelection input, struct outputs (nested mode). Keys come
+        %   back categorical, iterated in numeric order.
             scifor.set_schema(["FileNum", "CycleNum"]);
 
             tbl = table( ...
@@ -313,12 +376,12 @@ classdef TestSciforForEachCategorical < matlab.unittest.TestCase
                 struct('tableIn', scifor.ColumnSelection(tbl, 'Seg')), ...
                 output_names={'Seg_Out'}, FileNum=[], CycleNum=[]);
 
-            tc.verifyTrue(isnumeric(result.FileNum));
-            tc.verifyTrue(isnumeric(result.CycleNum));
+            tc.verifyClass(result.FileNum, 'categorical');
+            tc.verifyClass(result.CycleNum, 'categorical');
             % Combos iterate CycleNum in numeric order [2 3 10]; only the
             % three (FileNum, CycleNum) pairs with data produce rows.
-            tc.verifyEqual(result.FileNum, [1;1;2]);
-            tc.verifyEqual(result.CycleNum, [2;10;3]);
+            tc.verifyEqual(string(result.FileNum), ["1";"1";"2"]);
+            tc.verifyEqual(string(result.CycleNum), ["2";"10";"3"]);
             tc.verifyEqual([result.Seg_Out.a]', [1;2;3]);
         end
 
