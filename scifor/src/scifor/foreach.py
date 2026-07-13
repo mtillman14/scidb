@@ -198,6 +198,18 @@ def for_each(
         Log.debug("resolve_distribute_target: '%s' (one level below '%s')",
                   distribute_key, deepest_iterated, layer="scifor")
 
+    # Capture input schema-key column dtypes for output round-trip: output
+    # metadata columns must come back as EXACTLY the input column's dtype
+    # (int stays int, object/str stays object with values verbatim,
+    # categorical stays categorical with its categories and orderedness).
+    # Restored in _results_to_output_dataframe; mirrors the MATLAB scifor
+    # loop's capture_schema_column_types/restore_schema_column_types.
+    type_keys = list(dict.fromkeys(
+        [*schema_keys, *metadata_iterables.keys()]
+        + ([distribute_key] if distribute_key is not None else [])
+    ))
+    schema_col_dtypes = _capture_schema_column_dtypes(inputs, type_keys)
+
     # Resolve static ColName(df) wrappers before the data/constant split.
     # Deferred ColName() markers (no DataFrame) are left in place — they resolve
     # per-column inside the for_columns iteration loop (validated below).
@@ -694,7 +706,8 @@ def for_each(
 
     Log.debug("building output DataFrame from %d result row(s)",
               len(collected_rows), layer="scifor")
-    return _results_to_output_dataframe(collected_rows, resolved_output_names)
+    return _results_to_output_dataframe(collected_rows, resolved_output_names,
+                                        schema_col_dtypes)
 
 
 def _call_fn(fn, kwargs, n_outputs):
@@ -1428,6 +1441,85 @@ def _get_raw_df(var_spec: Any) -> "pd.DataFrame | None":
     return None
 
 
+def _capture_schema_column_dtypes(inputs: dict, keys: list) -> dict:
+    """Record each schema-key input column's pandas dtype.
+
+    Scans the raw DataFrame inputs and records, per key, the column dtype
+    (a CategoricalDtype carries its categories and orderedness), so output
+    metadata columns can round-trip as EXACTLY the input column dtype. A key
+    whose input DataFrames disagree on dtype is recorded as None and left at
+    the natural output dtype (warned at restore time).
+    """
+    dtypes: dict = {}
+    conflicts: set = set()
+    for param_name, var_spec in inputs.items():
+        df = _get_raw_df(var_spec)
+        if df is None:
+            continue
+        for key in keys:
+            if key not in df.columns:
+                continue
+            dt = df[key].dtype
+            if key not in dtypes:
+                dtypes[key] = dt
+                Log.debug("schema key '%s' (input '%s'): input column dtype %s",
+                          key, param_name, dt, layer="scifor")
+            elif dtypes[key] != dt:
+                conflicts.add(key)
+    for key in conflicts:
+        dtypes[key] = None
+    return dtypes
+
+
+def _restore_schema_column_dtypes(
+    result: "pd.DataFrame", col_dtypes: "dict | None"
+) -> "pd.DataFrame":
+    """Cast output metadata columns back to the captured input dtypes.
+
+    Keys without a captured dtype (explicit iterables with no DataFrame
+    column) keep the iterable's natural dtype. A cast that cannot be
+    performed losslessly leaves the column unchanged and warns, so identity
+    errors are visible rather than silent.
+    """
+    import pandas as pd
+
+    if not col_dtypes or result.empty:
+        return result
+    for key, dtype in col_dtypes.items():
+        if key not in result.columns:
+            continue
+        col = result[key]
+        if dtype is None:
+            Log.warn("schema key '%s': input DataFrames disagree on column "
+                     "dtype — leaving the output column as %s",
+                     key, col.dtype, layer="scifor")
+            continue
+        if col.dtype == dtype:
+            continue
+        converted = None
+        try:
+            converted = col.astype(dtype)
+            same = (converted == col) | (converted.isna() & col.isna())
+            lossless = bool(same.all())
+        except (ValueError, TypeError):
+            lossless = False
+        if not lossless and isinstance(dtype, pd.CategoricalDtype):
+            # Values outside the captured category set (e.g. distribute
+            # indices): fall back to a plain categorical of the values,
+            # mirroring the MATLAB categorical(col) fallback.
+            converted = col.astype("category")
+            lossless = True
+        if not lossless:
+            Log.warn("schema key '%s': cannot restore input column dtype %s "
+                     "losslessly — leaving as %s",
+                     key, dtype, col.dtype, layer="scifor")
+            continue
+        result[key] = converted
+        Log.debug("schema key '%s': output column restored to input dtype %s",
+                  key, dtype, layer="scifor")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Result collection
 # ---------------------------------------------------------------------------
@@ -1435,6 +1527,7 @@ def _get_raw_df(var_spec: Any) -> "pd.DataFrame | None":
 def _results_to_output_dataframe(
     collected_rows: list[tuple[dict, tuple]],
     output_names: list[str],
+    col_dtypes: "dict | None" = None,
 ) -> "pd.DataFrame":
     """Build a combined DataFrame from all for_each results."""
     import pandas as pd
@@ -1464,7 +1557,6 @@ def _results_to_output_dataframe(
         Log.debug("collect_results (flatten mode): DataFrame with %d row(s), "
                   "%d column(s)", len(result), len(result.columns),
                   layer="scifor")
-        return result
     else:
         rows = []
         for metadata, result_tuple in collected_rows:
@@ -1476,7 +1568,10 @@ def _results_to_output_dataframe(
         Log.debug("collect_results (scalar mode): DataFrame with %d row(s), "
                   "%d column(s)", len(result), len(result.columns),
                   layer="scifor")
-        return result
+
+    # Round-trip metadata column dtypes: cast each metadata column back to
+    # the exact dtype of the input column it was resolved from.
+    return _restore_schema_column_dtypes(result, col_dtypes)
 
 
 # ---------------------------------------------------------------------------

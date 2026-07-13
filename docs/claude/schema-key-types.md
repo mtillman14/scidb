@@ -116,10 +116,26 @@ Regression this fixes: numeric-backed categorical keys came back as
 lexically-sorted string columns ("10" < "2"), changing both schema-key
 identity and column type.
 
-**Python parity gap:** pandas keeps value dtypes inside categoricals, so the
-identity bug never existed there — but Python `for_each` outputs plain
-(non-categorical) metadata columns; categorical *dtype* does not round-trip.
-Not ported yet.
+**Python parity (ported 2026-07-13):** pandas keeps value dtypes inside
+categoricals, so the identity bug never existed there — no
+`decategorize_schema_column` analog is needed, and int-backed categoricals
+already iterate in numeric order. The dtype round-trip IS ported:
+`_capture_schema_column_dtypes` (after Step 3 in `scifor/foreach.py`) records
+each key's input column dtype (a `CategoricalDtype` carries categories +
+orderedness), and `_restore_schema_column_dtypes` (end of
+`_results_to_output_dataframe`) casts output metadata columns back,
+lossless-or-leave-with-WARN, with an `astype("category")` fallback when
+values fall outside the captured category set. Conflicting input dtypes for
+one key → recorded as None, warned, left at the natural dtype. The scidb
+Python path is covered automatically (it delegates to `scifor.for_each`).
+
+**Known ordering nuance (both languages):** text-label categoricals iterate
+in LEXICAL order of the distinct labels, not in category order — e.g.
+`categorical(["pre","post"], ordered)` iterates "post" then "pre". The
+restored output column still carries the true category order, so
+`sortrows`/`sort_values` recovers it. Deliberate: identical behavior whether
+the same labels arrive as strings or categorical; revisit if category-order
+iteration is requested.
 
 ## Tests
 
@@ -137,6 +153,10 @@ Not ported yet.
   zero-padded/mixed labels verbatim, ordinal + category-order preservation,
   explicit-iterable typing, type-conflict tolerance, categorical=true
   round-trip, two-key nested-struct regression mirror.
+- `scifor/tests/test_schema_dtype_roundtrip.py` — Python mirror: int/int32/
+  object/categorical dtype round-trip, ordered categoricals, numeric
+  iteration order for int-backed categoricals, flatten-mode restore,
+  explicit-iterable typing, dtype-conflict tolerance.
 
 ## See also
 
