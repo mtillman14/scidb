@@ -4085,6 +4085,17 @@ class DatabaseManager:
             self._inspector = Inspector(self)
         return self._inspector
 
+    def pipeline(self, name: str, uses=()) -> "Pipeline":
+        """Create a named Pipeline bound to this database and ACTIVATE it.
+
+        While active, ``for_each`` calls register as deferred steps instead
+        of executing (see ``scidb.pipeline.Pipeline``); ``run_all()``/
+        ``run_until()`` execute and deactivate. ``uses=`` declares other
+        Pipelines as dependencies: their steps join this pipeline's graph.
+        """
+        from .pipeline import Pipeline
+        return Pipeline(name, db=self, uses=uses).activate()
+
     def set_current_db(self):
         """Set this DatabaseManager as the active global database."""
         _local.database = self

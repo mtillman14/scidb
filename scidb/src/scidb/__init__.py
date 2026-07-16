@@ -38,6 +38,7 @@ from .exceptions import (
     DatabaseNotConfiguredError,
     NotFoundError,
     NotRegisteredError,
+    PipelineCycleError,
     ReservedMetadataKeyError,
     SciStackError,
 )
@@ -53,7 +54,7 @@ from .column_selection import ColumnSelection
 from .colname import ColName
 from .each_of import EachOf
 from .foreach_config import ForEachConfig
-from .pipeline import scistack
+from .pipeline import Pipeline, Step, active_pipeline, scistack
 
 # From scifor (Layer 1)
 from scifor import Col, set_schema, get_schema, PathInput, PathOutput
@@ -103,6 +104,9 @@ __all__ = [
     # Batch execution
     "for_each",
     "scistack",
+    "Pipeline",
+    "Step",
+    "active_pipeline",
     "Fixed",
     "Variant",
     "AcrossVariants",
@@ -136,4 +140,5 @@ __all__ = [
     "AmbiguousVersionError",
     "AmbiguousParamError",
     "DatabaseLockedError",
+    "PipelineCycleError",
 ]

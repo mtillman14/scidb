@@ -73,7 +73,14 @@ Additionally, a `branch_params` column in `_record_metadata` accumulates all bra
 
 ---
 
-### 4. Function/pipeline registry — not needed
+### 4. Function/pipeline registry — SUPERSEDED for the pipeline-builder case
+
+**Update 2026-07-16:** this conclusion was correct for a *visualization*
+GUI but flips for goal-directed execution and a GUI pipeline *builder* —
+both need the graph before first execution. A prescriptive registry now
+exists: `db.pipeline(name)` + deferred `for_each` registration
+(`scidb/pipeline.py`; see [endpoint-first-pipelines.md](endpoint-first-pipelines.md)).
+The original reasoning, kept for the pure-visualization case:
 
 A registry would only be necessary for a no-code pipeline builder that reconstructs and replays pipelines without executing Python. If the GUI is a visualization and control layer over an existing Python project, this is unnecessary:
 

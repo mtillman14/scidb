@@ -43,6 +43,16 @@ class AmbiguousParamError(SciStackError):
     pass
 
 
+class PipelineCycleError(SciStackError):
+    """Raised when a Pipeline's variable-type dependency graph has a cycle.
+
+    The one-step case is a function registered as consuming and producing
+    the same variable type.
+    """
+
+    pass
+
+
 class SchemaKeyTypeError(SciStackError):
     """Raised when a schema key's spelling is ambiguous or violates its type.
 

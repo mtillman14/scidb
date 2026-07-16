@@ -23,6 +23,11 @@ from .variant import Variant
 from .across_variants import AcrossVariants
 from .each_of import EachOf
 from .foreach_config import ForEachConfig
+from .pipeline import Pipeline as _Pipeline, Step, active_pipeline
+
+# Sentinel: distinguishes "pipeline= omitted" (use the ambient active
+# pipeline, if any) from an explicit pipeline=None (force eager execution).
+_PIPELINE_UNSET = object()
 from .filters import Filter
 from .merge import Merge
 from .provenance_save import GraphRecord as _GraphRecord
@@ -197,13 +202,14 @@ def for_each(
     schema_level: "list[str] | None" = None,
     share_limits: "dict[str, list[str]] | None" = None,
     finalized: bool = False,
+    pipeline: Any = _PIPELINE_UNSET,
     _inject_combo_metadata: bool = False,
     _pre_combo_hook: "Callable[[dict], bool] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
     _cancel_check: "Callable[[], bool] | None" = None,
     _lineage_fixed_rids: "dict | None" = None,
     **metadata_iterables: list[Any],
-) -> "pd.DataFrame | None":
+) -> "pd.DataFrame | Step | None":
     """
     Execute a function for all combinations of metadata, loading inputs
     and saving outputs automatically.
@@ -259,6 +265,15 @@ def for_each(
                     for non-endpoint functions.
         _inject_combo_metadata: If True, inject current-combo metadata keys
                     as extra kwargs to fn (used by scihist for generates_file).
+        pipeline: Deferred-registration control. Omitted (default): if a
+                    Pipeline is active (``db.pipeline(name)``), REGISTER this
+                    call as a deferred step and return a Step handle — nothing
+                    executes until ``pipeline.run_all()/run_until()``; with no
+                    active pipeline, execute eagerly as always. Pass ``None``
+                    to force an eager call even while a pipeline is active,
+                    or a Pipeline instance to register into a non-ambient
+                    pipeline. Consequence: ``pipeline`` is a reserved name and
+                    cannot be used as a schema key in **metadata_iterables.
         _pre_combo_hook: Internal use only. Called with each fully-expanded
                     combo dict before inputs are loaded. If it returns True
                     the combo is skipped entirely (no load, no call, no save).
@@ -266,8 +281,51 @@ def for_each(
         **metadata_iterables: Iterables of metadata values to combine.
 
     Returns:
-        A pandas DataFrame of results, or None when dry_run=True.
+        A pandas DataFrame of results, None when dry_run=True, or a Step
+        handle when the call was registered into a Pipeline instead of run.
     """
+    # --- Deferred pipeline registration. Must run before ANY other work —
+    #     a registered call must have zero side effects, and the spec must
+    #     capture the arguments exactly as passed (pristine, un-normalized)
+    #     so replay through run_*() is byte-identical to an eager call. ---
+    _target_pipeline = None
+    if isinstance(pipeline, _Pipeline):
+        _target_pipeline = pipeline
+    elif pipeline is _PIPELINE_UNSET:
+        _target_pipeline = active_pipeline()
+    elif pipeline is not None:
+        raise TypeError(
+            f"pipeline= must be a Pipeline instance, None, or omitted; "
+            f"got {type(pipeline).__name__}"
+        )
+    if _target_pipeline is not None:
+        return _target_pipeline.register_call(
+            fn=fn,
+            inputs=inputs,
+            outputs=outputs,
+            metadata_iterables=dict(metadata_iterables),
+            options=dict(
+                dry_run=dry_run,
+                save=save,
+                as_table=as_table,
+                db=db,
+                distribute=distribute,
+                where=where,
+                introspect=introspect,
+                track_lineage=track_lineage,
+                skip_computed=skip_computed,
+                schema_filter=schema_filter,
+                schema_level=schema_level,
+                share_limits=share_limits,
+                finalized=finalized,
+                _inject_combo_metadata=_inject_combo_metadata,
+                _pre_combo_hook=_pre_combo_hook,
+                _progress_fn=_progress_fn,
+                _cancel_check=_cancel_check,
+                _lineage_fixed_rids=_lineage_fixed_rids,
+            ),
+        )
+
     # --- Normalize where clause: convert string to RawFilter ---
     # (but not if it's an EachOf wrapper - those will be normalized in recursive calls)
     if isinstance(where, str):
