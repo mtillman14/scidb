@@ -78,6 +78,21 @@ Implementation cautions:
   `{low_hz=20, 50}` but trial 2 only `{20}`, the `50` group is missing trial 2:
   the aggregation proceeds on the partial group with a clear warning naming the
   group's branch-param signature and the schema locations it is missing.
+- **Save-kwarg groups ALIGN with a matching iterated key, not cross-product**
+  (fixed 2026-07-16). A non-schema save kwarg (e.g. `save(..., run="A")`) is
+  both a `__save__.run` branch-param discriminator AND a loaded data column
+  that scifor row-filters by when `run` is iterated. Auto-split used to cross
+  every combo with every group (the `run="A"` iteration also called fn on the
+  `__save__.run="B"` group's — filtered-away — rows: 2x calls on wrong/empty
+  inputs, breaking skip_computed cache hits). Now a group whose `__save__.<k>`
+  value contradicts the combo's iterated `<k>` value is dropped for that
+  combo; all groups conflicting falls back to the empty signature (graceful
+  skip). Only `__save__.*` keys participate — `fn.param` branch_params have
+  no corresponding data column. Implemented in the Step 12 combo expansion
+  (`_sig_conflicts_with_combo`); tests:
+  `scidb/tests/test_aggregation_with_variants.py::TestSaveKwargAlignment`.
+  Note the ragged-groups warning can still fire on this shape (each aligned
+  group covers only its own locations) — it is advisory there.
 - This supersedes the pooling default described in the aggregation section of
   [scidb-for-each-internals.md](scidb-for-each-internals.md) and implements
   the "auto-grouping" future work named in

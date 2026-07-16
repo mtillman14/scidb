@@ -1965,15 +1965,51 @@ def _for_each_prepare(
         # contributing rids: the branch_params merge becomes conflict-free by
         # construction and __upstream gives each group a distinct identity.
         _combo_key_cols = _iterated_keys_ordered + vsig_cols
+
+        def _sig_conflicts_with_combo(sig: str, combo: dict) -> bool:
+            """True when a ``__save__.<key>`` signature entry contradicts the
+            combo's own value for ``<key>``.
+
+            Save-time non-schema kwargs are BOTH a branch-param discriminator
+            (``__save__.<key>``) and a loaded data column scifor row-filters
+            by when ``<key>`` is iterated. Pairing a combo with a variant
+            group whose ``__save__.<key>`` differs from the combo's value
+            would call fn on rows the combo's own filter excludes (an empty
+            or wrong-group input), so such pairings are dropped — align, not
+            cross-product. Only ``__save__.*`` keys participate: function
+            branch_params (``fn.param``) have no corresponding data column.
+            """
+            if sig == _EMPTY_SIG:
+                return False
+            for k, v in json.loads(sig).items():
+                if not str(k).startswith("__save__."):
+                    continue
+                bare = k[len("__save__."):]
+                if bare in combo and str(combo[bare]) != str(v):
+                    return True
+            return False
+
         full_combos = []
         _combo_to_rids = {}
         for combo in base_combos:
             ck = tuple(str(combo.get(k, "")) for k in _iterated_keys_ordered)
-            sig_options = [
-                (sorted(_sig_rids_by_combo.get(c, {}).get(ck, {}).keys())
-                 or [_EMPTY_SIG])
-                for c in vsig_cols
-            ]
+            sig_options = []
+            for c in vsig_cols:
+                sigs = (sorted(_sig_rids_by_combo.get(c, {}).get(ck, {}).keys())
+                        or [_EMPTY_SIG])
+                aligned = [s for s in sigs
+                           if not _sig_conflicts_with_combo(s, combo)]
+                if len(aligned) < len(sigs):
+                    Log.debug(
+                        f"aggregation auto-split: input "
+                        f"'{c[len('__vsig_'):]}' at combo {combo}: aligned "
+                        f"__save__.* signature(s) to iterated value(s) — "
+                        f"kept {len(aligned)}/{len(sigs)} group(s)"
+                    )
+                # All groups conflicting = no matching data at this combo:
+                # flow through with the empty signature and skip gracefully,
+                # same as a combo with no data at all.
+                sig_options.append(aligned or [_EMPTY_SIG])
             # Pooled rids at this combo for inputs that do NOT split
             # (AcrossVariants opt-outs and any rid-tracked input without a
             # __vsig column) — identical for every group of this combo.

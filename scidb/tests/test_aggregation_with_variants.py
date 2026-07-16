@@ -717,3 +717,71 @@ class TestSkipComputedWithSplit:
         assert calls["n"] == 2, (
             "A grown record set (new session) must recompute the aggregate"
         )
+
+
+# ---------------------------------------------------------------------------
+# Save-kwarg variant alignment (align, not cross-product)
+# ---------------------------------------------------------------------------
+
+class TestSaveKwargAlignment:
+    """Iterating a key that is ALSO a save-time non-schema kwarg must align
+    each combo with its matching ``__save__.<key>`` variant group, not
+    cross-product combos with every group (regression: scihist
+    test_generates_file cache-hit ran 4 calls instead of 2, pairing the
+    run="A" iteration with the __save__.run="B" group and vice versa)."""
+
+    def test_iterated_save_kwarg_aligns_not_crosses(self, db):
+        # Two variants at the SAME schema location (subject=1, session=NULL),
+        # discriminated only by the non-schema save kwarg `run`.
+        RawSignal.save(np.array([1.0, 2.0]), subject="1", run="A")
+        RawSignal.save(np.array([3.0, 4.0]), subject="1", run="B")
+
+        calls = []
+
+        def total_signal(data):
+            vals = np.concatenate(
+                [np.asarray(v).ravel() for v in data["RawSignal"]]
+            )
+            calls.append(float(vals.sum()))
+            return float(vals.sum())
+
+        for_each(
+            total_signal,
+            inputs={"data": RawSignal},
+            outputs=[Aggregated],
+            subject=["1"],
+            run=["A", "B"],
+        )
+
+        # One call per (combo, matching group): run=A sees only [1,2],
+        # run=B only [3,4]. The pre-fix cross-product made 4 calls, two of
+        # them on the wrong group's rows.
+        assert sorted(calls) == [3.0, 7.0]
+
+    def test_second_run_skips_aligned_groups(self, db):
+        """skip_computed must hit on the aligned records (the original
+        scihist cache-hit failure mode)."""
+        RawSignal.save(np.array([1.0, 2.0]), subject="1", run="A")
+        RawSignal.save(np.array([3.0, 4.0]), subject="1", run="B")
+
+        calls = {"n": 0}
+
+        def total_signal(data):
+            calls["n"] += 1
+            vals = np.concatenate(
+                [np.asarray(v).ravel() for v in data["RawSignal"]]
+            )
+            return float(vals.sum())
+
+        kwargs = dict(
+            inputs={"data": RawSignal},
+            outputs=[Aggregated],
+            subject=["1"],
+            run=["A", "B"],
+            skip_computed=True,
+        )
+        for_each(total_signal, **kwargs)
+        assert calls["n"] == 2
+
+        for_each(total_signal, **kwargs)
+        assert calls["n"] == 2, "second run must skip both aligned groups"

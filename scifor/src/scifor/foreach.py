@@ -1485,10 +1485,21 @@ def _restore_schema_column_dtypes(
 
     if not col_dtypes or result.empty:
         return result
+    dup_labels = list(result.columns[result.columns.duplicated()].unique())
+    if dup_labels:
+        # Typically a function returning its input DataFrame with the
+        # metadata columns still inside, so combo metadata gets appended a
+        # second time under the same label.
+        Log.warn("output DataFrame has DUPLICATE column label(s) %s — the "
+                 "function's returned DataFrame likely already contains "
+                 "metadata column(s) that for_each appends per combo; dtype "
+                 "restore skips these columns", dup_labels, layer="scifor")
     for key, dtype in col_dtypes.items():
         if key not in result.columns:
             continue
         col = result[key]
+        if isinstance(col, pd.DataFrame):  # duplicated label — warned above
+            continue
         if dtype is None:
             Log.warn("schema key '%s': input DataFrames disagree on column "
                      "dtype — leaving the output column as %s",

@@ -1381,3 +1381,41 @@ def test_pathoutput_colname_token_without_iterate_input_raises():
             as_table=True,
             subject=[1, 2],
         )
+
+
+# ---------------------------------------------------------------------------
+# Dtype restore robustness
+# ---------------------------------------------------------------------------
+
+def test_restore_schema_column_dtypes_duplicate_labels():
+    """Duplicate column labels must not crash the dtype restore.
+
+    Arises when a function returns its input DataFrame with a metadata
+    column still inside, so result assembly appends the combo's metadata
+    column a second time under the same label (regression: AttributeError
+    'DataFrame' object has no attribute 'dtype'). The duplicated label is
+    warned about and skipped; other columns still restore.
+    """
+    from scifor.foreach import _restore_schema_column_dtypes
+
+    df = pd.concat(
+        [
+            pd.DataFrame({"session": ["A"], "subject": [1]}),
+            pd.DataFrame({"session": ["AA"], "value": [1.0]}),
+        ],
+        axis=1,
+    )
+    assert list(df.columns) == ["session", "subject", "session", "value"]
+
+    out = _restore_schema_column_dtypes(
+        df,
+        {
+            "session": pd.api.types.pandas_dtype("object"),
+            "subject": pd.api.types.pandas_dtype("float64"),
+        },
+    )
+
+    # No crash, duplicate labels untouched, non-duplicated column restored
+    # (int 1 -> float64 is a lossless cast).
+    assert list(out.columns) == ["session", "subject", "session", "value"]
+    assert out["subject"].dtype == pd.api.types.pandas_dtype("float64")
