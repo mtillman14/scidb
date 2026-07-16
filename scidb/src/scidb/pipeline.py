@@ -933,15 +933,9 @@ class Pipeline:
         run_all's own-steps rule); ``include_used=True`` widens to
         endpoints inside used pipelines.
         """
-        from .foreach import _endpoint_kind
-
-        pairs = self._composed_steps()
-        targets = {
-            i for i, (owner, spec) in enumerate(pairs)
-            if _endpoint_kind(spec.name) is not None
-            and (include_used or owner is self)
-        }
-        if not targets:
+        pairs, order, targets = self._select(
+            "endpoints", include_used=include_used)
+        if not order:
             self.deactivate()
             Log.warn(
                 f"pipeline_run_skipped: run_endpoints on '{self.name}': no "
@@ -951,7 +945,6 @@ class Pipeline:
                    "endpoints inside used pipelines")
             )
             return []
-        order = self._topo_order(pairs, targets | self._ancestors(pairs, targets))
         return self._run(
             pairs,
             order,
@@ -1015,9 +1008,8 @@ class Pipeline:
         would be surprising. Target them with ``run_until`` or run the used
         pipeline directly.
         """
-        pairs = self._composed_steps()
-        own = {i for i, (owner, _) in enumerate(pairs) if owner is self}
-        if not own:
+        pairs, order, _ = self._select("all")
+        if not order:
             self.deactivate()
             if pairs:
                 Log.warn(
@@ -1027,7 +1019,6 @@ class Pipeline:
                     f"run the used pipeline directly)"
                 )
             return []
-        order = self._topo_order(pairs, own | self._ancestors(pairs, own))
         return self._run(pairs, order, skip_computed=skip_computed)
 
     def run_until(
@@ -1042,9 +1033,7 @@ class Pipeline:
         ``finalized`` (endpoint draft/record mode) applies to the target
         step(s) only; other steps keep their registered flags.
         """
-        pairs = self._composed_steps()
-        targets = self._resolve_target(pairs, target)
-        order = self._topo_order(pairs, targets | self._ancestors(pairs, targets))
+        pairs, order, targets = self._select("until", target)
         return self._run(
             pairs,
             order,
@@ -1058,6 +1047,101 @@ class Pipeline:
         pipeline (the C3 inheritance rule for db=None sub-pipelines)."""
         return spec.options.get("db") or owner.db or self.db
 
+    def _select(
+        self,
+        mode: str,
+        target: Any | None = None,
+        include_used: bool = False,
+    ) -> "tuple[list, list[int], set[int]]":
+        """Shared step selection for run_*/execution_order: returns
+        (pairs, topo order, target indices) for ``mode`` ∈
+        {"all", "until", "endpoints"}."""
+        from .foreach import _endpoint_kind
+
+        pairs = self._composed_steps()
+        if mode == "until":
+            targets = self._resolve_target(pairs, target)
+        elif mode == "endpoints":
+            targets = {
+                i for i, (owner, spec) in enumerate(pairs)
+                if _endpoint_kind(spec.name) is not None
+                and (include_used or owner is self)
+            }
+        elif mode == "all":
+            targets = {i for i, (o, _) in enumerate(pairs) if o is self}
+        else:
+            raise ValueError(f"unknown selection mode {mode!r}")
+        if not targets:
+            return pairs, [], set()
+        order = self._topo_order(pairs, targets | self._ancestors(pairs, targets))
+        return pairs, order, targets
+
+    def execution_order(
+        self,
+        mode: str = "all",
+        target: Any | None = None,
+        include_used: bool = False,
+        finalized: "bool | None" = None,
+        skip_computed: bool = True,
+    ) -> list[dict]:
+        """The run plan as plain-data descriptors WITHOUT executing —
+        the seam an external driver (the MATLAB bridge) runs steps
+        through. Same selection + acknowledgment semantics as ``run_*``
+        (this pipeline is deactivated and acknowledged), but each step is
+        described rather than run.
+
+        Descriptor keys: ``pipeline`` (owner name), ``step`` (fn name),
+        ``step_index`` (position in the owner's OWN step list, for
+        driver-side lookup of what could not cross a language boundary),
+        ``is_matlab``, ``apply_finalized``, ``skip_computed``,
+        ``metadata_iterables``/``constant_inputs``/``path_templates``
+        (the POST-binding surface as plain data).
+        """
+        from scifor import PathOutput
+
+        pairs, order, targets = self._select(mode, target, include_used)
+        self._acknowledged = True
+        self.deactivate()
+        descriptors = []
+        for i in order:
+            owner, spec = pairs[i]
+            origin = getattr(spec, "origin", spec)
+            opts = dict(spec.options)
+            eff_skip = (
+                (opts.get("skip_computed") or skip_computed)
+                if opts.get("track_lineage", True) else False
+            )
+            descriptors.append({
+                "pipeline": owner.name,
+                "step": spec.name,
+                "step_index": next(
+                    idx for idx, s in enumerate(owner.steps)
+                    if s is origin
+                ),
+                "is_matlab": bool(opts.get("__matlab__", False)),
+                "apply_finalized": (
+                    finalized if (finalized is not None and i in targets)
+                    else None
+                ),
+                "skip_computed": eff_skip,
+                "metadata_iterables": dict(spec.metadata_iterables),
+                "constant_inputs": {
+                    k: spec.inputs[k]
+                    for k in _constant_input_names(spec)
+                },
+                "path_templates": {
+                    k: str(v.template)
+                    for k, v in spec.inputs.items()
+                    if isinstance(v, PathOutput)
+                },
+            })
+            owner._acknowledged = True
+        Log.info(
+            f"pipeline_execution_order: '{self.name}' mode={mode} -> "
+            f"{[d['step'] for d in descriptors]}"
+        )
+        return descriptors
+
     def _run(
         self,
         pairs: "list[tuple[Pipeline, StepSpec]]",
@@ -1068,6 +1152,17 @@ class Pipeline:
     ) -> list:
         from .foreach import for_each as _for_each
 
+        matlab_steps = sorted({
+            pairs[i][1].name for i in order
+            if pairs[i][1].options.get("__matlab__")
+        })
+        if matlab_steps:
+            raise RuntimeError(
+                f"pipeline '{self.name}' contains MATLAB-registered step(s) "
+                f"{matlab_steps} whose function handles live in MATLAB — "
+                f"run this pipeline from MATLAB (pipe.run_until(...)), which "
+                f"drives execution through Pipeline.execution_order()."
+            )
         self._acknowledged = True
         self.deactivate()
         names = [self._step_label(pairs[i][0], pairs[i][1], self) for i in order]
@@ -1077,33 +1172,55 @@ class Pipeline:
         )
         results = []
         for i in order:
-            owner, spec = pairs[i]
-            opts = dict(spec.options)
-            opts["db"] = self._db_for(owner, spec)
-            # Pull execution defaults to memoized runs; a step's explicitly
-            # registered skip_computed=True always wins, and untracked steps
-            # are left alone (skip_computed requires lineage).
-            if opts.get("track_lineage", True):
-                opts["skip_computed"] = opts.get("skip_computed") or skip_computed
-            if finalized is not None and finalized_for and i in finalized_for:
-                opts["finalized"] = finalized
-            Log.info(
-                f"pipeline_step_run: "
-                f"'{self._step_label(owner, spec, self)}' (via pipeline "
-                f"'{self.name}', skip_computed={opts.get('skip_computed', False)})"
+            apply_finalized = (
+                finalized
+                if (finalized is not None and finalized_for and i in finalized_for)
+                else None
             )
             results.append(
-                _for_each(
-                    spec.fn,
-                    spec.inputs,
-                    spec.outputs,
-                    pipeline=None,  # replay is always eager
-                    **opts,
-                    **spec.metadata_iterables,
-                )
+                self._execute_step(pairs, i, skip_computed, apply_finalized)
             )
-            # An executed step acknowledges its owner: a pipeline that only
-            # exists as a dependency should not warn at session end.
-            owner._acknowledged = True
         Log.info(f"pipeline_run_finished: '{self.name}' ({len(order)} step(s))")
         return results
+
+    def _execute_step(
+        self,
+        pairs: "list[tuple[Pipeline, StepSpec]]",
+        i: int,
+        skip_computed: bool = True,
+        finalized: "bool | None" = None,
+    ):
+        """Execute ONE composed step through eager for_each. Shared by the
+        ``_run`` loop and the MATLAB bridge's mixed-pipeline driver (which
+        runs Python-registered steps here while MATLAB runs its own)."""
+        from .foreach import for_each as _for_each
+
+        owner, spec = pairs[i]
+        opts = dict(spec.options)
+        opts.pop("__matlab__", None)
+        opts.pop("__matlab_fn_hash__", None)
+        opts["db"] = self._db_for(owner, spec)
+        # Pull execution defaults to memoized runs; a step's explicitly
+        # registered skip_computed=True always wins, and untracked steps
+        # are left alone (skip_computed requires lineage).
+        if opts.get("track_lineage", True):
+            opts["skip_computed"] = opts.get("skip_computed") or skip_computed
+        if finalized is not None:
+            opts["finalized"] = finalized
+        Log.info(
+            f"pipeline_step_run: "
+            f"'{self._step_label(owner, spec, self)}' (via pipeline "
+            f"'{self.name}', skip_computed={opts.get('skip_computed', False)})"
+        )
+        result = _for_each(
+            spec.fn,
+            spec.inputs,
+            spec.outputs,
+            pipeline=None,  # replay is always eager
+            **opts,
+            **spec.metadata_iterables,
+        )
+        # An executed step acknowledges its owner: a pipeline that only
+        # exists as a dependency should not warn at session end.
+        owner._acknowledged = True
+        return result

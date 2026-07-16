@@ -11,7 +11,17 @@ pipeline + `pipeline=` kwarg override); see
 endpoint verbs) implemented + verified same day — see
 `.claude/plan-pipeline-binding-endpoints-stage3.md` for the as-built
 record (`PipelineBinding`, `bind()`, `endpoints()`/`run_endpoints()`/
-`show()`, plan `endpoint` flag). MATLAB parity and the
+`show()`, plan `endpoint` flag). **Stage 4** (MATLAB parity) implemented
+2026-07-16, pending user test runs — see
+`.claude/plan-pipeline-matlab-parity-stage4.md`: Python owns the graph
+(MATLAB steps are StepSpecs with bridge sentinels + `__matlab__` options;
+type edges connect across languages via surrogate classes), MATLAB drives
+execution via `Pipeline.execution_order()` descriptors through its normal
+two-pass for_each; mixed pipelines run each step in its home language
+(`pipeline_run_python_step`); `scidb.Pipeline` MATLAB classdef
+(constructor creates+activates — no `scidb.pipeline` factory: it would
+case-collide with the classdef file on macOS), `pipeline=` seam in
+`+scidb/for_each.m`. MATLAB parity and the
 GUI surface remain future stages; Option E spec persistence is deliberately
 NOT planned (user decision 2026-07-16). Also landed with stage 1: the `@pipeline` step-function
 marker was renamed **`@scistack`** (no alias — beta) and its dead

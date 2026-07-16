@@ -165,6 +165,42 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         py_db = opts.db;
     end
 
+    % --- Pipeline registration seam (deferred execution, stage 4) ---
+    % Reuses the marshalled py objects above; registration must have zero
+    % side effects, so this runs BEFORE prepare (no loads, no DB writes).
+    % Dry-run always stays eager (preview intent beats deferral).
+    if ~dry_run
+        target_pipe = [];
+        if isa(opts.pipeline, 'scidb.Pipeline')
+            target_pipe = opts.pipeline;
+        elseif ~(ischar(opts.pipeline) || isstring(opts.pipeline)) ...
+                || ~strcmpi(char(string(opts.pipeline)), 'none')
+            active_name = char(py.scimatlab.bridge.pipeline_active_name());
+            if ~isempty(active_name)
+                target_pipe = scidb.internal.pipeline_registry('get', active_name);
+            end
+        end
+        if ~isempty(target_pipe)
+            step_index = double(py.scimatlab.bridge.pipeline_register_step( ...
+                target_pipe.py_handle, fn_name, fn_hash, py_inputs_spec, ...
+                py_output_classes, py_meta, ...
+                pyargs('where', py_where, ...
+                       'distribute', logical(opts.distribute), ...
+                       'as_table', py_as_table, ...
+                       'save', logical(do_save), ...
+                       'finalized', logical(opts.finalized), ...
+                       'skip_computed', logical(opts.skip_computed))));
+            target_pipe.store_step(step_index, fn, inputs, outputs, opts);
+            scidb.Log.info(['pipeline_step_registered (MATLAB): %s -> ' ...
+                'pipeline %s (deferred)'], fn_name, target_pipe.name);
+            result_tbl = struct('deferred', true, ...
+                                'pipeline', target_pipe.name, ...
+                                'step_index', step_index, ...
+                                'fn_name', fn_name);
+            return;
+        end
+    end
+
     % --- Call #1: Python prepare ---
     prep_t0 = tic;
     prep = py.scimatlab.bridge.for_each_prepare( ...
@@ -1178,6 +1214,10 @@ function [meta_args, opts] = split_options(varargin)
     opts.share_limits = struct();
     opts.fn_name_override = '';
     opts.fn_hash_override = '';
+    % Deferred pipeline registration: '' = ambient (register into the
+    % active pipeline if any), 'none' = force eager, or a scidb.Pipeline
+    % to register into a non-ambient pipeline.
+    opts.pipeline = '';
 
     % Reserved option names (normalized: lowercased, underscores removed) used
     % to warn when a metadata key looks like a misspelled option. Keep in sync
@@ -1185,7 +1225,7 @@ function [meta_args, opts] = split_options(varargin)
     reserved_opts = ["dryrun", "save", "preload", "astable", "db", ...
                      "parallel", "distribute", "where", "introspect", ...
                      "skipcomputed", "finalized", "sharelimits", ...
-                     "fnname", "fnhash"];
+                     "fnname", "fnhash", "pipeline"];
 
     meta_args = {};
     i = 1;
@@ -1241,6 +1281,9 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2; continue;
                 case "share_limits"
                     opts.share_limits = varargin{i+1};
+                    i = i + 2; continue;
+                case "pipeline"
+                    opts.pipeline = varargin{i+1};
                     i = i + 2; continue;
                 case "_fn_name"
                     opts.fn_name_override = char(varargin{i+1});
