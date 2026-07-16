@@ -45,9 +45,9 @@ def project_client(populated_db, tmp_path):
     )
     (src / "functions.py").write_text(
         textwrap.dedent("""
-            from scilineage import lineage_fcn
+            from scidb import scistack
 
-            @lineage_fcn
+            @scistack
             def project_fcn(x):
                 return x + 1
         """)

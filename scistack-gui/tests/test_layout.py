@@ -20,6 +20,7 @@ class TestReadLayout:
         assert not layout_path.exists()
         result = layout_store.read_layout()
         assert result == {
+            "pipeline_id": "main",
             "positions": {},
             "manual_nodes": {},
             "constants": [],
@@ -83,6 +84,7 @@ class TestManualNodes:
         assert data["manual_nodes"]["manual__1"] == {
             "type": "functionNode",
             "label": "my_fn",
+            "pipeline_id": "main",
         }
 
     def test_get_manual_nodes_returns_only_manual(self, layout_path):

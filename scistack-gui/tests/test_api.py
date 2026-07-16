@@ -640,7 +640,10 @@ class TestRunStateRed:
 
 
 class TestRunStateGrey:
-    """Partially-run pipeline → grey."""
+    """Partially-run pipeline → red. scidb node state is BINARY green/red
+    ('needs attention' is one state whether never-run, partial, or stale —
+    the former 'grey' staleness verdict was removed with the bipartite
+    graph). GUI 'grey' now ONLY means the pending-constant downgrade."""
 
     @pytest.fixture
     def client_partial(self, tmp_path):
@@ -675,22 +678,23 @@ class TestRunStateGrey:
 
     def test_function_node_is_grey(self, client_partial):
         nodes = client_partial.get("/api/pipeline").json()["nodes"]
-        # One call site (low_hz=20), partially run → grey.
+        # One call site (low_hz=20), partially run → red (binary state).
         node_id = find_fn_node_id_by_label(nodes, "bandpass_filter")
         fn_node = next(n for n in nodes if n["id"] == node_id)
-        assert fn_node["data"].get("run_state") == "grey"
+        assert fn_node["data"].get("run_state") == "red"
 
     def test_output_variable_is_grey(self, client_partial):
         nodes = client_partial.get("/api/pipeline").json()["nodes"]
         var_node = next(n for n in nodes if n["id"] == "var__FilteredSignal")
-        assert var_node["data"].get("run_state") == "grey"
+        assert var_node["data"].get("run_state") == "red"
 
 
 class TestRunStatePropagation:
     """
     Two-step chain: RawSignal → bandpass_filter → FilteredSignal → process_signal → ProcessedSignal.
-    When the first step is grey (partial run), the second step must also be grey
-    even if it ran completely for all available FilteredSignal records.
+    When the first step is red (partial run — binary node state), the second
+    step must also be red even if it ran completely for all available
+    FilteredSignal records (pessimistic DAG propagation).
     """
 
     @pytest.fixture
@@ -738,19 +742,20 @@ class TestRunStatePropagation:
         nodes = client_propagation.get("/api/pipeline").json()["nodes"]
         node_id = find_fn_node_id_by_label(nodes, "bandpass_filter")
         fn_node = next(n for n in nodes if n["id"] == node_id)
-        assert fn_node["data"].get("run_state") == "grey"
+        # Partial run → red (binary node state).
+        assert fn_node["data"].get("run_state") == "red"
 
     def test_downstream_function_is_grey_due_to_staleness(self, client_propagation):
         nodes = client_propagation.get("/api/pipeline").json()["nodes"]
         node_id = find_fn_node_id_by_label(nodes, "process_signal")
         fn_node = next(n for n in nodes if n["id"] == node_id)
-        # process_signal ran for all available inputs, but upstream is grey → grey
-        assert fn_node["data"].get("run_state") == "grey"
+        # process_signal ran for all available inputs, but upstream is red → red
+        assert fn_node["data"].get("run_state") == "red"
 
     def test_downstream_variable_is_grey_due_to_staleness(self, client_propagation):
         nodes = client_propagation.get("/api/pipeline").json()["nodes"]
         var_node = next(n for n in nodes if n["id"] == "var__ProcessedSignal")
-        assert var_node["data"].get("run_state") == "grey"
+        assert var_node["data"].get("run_state") == "red"
 
 
 # ---------------------------------------------------------------------------
@@ -910,13 +915,13 @@ class TestPendingConstantRecovery:
         db.close()
 
     def test_grey_plus_pending_resolves_to_green_after_full_run(self, client_partial):
-        """grey (partial run) + pending low_hz=42 → run both variants fully → green."""
-        assert self._fn_state(client_partial) == "grey"
+        """red (partial run) + pending low_hz=42 → run both variants fully → green."""
+        assert self._fn_state(client_partial) == "red"
 
-        # Add pending on top of grey — still grey (pending can't worsen grey,
-        # and auto_clean only downgrades green → grey).
+        # Add pending on top of red — still red (the pending downgrade only
+        # applies to green nodes; red already needs attention).
         client_partial.put("/api/constants/low_hz/pending/42")
-        assert self._fn_state(client_partial) == "grey"
+        assert self._fn_state(client_partial) == "red"
 
         # Complete both variants.
         for_each(

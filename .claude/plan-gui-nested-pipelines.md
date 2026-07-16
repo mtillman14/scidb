@@ -2,7 +2,68 @@
 
 Status: APPROVED 2026-07-16 (G1–G4 all confirmed by user). Execution
 order confirmed: stage 4 (MATLAB parity) first, then Part A (nesting),
-then Part B item 1 (endpoint presentation). NOT yet implemented.
+then Part B item 1 (endpoint presentation).
+
+**Checkpoint 1 — persistence (A1) IMPLEMENTED + VERIFIED 2026-07-16
+(full GUI suite + scihist state suite green, user-run).** As built:
+- `pipeline_store.py`: `_pipelines` + `_pipeline_uses` tables;
+  `pipeline_id` column on `_pipeline_nodes` (ALTER + NULL backfill to
+  `main`, same pattern as the config column); root row auto-inserted.
+  CRUD: `list/create/rename/delete_pipeline` (delete refuses root +
+  still-used pipelines, cascades own nodes/edges/uses; rename updates
+  pipelineNode labels on parent canvases). Uses:
+  `add_pipeline_use` (use row + canvas node whose node_id IS the use_id,
+  node_type='pipelineNode'; direct+transitive cycle rejection),
+  `remove_pipeline_use` (row + node + touching edges),
+  `get_pipeline_uses`, `update_use_binding` (key whitelist: key_map/
+  params/iterate). Edges stay scope-less (scope = endpoints' scope;
+  service layer filters).
+- `layout.py`: positions per scope (`{pipeline_id: {node_id: {x,y}}}`,
+  `positions_scoped` flag; flat files migrate under `main` on load);
+  `read_layout(pipeline_id="main")` keeps the flat per-scope shape so all
+  existing callers see pre-nesting behavior; scope params (default root)
+  on `write_node_position`/`write_manual_node`; `delete_node`/
+  `graduate_manual_node` scope-aware; name-derivation helpers scan the
+  merged position view.
+- scidb: `Pipeline.interface()` (composed consumed-not-produced inputs /
+  produced outputs — the pipeline node's ports; A2 groundwork).
+- Tests: `scistack-gui/tests/test_pipeline_scopes.py` (new, 16 tests);
+  two exact-shape assertions updated in `test_layout.py`; interface test
+  in scidb's `test_pipeline_registry.py`.
+
+**Checkpoint 1 test run also surfaced pre-existing GUI↔scidb drift**
+(none from the scoping work; fixed + VERIFIED 2026-07-16 alongside):
+- `api/variables.py` records endpoint queried the DELETED
+  `_record_metadata` table → rewritten against `{name}_data` JOIN
+  `_record`/`_schema` with `branch_params_batch` (the batched provenance
+  helper — no N+1), unknown names validated against `_variables` and
+  returning the empty shape.
+- GUI tests still encoded tri-state "partial → grey"; scidb node state is
+  BINARY (green/red) since the bipartite change. Tests updated: partial/
+  stale = red; GUI grey now ONLY means the pending-constant downgrade
+  (run_state.py's own semantics, unchanged).
+- `test_project_api` fixture imported the long-deleted
+  `scilineage.lineage_fcn` → `@scistack`.
+- `test_partial_run_only_greys_its_own_call_site` green-assertion failure:
+  a REAL scidb regression, root-caused statically — the invocation-
+  membership rewrite of `check_node_state` dropped the `call_id` filter
+  ("call sites never blur" held for invocation_id but NOT for the
+  expected-set union across variant configs), so one call site's partial
+  run reddened every sibling call site. Fixed in the scidb layer
+  (2026-07-16): `function_variant_configs` now carries `path_inputs` +
+  member `invocation_ids`; new `config_call_id()` shares
+  `pipeline_variants`' reconstruction recipe; `expected_invocations_for_
+  function(call_id=)` scopes configs, realized-inputless pairs, and the
+  declared-inputs fallback; `check_node_state` passes call_id through.
+  Regression tests: `scihist/tests/test_state.py::TestCallSiteScoping`.
+- `api/project.py` serialized plain @scistack functions as `str(fn)`
+  (a `.fcn`-wrapper leftover) → `__name__` first.
+
+Remaining checkpoints: services/API (scope-filtered graph queries,
+pipeline CRUD + use endpoints in both protocol adapters), execution
+rearchitecture (G2: document -> in-session scidb.Pipeline objects,
+run_until/plan), frontend (pipeline node + ports + binding badge,
+double-click descend, breadcrumb path + sidebar, scope-swapped canvas).
 Grounding: `docs/claude/scistack-gui-backend-internals.md` (dual-protocol
 server, service layer, `_pipeline_*` DuckDB tables + JSON layout);
 backend stages 1–3 all verified (registry, composition, bindings,

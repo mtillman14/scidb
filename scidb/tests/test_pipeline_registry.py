@@ -552,6 +552,18 @@ class TestComposition:
         owners = {e["step"]: e["pipeline"] for e in entries}
         assert owners == {"halve": "loading", "mean_of": "analysis"}
 
+    def test_interface_exposes_composed_ports(self, db):
+        """interface() = the pipeline node's ports: consumed-not-produced
+        types in, produced types out — across the composed graph."""
+        analysis = self._analysis_using(db, self._loading(db))
+        analysis.deactivate()
+
+        iface = analysis.interface()
+
+        names = lambda classes: [c.__name__ for c in classes]  # noqa: E731
+        assert names(iface["inputs"]) == ["RawSignal", "Unrelated"]
+        assert names(iface["outputs"]) == ["Filtered", "Speed", "UnrelatedOut"]
+
     def test_second_composed_run_skips_across_boundary(self, db):
         _seed(db)
         analysis = self._analysis_using(db, self._loading(db))

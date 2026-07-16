@@ -130,9 +130,10 @@ def test_each_call_site_reports_independent_state(two_call_sites_client):
 
 
 def test_partial_run_only_greys_its_own_call_site(tmp_path):
-    """A partial run for one constant value greys ONLY that call site,
+    """A partial run for one constant value degrades ONLY that call site,
     not the other (this is the behavior the user explicitly asked for —
-    they should be able to tell the two call sites apart)."""
+    they should be able to tell the two call sites apart). Under scidb's
+    binary node state, partial = red (the former grey verdict is gone)."""
     if hasattr(_local, "database"):
         delattr(_local, "database")
     _gui_db._db = None
@@ -173,4 +174,4 @@ def test_partial_run_only_greys_its_own_call_site(tmp_path):
     a = next(n for n in nodes if n["id"] == nid_a)
     b = next(n for n in nodes if n["id"] == nid_b)
     assert a["data"]["run_state"] == "green", "fully-run call site must remain green"
-    assert b["data"]["run_state"] == "grey", "partial call site must be grey"
+    assert b["data"]["run_state"] == "red", "partial call site must be red (binary state)"

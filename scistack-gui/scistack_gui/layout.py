@@ -29,25 +29,57 @@ def _layout_path() -> Path:
 
 
 def _load() -> dict:
-    """Load and normalise the layout file (positions only, post-migration)."""
+    """Load and normalise the layout file (positions only, post-migration).
+
+    Positions are PER-SCOPE (nested pipelines): ``positions`` maps
+    ``pipeline_id -> {node_id: {x, y}}``. Pre-scoping files (flat
+    ``node_id -> {x, y}``) migrate under the root scope on load, marked by
+    the ``positions_scoped`` flag.
+    """
     p = _layout_path()
     logger.debug("[layout] Loading layout file from %s", p)
     if not p.exists():
         logger.debug("[layout] Layout file does not exist, returning empty structure")
-        return {"positions": {}, "constants": [], "path_inputs": []}
+        return {"positions": {}, "constants": [], "path_inputs": [],
+                "positions_scoped": True}
     with p.open() as f:
         raw = json.load(f)
     logger.debug("[layout] Loaded layout file with %d top-level keys", len(raw))
     # Migrate legacy flat format: { "node_id": {"x":..,"y":..}, ... }
     if raw and "positions" not in raw:
         logger.debug("[layout] Migrating legacy flat format to nested positions structure")
-        return {"positions": raw, "constants": [], "path_inputs": []}
+        raw = {"positions": raw, "constants": [], "path_inputs": []}
     raw.setdefault("positions", {})
     raw.setdefault("constants", [])
     raw.setdefault("path_inputs", [])
-    logger.debug("[layout] Layout has %d positions, %d constants, %d path_inputs",
+    # Migrate flat positions to per-scope: everything predating scoping
+    # lived on the one canvas that is now the root pipeline.
+    if not raw.get("positions_scoped"):
+        logger.info("[layout] scoping migration: moving %d flat position(s) "
+                    "under root scope '%s'", len(raw["positions"]),
+                    pipeline_store.ROOT_PIPELINE_ID)
+        raw["positions"] = (
+            {pipeline_store.ROOT_PIPELINE_ID: raw["positions"]}
+            if raw["positions"] else {}
+        )
+        raw["positions_scoped"] = True
+    logger.debug("[layout] Layout has %d scope(s), %d constants, %d path_inputs",
                  len(raw["positions"]), len(raw["constants"]), len(raw["path_inputs"]))
     return raw
+
+
+def _scope_positions(data: dict, pipeline_id: str) -> dict:
+    """The (mutable) position dict for one scope, created on demand."""
+    return data["positions"].setdefault(pipeline_id, {})
+
+
+def _positions_all(data: dict) -> dict:
+    """Merged {node_id: {x, y}} across all scopes (node ids are unique) —
+    for the name-derivation helpers that scan canonical node ids."""
+    merged: dict = {}
+    for scope in data["positions"].values():
+        merged.update(scope)
+    return merged
 
 
 def _save(data: dict) -> None:
@@ -60,39 +92,50 @@ def _save(data: dict) -> None:
     logger.debug("[layout] Layout file saved successfully")
 
 
-def read_layout() -> dict:
-    """Return the full layout dict (positions + manual nodes/edges from DB)."""
+def read_layout(pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> dict:
+    """Return one SCOPE's layout (positions + manual nodes from DB).
+
+    Defaults to the root scope, which is where every pre-scoping document
+    lives — existing callers see exactly what they saw before nesting.
+    ``manual_edges`` is intentionally unfiltered here: DB-derived nodes'
+    scope membership is graph_builder's business (service layer filters
+    edges when composing a scoped canvas).
+    """
     data = _load()
     db = get_db()
     return {
-        "positions": data["positions"],
-        "manual_nodes": pipeline_store.get_manual_nodes(db),
+        "pipeline_id": pipeline_id,
+        "positions": dict(_scope_positions(data, pipeline_id)),
+        "manual_nodes": pipeline_store.get_manual_nodes(db, pipeline_id),
         "manual_edges": pipeline_store.get_manual_edges(db),
         "constants": data.get("constants", []),
     }
 
 
-def write_node_position(node_id: str, x: float, y: float) -> None:
-    logger.info("[layout] write_node_position called (node_id=%r, x=%.1f, y=%.1f)", node_id, x, y)
+def write_node_position(node_id: str, x: float, y: float,
+                        pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> None:
+    logger.info("[layout] write_node_position called (node_id=%r, x=%.1f, y=%.1f, scope=%r)",
+                node_id, x, y, pipeline_id)
     data = _load()
     logger.info("[layout] Writing position to JSON")
-    data["positions"][node_id] = {"x": x, "y": y}
+    _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
     _save(data)
     logger.info("[layout] Node position written successfully")
 
 
 def write_manual_node(node_id: str, x: float, y: float,
-                      node_type: str, label: str) -> None:
+                      node_type: str, label: str,
+                      pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> None:
     # Position goes to JSON; structural info goes to DB.
-    logger.info("[layout] write_manual_node called (node_id=%r, type=%r, label=%r, x=%.1f, y=%.1f)",
-                node_id, node_type, label, x, y)
+    logger.info("[layout] write_manual_node called (node_id=%r, type=%r, label=%r, x=%.1f, y=%.1f, scope=%r)",
+                node_id, node_type, label, x, y, pipeline_id)
     logger.info("[layout] Writing position to JSON")
     data = _load()
-    data["positions"][node_id] = {"x": x, "y": y}
+    _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
     _save(data)
     logger.info("[layout] Writing node metadata to DuckDB")
     db = get_db()
-    pipeline_store.write_manual_node(db, node_id, node_type, label)
+    pipeline_store.write_manual_node(db, node_id, node_type, label, pipeline_id)
     # If the user is re-adding a node that was previously hidden, unhide it.
     # Also unhide the canonical DB-derived ID for this type/label.
     logger.info("[layout] Unhiding node (in case it was previously deleted)")
@@ -134,7 +177,8 @@ def delete_node(node_id: str) -> None:
     logger.info("[layout] delete_node called (node_id=%r)", node_id)
     logger.info("[layout] Removing position from JSON")
     data = _load()
-    data["positions"].pop(node_id, None)
+    for scope in data["positions"].values():
+        scope.pop(node_id, None)
     _save(data)
     logger.info("[layout] Deleting node metadata from DuckDB")
     db = get_db()
@@ -165,7 +209,7 @@ def read_all_constant_names() -> list[str]:
         if meta.get("type") == "constantNode":
             names.add(meta["label"])
     # Canonical DB-derived constant nodes not already covered by manual_nodes.
-    for node_id in data["positions"]:
+    for node_id in _positions_all(data):
         if node_id.startswith("const__") and node_id not in manual_nodes:
             names.add(node_id[len("const__"):])
     return sorted(names)
@@ -195,7 +239,7 @@ def read_all_path_input_names() -> list[dict]:
     by_name: dict[str, dict] = {}
     for pi in data["path_inputs"]:
         by_name[pi["name"]] = pi
-    for node_id in data["positions"]:
+    for node_id in _positions_all(data):
         if node_id.startswith("pathInput__"):
             # Node IDs are "pathInput__<name>__<random>"; extract just <name>.
             parts = node_id.split("__")
@@ -258,11 +302,14 @@ def get_pending_constants() -> dict[str, set[str]]:
 
 
 def graduate_manual_node(old_id: str, new_id: str) -> None:
-    """Transfer position from a manual node to a DB-derived node ID and remove the manual entry."""
+    """Transfer position from a manual node to a DB-derived node ID and
+    remove the manual entry. Scope-aware: the new id stays on whichever
+    canvas the old node was placed on."""
     data = _load()
-    old_pos = data["positions"].get(old_id)
-    if old_pos and new_id not in data["positions"]:
-        data["positions"][new_id] = old_pos
-    data["positions"].pop(old_id, None)
+    for scope in data["positions"].values():
+        old_pos = scope.get(old_id)
+        if old_pos and new_id not in scope:
+            scope[new_id] = old_pos
+        scope.pop(old_id, None)
     _save(data)
     pipeline_store.graduate_manual_node(get_db(), old_id, new_id)

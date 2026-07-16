@@ -7,26 +7,52 @@ positions (x/y) remain in the JSON file as cosmetic data only.
 
 Tables created in the user's .duckdb file:
 
-    _pipeline_nodes (node_id, node_type, label)
+    _pipelines      (pipeline_id, name)
+    _pipeline_nodes (node_id, node_type, label, config, pipeline_id)
     _pipeline_edges (edge_id, source, target, source_handle, target_handle)
+    _pipeline_uses  (use_id, parent_pipeline_id, child_pipeline_id, binding_json)
 
 These tables are created lazily on first access so they are always present
 regardless of whether init_db() or configure_database() was used to open the DB.
+
+Nested pipelines (GUI stage, plan-gui-nested-pipelines.md)
+----------------------------------------------------------
+Every node belongs to exactly one pipeline SCOPE (``pipeline_id``); the
+reserved root scope is ``main`` and always exists.  A pipeline placed as a
+node on a parent canvas is one ``_pipeline_uses`` row: the canvas node's
+``node_id`` IS the ``use_id`` (``node_type='pipelineNode'``), so the same
+child pipeline placed twice — with different bindings = two backend
+variants — is two nodes.  ``binding_json`` holds ``{key_map, params,
+iterate}`` (empty = identity), mirroring scidb's ``Pipeline.bind()``.
+
+These tables are the GUI's DOCUMENT (what the user drew) — NOT backend
+spec persistence, which is deliberately unbuilt: at run time the GUI
+constructs in-session ``scidb.Pipeline`` objects from this document.
+
+Edges carry no scope column: an edge lives in the scope of the nodes it
+connects (both endpoints are always in one scope; service-level queries
+filter edges via node membership).
 
 Migration
 ---------
 On first access (detected by the migration sentinel key in the JSON layout),
 any manual_nodes and manual_edges entries in the JSON are written to the DB
 and removed from the JSON.  This is a one-time, idempotent operation.
+Scope columns/tables migrate in-place in ``_ensure_tables`` (ALTER +
+backfill to ``main``), same pattern as the ``config`` column.
 """
 
 import json
 import logging
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _MIGRATION_SENTINEL = "pipeline_db_migrated"
+
+# The reserved root scope: pre-scoping documents live here after migration.
+ROOT_PIPELINE_ID = "main"
 
 
 def _duck(db):
@@ -71,6 +97,42 @@ def _ensure_tables(db) -> None:
         )
     except Exception:
         pass  # Column already exists
+
+    # --- Nested-pipeline scoping (GUI stage) ---
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipelines (
+            pipeline_id VARCHAR PRIMARY KEY,
+            name        VARCHAR NOT NULL
+        )
+    """)
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_uses (
+            use_id             VARCHAR PRIMARY KEY,
+            parent_pipeline_id VARCHAR NOT NULL,
+            child_pipeline_id  VARCHAR NOT NULL,
+            binding_json       VARCHAR DEFAULT '{}'
+        )
+    """)
+    # The root scope always exists; pre-scoping nodes backfill into it.
+    _duck(db)._execute(
+        "INSERT INTO _pipelines (pipeline_id, name) VALUES (?, ?) "
+        "ON CONFLICT DO NOTHING",
+        [ROOT_PIPELINE_ID, ROOT_PIPELINE_ID],
+    )
+    try:
+        _duck(db)._execute(
+            f"ALTER TABLE _pipeline_nodes ADD COLUMN pipeline_id VARCHAR "
+            f"DEFAULT '{ROOT_PIPELINE_ID}'"
+        )
+        logger.info("[pipeline_store] scoping migration: added pipeline_id "
+                    "column to _pipeline_nodes (existing nodes -> '%s')",
+                    ROOT_PIPELINE_ID)
+    except Exception:
+        pass  # Column already exists
+    _duck(db)._execute(
+        "UPDATE _pipeline_nodes SET pipeline_id = ? WHERE pipeline_id IS NULL",
+        [ROOT_PIPELINE_ID],
+    )
 
 
 def migrate_from_json(db, layout_path: Path) -> None:
@@ -137,15 +199,28 @@ def migrate_from_json(db, layout_path: Path) -> None:
 # Nodes
 # ---------------------------------------------------------------------------
 
-def get_manual_nodes(db) -> dict[str, dict]:
-    """Return {node_id: {"type": ..., "label": ..., "config": ...}} for all manual nodes."""
+def get_manual_nodes(db, pipeline_id: "str | None" = None) -> dict[str, dict]:
+    """Return {node_id: {"type", "label", "pipeline_id"[, "config"]}}.
+
+    ``pipeline_id=None`` returns ALL scopes (pre-scoping behavior — every
+    existing caller keeps working); pass a scope to filter to one canvas.
+    """
     _ensure_tables(db)
-    rows = _duck(db)._fetchall(
-        "SELECT node_id, node_type, label, config FROM _pipeline_nodes"
-    )
+    if pipeline_id is None:
+        rows = _duck(db)._fetchall(
+            "SELECT node_id, node_type, label, config, pipeline_id "
+            "FROM _pipeline_nodes"
+        )
+    else:
+        rows = _duck(db)._fetchall(
+            "SELECT node_id, node_type, label, config, pipeline_id "
+            "FROM _pipeline_nodes WHERE pipeline_id = ?",
+            [pipeline_id],
+        )
     result = {}
     for row in rows:
-        entry: dict = {"type": row[1], "label": row[2]}
+        entry: dict = {"type": row[1], "label": row[2],
+                       "pipeline_id": row[4] or ROOT_PIPELINE_ID}
         if row[3] and row[3] != '{}':
             try:
                 entry["config"] = json.loads(row[3])
@@ -155,12 +230,13 @@ def get_manual_nodes(db) -> dict[str, dict]:
     return result
 
 
-def write_manual_node(db, node_id: str, node_type: str, label: str) -> None:
-    logger.info("[pipeline_store] write_manual_node called (node_id=%r, type=%r, label=%r)",
-                node_id, node_type, label)
+def write_manual_node(db, node_id: str, node_type: str, label: str,
+                      pipeline_id: str = ROOT_PIPELINE_ID) -> None:
+    logger.info("[pipeline_store] write_manual_node called (node_id=%r, type=%r, "
+                "label=%r, pipeline_id=%r)", node_id, node_type, label, pipeline_id)
     _ensure_tables(db)
     logger.info("[pipeline_store] Upserting node into _pipeline_nodes table")
-    _upsert_node(db, node_id, node_type, label)
+    _upsert_node(db, node_id, node_type, label, pipeline_id)
     logger.info("[pipeline_store] Node written to DuckDB successfully")
 
 
@@ -289,6 +365,224 @@ def get_pending_constants(db) -> dict[str, set[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Pipelines (nested-pipeline scopes)
+# ---------------------------------------------------------------------------
+
+def list_pipelines(db) -> list[dict]:
+    """All pipeline scopes: [{"pipeline_id", "name"}], root first."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT pipeline_id, name FROM _pipelines "
+        "ORDER BY (pipeline_id != ?), name",
+        [ROOT_PIPELINE_ID],
+    )
+    return [{"pipeline_id": r[0], "name": r[1]} for r in rows]
+
+
+def create_pipeline(db, name: str) -> str:
+    """Create a new (empty) pipeline scope; returns its pipeline_id."""
+    _ensure_tables(db)
+    name = str(name).strip()
+    if not name:
+        raise ValueError("pipeline name must be non-empty")
+    existing = {p["name"] for p in list_pipelines(db)}
+    if name in existing:
+        raise ValueError(f"a pipeline named '{name}' already exists")
+    pipeline_id = f"pipe_{uuid.uuid4().hex[:12]}"
+    _duck(db)._execute(
+        "INSERT INTO _pipelines (pipeline_id, name) VALUES (?, ?)",
+        [pipeline_id, name],
+    )
+    logger.info("[pipeline_store] create_pipeline: '%s' -> %s", name, pipeline_id)
+    return pipeline_id
+
+
+def rename_pipeline(db, pipeline_id: str, name: str) -> None:
+    _ensure_tables(db)
+    if pipeline_id == ROOT_PIPELINE_ID:
+        raise ValueError("the root pipeline cannot be renamed")
+    name = str(name).strip()
+    if not name:
+        raise ValueError("pipeline name must be non-empty")
+    _duck(db)._execute(
+        "UPDATE _pipelines SET name = ? WHERE pipeline_id = ?",
+        [name, pipeline_id],
+    )
+    # Pipeline-node labels on parent canvases display the child's name.
+    _duck(db)._execute(
+        "UPDATE _pipeline_nodes SET label = ? WHERE node_id IN "
+        "(SELECT use_id FROM _pipeline_uses WHERE child_pipeline_id = ?)",
+        [name, pipeline_id],
+    )
+
+
+def delete_pipeline(db, pipeline_id: str) -> None:
+    """Delete an EMPTY-of-consumers pipeline scope and its contents.
+
+    Refuses the root and any pipeline still placed on another canvas
+    (delete those pipeline nodes first — fail fast beats silent cascade).
+    Cascades: own nodes, edges between them, its outgoing use rows (and
+    THEIR canvas node rows live in this scope, so they go with the nodes).
+    """
+    _ensure_tables(db)
+    if pipeline_id == ROOT_PIPELINE_ID:
+        raise ValueError("the root pipeline cannot be deleted")
+    consumers = _duck(db)._fetchall(
+        "SELECT p.name FROM _pipeline_uses u JOIN _pipelines p "
+        "ON p.pipeline_id = u.parent_pipeline_id WHERE u.child_pipeline_id = ?",
+        [pipeline_id],
+    )
+    if consumers:
+        names = sorted({r[0] for r in consumers})
+        raise ValueError(
+            f"pipeline is still used by {names} — remove those pipeline "
+            f"nodes first"
+        )
+    node_rows = _duck(db)._fetchall(
+        "SELECT node_id FROM _pipeline_nodes WHERE pipeline_id = ?",
+        [pipeline_id],
+    )
+    node_ids = [r[0] for r in node_rows]
+    for nid in node_ids:
+        _duck(db)._execute(
+            "DELETE FROM _pipeline_edges WHERE source = ? OR target = ?",
+            [nid, nid],
+        )
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_nodes WHERE pipeline_id = ?", [pipeline_id])
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_uses WHERE parent_pipeline_id = ?",
+        [pipeline_id])
+    _duck(db)._execute(
+        "DELETE FROM _pipelines WHERE pipeline_id = ?", [pipeline_id])
+    logger.info("[pipeline_store] delete_pipeline: %s (%d node(s) removed)",
+                pipeline_id, len(node_ids))
+
+
+# ---------------------------------------------------------------------------
+# Pipeline uses (pipeline-as-node edges between scopes)
+# ---------------------------------------------------------------------------
+
+def _uses_reachable(db, start_id: str) -> set:
+    """Pipeline ids reachable from start_id through _pipeline_uses edges."""
+    reachable: set = set()
+    frontier = [start_id]
+    while frontier:
+        current = frontier.pop()
+        rows = _duck(db)._fetchall(
+            "SELECT child_pipeline_id FROM _pipeline_uses "
+            "WHERE parent_pipeline_id = ?",
+            [current],
+        )
+        for (child,) in rows:
+            if child not in reachable:
+                reachable.add(child)
+                frontier.append(child)
+    return reachable
+
+
+def add_pipeline_use(db, parent_pipeline_id: str, child_pipeline_id: str,
+                     binding: "dict | None" = None) -> str:
+    """Place ``child`` as a pipeline NODE on ``parent``'s canvas.
+
+    One _pipeline_uses row + one canvas node whose node_id IS the use_id
+    (same child twice = two nodes; bindings live on the use edge — G1).
+    Rejects cycles at creation (mirrors scidb's PipelineCycleError).
+    Returns the use_id.
+    """
+    _ensure_tables(db)
+    known = {p["pipeline_id"] for p in list_pipelines(db)}
+    for pid in (parent_pipeline_id, child_pipeline_id):
+        if pid not in known:
+            raise ValueError(f"unknown pipeline_id '{pid}'")
+    if child_pipeline_id == parent_pipeline_id or \
+            parent_pipeline_id in _uses_reachable(db, child_pipeline_id):
+        raise ValueError(
+            f"placing this pipeline would create a dependency cycle "
+            f"('{child_pipeline_id}' already reaches '{parent_pipeline_id}')"
+        )
+    use_id = f"use_{uuid.uuid4().hex[:12]}"
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_uses "
+        "(use_id, parent_pipeline_id, child_pipeline_id, binding_json) "
+        "VALUES (?, ?, ?, ?)",
+        [use_id, parent_pipeline_id, child_pipeline_id,
+         json.dumps(binding or {})],
+    )
+    child_name = next(
+        p["name"] for p in list_pipelines(db)
+        if p["pipeline_id"] == child_pipeline_id
+    )
+    _upsert_node(db, use_id, "pipelineNode", child_name, parent_pipeline_id)
+    logger.info("[pipeline_store] add_pipeline_use: '%s' placed on '%s' "
+                "(use_id=%s, binding=%s)", child_pipeline_id,
+                parent_pipeline_id, use_id, binding or {})
+    return use_id
+
+
+def remove_pipeline_use(db, use_id: str) -> None:
+    """Remove a pipeline node: the use row, its canvas node, its edges."""
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_uses WHERE use_id = ?", [use_id])
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_nodes WHERE node_id = ?", [use_id])
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_edges WHERE source = ? OR target = ?",
+        [use_id, use_id],
+    )
+    logger.info("[pipeline_store] remove_pipeline_use: %s", use_id)
+
+
+def get_pipeline_uses(db, parent_pipeline_id: "str | None" = None) -> list[dict]:
+    """Use edges: [{"use_id", "parent_pipeline_id", "child_pipeline_id",
+    "binding"}] — all of them, or one parent's."""
+    _ensure_tables(db)
+    if parent_pipeline_id is None:
+        rows = _duck(db)._fetchall(
+            "SELECT use_id, parent_pipeline_id, child_pipeline_id, "
+            "binding_json FROM _pipeline_uses"
+        )
+    else:
+        rows = _duck(db)._fetchall(
+            "SELECT use_id, parent_pipeline_id, child_pipeline_id, "
+            "binding_json FROM _pipeline_uses WHERE parent_pipeline_id = ?",
+            [parent_pipeline_id],
+        )
+    result = []
+    for use_id, parent_id, child_id, binding_json in rows:
+        try:
+            binding = json.loads(binding_json) if binding_json else {}
+        except (json.JSONDecodeError, TypeError):
+            binding = {}
+        result.append({
+            "use_id": use_id,
+            "parent_pipeline_id": parent_id,
+            "child_pipeline_id": child_id,
+            "binding": binding,
+        })
+    return result
+
+
+def update_use_binding(db, use_id: str, binding: dict) -> None:
+    """Replace a use edge's binding ({key_map, params, iterate} subset)."""
+    _ensure_tables(db)
+    allowed = {"key_map", "params", "iterate"}
+    unknown = set(binding) - allowed
+    if unknown:
+        raise ValueError(
+            f"unknown binding key(s) {sorted(unknown)} — allowed: "
+            f"{sorted(allowed)}"
+        )
+    _duck(db)._execute(
+        "UPDATE _pipeline_uses SET binding_json = ? WHERE use_id = ?",
+        [json.dumps(binding), use_id],
+    )
+    logger.info("[pipeline_store] update_use_binding: %s -> %s",
+                use_id, binding)
+
+
+# ---------------------------------------------------------------------------
 # Hidden nodes (user-deleted DB-derived nodes)
 # ---------------------------------------------------------------------------
 
@@ -335,12 +629,14 @@ def get_hidden_node_ids(db) -> set[str]:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _upsert_node(db, node_id: str, node_type: str, label: str) -> None:
+def _upsert_node(db, node_id: str, node_type: str, label: str,
+                 pipeline_id: str = ROOT_PIPELINE_ID) -> None:
     _duck(db)._execute(
-        "INSERT INTO _pipeline_nodes (node_id, node_type, label) VALUES (?, ?, ?) "
+        "INSERT INTO _pipeline_nodes (node_id, node_type, label, pipeline_id) "
+        "VALUES (?, ?, ?, ?) "
         "ON CONFLICT (node_id) DO UPDATE SET node_type = excluded.node_type, "
-        "label = excluded.label",
-        [node_id, node_type, label],
+        "label = excluded.label, pipeline_id = excluded.pipeline_id",
+        [node_id, node_type, label, pipeline_id],
     )
 
 

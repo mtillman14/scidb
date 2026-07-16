@@ -47,7 +47,10 @@ def _serialise_module_exports(mod) -> dict:
         "module_name": mod.module_name,
         "variables": [cls.__name__ for cls in mod.variables],
         "functions": [
-            getattr(getattr(f, "fcn", None), "__name__", str(f))
+            # @scistack functions are PLAIN callables (name on the function
+            # itself); the .fcn fallback covers any legacy wrapper object.
+            getattr(f, "__name__", None)
+            or getattr(getattr(f, "fcn", None), "__name__", str(f))
             for f in mod.functions
         ],
         "constants": [

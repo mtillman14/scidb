@@ -61,39 +61,51 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
     """
     schema_keys: list[str] = db._duck.dataset_schema
 
-    # Dynamically build the SELECT clause for schema key columns.
+    # The pre-bipartite _record_metadata table (with its embedded
+    # branch_params column) is gone: record identity lives on the _record
+    # entity and branch_params are DERIVED from the provenance graph.
+    # Query the variable's data table joined to _record/_schema, then batch
+    # the branch-params walk (never per-record — the N+1 trap).
+
+    # Validate the name against the _variables registry table — unknown
+    # variables return the empty shape (and the {name}_data interpolation
+    # below only ever receives a known-registered name).
+    known = {row[0] for row in db._duck._fetchall(
+        "SELECT variable_name FROM _variables")}
+    if variable_name not in known:
+        logger.info("get_variable_records: unknown variable %r", variable_name)
+        return {"schema_keys": schema_keys, "records": [], "variants": []}
+
     schema_select = ", ".join(f's."{k}"' for k in schema_keys)
     if schema_select:
-        schema_select += ", "
-
+        schema_select = ", " + schema_select
     query = f"""
-        WITH latest AS (
-            SELECT record_id, schema_id, branch_params
-            FROM _record_metadata
-            WHERE variable_name = $1
-              AND excluded = FALSE
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY timestamp DESC) = 1
-        )
-        SELECT {schema_select}l.branch_params
-        FROM latest l
-        LEFT JOIN _schema s ON l.schema_id = s.schema_id
-        ORDER BY {", ".join(f's."{k}"' for k in schema_keys) or "l.branch_params"}
+        SELECT DISTINCT t.record_id{schema_select}
+        FROM "{variable_name}_data" t
+        JOIN _record r ON t.record_id = r.record_id
+        LEFT JOIN _schema s ON r.schema_id = s.schema_id
+        WHERE r.excluded IS DISTINCT FROM TRUE
+        ORDER BY {", ".join(f's."{k}"' for k in schema_keys) or "t.record_id"}
     """
-
     try:
-        rows = db._duck._fetchall(query, [variable_name])
+        rows = db._duck._fetchall(query)
     except Exception as exc:
+        logger.warning("get_variable_records(%s) query failed: %s",
+                       variable_name, exc)
         raise HTTPException(status_code=404, detail=str(exc))
 
-    col_names = schema_keys + ["branch_params"]
+    record_ids = [row[0] for row in rows]
+    from scidb.provenance_query import branch_params_batch
+    bp_by_record = branch_params_batch(db._duck, record_ids)
 
     records = []
     for row in rows:
-        row_dict = dict(zip(col_names, row))
-        raw_bp = row_dict.get("branch_params") or "{}"
-        bp = json.loads(raw_bp) if isinstance(raw_bp, str) else (raw_bp or {})
+        record_id = row[0]
+        schema_vals = dict(zip(schema_keys, row[1:]))
+        bp = bp_by_record.get(record_id, {})
         records.append({
-            **{k: str(row_dict[k]) if row_dict[k] is not None else None for k in schema_keys},
+            **{k: str(schema_vals[k]) if schema_vals[k] is not None else None
+               for k in schema_keys},
             "branch_params": bp,
             "variant_label": _format_variant_label(bp),
         })

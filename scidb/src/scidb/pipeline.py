@@ -896,6 +896,23 @@ class Pipeline:
             )
         return entries
 
+    def interface(self) -> dict:
+        """The pipeline's PORTS: variable types consumed but not produced
+        inside the composed graph (``inputs``) and types produced inside
+        (``outputs``). Pure graph logic — the GUI renders these as a
+        pipeline node's connection ports; MATLAB/CLI can use it too.
+        """
+        pairs = self._composed_steps()
+        produced: set[type] = set()
+        consumed: set[type] = set()
+        for _, spec in pairs:
+            produced |= spec.output_classes()
+            consumed |= spec.input_classes()
+        return {
+            "inputs": sorted(consumed - produced, key=lambda c: c.__name__),
+            "outputs": sorted(produced, key=lambda c: c.__name__),
+        }
+
     # -- endpoint verbs -----------------------------------------------------------
 
     def endpoints(self, include_used: bool = True) -> list[dict]:
