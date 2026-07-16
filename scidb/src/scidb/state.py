@@ -378,14 +378,17 @@ def check_node_state(
     # (the un-run combos leave no trace); it is red only when never run.
     # "stale" collapses into "missing": a changed input or edited function shifts
     # the EXPECTED id, so the old one drops out of the expected set and the new
-    # (absent) one shows as needs-run (see §9c / §10.4). The legacy ``call_id``
-    # filter is gone — invocation_id is config-specific, so call sites never blur.
+    # (absent) one shows as needs-run (see §9c / §10.4). ``call_id`` scopes the
+    # expected set to one call site's variant config (config_call_id matching)
+    # — invocation_id alone is config-specific, but the EXPECTED-set union
+    # across configs is not: without the scope, one call site's partial run
+    # reddens every other call site of the same function.
     from . import provenance_query
     from scidb.foreach_config import _compute_fn_hash
 
     fn_hash = _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
     expected = provenance_query.expected_invocations_for_function(
-        db, fn_name, fn_hash, inputs_fallback=inputs,
+        db, fn_name, fn_hash, inputs_fallback=inputs, call_id=call_id,
     )
     present = provenance_query.present_invocation_schema_pairs(
         db._duck, {inv_id for inv_id, _sid in expected},

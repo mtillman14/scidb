@@ -645,11 +645,14 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
     """Distinct config "shapes" ``fn_name`` has been invoked with (from the graph).
 
     Each config: ``{input_types: {param: type}, selectors: {param: selector},
-    constants: {param: value}, as_table: [...], distribute: bool}``. Deduped
-    fn-hash-independently — a config is the call's wiring (which input *types*,
-    which constants, which flags), the graph-derived equivalent of the old
-    ``list_pipeline_variants`` grouping. Used to predict expected invocation_ids
-    for input data that exists now but may not have been run yet.
+    constants: {param: value}, path_inputs: {param: to_key-json},
+    as_table: [...], distribute: bool, invocation_ids: {inv_id, ...}}``.
+    Deduped fn-hash-independently — a config is the call's wiring (which
+    input *types*, which constants, which flags), the graph-derived
+    equivalent of the old ``list_pipeline_variants`` grouping. Used to
+    predict expected invocation_ids for input data that exists now but may
+    not have been run yet, and (via :func:`config_call_id` +
+    ``invocation_ids``) to scope node-state checks to one call site.
     """
     inv_rows = duck._fetchall(
         "SELECT invocation_id, as_table, distribute FROM _invocation WHERE function_name = ?",
@@ -666,11 +669,13 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
         )
         selectors = {p: s for p, s in sel_rows}
         input_types = {i["param_name"]: i["variable_type"] for i in var_inputs}
+        path_inputs = invocation_path_inputs(duck, inv_id)
         at = sorted(as_table) if as_table else []
         key = (
             tuple(sorted(input_types.items())),
             tuple(sorted(selectors.items())),
             tuple(sorted((k, repr(v)) for k, v in constants.items())),
+            tuple(sorted(path_inputs.items())),
             tuple(at),
             bool(distribute),
         )
@@ -679,10 +684,36 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
                 "input_types": input_types,
                 "selectors": selectors,
                 "constants": constants,
+                "path_inputs": path_inputs,
                 "as_table": at,
                 "distribute": bool(distribute),
+                "invocation_ids": set(),
             }
+        configs[key]["invocation_ids"].add(inv_id)
     return list(configs.values())
+
+
+def config_call_id(fn_name: str, cfg: dict) -> str:
+    """The call-site id a variant config reconstructs to.
+
+    Rebuilds the same version-keys payload ``pipeline_variants`` uses
+    (``__fn``/``__inputs`` incl. PathInput to_key specs/``__constants``/
+    ``__distribute``/``__as_table``) so the result matches the forward
+    ``ForEachConfig.to_call_id`` for plain inputs — one recipe, both
+    directions.
+    """
+    from .foreach_config import call_id_from_version_keys
+
+    merged_inputs = {**cfg.get("input_types", {}), **cfg.get("path_inputs", {})}
+    vk: dict = {"__fn": fn_name}
+    if merged_inputs:
+        vk["__inputs"] = merged_inputs
+    vk["__constants"] = cfg.get("constants", {})
+    if cfg.get("distribute"):
+        vk["__distribute"] = True
+    if cfg.get("as_table"):
+        vk["__as_table"] = cfg["as_table"]
+    return call_id_from_version_keys(vk)
 
 
 def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
@@ -969,7 +1000,8 @@ def realized_inputless_schema_ids(duck, fn_name: str, const_rids: dict) -> set:
 
 
 def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
-                                      inputs_fallback: dict | None = None) -> set:
+                                      inputs_fallback: dict | None = None,
+                                      call_id: str | None = None) -> set:
     """Expected ``{(invocation_id, schema_id)}`` pairs for ``fn_name`` (§9c).
 
     Derived live from the graph (no persisted snapshot — see the removal of
@@ -983,6 +1015,12 @@ def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
       * a live prediction from ``inputs_fallback`` when provided — lets a
         never-run function enumerate its expected combos from its declared inputs.
 
+    ``call_id`` scopes the check to ONE call site: only variant configs whose
+    :func:`config_call_id` matches contribute (predictions AND realized
+    inputless pairs, the latter restricted to matching configs'
+    ``invocation_ids``), so a fn reused across call sites never blurs — one
+    site's partial run cannot redden another's fully-run node.
+
     Each pair's presence (an output of that invocation at that schema location)
     is the completeness signal — see :func:`present_invocation_schema_pairs`.
 
@@ -995,17 +1033,33 @@ def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
     duck = db._duck
     expected: set = set()
 
+    configs = function_variant_configs(duck, fn_name)
+    if call_id is not None:
+        matched = [c for c in configs
+                   if config_call_id(fn_name, c) == call_id]
+        logger.debug(
+            "expected_invocations(%s): call_id=%s matched %d/%d config(s)",
+            fn_name, call_id, len(matched), len(configs),
+        )
+        configs = matched
+        scoped_inv_ids = set().union(
+            *[c["invocation_ids"] for c in configs]) if configs else set()
+
     # (a) realized inputless invocations (PathInput-only loaders, etc.)
-    expected |= realized_inputless_invocations(duck, fn_name)
+    realized = realized_inputless_invocations(duck, fn_name)
+    if call_id is not None:
+        realized = {(i, s) for i, s in realized if i in scoped_inv_ids}
+    expected |= realized
 
     # (b) live prediction per known variant config × current input data
-    for cfg in function_variant_configs(duck, fn_name):
+    for cfg in configs:
         _predict_config_invocations(duck, fn_hash, cfg, expected)
 
-    # (c) live prediction from the declared inputs (never-run fallback)
+    # (c) live prediction from the declared inputs (never-run fallback) —
+    # under call_id scoping, only when the declared config IS that call site.
     if inputs_fallback:
-        _predict_config_invocations(
-            duck, fn_hash, config_from_inputs(inputs_fallback), expected,
-        )
+        fallback_cfg = config_from_inputs(inputs_fallback)
+        if call_id is None or config_call_id(fn_name, fallback_cfg) == call_id:
+            _predict_config_invocations(duck, fn_hash, fallback_cfg, expected)
 
     return expected

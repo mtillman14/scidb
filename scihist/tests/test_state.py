@@ -498,3 +498,58 @@ class TestCheckMultipleNodesState:
 
         assert "fn__nonexistent_func__abc123" in result
         assert result["fn__nonexistent_func__abc123"]["state"] == "red"
+
+
+# ---------------------------------------------------------------------------
+# Per-call-site scoping (call_id)
+# ---------------------------------------------------------------------------
+
+@scistack
+def scale_data(raw, factor):
+    return np.asarray(raw, dtype=float) * float(factor)
+
+
+class TestCallSiteScoping:
+    """call_id restricts the expected-invocation set to ONE call site's
+    variant config: a second call site's partial run must not redden the
+    first site's fully-run node (regression: the invocation-membership
+    rewrite dropped the call_id filter, unioning expected sets across
+    configs — the GUI's per-call-site display broke)."""
+
+    def _call_id(self, constants):
+        from scidb.foreach_config import ForEachConfig
+        return ForEachConfig(
+            scale_data, {"raw": RawState, "factor": constants}
+        ).to_call_id()
+
+    def test_full_call_site_stays_green_beside_partial_sibling(self, db):
+        _seed_raw(db)
+        # Call site A (factor=2): fully run.
+        for_each(scale_data, inputs={"raw": RawState, "factor": 2},
+                 outputs=[ProcessedState], subject=[1, 2], trial=["A", "B"])
+        # Call site B (factor=5): subject=1 only (partial).
+        for_each(scale_data, inputs={"raw": RawState, "factor": 5},
+                 outputs=[ProcessedState], subject=[1], trial=["A", "B"])
+
+        result_a = check_node_state(scale_data, [ProcessedState], db=db,
+                                    call_id=self._call_id(2))
+        result_b = check_node_state(scale_data, [ProcessedState], db=db,
+                                    call_id=self._call_id(5))
+        result_union = check_node_state(scale_data, [ProcessedState], db=db)
+
+        assert result_a["state"] == "green", "fully-run call site must stay green"
+        assert result_a["counts"]["missing"] == 0
+        assert result_b["state"] == "red", "partial call site must be red"
+        assert result_b["counts"]["missing"] == 2
+        # No call_id = the union across call sites (pessimistic).
+        assert result_union["state"] == "red"
+
+    def test_unknown_call_id_reads_red(self, db):
+        _seed_raw(db)
+        for_each(scale_data, inputs={"raw": RawState, "factor": 2},
+                 outputs=[ProcessedState], subject=[1, 2], trial=["A", "B"])
+
+        result = check_node_state(scale_data, [ProcessedState], db=db,
+                                  call_id="0000000000000000")
+
+        assert result["state"] == "red"  # no matching config -> no expected work
