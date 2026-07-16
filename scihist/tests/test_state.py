@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, for_each as scidb_for_each, pipeline
+from scidb import BaseVariable, for_each as scidb_for_each, scistack
 from scihist import for_each
 from scihist.state import check_combo_state, check_node_state
 
@@ -26,11 +26,11 @@ class SecondaryState(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@pipeline
+@scistack
 def process_data(raw):
     return np.asarray(raw, dtype=float) * 2.0
 
-@pipeline
+@scistack
 def second_step(processed):
     return np.asarray(processed, dtype=float) + 1.0
 
@@ -97,7 +97,7 @@ class TestCheckComboState:
         _seed_raw(db)
         _run_all(db)
 
-        @pipeline
+        @scistack
         def process_data_v2(raw):  # different bytecode → different hash
             return np.asarray(raw, dtype=float) * 3.0
 
@@ -365,7 +365,7 @@ def test_variable_input_classification(tmp_path):
     rid_input = RawEMG.save(sig, subject=1, session="A")
 
     # Process with pipeline function
-    @pipeline
+    @scistack
     def bandpass(signal, low_hz):
         return signal
 

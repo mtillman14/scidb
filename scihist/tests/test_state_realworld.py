@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from scidb import BaseVariable, pipeline
+from scidb import BaseVariable, scistack
 from scifor import PathInput
 from scihist import for_each
 from scihist.state import check_node_state
@@ -51,26 +51,26 @@ class RwPeakForce(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@pipeline
+@scistack
 def load_time(filepath):
     """Python equivalent of load_csv.m — returns time column."""
     df = pd.read_csv(filepath)
     return df["time"].values
 
 
-@pipeline
+@scistack
 def load_force_left(filepath):
     df = pd.read_csv(filepath)
     return df["force_left"].values
 
 
-@pipeline
+@scistack
 def load_force_right(filepath):
     df = pd.read_csv(filepath)
     return df["force_right"].values
 
 
-@pipeline
+@scistack
 def compute_peak(force_left, force_right):
     """Downstream function: peak combined force."""
     return float(np.max(np.abs(np.asarray(force_left) + np.asarray(force_right))))
@@ -214,7 +214,7 @@ class TestMultiOutputNodeState:
     """check_node_state with separate functions for each of load_csv.m's 3 outputs.
 
     load_csv.m returns [time, force_left, force_right].  In Python we model
-    this as three separate @pipeline functions, one per output.  The state
+    this as three separate @scistack functions, one per output.  The state
     of each output type is independent. These are PathInput loaders, so a
     partial run is invisible to node state (stays green); only a never-run
     loader is red.

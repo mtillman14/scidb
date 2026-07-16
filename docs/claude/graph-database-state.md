@@ -148,7 +148,7 @@ or "has variable inputs" checks.
 - Writes data + `_record_metadata` + `_record` entity. If the save carries
   non-schema kwargs, `record_direct_save` adds the synthetic `__save__` invocation.
 
-### generates_file (`@pipeline(generates_file=True)`)
+### generates_file (`@scistack(generates_file=True)`)
 - Side-effect functions (write a file, return nothing) save **lineage-only**: a
   `generated:{invocation_id}` record (no data row), `_record_metadata` + `_record`
   entity + graph edges via `record_run`. Metadata-injection passes combo schema
@@ -387,7 +387,7 @@ expanded its scope — see above). `select=` kwarg (optional part of #4A) not ad
   its own `save_variable` LineageFcnResult handling — needs its own migration
   (the network-layer analogue of the Cluster-1 removal).
 - **scistack-gui**:
-  - a test fixture (`tests/test_project_api.py`) uses `@lineage_fcn` → `@pipeline`.
+  - a test fixture (`tests/test_project_api.py`) uses `@lineage_fcn` → `@scistack`.
   - its grey-based DAG run-state model (`domain/run_state.py`, `api/pipeline.py`,
     frontend `FunctionNode.tsx`/`VariableNode.tsx`) sits on top of the now-**binary**
     scidb node-state. Decide: keep grey purely in the GUI layer (DAG propagation /
@@ -528,5 +528,5 @@ case. `where_clause` survives only as display/audit.
   variant queries.
 - `scidb/foreach.py` — for_each orchestration, `_save_results`, `_build_skip_hook`.
 - `scidb/state.py` — node-state (binary) + `check_combo_state`.
-- `scidb/pipeline.py` — the `@pipeline` marker (replaces `@lineage_fcn`).
+- `scidb/pipeline.py` — the `@scistack` marker (formerly `@pipeline`, replaces `@lineage_fcn`).
 - `scilineage/` — reduced to `hashing.py` (`compute_function_hash`, `canonical_hash`).

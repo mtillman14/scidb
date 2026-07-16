@@ -188,13 +188,13 @@ class TestCli:
     def test_exclusion_flips_pathinput_state(self, tmp_path, capsys):
         """Cross-check with Phase 3: excluding an un-imported combo removes
         it from the loader's should-run set → red flips back to green."""
-        from scidb import pipeline
+        from scidb import scistack
         from scifor import PathInput
 
         class P5Loaded(BaseVariable):
             schema_version = 1
 
-        @pipeline
+        @scistack
         def import5(filepath):
             with open(filepath) as fh:
                 return float(fh.read().strip())

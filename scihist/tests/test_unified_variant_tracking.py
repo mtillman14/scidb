@@ -7,7 +7,7 @@ matching scidb.for_each structure, eliminating the dual variant tracking system.
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, Fixed, pipeline
+from scidb import BaseVariable, Fixed, scistack
 from scihist import for_each as scihist_for_each
 import scidb
 
@@ -58,7 +58,7 @@ class TestVersionKeysCompleteness:
 
     def test_scihist_has_all_version_keys(self, db):
         """scihist outputs record function + inputs + constants in the graph."""
-        @pipeline
+        @scistack
         def process(x, threshold):
             return x * threshold
 
@@ -90,7 +90,7 @@ class TestVersionKeysCompleteness:
 
     def test_scihist_has_populated_branch_params(self, db):
         """scihist outputs should have non-empty branch_params."""
-        @pipeline
+        @scistack
         def scale(x, factor):
             return x * factor
 
@@ -118,7 +118,7 @@ class TestVersionKeysCompleteness:
 
     def test_multiple_constants_in_version_keys(self, db):
         """All constants should be recorded on the producing invocation."""
-        @pipeline
+        @scistack
         def compute(x, alpha, beta, gamma):
             return x * alpha + beta * gamma
 
@@ -145,11 +145,11 @@ class TestBranchParamsAccumulation:
 
     def test_branch_params_accumulate_across_pipeline(self, db):
         """Downstream branch_params should include upstream constants."""
-        @pipeline
+        @scistack
         def step1(x, param1):
             return x + param1
 
-        @pipeline
+        @scistack
         def step2(y, param2):
             return y * param2
 
@@ -183,15 +183,15 @@ class TestBranchParamsAccumulation:
 
     def test_branch_params_multiple_inputs(self, db):
         """branch_params should merge from all upstream inputs."""
-        @pipeline
+        @scistack
         def process_a(x, alpha):
             return x * alpha
 
-        @pipeline
+        @scistack
         def process_b(x, beta):
             return x + beta
 
-        @pipeline
+        @scistack
         def combine(a, b, gamma):
             return a + b + gamma
 
@@ -240,7 +240,7 @@ class TestFixedInputTracking:
 
     def test_fixed_input_in_lineage(self, db):
         """Fixed inputs should appear in _lineage.inputs as variable entries (not constants)."""
-        @pipeline
+        @scistack
         def process(ref, value):
             return ref + value
 
@@ -293,7 +293,7 @@ class TestFixedInputTracking:
         """Changing a Fixed input should cause skip_computed to re-run."""
         call_count = 0
 
-        @pipeline
+        @scistack
         def use_fixed(ref, multiplier):
             nonlocal call_count
             call_count += 1
@@ -342,7 +342,7 @@ class TestVariantDiscovery:
 
     def test_multiple_constant_variants(self, db):
         """Different constant values should create distinct variants."""
-        @pipeline
+        @scistack
         def scale(x, factor):
             return x * factor
 
@@ -375,7 +375,7 @@ class TestVariantDiscovery:
 
     def test_variant_query_consistency(self, db):
         """Variants are queryable via the bipartite graph (constant input edges)."""
-        @pipeline
+        @scistack
         def compute(x, param):
             return x + param
 
@@ -418,7 +418,7 @@ class TestComparisonWithScidb:
             return x * threshold
 
         # Lineage function for scihist
-        @pipeline
+        @scistack
         def lineage_process(x, threshold):
             return x * threshold
 
@@ -465,11 +465,11 @@ class TestComparisonWithScidb:
         def plain_step2(y, p2):
             return y * p2
 
-        @pipeline
+        @scistack
         def lineage_step1(x, p1):
             return x + p1
 
-        @pipeline
+        @scistack
         def lineage_step2(y, p2):
             return y * p2
 
@@ -504,7 +504,7 @@ class TestMultipleOutputs:
 
     def test_multiple_outputs_all_have_metadata(self, db):
         """All outputs should have complete metadata."""
-        @pipeline
+        @scistack
         def split_process(x, factor):
             return x * factor, x + factor
 
@@ -529,7 +529,7 @@ class TestMultipleOutputs:
 
     def test_multiple_outputs_same_branch_params(self, db):
         """All outputs from same call should have identical branch_params."""
-        @pipeline
+        @scistack
         def dual_output(x, alpha, beta):
             return x * alpha, x + beta
 
@@ -559,7 +559,7 @@ class TestGeneratesFile:
         their function + constants captured in the bipartite graph."""
         from scidb import provenance_query
 
-        @pipeline(generates_file=True)
+        @scistack(generates_file=True)
         def export_data(x, filename):
             # Side-effect only, no return value
             pass
@@ -605,7 +605,7 @@ class TestEdgeCases:
 
     def test_no_constants(self, db):
         """Function with only variable inputs should have empty __constants."""
-        @pipeline
+        @scistack
         def identity(x):
             return x
 
@@ -625,7 +625,7 @@ class TestEdgeCases:
 
     def test_empty_branch_params_first_stage(self, db):
         """First pipeline stage should have only current function's params."""
-        @pipeline
+        @scistack
         def first_stage(x, alpha):
             return x * alpha
 
@@ -648,7 +648,7 @@ class TestEdgeCases:
 
     def test_dry_run_no_save(self, db):
         """dry_run should not save any outputs."""
-        @pipeline
+        @scistack
         def compute(x, value):
             return x + value
 
@@ -677,7 +677,7 @@ class TestEdgeCases:
         """The where= filter string is recorded on the producing run for visual
         inspection only (no matching logic reads it — see §10 where= redesign)."""
 
-        @pipeline
+        @scistack
         def filter_process(x, threshold):
             return x * threshold
 
@@ -716,7 +716,7 @@ class TestSkipComputed:
         """skip_computed should work based on __constants in version_keys."""
         call_count = 0
 
-        @pipeline
+        @scistack
         def expensive(x, param):
             nonlocal call_count
             call_count += 1
@@ -762,7 +762,7 @@ class TestSkipComputed:
         RawData.save(np.array([5]), subject=1, trial=1)
 
         # First version of function
-        @pipeline
+        @scistack
         def version1(x, factor):
             return x * factor  # Simple multiply
 
@@ -778,7 +778,7 @@ class TestSkipComputed:
         con = db._duck.con
 
         # Second version with different implementation
-        @pipeline
+        @scistack
         def version1(x, factor):
             return x * factor + 1  # Changed implementation
 

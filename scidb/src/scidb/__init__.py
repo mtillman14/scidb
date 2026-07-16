@@ -53,7 +53,7 @@ from .column_selection import ColumnSelection
 from .colname import ColName
 from .each_of import EachOf
 from .foreach_config import ForEachConfig
-from .pipeline import pipeline
+from .pipeline import scistack
 
 # From scifor (Layer 1)
 from scifor import Col, set_schema, get_schema, PathInput, PathOutput
@@ -102,7 +102,7 @@ __all__ = [
     "Log",
     # Batch execution
     "for_each",
-    "pipeline",
+    "scistack",
     "Fixed",
     "Variant",
     "AcrossVariants",

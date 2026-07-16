@@ -4,7 +4,7 @@
 
 It previously also handled ``scilineage.LineageFcnResult`` for the manual
 compute-and-save pattern (``r = fn(x); save(Out, r)``). That path was removed
-with the ``@lineage_fcn`` → ``@pipeline`` migration: provenance is now captured
+with the ``@lineage_fcn`` → ``@scistack`` migration: provenance is now captured
 by ``for_each`` directly into the bipartite graph, so there is no result wrapper
 to unpack here.
 """

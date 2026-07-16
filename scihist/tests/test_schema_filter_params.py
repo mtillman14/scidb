@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import scifor as _scifor
 
-from scidb import BaseVariable, configure_database, pipeline
+from scidb import BaseVariable, configure_database, scistack
 from scihist import for_each
 
 
@@ -36,7 +36,7 @@ class ProcessedData(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@pipeline
+@scistack
 def process(raw_data, threshold):
     return raw_data * threshold
 

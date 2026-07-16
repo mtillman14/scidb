@@ -1,4 +1,4 @@
-"""Tests for @pipeline(generates_file=True) — side-effect function tracking via for_each.
+"""Tests for @scistack(generates_file=True) — side-effect function tracking via for_each.
 
 generates_file functions produce a file as a side effect (a plot, report, etc.)
 rather than returning data to store. for_each records them in the provenance graph
@@ -6,13 +6,13 @@ rather than returning data to store. for_each records them in the provenance gra
 the function can build its output path.
 
 (The former manual ``r = fn(x); save(Figure, r)`` pattern and the @lineage_fcn
-rerun cache were removed with the @lineage_fcn → @pipeline migration; generates_file
+rerun cache were removed with the @lineage_fcn → @scistack migration; generates_file
 now lives only on the for_each path. See .claude/remove-lineage-fcn.md.)
 """
 
 import numpy as np
 
-from scidb import BaseVariable, pipeline
+from scidb import BaseVariable, scistack
 from scihist import for_each
 
 
@@ -39,7 +39,7 @@ class TestForEachIntegration:
 
         received_kwargs = {}
 
-        @pipeline(generates_file=True)
+        @scistack(generates_file=True)
         def make_plot(data, subject, session):
             nonlocal received_kwargs
             received_kwargs = {"subject": subject, "session": session}
@@ -62,7 +62,7 @@ class TestForEachIntegration:
 
         call_count = 0
 
-        @pipeline(generates_file=True)
+        @scistack(generates_file=True)
         def make_plot(data, subject, session):
             nonlocal call_count
             call_count += 1
@@ -92,7 +92,7 @@ class TestForEachIntegration:
         """outputs=[Figure] should work with generates_file function."""
         RawSignal.save(np.array([1, 2, 3]), subject=1, session="A")
 
-        @pipeline(generates_file=True)
+        @scistack(generates_file=True)
         def make_plot(data, subject, session):
             return None
 
@@ -111,7 +111,7 @@ class TestForEachIntegration:
 
         call_args = {}
 
-        @pipeline
+        @scistack
         def process(data):
             nonlocal call_args
             call_args = {"called": True}

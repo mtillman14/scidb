@@ -6,7 +6,7 @@ Walks a project's ``src/{project}/`` tree and all packages listed in
 collects the pipeline-relevant exports of each module:
 
 * :class:`BaseVariable` subclasses (via ``issubclass`` check)
-* ``@pipeline``-tagged plain functions (pipeline steps)
+* ``@scistack``-tagged plain functions (pipeline steps)
 * :class:`Constant` instances (wrapped via :func:`constant`)
 
 The scan imports modules for real — it never parses source text — so the
@@ -50,7 +50,7 @@ else:  # pragma: no cover
         import tomli as tomllib  # type: ignore[no-redef]
 
 from .constant import Constant
-from .pipeline import is_pipeline_function
+from .pipeline import is_scistack_function
 from .variable import BaseVariable
 
 logger = logging.getLogger(__name__)
@@ -130,7 +130,7 @@ def discover_module(module: ModuleType) -> ModuleExports:
     """
     Scan a single already-imported module for scistack-relevant exports.
 
-    A BaseVariable subclass or ``@pipeline`` function is only attributed to
+    A BaseVariable subclass or ``@scistack`` function is only attributed to
     ``module`` if it was *defined* there — re-exports (e.g. ``from .other import
     X``) are filtered out by comparing ``__module__``. This prevents the same
     object from being listed twice in the project panel.
@@ -153,8 +153,8 @@ def discover_module(module: ModuleType) -> ModuleExports:
                 exports.variables.append(obj)
             continue
 
-        # --- @pipeline-tagged plain functions ---
-        if is_pipeline_function(obj):
+        # --- @scistack-tagged plain functions ---
+        if is_scistack_function(obj):
             if getattr(obj, "__module__", None) == module_name:
                 exports.functions.append(obj)
             continue

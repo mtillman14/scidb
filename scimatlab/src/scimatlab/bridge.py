@@ -7,7 +7,7 @@ provides :class:`MatlabLineageFcn` — a lightweight MATLAB function handle for
 
 (The former per-call lineage/cache machinery — ``MatlabLineageFcnInvocation``,
 ``make_lineage_fcn_result``, the rerun cache — was removed with the
-``@lineage_fcn`` → ``@pipeline`` migration. Real MATLAB ``for_each`` always went
+``@lineage_fcn`` → ``@scistack`` migration. Real MATLAB ``for_each`` always went
 through the batch save path, which is unaffected.)
 """
 

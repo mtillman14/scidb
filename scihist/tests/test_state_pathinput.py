@@ -18,7 +18,7 @@ no trace to count as missing.
 import numpy as np
 import pytest
 
-from scidb import BaseVariable, pipeline, exclude_schema
+from scidb import BaseVariable, scistack, exclude_schema
 from scihist import for_each
 from scihist.state import check_node_state, check_pathinput_node_state
 
@@ -35,7 +35,7 @@ class PathInputOutput(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@pipeline
+@scistack
 def import_from_file(filepath):
     """PathInput-only function: reads a single number from a file."""
     with open(filepath) as fh:

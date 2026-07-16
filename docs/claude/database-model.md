@@ -160,7 +160,7 @@ invocation (each kwarg → constant + edge).
    pathinput entities/edges, the `_invocation` (id via `invocation_id_for_meta`),
    input/output edges, and a fresh `_run` (+ `_run_invocation`).
 
-### generates_file (`@pipeline(generates_file=True)`)
+### generates_file (`@scistack(generates_file=True)`)
 Side-effect functions (write a file, return nothing) save **lineage-only**: a
 `generated:{invocation_id}` record (no data row) + `_record_save` + `_record`
 entity + graph edges via `record_run`. `invocation_id_for_meta` is the single id
@@ -328,7 +328,7 @@ GUI-layer decision.
 - `scidb/foreach.py` — for_each orchestration, `_save_results`,
   `_build_skip_hook`.
 - `scidb/state.py` — node-state (binary) + `check_combo_state`.
-- `scidb/pipeline.py` — the `@pipeline` marker (replaces `@lineage_fcn`).
+- `scidb/pipeline.py` — the `@scistack` marker (formerly `@pipeline`, replaces `@lineage_fcn`).
 - `scilineage/` — reduced to `hashing.py` (`compute_function_hash`,
   `canonical_hash`).
 
@@ -412,7 +412,7 @@ final shapes. Each needs its own runtime to verify.
 - **scistack-gui**:
   - `scistack-gui/.../variables.py` still references `_record_metadata` (parked
     from #5); a test fixture (`tests/test_project_api.py`) uses `@lineage_fcn` →
-    `@pipeline`.
+    `@scistack`.
   - Its **grey-based DAG run-state model** (`domain/run_state.py`,
     `api/pipeline.py`, frontend `FunctionNode.tsx`/`VariableNode.tsx`) sits on top
     of the now-**binary** scidb node-state. Decide: keep grey purely in the GUI

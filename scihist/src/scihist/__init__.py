@@ -37,8 +37,8 @@ from scidb import Fixed, Merge, ColumnSelection, ForEachConfig
 # Re-export scifor helpers
 from scifor import Col, set_schema, get_schema, PathInput
 
-# Re-export the pipeline-step marker (replaces the removed @lineage_fcn).
-from scidb import pipeline
+# Re-export the step-function marker (replaces the removed @lineage_fcn).
+from scidb import scistack
 
 __version__ = "0.1.0"
 
@@ -63,6 +63,6 @@ __all__ = [
     "Col",
     "set_schema",
     "get_schema",
-    # Pipeline marker
-    "pipeline",
+    # Step-function marker
+    "scistack",
 ]

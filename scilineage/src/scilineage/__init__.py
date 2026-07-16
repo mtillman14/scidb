@@ -2,7 +2,7 @@
 
 What remains of scilineage after the lineage-wrapper system (``@lineage_fcn`` /
 ``LineageFcnResult`` / input classification / rerun cache) was removed in favor
-of scidb's ``@pipeline`` + bipartite provenance graph: the bytecode/AST-based
+of scidb's ``@scistack`` + bipartite provenance graph: the bytecode/AST-based
 function hashing that scidb uses for function identity in the graph.
 
     from scilineage import compute_function_hash, canonical_hash

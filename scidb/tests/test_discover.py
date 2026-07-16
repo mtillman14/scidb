@@ -114,9 +114,9 @@ class TestDiscoverModule:
             package_name="fix_fns",
             files={
                 "functions.py": """
-                    from scidb import pipeline
+                    from scidb import scistack
 
-                    @pipeline
+                    @scistack
                     def preprocess(x):
                         return x + 1
                 """,
@@ -178,9 +178,9 @@ class TestDiscoverModule:
             package_name="fix_fn_reexport",
             files={
                 "functions.py": """
-                    from scidb import pipeline
+                    from scidb import scistack
 
-                    @pipeline
+                    @scistack
                     def preprocess(x):
                         return x + 1
                 """,
@@ -229,13 +229,13 @@ class TestScanProject:
                         schema_version = 1
                 """,
                 "functions.py": """
-                    from scidb import pipeline
+                    from scidb import scistack
 
-                    @pipeline
+                    @scistack
                     def preprocess(x):
                         return x
 
-                    @pipeline
+                    @scistack
                     def analyze(x):
                         return x
                 """,
@@ -745,12 +745,12 @@ class TestMixedModuleExports:
             files={
                 "everything.py": """
                     from scidb import BaseVariable, constant
-                    from scidb import pipeline
+                    from scidb import scistack
 
                     class MixedVar(BaseVariable):
                         schema_version = 1
 
-                    @pipeline
+                    @scistack
                     def mixed_fn(x):
                         return x
 

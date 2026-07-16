@@ -397,7 +397,7 @@ def for_each(
     # No function wrapping: plain functions flow straight through to scifor, which
     # spreads tuple returns natively. Provenance is built from input bindings at
     # save time (the bipartite graph); Step 16 reconstructs BaseVariable inputs.
-    # ``generates_file`` is read from the @pipeline marker and drives combo-
+    # ``generates_file`` is read from the @scistack marker and drives combo-
     # metadata injection + a graph-native lineage-only save (see _save_results).
     from .pipeline import GENERATES_FILE_ATTR
     _is_generates_file = bool(getattr(fn, GENERATES_FILE_ATTR, None)) or bool(

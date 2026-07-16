@@ -7,7 +7,7 @@ by covering user workflows that previously had no explicit test:
    through the full lineage graph.
 2. Fork / Join DAG shapes.
 3. Mixed input types (PathInput + Variable + Constant in a single function).
-4. True multi-output functions (single @pipeline returning a tuple).
+4. True multi-output functions (single @scistack returning a tuple).
 
 Design decisions codified here:
 
@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from scidb import BaseVariable, for_each as scidb_for_each, pipeline
+from scidb import BaseVariable, for_each as scidb_for_each, scistack
 from scifor import PathInput
 from scihist import for_each
 from scihist.state import check_node_state
@@ -93,31 +93,31 @@ class WfVariantOut(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
-@pipeline
+@scistack
 def step1(raw):
     return np.asarray(raw, dtype=float) * 2.0
 
-@pipeline
+@scistack
 def step2(s1):
     return np.asarray(s1, dtype=float) + 1.0
 
-@pipeline
+@scistack
 def step3(s2):
     return np.asarray(s2, dtype=float) - 0.5
 
-@pipeline
+@scistack
 def fork_left(raw):
     return np.asarray(raw, dtype=float) * 10.0
 
-@pipeline
+@scistack
 def fork_right(raw):
     return np.asarray(raw, dtype=float) * 100.0
 
-@pipeline
+@scistack
 def join_sides(left, right):
     return float(np.sum(np.asarray(left) + np.asarray(right)))
 
-@pipeline
+@scistack
 def mixed_inputs(filepath, baseline, scale):
     """PathInput + Variable + Constant, all in one function."""
     df = pd.read_csv(filepath)
@@ -131,11 +131,11 @@ def scale_raw(raw, scale):
     return np.asarray(raw, dtype=float) * float(scale)
 
 
-@pipeline(unpack_output=True)
+@scistack
 def multi_output(raw):
     """Single function, three outputs — the canonical load_csv.m shape.
     Returns a tuple; scifor spreads each element to the corresponding output
-    class.
+    class (by output count — the marker carries no unpack option).
     """
     arr = np.asarray(raw, dtype=float)
     return arr * 1.0, arr * 2.0, arr * 3.0
@@ -206,7 +206,7 @@ class TestMultiStepPropagation:
         """
         self._run_full_chain(db)
 
-        @pipeline
+        @scistack
         def step2_v2(s1):
             return np.asarray(s1, dtype=float) + 42.0
         step2_v2.__name__ = "step2"
@@ -385,11 +385,11 @@ class TestMixedInputTypes:
 
 
 # ---------------------------------------------------------------------------
-# 4. True multi-output (single @pipeline → tuple)
+# 4. True multi-output (single @scistack → tuple)
 # ---------------------------------------------------------------------------
 
 class TestMultiOutputSingleFunction:
-    """One @pipeline(unpack_output=True) returns a tuple; for_each saves
+    """One @scistack function returns a tuple; for_each saves
     each tuple element to a separate output type. check_node_state(fn, [A,B,C])
     aggregates across all three output classes.
     """

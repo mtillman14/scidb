@@ -29,7 +29,7 @@ from scidb import (
     NotFoundError,
     configure_database,
     for_each,
-    pipeline,
+    scistack,
 )
 from scidb.inspect import Inspector, render
 from scidb.inspect.cli import _coerce_non_schema, main
@@ -69,7 +69,7 @@ def gain3(signal, k):
     return signal * k
 
 
-@pipeline
+@scistack
 def import3(filepath):
     with open(filepath) as fh:
         return float(fh.read().strip())
