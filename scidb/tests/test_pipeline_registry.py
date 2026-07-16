@@ -561,3 +561,291 @@ class TestComposition:
         analysis.run_until(mean_of)
 
         assert (halve.calls, mean_of.calls) == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Use-edge bindings (stage 3)
+# ---------------------------------------------------------------------------
+
+
+def scale_by(signal, factor):
+    scale_by.calls.append(factor)
+    return np.asarray(signal, dtype=float).ravel() * float(factor)
+
+
+@pytest.fixture(autouse=True)
+def _reset_scale_by():
+    scale_by.calls = []
+
+
+class TestBinding:
+    """PipelineBinding: adapt a used pipeline (key_map / params / iterate)
+    without touching its source. Non-mutating; different parents can bind
+    the same pipeline differently."""
+
+    def _scaling(self, db=None):
+        """A pipeline with a constant input (factor=2) — the params surface."""
+        scaling = Pipeline("scaling", db=db)
+        for_each(scale_by, {"signal": RawSignal, "factor": 2}, [Filtered],
+                 subject=SUBJECTS, trial=TRIALS, pipeline=scaling)
+        return scaling
+
+    # -- params ---------------------------------------------------------------
+
+    def test_params_override_reaches_the_function(self, db):
+        _seed(db)
+        scaling = self._scaling()
+        analysis = db.pipeline("analysis", uses=[scaling.bind(params={"factor": 3})])
+        for_each(mean_of, {"filtered": Filtered}, [Speed],
+                 subject=SUBJECTS, trial=TRIALS, db=db)
+
+        analysis.run_until(mean_of)
+
+        assert scale_by.calls == [3, 3, 3, 3]  # bound value, not source's 2
+
+    def test_original_pipeline_unaffected_by_binding(self, db):
+        _seed(db)
+        scaling = self._scaling(db=db)
+        db.pipeline("analysis", uses=[scaling.bind(params={"factor": 3})])
+        scaling.run_all()  # the UNBOUND pipeline still runs factor=2
+
+        assert scale_by.calls == [2, 2, 2, 2]
+
+    def test_two_parents_two_params_are_two_variants(self, db):
+        _seed(db)
+        scaling = self._scaling()
+
+        a = db.pipeline("a", uses=[scaling.bind(params={"factor": 3})])
+        a.deactivate()
+        b = db.pipeline("b", uses=[scaling.bind(params={"factor": 5})])
+        b.deactivate()
+
+        a.run_until(scale_by)
+        b.run_until(scale_by)
+
+        assert sorted(scale_by.calls) == [3, 3, 3, 3, 5, 5, 5, 5]
+        # Both variants exist as distinct records (constants are version keys).
+        v3 = Filtered.load(subject="1", trial="1", factor=3)
+        v5 = Filtered.load(subject="1", trial="1", factor=5)
+        d3 = v3.data if hasattr(v3, "data") else v3
+        d5 = v5.data if hasattr(v5, "data") else v5
+        assert float(np.asarray(d3).ravel()[0]) == pytest.approx(6.0)
+        assert float(np.asarray(d5).ravel()[0]) == pytest.approx(10.0)
+
+    def test_identical_bindings_dedupe_in_diamond(self, db):
+        scaling = self._scaling()
+        left = Pipeline("left", db=db, uses=[scaling.bind(params={"factor": 3})])
+        right = Pipeline("right", db=db, uses=[scaling.bind(params={"factor": 3})])
+        top = Pipeline("top", db=db, uses=[left, right])
+
+        pairs = top._composed_steps()
+        scaling_specs = [s for (o, s) in pairs if o is scaling]
+        assert len(scaling_specs) == 1  # equal signatures -> one computation
+
+        differing = Pipeline("top2", db=db, uses=[
+            Pipeline("l2", db=db, uses=[scaling.bind(params={"factor": 3})]),
+            Pipeline("r2", db=db, uses=[scaling.bind(params={"factor": 5})]),
+        ])
+        pairs2 = differing._composed_steps()
+        assert len([s for (o, s) in pairs2 if o is scaling]) == 2  # two variants
+
+    def test_bind_time_param_validation(self, db):
+        scaling = self._scaling()
+        with pytest.raises(ValueError, match="no constant input matching"):
+            scaling.bind(params={"nonexistent": 1})
+
+        # Ambiguity: two functions with the same constant name.
+        def scale_other(signal, factor):
+            return signal
+
+        both = Pipeline("both", db=db)
+        for_each(scale_by, {"signal": RawSignal, "factor": 2}, [Filtered],
+                 subject=SUBJECTS, trial=TRIALS, pipeline=both)
+        for_each(scale_other, {"signal": RawSignal, "factor": 4}, [Speed],
+                 subject=SUBJECTS, trial=TRIALS, pipeline=both)
+        from scidb import AmbiguousParamError
+        with pytest.raises(AmbiguousParamError, match="disambiguate"):
+            both.bind(params={"factor": 9})
+        # Namespaced targeting resolves it.
+        binding = both.bind(params={"scale_by.factor": 9})
+        assert binding.params == {"scale_by.factor": 9}
+
+    # -- key_map ----------------------------------------------------------------
+
+    def test_key_map_renames_iteration_keys_end_to_end(self, db):
+        """A pipeline written for [session, trial] runs in this project's
+        [subject, trial] schema via key_map, saving under PROJECT keys."""
+        _seed(db)
+        foreign = Pipeline("foreign")
+        for_each(halve, {"signal": RawSignal}, [Filtered],
+                 session=SUBJECTS, trial=TRIALS,  # foreign vocabulary
+                 pipeline=foreign)
+
+        analysis = db.pipeline(
+            "analysis", uses=[foreign.bind(key_map={"session": "subject"})])
+        for_each(mean_of, {"filtered": Filtered}, [Speed],
+                 subject=SUBJECTS, trial=TRIALS, db=db)
+
+        analysis.run_until(mean_of)
+
+        assert halve.calls == 4
+        assert Filtered.load(subject="1", trial="1") is not None
+
+    def test_key_map_rewrites_pathoutput_template(self, db):
+        foreign = Pipeline("foreign")
+        from scidb import PathOutput
+        for_each(halve,
+                 {"signal": RawSignal,
+                  "out": PathOutput("figs/{session}_{trial}.png")},
+                 [Filtered], session=SUBJECTS, trial=TRIALS,
+                 pipeline=foreign)
+
+        analysis = Pipeline(
+            "analysis", db=db,
+            uses=[foreign.bind(key_map={"session": "subject"})])
+        pairs = analysis._composed_steps()
+        (spec,) = [s for (o, s) in pairs if o is foreign]
+
+        assert str(spec.inputs["out"].template) == "figs/{subject}_{trial}.png"
+        assert list(spec.metadata_iterables) == ["subject", "trial"]
+        # Source spec untouched.
+        assert list(foreign.steps[0].metadata_iterables) == ["session", "trial"]
+
+    def test_key_map_rewrites_fixed_and_structured_where(self, db):
+        from scidb import Fixed
+        from scidb.filters import schema_key
+
+        foreign = Pipeline("foreign")
+        for_each(mean_of,
+                 {"filtered": Fixed(Filtered, session="1")},
+                 [Speed], session=SUBJECTS,
+                 where=schema_key("session") == "1",
+                 pipeline=foreign)
+
+        analysis = Pipeline(
+            "analysis", db=db,
+            uses=[foreign.bind(key_map={"session": "subject"})])
+        (spec,) = [s for (o, s) in analysis._composed_steps() if o is foreign]
+
+        assert spec.inputs["filtered"].fixed_metadata == {"subject": "1"}
+        assert spec.options["where"].key == "subject"
+
+    def test_key_map_raw_sql_where_warns_not_errors(self, db):
+        foreign = Pipeline("foreign")
+        for_each(mean_of, {"filtered": Filtered}, [Speed],
+                 session=SUBJECTS, where="session == '1'",
+                 pipeline=foreign)
+        analysis = Pipeline(
+            "analysis", db=db,
+            uses=[foreign.bind(key_map={"session": "subject"})])
+
+        (spec,) = [s for (o, s) in analysis._composed_steps() if o is foreign]
+        # Raw filter passes through unchanged (warned, not raised).
+        assert spec.options["where"] is not None
+
+    def test_iterate_override_and_transitive_binding(self, db):
+        """iterate= replaces hardcoded lists; bindings reach nested uses
+        with composed key_maps."""
+        _seed(db)
+        base = Pipeline("base")
+        for_each(halve, {"signal": RawSignal}, [Filtered],
+                 session=["9"], trial=TRIALS,  # wrong hardcoded list
+                 pipeline=base)
+        mid = Pipeline("mid", uses=[base])  # identity edge
+
+        analysis = db.pipeline("analysis", uses=[
+            mid.bind(key_map={"session": "subject"},
+                     iterate={"subject": SUBJECTS}),  # post-map key
+        ])
+        for_each(mean_of, {"filtered": Filtered}, [Speed],
+                 subject=SUBJECTS, trial=TRIALS, db=db)
+
+        analysis.run_until(mean_of)
+
+        assert halve.calls == 4  # real subjects, not session "9"
+        assert Filtered.load(subject="2", trial="2") is not None
+
+
+# ---------------------------------------------------------------------------
+# Endpoint verbs (stage 3)
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointVerbs:
+    def _with_plot(self, db, tmp_path):
+        matplotlib = pytest.importorskip("matplotlib")
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from scidb import PathOutput
+
+        class VerbFigure(BaseVariable):
+            schema_version = 1
+
+        def plot_filtered(filtered, filename):
+            fig, ax = plt.subplots()
+            ax.plot(np.asarray(filtered).ravel())
+            return fig
+
+        plots = tmp_path / "verb_figs"
+        plots.mkdir(exist_ok=True)
+        pipe = db.pipeline("report")
+        for_each(halve, {"signal": RawSignal}, [Filtered],
+                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(plot_filtered,
+                 {"filtered": Filtered,
+                  "filename": PathOutput(str(plots / "{subject}_{trial}.png"))},
+                 [VerbFigure], subject=SUBJECTS, trial=TRIALS, db=db)
+        return pipe, plots, VerbFigure
+
+    def test_endpoints_lists_only_endpoint_steps(self, db, tmp_path):
+        pipe, _, _ = self._with_plot(db, tmp_path)
+        eps = pipe.endpoints()
+        assert [(e["step"], e["kind"]) for e in eps] == [("plot_filtered", "plot")]
+
+    def test_plan_flags_endpoints(self, db, tmp_path):
+        _seed(db)
+        pipe, _, _ = self._with_plot(db, tmp_path)
+        flags = {e["step"]: e["endpoint"] for e in pipe.plan()}
+        assert flags == {"halve": False, "plot_filtered": True}
+
+    def test_show_draft_runs_and_returns_paths(self, db, tmp_path):
+        _seed(db)
+        pipe, plots, VerbFigure = self._with_plot(db, tmp_path)
+
+        paths = pipe.show("plot_filtered")
+
+        assert len(paths) == 4
+        for p in paths:
+            assert str(plots) in str(p)
+        assert (plots / "1_1.png").exists()   # rendered to look at
+        with pytest.raises(NOT_STORED):
+            VerbFigure.load(subject="1", trial="1")  # draft: no record
+        assert halve.calls == 4  # ancestry pulled
+
+    def test_show_rejects_processing_steps(self, db, tmp_path):
+        pipe, _, _ = self._with_plot(db, tmp_path)
+        with pytest.raises(ValueError, match="endpoints"):
+            pipe.show(halve)
+
+    def test_run_endpoints_finalized_records(self, db, tmp_path):
+        _seed(db)
+        pipe, plots, VerbFigure = self._with_plot(db, tmp_path)
+
+        pipe.run_endpoints(finalized=True)
+
+        assert VerbFigure.load(subject="1", trial="1") is not None
+        assert (plots / "2_2.png").exists()
+
+    def test_run_endpoints_scope_default_own_only(self, db, tmp_path):
+        """Endpoints inside a used pipeline are excluded by default,
+        included with include_used=True."""
+        _seed(db)
+        sub, plots, VerbFigure = self._with_plot(db, tmp_path)
+        sub.deactivate()
+        parent = db.pipeline("parent", uses=[sub])
+
+        assert parent.run_endpoints() == []          # own endpoints: none
+        assert not (plots / "1_1.png").exists()
+
+        parent.run_endpoints(include_used=True, finalized=True)
+        assert (plots / "1_1.png").exists()

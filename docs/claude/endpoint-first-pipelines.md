@@ -6,9 +6,14 @@ declaration-shape decision landed on **Option D′** (ambient current
 pipeline + `pipeline=` kwarg override); see
 `.claude/plan-pipeline-registry-stage1.md` for the as-built record and
 `scidb/pipeline.py` for the implementation (`Pipeline`, `StepSpec`, `Step`,
-`db.pipeline(name)`, `run_all`/`run_until`/`plan`). Composition (`uses=`),
-Option E self-registration, MATLAB parity, and the GUI surface remain
-future stages. Also landed with stage 1: the `@pipeline` step-function
+`db.pipeline(name)`, `run_all`/`run_until`/`plan`). **Stage 2** (composition,
+`uses=`) implemented + verified same day. **Stage 3** (use-edge bindings +
+endpoint verbs) implemented + verified same day — see
+`.claude/plan-pipeline-binding-endpoints-stage3.md` for the as-built
+record (`PipelineBinding`, `bind()`, `endpoints()`/`run_endpoints()`/
+`show()`, plan `endpoint` flag). MATLAB parity and the
+GUI surface remain future stages; Option E spec persistence is deliberately
+NOT planned (user decision 2026-07-16). Also landed with stage 1: the `@pipeline` step-function
 marker was renamed **`@scistack`** (no alias — beta) and its dead
 `unpack_output` option removed. This doc captures the design conversation
 that led here.
@@ -352,6 +357,82 @@ not copied; the graphs union. The genuinely new machinery is small:
 GUI payoff: composition gives the pipeline map its hierarchy — sub-pipelines
 render as collapsible boxes, and the "loading" box is reused across every
 analysis view that depends on it.
+
+## Cross-project reuse: bindings on the use edge (2026-07-16)
+
+A pipeline written against schema `[session, trial]` reused in a
+`[subject, trial]` project must be adapted **without touching its
+source**. Schema keys leak into a declaration in a bounded set of places:
+iteration kwargs, `PathOutput`/`PathInput` templates, `Fixed(...)` kwargs,
+`where=` filters, `schema_filter`/`schema_level` — and, only in
+aggregation mode, inside user functions (`df["session"]`; full-iteration
+functions receive bare data and never see key names).
+
+Decision: adaptation is a **binding on the use edge**, so one pipeline can
+be used under different vocabularies/parameters by different parents,
+non-mutating:
+
+```python
+analysis = db.pipeline("gait", uses=[
+    loading.bind(key_map={"session": "subject"},
+                 params={"low_hz": 30},
+                 iterate={"subject": SUBJECTS}),
+])
+```
+
+- `key_map` rewrites the declaration surface at composition time; records
+  save under the PROJECT's keys (identity follows the project schema).
+  Renaming delivered DataFrame columns into the pipeline's native
+  vocabulary (the aggregation-mode fn-internals case) is deferred until
+  that reuse case materializes.
+- `params` overrides constants in the used pipeline's specs — a different
+  computation identity by construction (constants are version keys), i.e.
+  the variant-scoping answer: two parents binding different params compute
+  two variants.
+- `iterate` overrides iteration values (the used pipeline's hardcoded
+  lists rarely match the new project's data).
+- Bindings apply transitively through the used pipeline's own `uses`
+  subtree; chained key_maps compose.
+
+Convention worth documenting for NEW pipelines: declare iteration
+structurally (`schema_level` position, empty-list resolution) rather than
+by key name — a portably-written pipeline needs no `key_map` at all.
+
+## Elevating endpoints: the thin surface (2026-07-16)
+
+Pull execution made every step target-addressable but not endpoints
+*privileged* — half-intentional: a plot being an ordinary step is what
+gives it lineage, skip_computed, variant identity, and stamping for free.
+The endpoint machinery (draft/finalized, PathOutput, stamps, report CLI)
+already covers their leaf semantics. What remains is a thin vocabulary on
+`Pipeline`, cheap because `_endpoint_policy` already detects endpoints:
+
+- `pipe.endpoints()` — the endpoint steps (the GUI's top-level cards).
+- `pipe.run_endpoints(finalized=...)` — "make all my figures and stats";
+  each endpoint pulls its own ancestry.
+- `pipe.show(plot_gait)` — draft-run one endpoint + ancestors, return the
+  rendered artifact paths (the everyday "let me look at it" verb).
+- `plan()` entries flagged `endpoint: True` so the GUI can invert the
+  display: endpoints as entry points, processing as collapsible ancestry.
+
+The real elevation happens in GUI/report presentation on top of these —
+correct layer split (CLAUDE.md NOTE 3).
+
+## Database interaction in pull mode (2026-07-16, clarification)
+
+- **Registration: zero.** The for_each hook returns before any DB work;
+  `db.pipeline(name)` only stores the reference.
+- **Graph inference / topo: zero.** Edges come from variable classes in
+  memory — why never-run steps have a graph at all.
+- **`plan()`: read-only.** `check_node_state` per step: output records by
+  fn/call_id, lineage staleness, and — for never-run steps — expected
+  combos from the input variables' existing records. Safe on a read-only
+  connection.
+- **`run_*`: normal for_each traffic per step** (skip_computed queries,
+  loads, saves, lineage writes). Byte-identical to eager runs.
+- **Pipelines themselves are never stored in the DB** — in-session
+  objects only. Cross-session pipeline discovery would require spec
+  persistence (Option E territory), which is deliberately NOT planned.
 
 ## Related docs
 

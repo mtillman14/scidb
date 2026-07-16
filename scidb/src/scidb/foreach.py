@@ -3190,6 +3190,16 @@ def _make_plot_wrapper(fn: Any, path_param: str) -> Any:
     return wrapped
 
 
+def _endpoint_kind(fn_name: str) -> "str | None":
+    """Endpoint detection only — "plot" | "stat" | None by name prefix.
+
+    Side-effect-free subset of :func:`_endpoint_policy` for callers that
+    need classification without the contract checks (Pipeline.endpoints()).
+    """
+    return ("plot" if fn_name.startswith("plot_")
+            else "stat" if fn_name.startswith("stat_") else None)
+
+
 def _endpoint_policy(fn_name: str, inputs: dict, finalized: bool, as_table):
     """Endpoint (plot_/stat_) policy shared by scidb.for_each AND the MATLAB
     bridge's for_each_prepare — one source of truth for detection, the
@@ -3203,8 +3213,7 @@ def _endpoint_policy(fn_name: str, inputs: dict, finalized: bool, as_table):
     """
     from scifor import PathOutput
 
-    endpoint_kind = ("plot" if fn_name.startswith("plot_")
-                     else "stat" if fn_name.startswith("stat_") else None)
+    endpoint_kind = _endpoint_kind(fn_name)
     path_param = None
     if endpoint_kind is not None:
         path_param = next(

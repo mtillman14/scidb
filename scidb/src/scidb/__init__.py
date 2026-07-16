@@ -54,7 +54,7 @@ from .column_selection import ColumnSelection
 from .colname import ColName
 from .each_of import EachOf
 from .foreach_config import ForEachConfig
-from .pipeline import Pipeline, Step, active_pipeline, scistack
+from .pipeline import Pipeline, PipelineBinding, Step, active_pipeline, scistack
 
 # From scifor (Layer 1)
 from scifor import Col, set_schema, get_schema, PathInput, PathOutput
@@ -105,6 +105,7 @@ __all__ = [
     "for_each",
     "scistack",
     "Pipeline",
+    "PipelineBinding",
     "Step",
     "active_pipeline",
     "Fixed",

@@ -197,6 +197,312 @@ class Step:
         )
 
 
+# ---------------------------------------------------------------------------
+# Use-edge bindings (cross-project reuse without touching pipeline source)
+# ---------------------------------------------------------------------------
+
+
+def _rename_keys(d: dict, key_map: dict) -> dict:
+    return {key_map.get(k, k): v for k, v in d.items()}
+
+
+def _rewrite_template(template, key_map: dict):
+    """Rename ``{key}`` placeholders in a path template (literal replace,
+    matching PathOutput/PathInput's own literal resolution)."""
+    s = str(template)
+    for old, new in key_map.items():
+        s = s.replace("{" + old + "}", "{" + new + "}")
+    from pathlib import Path as _P
+    return _P(s) if isinstance(template, _P) else s
+
+
+def _rewrite_where(where: Any, key_map: dict, step_name: str) -> Any:
+    """Rewrite schema-key names inside a structured Filter tree.
+
+    Raw SQL (strings / RawFilter) cannot be rewritten safely → WARN and
+    leave as-is (observability over silent breakage).
+    """
+    from .filters import (
+        CompoundFilter,
+        NotFilter,
+        RawFilter,
+        SchemaKeyCompareFilter,
+        SchemaKeyInFilter,
+    )
+
+    if where is None:
+        return None
+    if isinstance(where, (str, RawFilter)):
+        Log.warn(
+            f"pipeline_binding: step '{step_name}' has a raw-SQL where= "
+            f"filter — key_map cannot rewrite raw SQL; the filter is left "
+            f"unchanged and may reference the wrong schema keys"
+        )
+        return where
+    if isinstance(where, SchemaKeyCompareFilter):
+        return SchemaKeyCompareFilter(
+            key_map.get(where.key, where.key), where.op, where.value)
+    if isinstance(where, SchemaKeyInFilter):
+        return SchemaKeyInFilter(
+            key_map.get(where.key, where.key), list(where.values))
+    if isinstance(where, CompoundFilter):
+        return CompoundFilter(
+            _rewrite_where(where.left, key_map, step_name),
+            _rewrite_where(where.right, key_map, step_name),
+            where.op,
+        )
+    if isinstance(where, NotFilter):
+        return NotFilter(_rewrite_where(where.inner, key_map, step_name))
+    Log.warn(
+        f"pipeline_binding: step '{step_name}' has a where= filter of "
+        f"unrecognized type {type(where).__name__} — left unchanged"
+    )
+    return where
+
+
+def _rewrite_input(val: Any, key_map: dict):
+    """Rewrite one input spec's schema-key surface (non-mutating: wrappers
+    are rebuilt, never modified in place)."""
+    from scifor import PathOutput
+    from scifor.pathinput import PathInput
+    from .fixed import Fixed
+
+    if isinstance(val, PathOutput):
+        return PathOutput(_rewrite_template(val.template, key_map))
+    if isinstance(val, PathInput):
+        return PathInput(
+            _rewrite_template(val.path_template, key_map),
+            root_folder=val.root_folder,
+            regex=val.regex,
+        )
+    if isinstance(val, Fixed):
+        return Fixed(
+            _rewrite_input(val.var_type, key_map),
+            **_rename_keys(val.fixed_metadata, key_map),
+        )
+    return val
+
+
+def _constant_input_names(spec: StepSpec) -> "set[str]":
+    """Names of this spec's scalar constant inputs (the params surface) —
+    same classification as ForEachConfig._get_direct_constants."""
+    from .foreach import _is_loadable
+    from .colname import ColName
+    from scifor import PathOutput
+    from scifor.pathinput import PathInput
+
+    return {
+        k for k, v in spec.inputs.items()
+        if not _is_loadable(v)
+        and not isinstance(v, (ColName, PathOutput, PathInput))
+        and not isinstance(v, type)
+    }
+
+
+class PipelineBinding:
+    """A non-mutating adaptation of a pipeline for one use edge.
+
+    Created via :meth:`Pipeline.bind`. The bound pipeline's own specs are
+    never modified — composition materializes rewritten COPIES — so
+    different parents can bind the same pipeline differently, and its own
+    ``run_all()`` still runs the unbound versions.
+
+    - ``key_map``: native schema key → project schema key. Rewrites the
+      declaration surface (iteration kwargs, Path templates, Fixed kwargs,
+      structured where= filters, schema_filter/schema_level, share_limits
+      values); records save under the PROJECT's keys.
+    - ``params``: constant-input overrides → a different computation
+      identity by construction (constants are version keys), i.e. distinct
+      variants per binding. Bare names must match exactly one function's
+      constant input across the subtree; ``"fn.param"`` disambiguates.
+    - ``iterate``: iteration-value overrides, keyed by POST-key_map names.
+
+    Bindings apply transitively to the bound pipeline's own ``uses``
+    subtree (the whole subtree was written in the foreign vocabulary).
+    """
+
+    def __init__(
+        self,
+        pipeline: "Pipeline",
+        key_map: "dict[str, str] | None" = None,
+        params: "dict[str, Any] | None" = None,
+        iterate: "dict[str, Any] | None" = None,
+    ):
+        self.pipeline = pipeline
+        self.key_map = dict(key_map or {})
+        self.params = dict(params or {})
+        self.iterate = dict(iterate or {})
+        # original-spec id -> rewritten StepSpec (stable across compositions
+        # so dedup-by-identity and repeated runs see the same objects).
+        self._rewritten: dict[int, StepSpec] = {}
+        # outer-signature -> composed binding (stable objects across closure
+        # walks, so THEIR rewrite caches are stable too).
+        self._compose_cache: "dict[str, PipelineBinding]" = {}
+        if self.params:
+            self._resolved_params = self._resolve_params()
+
+    # -- identity ------------------------------------------------------------
+
+    def signature(self) -> str:
+        """Canonical signature for dedup: identical bindings of the same
+        pipeline through different parents are ONE computation; different
+        params are different variants and must both run."""
+        import json as _json
+
+        return _json.dumps(
+            {
+                "pipeline": id(self.pipeline),
+                "key_map": self.key_map,
+                "params": {k: repr(v) for k, v in sorted(self.params.items())},
+                "iterate": {k: repr(v) for k, v in sorted(self.iterate.items())},
+            },
+            sort_keys=True,
+        )
+
+    def is_identity(self) -> bool:
+        return not (self.key_map or self.params or self.iterate)
+
+    # -- params resolution (bind-time validation, E2) --------------------------
+
+    def _resolve_params(self) -> "dict[tuple[str, str], Any]":
+        """Resolve params targets against the subtree's constant inputs.
+
+        Returns {(fn_name, input_name): value}. Bare names must match
+        exactly one function's constant input; ``"fn.param"`` targets one
+        function. Ambiguity → AmbiguousParamError; no match → ValueError.
+        Both raised HERE, at bind time — not at run.
+        """
+        from .exceptions import AmbiguousParamError
+
+        available: list[tuple[str, str]] = []  # (fn_name, input_name)
+        for p in [self.pipeline] + self.pipeline._uses_pipelines_closure():
+            for spec in p.steps:
+                for cname in _constant_input_names(spec):
+                    available.append((spec.name, cname))
+
+        resolved: dict[tuple[str, str], Any] = {}
+        for target, value in self.params.items():
+            if "." in target:
+                fn_name, input_name = target.rsplit(".", 1)
+                matches = [
+                    (f, c) for f, c in available
+                    if f == fn_name and c == input_name
+                ]
+            else:
+                matches = [(f, c) for f, c in available if c == target]
+            if not matches:
+                raise ValueError(
+                    f"bind(params=...): no constant input matching "
+                    f"'{target}' in pipeline '{self.pipeline.name}' or its "
+                    f"used pipelines; available: "
+                    f"{sorted(f'{f}.{c}' for f, c in available)}"
+                )
+            fns = sorted({f for f, _ in matches})
+            if len(fns) > 1:
+                raise AmbiguousParamError(
+                    f"bind(params=...): '{target}' matches constant inputs "
+                    f"in multiple functions {fns} — disambiguate with "
+                    f"'<fn>.{target}'"
+                )
+            for f, c in matches:
+                resolved[(f, c)] = value
+        return resolved
+
+    # -- composition ------------------------------------------------------------
+
+    def compose(self, outer: "PipelineBinding") -> "PipelineBinding":
+        """The binding an OUTER edge implies for this inner edge's pipeline
+        (outer ∘ inner): key_maps chain (inner then outer), outer params/
+        iterate win on conflict, inner iterate keys pass through the outer
+        key_map first (they are in the inner post-map vocabulary)."""
+        cached = self._compose_cache.get(outer.signature())
+        if cached is not None:
+            return cached
+        composed_key_map = {
+            k: outer.key_map.get(v, v) for k, v in self.key_map.items()
+        }
+        for k, v in outer.key_map.items():
+            composed_key_map.setdefault(k, v)
+        composed_iterate = _rename_keys(self.iterate, outer.key_map)
+        composed_iterate.update(outer.iterate)
+        composed = PipelineBinding(
+            self.pipeline,
+            key_map=composed_key_map,
+            iterate=composed_iterate,
+        )
+        # Params were already resolved and VALIDATED at each edge's bind
+        # time against its own subtree — carry the resolved maps (outer
+        # wins), never re-resolve: outer params may target steps of a
+        # shallower pipeline that this deeper subtree doesn't contain.
+        composed.params = {**self.params, **outer.params}
+        composed._resolved_params = {
+            **getattr(self, "_resolved_params", {}),
+            **getattr(outer, "_resolved_params", {}),
+        }
+        self._compose_cache[outer.signature()] = composed
+        return composed
+
+    # -- the rewrite ------------------------------------------------------------
+
+    def rewrite(self, spec: StepSpec) -> StepSpec:
+        """Materialize the adapted copy of ``spec`` (cached per binding)."""
+        if self.is_identity():
+            return spec
+        cached = self._rewritten.get(id(spec))
+        if cached is not None:
+            return cached
+
+        km = self.key_map
+        new_iterables = _rename_keys(spec.metadata_iterables, km)
+        for k, v in self.iterate.items():
+            if k in new_iterables:
+                new_iterables[k] = v
+
+        new_inputs: dict[str, Any] = {}
+        overrides = getattr(self, "_resolved_params", {})
+        constant_names = _constant_input_names(spec)
+        for name, val in spec.inputs.items():
+            if name in constant_names and (spec.name, name) in overrides:
+                new_inputs[name] = overrides[(spec.name, name)]
+            else:
+                new_inputs[name] = _rewrite_input(val, km)
+
+        new_options = dict(spec.options)
+        if km:
+            if new_options.get("where") is not None:
+                new_options["where"] = _rewrite_where(
+                    new_options["where"], km, spec.name)
+            if new_options.get("schema_filter") is not None:
+                new_options["schema_filter"] = _rename_keys(
+                    new_options["schema_filter"], km)
+            if new_options.get("schema_level") is not None:
+                new_options["schema_level"] = [
+                    km.get(k, k) for k in new_options["schema_level"]]
+            if new_options.get("share_limits") is not None:
+                new_options["share_limits"] = {
+                    inp: [km.get(k, k) for k in keys]
+                    for inp, keys in new_options["share_limits"].items()
+                }
+
+        new_spec = StepSpec(
+            fn=spec.fn,
+            inputs=new_inputs,
+            outputs=list(spec.outputs),
+            metadata_iterables=new_iterables,
+            options=new_options,
+        )
+        new_spec.origin = spec  # Step-handle targeting follows rewrites
+        self._rewritten[id(spec)] = new_spec
+        Log.debug(
+            f"pipeline_binding_rewrite: '{spec.name}' adapted for "
+            f"'{self.pipeline.name}' binding (key_map={km or '{}'}, "
+            f"param overrides="
+            f"{sorted(f'{f}.{c}' for (f, c) in overrides if f == spec.name) or '[]'}, "
+            f"iterate={sorted(set(self.iterate) & set(new_iterables)) or '[]'})"
+        )
+        return new_spec
+
+
 # Module-level session state (pattern-matched to the current-db global):
 # the activation stack ambient for_each registration targets, plus every
 # pipeline created this session for the never-run atexit check.
@@ -257,7 +563,9 @@ class Pipeline:
         self.name = name
         self.db = db
         self.steps: list[StepSpec] = []
-        self.uses: list[Pipeline] = []
+        # Use edges, each a PipelineBinding (bare pipelines get identity
+        # bindings, so composition has one shape).
+        self.uses: list[PipelineBinding] = []
         # True once run_all/run_until/plan/deactivate acknowledged this
         # pipeline; guards the never-run atexit warning.
         self._acknowledged = False
@@ -271,63 +579,118 @@ class Pipeline:
 
     # -- composition -----------------------------------------------------------
 
-    def use(self, other: "Pipeline") -> "Pipeline":
-        """Declare ``other`` as a dependency: its steps join this pipeline's
-        graph (union — nothing is copied), so ``run_until``/``plan`` resolve
-        producers inside it. Never activates anything."""
+    def bind(
+        self,
+        key_map: "dict[str, str] | None" = None,
+        params: "dict[str, Any] | None" = None,
+        iterate: "dict[str, Any] | None" = None,
+    ) -> "PipelineBinding":
+        """Adapt this pipeline for a use edge WITHOUT touching its source:
+        ``uses=[loading.bind(key_map={"session": "subject"},
+        params={"low_hz": 30})]``. See :class:`PipelineBinding`. Params
+        targets are validated here, at bind time."""
+        return PipelineBinding(
+            self, key_map=key_map, params=params, iterate=iterate)
+
+    def use(self, other: "Pipeline | PipelineBinding") -> "Pipeline":
+        """Declare ``other`` (a Pipeline or a Pipeline.bind(...) binding) as
+        a dependency: its steps join this pipeline's graph (union — nothing
+        is copied; bindings materialize adapted copies at composition), so
+        ``run_until``/``plan`` resolve producers inside it. Never activates
+        anything."""
         from .exceptions import PipelineCycleError
 
-        if not isinstance(other, Pipeline):
+        if isinstance(other, Pipeline):
+            binding = PipelineBinding(other)
+        elif isinstance(other, PipelineBinding):
+            binding = other
+        else:
             raise TypeError(
-                f"uses= entries must be Pipeline instances; got "
-                f"{type(other).__name__}"
+                f"uses= entries must be Pipeline or Pipeline.bind(...) "
+                f"instances; got {type(other).__name__}"
             )
-        if other is self or any(p is self for p in other._uses_closure()):
+        target = binding.pipeline
+        if target is self or any(
+            p is self for p in target._uses_pipelines_closure()
+        ):
             raise PipelineCycleError(
-                f"pipeline '{self.name}' cannot use '{other.name}': "
+                f"pipeline '{self.name}' cannot use '{target.name}': "
                 f"dependency cycle between pipelines"
             )
         if (
-            other.db is not None
+            target.db is not None
             and self.db is not None
-            and other.db is not self.db
+            and target.db is not self.db
         ):
             raise ValueError(
-                f"pipeline '{other.name}' is bound to a different database "
+                f"pipeline '{target.name}' is bound to a different database "
                 f"than '{self.name}' — cross-database composition is not "
                 f"supported. Rebind one of them (a used pipeline with db=None "
                 f"inherits the user's database)."
             )
-        self.uses.append(other)
-        Log.info(
-            f"pipeline_uses: '{self.name}' uses '{other.name}' "
-            f"({len(other.steps)} step(s) joined the graph)"
-        )
+        self.uses.append(binding)
+        if binding.is_identity():
+            Log.info(
+                f"pipeline_uses: '{self.name}' uses '{target.name}' "
+                f"({len(target.steps)} step(s) joined the graph)"
+            )
+        else:
+            Log.info(
+                f"pipeline_bound: '{self.name}' uses '{target.name}' with "
+                f"key_map={binding.key_map or '{}'}, "
+                f"params={sorted(binding.params) or '[]'}, "
+                f"iterate={sorted(binding.iterate) or '[]'} "
+                f"({len(target.steps)} step(s) joined, adapted)"
+            )
         return self
 
-    def _uses_closure(self) -> "list[Pipeline]":
-        """Transitively used pipelines, dependencies-first, deduped by
-        identity (a shared sub-pipeline is the same object everywhere —
-        the diamond case collapses for free)."""
+    def _uses_pipelines_closure(self) -> "list[Pipeline]":
+        """Transitively used pipelines (bindings stripped), deduped by
+        identity — for cycle checks and params resolution."""
         ordered: list[Pipeline] = []
         seen: set[int] = set()
 
         def visit(p: "Pipeline") -> None:
-            for u in p.uses:
-                if id(u) not in seen:
-                    seen.add(id(u))
-                    visit(u)
-                    ordered.append(u)
+            for b in p.uses:
+                if id(b.pipeline) not in seen:
+                    seen.add(id(b.pipeline))
+                    visit(b.pipeline)
+                    ordered.append(b.pipeline)
 
         visit(self)
         return ordered
 
+    def _uses_closure(self) -> "list[tuple[Pipeline, PipelineBinding]]":
+        """Transitively used pipelines with their EFFECTIVE bindings
+        (outer ∘ inner composition down each path), dependencies-first.
+
+        Deduped by (pipeline identity, binding signature): the same
+        sub-pipeline reached twice with identical adaptation is one set of
+        steps (diamond case); reached with different params it is two
+        genuinely different computations — two variants — and both stay.
+        """
+        ordered: list[tuple[Pipeline, PipelineBinding]] = []
+        seen: set[tuple[int, str]] = set()
+
+        def visit(p: "Pipeline", outer: "PipelineBinding | None") -> None:
+            for b in p.uses:
+                eff = b if outer is None else b.compose(outer)
+                key = (id(eff.pipeline), eff.signature())
+                if key not in seen:
+                    seen.add(key)
+                    visit(eff.pipeline, eff)
+                    ordered.append((eff.pipeline, eff))
+
+        visit(self, None)
+        return ordered
+
     def _composed_steps(self) -> "list[tuple[Pipeline, StepSpec]]":
         """The full graph's steps as (owner pipeline, spec) pairs: used
-        pipelines' steps first (closure order), then this pipeline's own."""
+        pipelines' steps first (closure order, adapted through their
+        effective bindings), then this pipeline's own (never adapted)."""
         pairs: list[tuple[Pipeline, StepSpec]] = []
-        for p in self._uses_closure():
-            pairs.extend((p, s) for s in p.steps)
+        for p, binding in self._uses_closure():
+            pairs.extend((p, binding.rewrite(s)) for s in p.steps)
         pairs.extend((self, s) for s in self.steps)
         return pairs
 
@@ -440,7 +803,11 @@ class Pipeline:
         of its registrations.
         """
         if isinstance(target, Step):
-            matches = {i for i, (_, s) in enumerate(pairs) if s is target.spec}
+            matches = {
+                i for i, (_, s) in enumerate(pairs)
+                if s is target.spec
+                or getattr(s, "origin", None) is target.spec
+            }
         elif callable(target):
             matches = {i for i, (_, s) in enumerate(pairs) if s.fn is target}
         elif isinstance(target, str):
@@ -492,10 +859,16 @@ class Pipeline:
         else:
             order = self._topo_order(pairs)
 
+        from .foreach import _endpoint_kind
+
         entries: list[dict] = []
         for i in order:
             owner, spec = pairs[i]
-            entry: dict[str, Any] = {"step": spec.name, "pipeline": owner.name}
+            entry: dict[str, Any] = {
+                "step": spec.name,
+                "pipeline": owner.name,
+                "endpoint": _endpoint_kind(spec.name) is not None,
+            }
             try:
                 from .state import check_node_state
 
@@ -522,6 +895,114 @@ class Pipeline:
                 f"{entry['state']} ({len(entry['combos'])} known combo(s))"
             )
         return entries
+
+    # -- endpoint verbs -----------------------------------------------------------
+
+    def endpoints(self, include_used: bool = True) -> list[dict]:
+        """The composed graph's endpoint steps (``plot_``/``stat_`` per the
+        shared ``_endpoint_policy`` prefix detection) — the top-level cards
+        an endpoint-first surface renders.
+
+        Each entry: ``{"step", "pipeline", "kind"}`` with kind
+        "plot" | "stat".
+        """
+        from .foreach import _endpoint_kind
+
+        pairs = self._composed_steps()
+        out = []
+        for owner, spec in pairs:
+            if not include_used and owner is not self:
+                continue
+            kind = _endpoint_kind(spec.name)
+            if kind is not None:
+                out.append(
+                    {"step": spec.name, "pipeline": owner.name, "kind": kind})
+        return out
+
+    def run_endpoints(
+        self,
+        finalized: bool = False,
+        skip_computed: bool = True,
+        include_used: bool = False,
+    ) -> list:
+        """Run every endpoint and its ancestry — "make all my figures and
+        stats". One topo pass over the union of ancestries; ``finalized``
+        applies to the endpoint steps only.
+
+        Default scope is this pipeline's OWN endpoints (consistent with
+        run_all's own-steps rule); ``include_used=True`` widens to
+        endpoints inside used pipelines.
+        """
+        from .foreach import _endpoint_kind
+
+        pairs = self._composed_steps()
+        targets = {
+            i for i, (owner, spec) in enumerate(pairs)
+            if _endpoint_kind(spec.name) is not None
+            and (include_used or owner is self)
+        }
+        if not targets:
+            self.deactivate()
+            Log.warn(
+                f"pipeline_run_skipped: run_endpoints on '{self.name}': no "
+                f"endpoint (plot_/stat_) steps"
+                + ("" if include_used else
+                   " among own steps — pass include_used=True to run "
+                   "endpoints inside used pipelines")
+            )
+            return []
+        order = self._topo_order(pairs, targets | self._ancestors(pairs, targets))
+        return self._run(
+            pairs,
+            order,
+            skip_computed=skip_computed,
+            finalized=finalized,
+            finalized_for=targets,
+        )
+
+    def show(self, target: Any, skip_computed: bool = True) -> list:
+        """Draft-run one endpoint (+ ancestors) to LOOK at it — the everyday
+        verb. Nothing is recorded (finalized=False); returns the endpoint's
+        rendered outputs: artifact paths for ``plot_``, result payloads for
+        ``stat_``. The caller opens the files.
+        """
+        from .foreach import _endpoint_kind
+
+        pairs = self._composed_steps()
+        targets = self._resolve_target(pairs, target)
+        non_endpoints = sorted({
+            pairs[i][1].name for i in targets
+            if _endpoint_kind(pairs[i][1].name) is None
+        })
+        if non_endpoints:
+            raise ValueError(
+                f"show() is for endpoints (plot_/stat_ functions); "
+                f"{non_endpoints} are processing steps — use "
+                f"run_until(...) for those"
+            )
+        order = self._topo_order(pairs, targets | self._ancestors(pairs, targets))
+        results = self._run(
+            pairs,
+            order,
+            skip_computed=skip_computed,
+            finalized=False,
+            finalized_for=targets,
+        )
+        rendered: list = []
+        target_positions = {
+            pos for pos, i in enumerate(order) if i in targets}
+        for pos in sorted(target_positions):
+            result_tbl = results[pos]
+            if result_tbl is None:
+                continue
+            _, spec = pairs[order[pos]]
+            for out_cls in spec.output_classes():
+                col = out_cls.__name__
+                if hasattr(result_tbl, "columns") and col in result_tbl.columns:
+                    rendered.extend(result_tbl[col].tolist())
+        for path in rendered:
+            Log.info(f"pipeline_show: rendered -> {path}")
+        return rendered
 
     # -- execution ----------------------------------------------------------------
 
