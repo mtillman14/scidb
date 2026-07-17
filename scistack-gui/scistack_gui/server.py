@@ -144,6 +144,25 @@ def _h_remove_pipeline_use(params):
     return remove_pipeline_use(params["use_id"])
 
 
+def _h_get_pipeline_plan(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.execution_service import plan_pipeline
+    return plan_pipeline(get_db(), params["pipeline_id"],
+                         params.get("target", ""))
+
+
+def _h_start_pipeline_run(params):
+    from scistack_gui.api.run import start_pipeline_run
+    return start_pipeline_run(
+        params["pipeline_id"],
+        params.get("mode", "all"),
+        params.get("target", ""),
+        params.get("finalized"),
+        params.get("skip_computed", True),
+        params.get("run_id"),
+    )
+
+
 def _h_get_schema(params):
     from scistack_gui.services.pipeline_service import get_schema
     from scistack_gui.db import get_db
@@ -511,6 +530,8 @@ METHODS = {
     "add_pipeline_use": _h_add_pipeline_use,
     "update_use_binding": _h_update_use_binding,
     "remove_pipeline_use": _h_remove_pipeline_use,
+    "get_pipeline_plan": _h_get_pipeline_plan,
+    "start_pipeline_run": _h_start_pipeline_run,
     "get_indexes": _h_get_indexes,
     "search_index_packages": _h_search_index_packages,
     "add_library": _h_add_library,

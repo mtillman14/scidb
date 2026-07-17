@@ -423,3 +423,105 @@ class TestDocumentInterface:
         node = next(n for n in graph["nodes"] if n["id"] == use_id)
         assert node["data"]["inputs"] == ["RawSignal"]
         assert node["data"]["outputs"] == ["FilteredSignal"]
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint 3: execution rearchitecture (G2 — document -> backend pipelines)
+# ---------------------------------------------------------------------------
+
+class TestExecutionCompiler:
+    def test_derive_fn_targets_from_db_history(self, client):
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import derive_fn_targets
+
+        targets = derive_fn_targets(get_db(), "bandpass_filter")
+
+        assert len(targets) == 1
+        assert targets[0]["constants"] == {"low_hz": 20}
+        assert targets[0]["output_type"] == "FilteredSignal"
+
+    def test_derive_fn_targets_unknown_fn_is_empty(self, client):
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import derive_fn_targets
+
+        assert derive_fn_targets(get_db(), "no_such_fn") == []
+
+    def test_compile_root_scope(self, client):
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            _discard_compiled, build_backend_pipeline,
+        )
+
+        built: dict = {}
+        pipe = build_backend_pipeline(get_db(), "main", built)
+        try:
+            assert [s.name for s in pipe.steps] == ["bandpass_filter"]
+            iface = pipe.interface()
+            assert [c.__name__ for c in iface["inputs"]] == ["RawSignal"]
+            assert [c.__name__ for c in iface["outputs"]] == ["FilteredSignal"]
+        finally:
+            _discard_compiled(built)
+
+    def test_plan_endpoint_green_after_seed_run(self, client):
+        r = client.get("/api/pipelines/main/plan")
+        assert r.status_code == 200
+        entries = r.json()
+        by_name = {e["step"]: e for e in entries}
+        assert by_name["bandpass_filter"]["state"] == "green"
+        assert by_name["bandpass_filter"]["endpoint"] is False
+        assert by_name["bandpass_filter"]["pipeline"] == "main"
+        assert by_name["bandpass_filter"]["n_combos"] == 4
+
+    def test_composed_plan_crosses_scopes(self, client):
+        """Move the bandpass call site into a sub scope, use it from main:
+        main's plan resolves the step inside the used pipeline."""
+        pid = client.post("/api/pipelines",
+                          json={"name": "loading"}).json()["pipeline_id"]
+        # Membership = where the position is saved (drag onto sub canvas).
+        graph = client.get("/api/pipeline").json()
+        fn_id = next(n["id"] for n in graph["nodes"]
+                     if n["type"] == "functionNode")
+        client.put(f"/api/layout/{fn_id}",
+                   json={"x": 0, "y": 0, "pipeline_id": pid})
+        client.post("/api/pipelines/main/uses",
+                    json={"child_pipeline_id": pid})
+
+        entries = client.get("/api/pipelines/main/plan").json()
+
+        by_name = {e["step"]: e for e in entries}
+        assert by_name["bandpass_filter"]["pipeline"] == "loading"
+        assert by_name["bandpass_filter"]["state"] == "green"
+
+    def test_run_pipeline_skips_current_steps(self, client):
+        """Synchronous run through the compiler: the seed already ran
+        bandpass fully, so skip_computed leaves zero new invocations."""
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import run_pipeline
+
+        db = get_db()
+        n_inv_before = db._duck._fetchall(
+            "SELECT COUNT(*) FROM _invocation")[0][0]
+
+        result = run_pipeline(db, "main", mode="until",
+                              target="bandpass_filter")
+
+        assert result["ok"] is True
+        n_inv_after = db._duck._fetchall(
+            "SELECT COUNT(*) FROM _invocation")[0][0]
+        assert n_inv_after == n_inv_before  # all combos skipped
+
+    def test_run_endpoint_validation(self, client):
+        r = client.post("/api/pipelines/main/run",
+                        json={"mode": "until", "target": ""})
+        assert r.status_code == 400
+        r = client.post("/api/pipelines/main/run", json={"mode": "bogus"})
+        assert r.status_code == 400
+
+    def test_compiled_pipelines_are_discarded(self, client):
+        from scidb.pipeline import _all_pipelines
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import plan_pipeline
+
+        before = len(_all_pipelines)
+        plan_pipeline(get_db(), "main")
+        assert len(_all_pipelines) == before  # transient compiles cleaned

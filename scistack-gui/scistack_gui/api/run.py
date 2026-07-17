@@ -166,160 +166,24 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         logger.info("[run_thread] Thread exiting due to function not found (run_id=%s)", run_id)
         return
 
-    # Look up input/output types for this function from the DB.
-    logger.info("[run_thread] Querying DB for pipeline variants (run_id=%s)", run_id)
-    all_variants = db.list_pipeline_variants()
-    fn_variants = [v for v in all_variants if v["function_name"] == function_name]
-    logger.debug("[run_thread] Found %d variants for function '%s' (run_id=%s)",
+    # Derive the for_each targets for this function node — DB history with
+    # manual-wiring overrides, or the manual-edge fallback. Shared with the
+    # pipeline compiler (execution_service) so per-node and pipeline runs
+    # derive identically.
+    logger.info("[run_thread] Deriving targets for '%s' (run_id=%s)",
+                function_name, run_id)
+    from scistack_gui.services.execution_service import derive_fn_targets
+    fn_variants = derive_fn_targets(db, function_name)
+    logger.debug("[run_thread] Derived %d target(s) for '%s' (run_id=%s)",
                  len(fn_variants), function_name, run_id)
-
-    logger.debug("run: fn_variants for '%s' = %s", function_name, fn_variants)
-
-    # --- Check manual edges for current output wiring ---
-    # If the user has rewired the function's outputs (e.g. deleted an old output
-    # node and connected a new one), manual edges should override DB-derived
-    # output types.  This prevents stale DB history from resurrecting old nodes.
-    logger.info("[run_thread] Checking manual edges for output wiring (run_id=%s)", run_id)
-    from scistack_gui import pipeline_store, layout as layout_store
-    from scistack_gui.api.pipeline import _fn_params_from_registry
-    from scistack_gui.domain.edge_resolver import (
-        resolve_function_edges, infer_manual_fn_output_types,
-    )
-
-    all_edges = pipeline_store.get_manual_edges(db)
-    manual_nodes = pipeline_store.get_manual_nodes(db)
-    logger.debug("[run_thread] Found %d manual edges, %d manual nodes (run_id=%s)",
-                 len(all_edges), len(manual_nodes), run_id)
-
-    # Collect all node IDs for this function: every DB-derived call site
-    # (composite fn__{fn}__{call_id}), every manual node sharing the label,
-    # and the legacy fn__{fn} form for backward-compat manual edges.
-    from scistack_gui.domain.graph_builder import fn_node_id
-    fn_node_ids = set()
-    fn_node_ids.add(f"fn__{function_name}")  # legacy/manual edges
-    for v in fn_variants:
-        cid = v.get("call_id")
-        if cid:
-            fn_node_ids.add(fn_node_id(function_name, cid))
-    for nid, meta in manual_nodes.items():
-        if meta["type"] == "functionNode" and meta["label"] == function_name:
-            fn_node_ids.add(nid)
-
-    manual_output_types = infer_manual_fn_output_types(
-        fn_node_ids, all_edges, manual_nodes, existing_node_labels={})
-    logger.debug("[run_thread] Inferred manual output types: %s (run_id=%s)",
-                 manual_output_types, run_id)
-
-    if fn_variants and manual_output_types:
-        # Override output types in DB-derived variants with the current wiring.
-        logger.info("[run_thread] Overriding DB output types with manual edge outputs: %s (run_id=%s)",
-                    manual_output_types, run_id)
-        Log.info(f"run: overriding DB output types with manual edge outputs: {manual_output_types}")
-        overridden = []
-        seen_constants = set()
-        for v in fn_variants:
-            key = tuple(sorted(v["constants"].items()))
-            if key in seen_constants:
-                continue
-            seen_constants.add(key)
-            for out in manual_output_types:
-                overridden.append({
-                    **v,
-                    "output_type": out,
-                })
-        fn_variants = overridden
-        logger.debug("[run_thread] Overridden to %d variants (run_id=%s)", len(fn_variants), run_id)
-
     if not fn_variants:
-        # No DB history yet — try to infer inputs/outputs from manual edges.
-        logger.info("[run_thread] No DB variants found, inferring from manual edges (run_id=%s)", run_id)
-        Log.info(f"run: all_edges = {all_edges}")
-        Log.info(f"run: manual_nodes = {manual_nodes}")
-        Log.info(f"run: fn_node_ids = {fn_node_ids}")
-
-        sig_params = _fn_params_from_registry(function_name)
-        logger.debug("[run_thread] Function signature params: %s (run_id=%s)", sig_params, run_id)
-        resolved = resolve_function_edges(
-            fn_node_ids=fn_node_ids,
-            manual_edges=all_edges,
-            manual_nodes=manual_nodes,
-            existing_node_labels={},
-            sig_params=sig_params,
-        )
-        input_types = resolved.input_types
-        output_types = resolved.output_types
-        constant_names = resolved.constant_names
-
-        logger.info("[run_thread] Edge resolution complete: inputs=%s, outputs=%s, constants=%s (run_id=%s)",
-                    input_types, output_types, constant_names, run_id)
-        Log.info(f"run: after edge scan: input_types={input_types}, output_types={output_types}, "
-                 f"constant_names={constant_names}")
-
-        if not output_types:
-            logger.warning("[run_thread] No outputs found for '%s' from DB or edges (run_id=%s)",
-                          function_name, run_id)
-            Log.warn(f"run: no outputs found for '{function_name}' from DB or edges")
-            push_message({"type": "run_done", "run_id": run_id, "success": False,
-                          "error": f"No pipeline history or output connections found for '{function_name}'. "
-                                    "Connect it to an output variable node first."})
-            logger.info("[run_thread] Thread exiting due to no outputs (run_id=%s)", run_id)
-            return
-
-        # Collect constant values from pending constants for wired constant nodes.
-        logger.info("[run_thread] Collecting pending constants for wired nodes (run_id=%s)", run_id)
-        import ast as _ast
-        inferred_constants: dict[str, list] = {}  # const_name → list of typed values
-        if constant_names:
-            pending = pipeline_store.get_pending_constants(db)
-            logger.debug("[run_thread] Pending constants from DB: %s (run_id=%s)", pending, run_id)
-            Log.info(f"run: pending constants = {pending}")
-            for cname in constant_names:
-                vals = pending.get(cname, set())
-                typed_vals = []
-                for v in vals:
-                    try:
-                        typed_vals.append(_ast.literal_eval(v))
-                    except (ValueError, SyntaxError):
-                        typed_vals.append(v)
-                if typed_vals:
-                    inferred_constants[cname] = typed_vals
-                    logger.debug("[run_thread] Constant '%s' has %d values (run_id=%s)",
-                                cname, len(typed_vals), run_id)
-                else:
-                    logger.warning("[run_thread] Constant '%s' wired to '%s' has no pending values (run_id=%s)",
-                                  cname, function_name, run_id)
-                    Log.warn(f"run: constant '{cname}' wired to '{function_name}' but has no pending values")
-
-        logger.info("[run_thread] Inferred constants: %s (run_id=%s)",
-                    list(inferred_constants.keys()), run_id)
-        Log.info(f"run: inferred inputs={input_types} outputs={output_types} "
-                 f"constants={list(inferred_constants.keys())} for '{function_name}' from edges")
-
-        # Build synthetic variants: cross-product of output types × constant combos.
-        logger.info("[run_thread] Building synthetic variants from inferred data (run_id=%s)", run_id)
-        if inferred_constants:
-            # Build all combinations of constant values.
-            from itertools import product as _product
-            const_names_list = sorted(inferred_constants.keys())
-            const_value_lists = [inferred_constants[c] for c in const_names_list]
-            fn_variants = []
-            for combo in _product(*const_value_lists):
-                constants = dict(zip(const_names_list, combo))
-                for out in output_types:
-                    fn_variants.append({
-                        "input_types": input_types,
-                        "output_type": out,
-                        "constants": constants,
-                    })
-            logger.debug("[run_thread] Built %d synthetic variants from constant combinations (run_id=%s)",
-                        len(fn_variants), run_id)
-        else:
-            fn_variants = [
-                {"input_types": input_types, "output_type": out, "constants": {}}
-                for out in output_types
-            ]
-            logger.debug("[run_thread] Built %d synthetic variants without constants (run_id=%s)",
-                        len(fn_variants), run_id)
+        push_message({"type": "run_done", "run_id": run_id, "success": False,
+                      "error": f"No pipeline history or output connections found for '{function_name}'. "
+                               "Connect it to an output variable node first."})
+        with _active_runs_lock:
+            _active_runs.pop(run_id, None)
+        logger.info("[run_thread] Thread exiting due to no targets (run_id=%s)", run_id)
+        return
 
     # --- Variant resolution via domain layer ---
     logger.info("[run_thread] Resolving variants to execute (run_id=%s)", run_id)
@@ -622,6 +486,114 @@ def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     thread.start()
     logger.info("[api/run] Background thread started for run_id=%s", run_id)
     return {"run_id": run_id}
+
+
+def _run_pipeline_in_thread(run_id: str, pipeline_id: str, mode: str,
+                            target: str, finalized, skip_computed: bool,
+                            db: DatabaseManager):
+    """Background execution of a document pipeline through the backend
+    verbs (G2). Reuses the per-node run's registry (force-cancel works —
+    KeyboardInterrupt between/inside steps; cooperative cancel is a no-op
+    for pipeline runs in v1: Pipeline._run has no between-step hook yet)
+    and its message contract (run_output / run_done / dag_updated).
+    """
+    from scistack_gui.services.execution_service import run_pipeline
+
+    def emit(text: str):
+        push_message({"type": "run_output", "run_id": run_id, "text": text})
+
+    class _RunLogRelay(logging.Handler):
+        _RELAY_LOGGERS = ("scifor", "scidb")
+
+        def __init__(self):
+            super().__init__(level=logging.INFO)
+            self.setFormatter(logging.Formatter("%(message)s"))
+
+        def emit(self, record):
+            try:
+                emit(self.format(record) + "\n")
+            except Exception:
+                pass
+
+        def __enter__(self):
+            for name in self._RELAY_LOGGERS:
+                logging.getLogger(name).addHandler(self)
+            return self
+
+        def __exit__(self, *exc):
+            for name in self._RELAY_LOGGERS:
+                logging.getLogger(name).removeHandler(self)
+            return False
+
+    cancel_event = threading.Event()
+    with _active_runs_lock:
+        _active_runs[run_id] = {
+            "event": cancel_event,
+            "thread": threading.current_thread(),
+            "cancelled": False,
+            "force_cancelled": False,
+        }
+    db.set_current_db()
+    logger.info("[pipeline_run] run_id=%s scope=%s mode=%s target=%r",
+                run_id, pipeline_id, mode, target)
+    emit(f"▶ Running pipeline scope {pipeline_id} (mode={mode}"
+         + (f", target={target}" if target else "") + ")\n")
+
+    success, cancelled = True, False
+    run_started_at = time.time()
+    buf = StringIO()
+    try:
+        with _RunLogRelay(), redirect_stdout(buf):
+            run_pipeline(db, pipeline_id, mode=mode, target=target,
+                         finalized=finalized, skip_computed=skip_computed)
+    except KeyboardInterrupt:
+        cancelled = True
+        emit("⛔ Force-cancelled\n")
+    except Exception as exc:
+        logger.exception("[pipeline_run] failed (run_id=%s)", run_id)
+        emit(f"Error: {exc}\n")
+        success = False
+    finally:
+        output = buf.getvalue()
+        if output:
+            emit(output)
+        duration_ms = int((time.time() - run_started_at) * 1000)
+        with _active_runs_lock:
+            entry = _active_runs.pop(run_id, None)
+        was_force = bool(entry and entry.get("force_cancelled"))
+        if cancel_event.is_set():
+            cancelled = True
+        logger.info("[pipeline_run] finished (run_id=%s success=%s "
+                    "cancelled=%s) in %d ms", run_id, success, cancelled,
+                    duration_ms)
+        push_message({"type": "run_done", "run_id": run_id,
+                      "success": success, "duration_ms": duration_ms,
+                      "cancelled": cancelled, "force_cancelled": was_force})
+        push_message({"type": "dag_updated"})
+
+
+def start_pipeline_run(pipeline_id: str, mode: str = "all", target: str = "",
+                       finalized=None, skip_computed: bool = True,
+                       run_id: "str | None" = None) -> dict:
+    """Spawn a background pipeline run (called from api/scopes and the
+    JSON-RPC handler). Validates the mode/target shape up front so bad
+    requests fail synchronously."""
+    from scistack_gui.db import get_db
+
+    if mode not in ("all", "until", "endpoints"):
+        raise ValueError(f"unknown run mode {mode!r}")
+    if mode == "until" and not target:
+        raise ValueError("mode='until' requires a target step name")
+    rid = run_id or str(uuid.uuid4())[:8]
+    thread = threading.Thread(
+        target=_run_pipeline_in_thread,
+        args=(rid, pipeline_id, mode, target, finalized, skip_computed,
+              get_db()),
+        daemon=True,
+    )
+    thread.start()
+    logger.info("[api/run] pipeline run thread started (run_id=%s)", rid)
+    return {"run_id": rid}
 
 
 # ---------------------------------------------------------------------------

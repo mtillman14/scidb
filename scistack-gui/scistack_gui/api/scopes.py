@@ -77,6 +77,37 @@ def get_pipeline_interface(pipeline_id: str) -> dict:
     return scope_service.pipeline_interface(pipeline_id)
 
 
+@router.get("/pipelines/{pipeline_id}/plan")
+def get_pipeline_plan(pipeline_id: str, target: str = "") -> list[dict]:
+    """The plan-preview dialog's data (R2): compile the document scope to a
+    backend pipeline and dry-run plan it — nothing executes."""
+    from scistack_gui.db import get_db
+    from scistack_gui.services.execution_service import plan_pipeline
+
+    return _guard(plan_pipeline, get_db(), pipeline_id, target)
+
+
+class PipelineRunRequest(BaseModel):
+    mode: str = "all"                 # all | until | endpoints
+    target: str = ""                  # step/fn name (mode="until")
+    finalized: bool | None = None     # endpoint draft/record flag
+    skip_computed: bool = True
+    run_id: str | None = None
+
+
+@router.post("/pipelines/{pipeline_id}/run")
+def post_pipeline_run(pipeline_id: str, body: PipelineRunRequest) -> dict:
+    """Execute the scope through the backend verbs in a background run
+    thread (same relay/cancel machinery as per-node runs)."""
+    from scistack_gui.api.run import start_pipeline_run
+
+    return _guard(
+        start_pipeline_run,
+        pipeline_id, body.mode, body.target, body.finalized,
+        body.skip_computed, body.run_id,
+    )
+
+
 @router.post("/pipelines/{pipeline_id}/uses")
 def post_pipeline_use(pipeline_id: str, body: UseCreate) -> dict:
     return _guard(

@@ -708,6 +708,17 @@ class Pipeline:
         while self in _active_stack:
             _active_stack.remove(self)
 
+    def discard(self) -> None:
+        """Deactivate AND drop this pipeline from the session registry.
+
+        For transient pipelines (e.g. the GUI compiling its document per
+        request): a long-lived process would otherwise accumulate every
+        compiled pipeline in the never-run bookkeeping forever.
+        """
+        self.deactivate()
+        while self in _all_pipelines:
+            _all_pipelines.remove(self)
+
     # -- registration --------------------------------------------------------
 
     def register_call(

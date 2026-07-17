@@ -105,10 +105,38 @@ As built:
   DB-derived membership move, edge filtering), TestDocumentInterface
   (var->fn->var document ports + the same ports on the pipeline node).
 
-Remaining checkpoints: execution rearchitecture (G2: document ->
-in-session scidb.Pipeline objects, run_until/plan, plan-preview data),
-frontend (pipeline node + ports + binding badge, double-click descend,
-breadcrumb path + sidebar, scope-swapped canvas).
+**Checkpoint 3 — execution rearchitecture (G2) IMPLEMENTED + VERIFIED
+2026-07-16 (full GUI suite green, user-run).** As built:
+- `services/execution_service.py`: `derive_fn_targets` (the per-function
+  target derivation EXTRACTED from api/run.py's thread — DB variants with
+  manual-wiring overrides, else manual-edge + pending-constant fallback —
+  so per-node and pipeline runs derive identically);
+  `build_backend_pipeline` (document scope -> in-session scidb.Pipeline:
+  function-node targets register via `for_each(..., pipeline=pipe)` —
+  explicit target, never ambient; use rows -> `use(child.bind(**binding))`;
+  per-request memo preserves diamond dedup); `plan_pipeline` (the R2
+  plan-preview data); `run_pipeline` (modes all/until/endpoints ->
+  backend verbs, endpoints with include_used=True).
+- scidb: `Pipeline.discard()` — transient compiles drop out of the
+  session never-run bookkeeping (long-running server would accumulate
+  them); compile paths discard in finally.
+- api/run.py: inline derivation block replaced by the shared helper;
+  `_run_pipeline_in_thread` + `start_pipeline_run` reuse the run
+  registry/relay/message contract (v1: cooperative cancel is a no-op for
+  pipeline runs — Pipeline._run has no between-step hook; force-cancel
+  works).
+- Endpoints: `GET /api/pipelines/{pid}/plan?target=`,
+  `POST /api/pipelines/{pid}/run` (mode/target/finalized/skip_computed;
+  validation 400s synchronously); JSON-RPC `get_pipeline_plan` /
+  `start_pipeline_run`.
+- Tests: TestExecutionCompiler in test_pipeline_scopes.py (derivation
+  parity, root-scope compile + interface, plan green after seed run,
+  composed cross-scope plan, skip_computed no-op run via invocation
+  count, run validation 400s, transient-compile cleanup).
+
+Remaining checkpoint: frontend (pipeline node + ports + binding badge,
+double-click descend, breadcrumb path + sidebar, scope-swapped canvas,
+plan-preview dialog + run controls wired to the new endpoints).
 Grounding: `docs/claude/scistack-gui-backend-internals.md` (dual-protocol
 server, service layer, `_pipeline_*` DuckDB tables + JSON layout);
 backend stages 1–3 all verified (registry, composition, bindings,
