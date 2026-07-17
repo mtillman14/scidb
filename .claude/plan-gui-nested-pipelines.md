@@ -59,11 +59,56 @@ then Part B item 1 (endpoint presentation).
 - `api/project.py` serialized plain @scistack functions as `str(fn)`
   (a `.fcn`-wrapper leftover) → `__name__` first.
 
-Remaining checkpoints: services/API (scope-filtered graph queries,
-pipeline CRUD + use endpoints in both protocol adapters), execution
-rearchitecture (G2: document -> in-session scidb.Pipeline objects,
-run_until/plan), frontend (pipeline node + ports + binding badge,
-double-click descend, breadcrumb path + sidebar, scope-swapped canvas).
+**Checkpoint 2 — services/API IMPLEMENTED + VERIFIED 2026-07-16 (full GUI
+suite green, user-run).** Two fixes landed during verification:
+- Graduations move positions (= the DB-derived scope-membership record)
+  and delete manual rows, so `_build_graph` refreshes
+  positions_by_scope/manual_nodes after executing graduation actions —
+  filtering on the pre-graduation snapshot double-placed a just-graduated
+  node (root + sub). Bonus behavior locked in by test: graduation
+  PRESERVES sub-scope membership (place `bandpass_filter` inside a
+  sub-pipeline → the canonical call-site node lives there).
+- Edge filtering judges endpoints by `node_scope`, not kept-node
+  membership: dangling manual edges (legacy `fn__{name}` endpoint ids
+  that match no built node) default to root and stay on the root canvas
+  exactly as pre-scoping.
+
+As built:
+- `domain/scope_filter.py` (pure): `node_scope` — manual nodes belong by
+  `pipeline_id`; DB-derived nodes by WHERE THEIR POSITION IS SAVED
+  (dragging onto a sub-canvas writes the position into that scope, which
+  IS the membership record); unsaved -> root. `filter_graph_to_scope`
+  (edges survive only with both endpoints); `document_interface` — the
+  GUI-document mirror of scidb's `Pipeline.interface()`, recursing
+  through nested uses.
+- `services/scope_service.py`: scope CRUD + use CRUD with layout side
+  effects (positions per scope; `drop_scope_positions`/
+  `drop_node_positions` added to layout.py); `build_pipeline_nodes` —
+  pipelineNode entries with child name, binding, ports.
+- `_build_graph(db, pipeline_id)`: full build then scope filter;
+  pipelineNode metas excluded from the generic manual-node merge (they
+  are built by scope_service with ports); graduation now sees positions
+  merged across scopes; response gains `pipeline_id`.
+- FastAPI: new `api/scopes.py` router (GET/POST/PUT/DELETE /pipelines,
+  /pipelines/{pid}/interface, /pipelines/{pid}/uses,
+  /pipeline-uses/{use_id}[/binding]); ValueError -> 400.
+  `GET /api/pipeline?pipeline_id=`, `GET /api/layout?pipeline_id=`,
+  `PUT /api/layout/{id}` body gains pipeline_id.
+- JSON-RPC: 8 new methods (list/create/rename/delete_pipeline,
+  get_pipeline_interface, add/remove_pipeline_use, update_use_binding);
+  get_pipeline/get_layout/put_layout accept pipeline_id. Handler
+  exceptions already map to RPC errors.
+- Tests appended to test_pipeline_scopes.py: TestScopeApi (CRUD, 400
+  guards, use flow incl. pipelineNode on the parent canvas with binding +
+  position, cycle/binding-whitelist 400s, remove-use cleanup),
+  TestScopedGraph (scope exclusion both directions, position-based
+  DB-derived membership move, edge filtering), TestDocumentInterface
+  (var->fn->var document ports + the same ports on the pipeline node).
+
+Remaining checkpoints: execution rearchitecture (G2: document ->
+in-session scidb.Pipeline objects, run_until/plan, plan-preview data),
+frontend (pipeline node + ports + binding badge, double-click descend,
+breadcrumb path + sidebar, scope-swapped canvas).
 Grounding: `docs/claude/scistack-gui-backend-internals.md` (dual-protocol
 server, service layer, `_pipeline_*` DuckDB tables + JSON layout);
 backend stages 1–3 all verified (registry, composition, bindings,

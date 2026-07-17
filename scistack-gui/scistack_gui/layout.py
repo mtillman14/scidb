@@ -92,6 +92,33 @@ def _save(data: dict) -> None:
     logger.debug("[layout] Layout file saved successfully")
 
 
+def read_positions_by_scope() -> dict:
+    """All saved positions, scope-keyed: {pipeline_id: {node_id: {x, y}}}.
+
+    The scope a DB-derived node's position lives in IS its scope membership
+    (see domain.scope_filter.node_scope), so graph filtering reads this.
+    """
+    return {k: dict(v) for k, v in _load()["positions"].items()}
+
+
+def drop_scope_positions(pipeline_id: str) -> None:
+    """Remove a deleted scope's position map (scope teardown)."""
+    data = _load()
+    if data["positions"].pop(pipeline_id, None) is not None:
+        _save(data)
+
+
+def drop_node_positions(node_id: str) -> None:
+    """Remove one node's position from every scope (position only — no
+    manual-node/hide side effects, unlike delete_node)."""
+    data = _load()
+    changed = False
+    for scope in data["positions"].values():
+        changed = scope.pop(node_id, None) is not None or changed
+    if changed:
+        _save(data)
+
+
 def read_layout(pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> dict:
     """Return one SCOPE's layout (positions + manual nodes from DB).
 

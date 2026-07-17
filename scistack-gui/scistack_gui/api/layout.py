@@ -37,6 +37,8 @@ class PositionUpdate(BaseModel):
     # Present only when the node was just dragged from the sidebar palette.
     node_type: str | None = None
     label: str | None = None
+    # Scope the node lives on (nested pipelines); default = root canvas.
+    pipeline_id: str = "main"
 
 
 class NodeConfigUpdate(BaseModel):
@@ -44,15 +46,16 @@ class NodeConfigUpdate(BaseModel):
 
 
 @router.get("/layout")
-def get_layout() -> dict:
+def get_layout(pipeline_id: str = "main") -> dict:
     from scistack_gui.services.layout_service import get_layout as _get
-    return _get()
+    return _get(pipeline_id)
 
 
 @router.put("/layout/{node_id}")
 def put_layout(node_id: str, body: PositionUpdate):
     from scistack_gui.services.layout_service import put_layout as _put
-    return _put(node_id, body.x, body.y, body.node_type, body.label)
+    return _put(node_id, body.x, body.y, body.node_type, body.label,
+                body.pipeline_id)
 
 
 @router.delete("/layout/{node_id}")

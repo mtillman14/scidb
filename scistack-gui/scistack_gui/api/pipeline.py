@@ -209,14 +209,20 @@ def _compute_run_states(
     return result
 
 
-def _build_graph(db: DatabaseManager) -> dict:
+def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     """
-    Build nodes and edges from list_pipeline_variants() and list_variables().
+    Build nodes and edges from list_pipeline_variants() and list_variables(),
+    restricted to one pipeline SCOPE.
 
     Delegates pure logic to domain.graph_builder and domain.edge_resolver;
-    this function orchestrates data fetching and side effects.
+    this function orchestrates data fetching and side effects. The full
+    graph is built once, then scope-filtered (domain.scope_filter): manual
+    nodes belong by pipeline_id, DB-derived nodes by where their position
+    is saved (unsaved -> root), edges by both-endpoints-kept. pipelineNode
+    entries for the scope's use edges are appended last (scope_service).
     """
-    logger.info("[pipeline] Starting graph build orchestration")
+    logger.info("[pipeline] Starting graph build orchestration (scope=%s)",
+                pipeline_id)
 
     from scistack_gui import pipeline_store as _ps
     from scistack_gui import matlab_registry as _mr
@@ -423,10 +429,21 @@ def _build_graph(db: DatabaseManager) -> dict:
     logger.info("[pipeline] built %d edges", len(edges))
 
     # --- Merge manual nodes ---
+    # pipelineNode entries are NOT generic manual nodes: they are built by
+    # scope_service (ports + binding) after filtering, so exclude them here.
     logger.info("[pipeline] Merging manual nodes (delegating to graph_builder)")
-    saved_positions = layout_store.read_layout()["positions"]
-    logger.debug("[pipeline] loaded %d saved position(s)", len(saved_positions))
-    to_add, graduations = gb.merge_manual_nodes(nodes, manual_nodes, saved_positions)
+    positions_by_scope = layout_store.read_positions_by_scope()
+    saved_positions: dict = {}
+    for _scope_positions_map in positions_by_scope.values():
+        saved_positions.update(_scope_positions_map)
+    logger.debug("[pipeline] loaded %d saved position(s) across %d scope(s)",
+                 len(saved_positions), len(positions_by_scope))
+    mergeable_manual_nodes = {
+        nid: meta for nid, meta in manual_nodes.items()
+        if meta.get("type") != "pipelineNode"
+    }
+    to_add, graduations = gb.merge_manual_nodes(
+        nodes, mergeable_manual_nodes, saved_positions)
 
     # Execute graduation side effects.
     logger.info("[pipeline] Executing %d graduation action(s)", len(graduations))
@@ -495,25 +512,45 @@ def _build_graph(db: DatabaseManager) -> dict:
         logger.debug("[pipeline] built manual node: %s (type=%s, label=%s)",
                      node_id, meta["type"], meta["label"])
 
+    # --- Scope filtering (nested pipelines) ---
+    # Graduations above MOVE positions (the scope-membership record for
+    # DB-derived nodes) and delete manual-node rows; filtering on the
+    # pre-graduation snapshots would place a just-graduated node in the
+    # root scope (no position found) while its position actually lives in
+    # a sub scope — so refresh both inputs when any graduation ran.
+    if graduations:
+        positions_by_scope = layout_store.read_positions_by_scope()
+        manual_nodes = _ps.get_manual_nodes(db)
+        logger.debug("[pipeline] refreshed scope-membership inputs after "
+                     "%d graduation(s)", len(graduations))
+    logger.info("[pipeline] Filtering graph to scope %s", pipeline_id)
+    from scistack_gui.domain.scope_filter import filter_graph_to_scope
+    from scistack_gui.services.scope_service import build_pipeline_nodes
+    nodes, edges = filter_graph_to_scope(
+        nodes, edges, pipeline_id, manual_nodes, positions_by_scope)
+    nodes += build_pipeline_nodes(db, pipeline_id)
+
     logger.info("[pipeline] Graph build complete - assembling final result")
     node_types = {}
     for n in nodes:
         t = n["type"]
         node_types[t] = node_types.get(t, 0) + 1
     logger.info(
-        "[pipeline] graph built successfully: %d total nodes (%s), %d edges",
+        "[pipeline] graph built successfully (scope=%s): %d total nodes (%s), %d edges",
+        pipeline_id,
         len(nodes),
         ", ".join(f"{c} {t}" for t, c in sorted(node_types.items())),
         len(edges),
     )
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "pipeline_id": pipeline_id}
 
 
 @router.get("/pipeline")
-def get_pipeline(db: DatabaseManager = Depends(get_db)):
+def get_pipeline(pipeline_id: str = "main",
+                 db: DatabaseManager = Depends(get_db)):
     from scistack_gui.services.pipeline_service import get_pipeline_graph
-    return get_pipeline_graph(db)
+    return get_pipeline_graph(db, pipeline_id)
 
 
 @router.get("/function/{fn_name}/params")

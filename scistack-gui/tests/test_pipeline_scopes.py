@@ -235,3 +235,191 @@ class TestScopedPositions:
 
         assert "m1" not in layout_store.read_layout(pipeline_id=pid)["positions"]
         assert "m1" not in ps.get_manual_nodes(db)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint 2: scope services + API (scoped graph, scope CRUD endpoints)
+# ---------------------------------------------------------------------------
+
+class TestScopeApi:
+    def test_list_and_create_pipelines(self, client):
+        r = client.get("/api/pipelines")
+        assert r.status_code == 200
+        assert r.json()["pipelines"][0]["pipeline_id"] == "main"
+
+        r = client.post("/api/pipelines", json={"name": "loading"})
+        assert r.status_code == 200
+        pid = r.json()["pipeline_id"]
+        assert pid.startswith("pipe_")
+
+        # Duplicate name -> 400 with the store's message.
+        r = client.post("/api/pipelines", json={"name": "loading"})
+        assert r.status_code == 400
+        assert "already exists" in r.json()["detail"]
+
+    def test_root_guards_are_400(self, client):
+        assert client.delete("/api/pipelines/main").status_code == 400
+        r = client.put("/api/pipelines/main", json={"name": "x"})
+        assert r.status_code == 400
+
+    def test_use_flow_and_pipeline_node_on_parent_canvas(self, client):
+        pid = client.post("/api/pipelines",
+                          json={"name": "loading"}).json()["pipeline_id"]
+
+        r = client.post(f"/api/pipelines/main/uses",
+                        json={"child_pipeline_id": pid,
+                              "binding": {"params": {"low_hz": 30}},
+                              "x": 10.0, "y": 20.0})
+        assert r.status_code == 200
+        use_id = r.json()["use_id"]
+
+        graph = client.get("/api/pipeline").json()
+        pipeline_nodes = [n for n in graph["nodes"]
+                          if n["type"] == "pipelineNode"]
+        assert [n["id"] for n in pipeline_nodes] == [use_id]
+        data = pipeline_nodes[0]["data"]
+        assert data["label"] == "loading"
+        assert data["binding"] == {"params": {"low_hz": 30}}
+        assert data["child_pipeline_id"] == pid
+        # Its position landed in the parent scope.
+        layout = client.get("/api/layout").json()
+        assert layout["positions"][use_id] == {"x": 10.0, "y": 20.0}
+
+    def test_cycle_and_binding_validation_are_400(self, client):
+        a = client.post("/api/pipelines", json={"name": "a"}).json()["pipeline_id"]
+        b = client.post("/api/pipelines", json={"name": "b"}).json()["pipeline_id"]
+        client.post(f"/api/pipelines/{a}/uses", json={"child_pipeline_id": b})
+
+        r = client.post(f"/api/pipelines/{b}/uses", json={"child_pipeline_id": a})
+        assert r.status_code == 400
+        assert "cycle" in r.json()["detail"]
+
+        use_id = client.get("/api/pipelines").json()["uses"][0]["use_id"]
+        r = client.put(f"/api/pipeline-uses/{use_id}/binding",
+                       json={"binding": {"bogus": 1}})
+        assert r.status_code == 400
+
+    def test_remove_use_clears_node_and_position(self, client):
+        pid = client.post("/api/pipelines",
+                          json={"name": "loading"}).json()["pipeline_id"]
+        use_id = client.post(f"/api/pipelines/main/uses",
+                             json={"child_pipeline_id": pid,
+                                   "x": 5.0, "y": 5.0}).json()["use_id"]
+
+        assert client.delete(f"/api/pipeline-uses/{use_id}").status_code == 200
+
+        graph = client.get("/api/pipeline").json()
+        assert all(n["id"] != use_id for n in graph["nodes"])
+        assert use_id not in client.get("/api/layout").json()["positions"]
+
+
+class TestScopedGraph:
+    def test_root_graph_excludes_sub_scope_manual_nodes(self, client):
+        # Label with NO DB-derived counterpart, so the node stays manual
+        # (a label matching one DB node would GRADUATE — separate test).
+        pid = client.post("/api/pipelines",
+                          json={"name": "loading"}).json()["pipeline_id"]
+        client.put("/api/layout/sub_fn_node",
+                   json={"x": 0, "y": 0, "node_type": "functionNode",
+                         "label": "my_custom_fn", "pipeline_id": pid})
+
+        root_ids = {n["id"] for n in
+                    client.get("/api/pipeline").json()["nodes"]}
+        sub_ids = {n["id"] for n in
+                   client.get("/api/pipeline",
+                              params={"pipeline_id": pid}).json()["nodes"]}
+
+        assert "sub_fn_node" not in root_ids
+        assert "sub_fn_node" in sub_ids
+        # DB-derived nodes (no saved position anywhere) default to root.
+        assert "var__RawSignal" in root_ids
+        assert "var__RawSignal" not in sub_ids
+
+    def test_graduation_preserves_sub_scope_membership(self, client):
+        """A manual node whose label matches exactly one DB-derived node
+        GRADUATES into it — and because the position transfer is
+        scope-aware, the canonical node inherits the sub-scope membership
+        (it moves off the root canvas onto the sub canvas)."""
+        pid = client.post("/api/pipelines",
+                          json={"name": "loading"}).json()["pipeline_id"]
+        client.put("/api/layout/sub_fn_node",
+                   json={"x": 0, "y": 0, "node_type": "functionNode",
+                         "label": "bandpass_filter", "pipeline_id": pid})
+
+        root_ids = {n["id"] for n in
+                    client.get("/api/pipeline").json()["nodes"]}
+        sub_ids = {n["id"] for n in
+                   client.get("/api/pipeline",
+                              params={"pipeline_id": pid}).json()["nodes"]}
+
+        canonical = {i for i in (root_ids | sub_ids)
+                     if i.startswith("fn__bandpass_filter__")}
+        assert len(canonical) == 1
+        assert canonical <= sub_ids, \
+            "graduated node must live on the sub canvas (position scope)"
+        assert not (canonical & root_ids)
+        assert "sub_fn_node" not in (root_ids | sub_ids)  # replaced
+
+    def test_position_moves_db_derived_node_between_scopes(self, client):
+        """Dragging a DB-derived node onto a sub-canvas (position write in
+        that scope) IS the membership record."""
+        pid = client.post("/api/pipelines",
+                          json={"name": "loading"}).json()["pipeline_id"]
+        client.put("/api/layout/var__RawSignal",
+                   json={"x": 1.0, "y": 2.0, "pipeline_id": pid})
+
+        root_ids = {n["id"] for n in
+                    client.get("/api/pipeline").json()["nodes"]}
+        sub_ids = {n["id"] for n in
+                   client.get("/api/pipeline",
+                              params={"pipeline_id": pid}).json()["nodes"]}
+
+        assert "var__RawSignal" not in root_ids
+        assert "var__RawSignal" in sub_ids
+
+    def test_edges_filtered_by_scope_membership(self, client):
+        """The seeded bandpass edges stay on root; a sub-scope canvas sees
+        none of them."""
+        pid = client.post("/api/pipelines",
+                          json={"name": "empty"}).json()["pipeline_id"]
+
+        root = client.get("/api/pipeline").json()
+        sub = client.get("/api/pipeline",
+                         params={"pipeline_id": pid}).json()
+
+        assert len(root["edges"]) > 0
+        assert sub["edges"] == []
+        assert sub["pipeline_id"] == pid
+
+
+class TestDocumentInterface:
+    def test_interface_from_manual_document(self, client):
+        """var -> fn -> var wired inside a sub-scope: consumed-not-produced
+        in, produced out."""
+        pid = client.post("/api/pipelines",
+                          json={"name": "loading"}).json()["pipeline_id"]
+        client.put("/api/layout/mv_in",
+                   json={"x": 0, "y": 0, "node_type": "variableNode",
+                         "label": "RawSignal", "pipeline_id": pid})
+        client.put("/api/layout/mf_proc",
+                   json={"x": 0, "y": 0, "node_type": "functionNode",
+                         "label": "bandpass_filter", "pipeline_id": pid})
+        client.put("/api/layout/mv_out",
+                   json={"x": 0, "y": 0, "node_type": "variableNode",
+                         "label": "FilteredSignal", "pipeline_id": pid})
+        client.put("/api/edges/e_in", json={"source": "mv_in",
+                                            "target": "mf_proc"})
+        client.put("/api/edges/e_out", json={"source": "mf_proc",
+                                             "target": "mv_out"})
+
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+
+        assert iface == {"inputs": ["RawSignal"], "outputs": ["FilteredSignal"]}
+
+        # The pipeline node on the root canvas carries the same ports.
+        use_id = client.post("/api/pipelines/main/uses",
+                             json={"child_pipeline_id": pid}).json()["use_id"]
+        graph = client.get("/api/pipeline").json()
+        node = next(n for n in graph["nodes"] if n["id"] == use_id)
+        assert node["data"]["inputs"] == ["RawSignal"]
+        assert node["data"]["outputs"] == ["FilteredSignal"]

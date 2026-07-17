@@ -13,15 +13,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def get_pipeline_graph(db) -> dict:
-    """Build the full pipeline graph (nodes + edges).
+def get_pipeline_graph(db, pipeline_id: str = "main") -> dict:
+    """Build the pipeline graph (nodes + edges) for one SCOPE.
 
     Delegates to api/pipeline._build_graph which already orchestrates
     domain modules. This service function provides a stable entry point
     for both protocol adapters.
     """
     from scistack_gui.api.pipeline import _build_graph
-    return _build_graph(db)
+    return _build_graph(db, pipeline_id)
 
 
 def get_function_params(fn_name: str) -> list[str]:

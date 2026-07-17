@@ -11,16 +11,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def get_layout() -> dict:
+def get_layout(pipeline_id: str = "main") -> dict:
     from scistack_gui import layout as layout_store
-    return layout_store.read_layout()
+    return layout_store.read_layout(pipeline_id)
 
 
 def put_layout(node_id: str, x: float, y: float,
-               node_type: str | None = None, label: str | None = None) -> dict:
+               node_type: str | None = None, label: str | None = None,
+               pipeline_id: str = "main") -> dict:
     from scistack_gui import layout as layout_store
-    logger.info("[layout_service] put_layout called (node_id=%r, type=%r, label=%r, position=(%.1f, %.1f))",
-                node_id, node_type, label, x, y)
+    logger.info("[layout_service] put_layout called (node_id=%r, type=%r, label=%r, position=(%.1f, %.1f), scope=%r)",
+                node_id, node_type, label, x, y, pipeline_id)
     if node_type and label:
         logger.info("[layout_service] Creating/updating manual node")
         if node_type == "functionNode":
@@ -36,11 +37,13 @@ def put_layout(node_id: str, x: float, y: float,
         else:
             logger.debug("[layout_service] Node added to DAG: node_id=%r, type=%r, label=%r",
                          node_id, node_type, label)
-        layout_store.write_manual_node(node_id, x, y, node_type, label)
+        layout_store.write_manual_node(node_id, x, y, node_type, label,
+                                       pipeline_id=pipeline_id)
         logger.info("[layout_service] Manual node created/updated successfully")
     else:
         logger.info("[layout_service] Updating node position only (no type/label)")
-        layout_store.write_node_position(node_id, x, y)
+        layout_store.write_node_position(node_id, x, y,
+                                         pipeline_id=pipeline_id)
         logger.info("[layout_service] Node position updated successfully")
     return {"ok": True}
 

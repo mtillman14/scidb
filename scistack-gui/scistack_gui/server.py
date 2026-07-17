@@ -89,12 +89,59 @@ def _send_progress(message: str) -> None:
 def _h_get_pipeline(params):
     from scistack_gui.services.pipeline_service import get_pipeline_graph
     from scistack_gui.db import get_db
-    return get_pipeline_graph(get_db())
+    return get_pipeline_graph(get_db(), params.get("pipeline_id", "main"))
 
 
 def _h_get_layout(params):
     from scistack_gui.services.layout_service import get_layout
-    return get_layout()
+    return get_layout(params.get("pipeline_id", "main"))
+
+
+# --- Nested-pipeline scopes (plan-gui-nested-pipelines.md Part A) ---
+# Store-level ValueErrors propagate; the dispatch loop's error mapping
+# reports them as JSON-RPC errors with the store's message.
+
+def _h_list_pipelines(params):
+    from scistack_gui.services.scope_service import list_pipelines
+    return list_pipelines()
+
+
+def _h_create_pipeline(params):
+    from scistack_gui.services.scope_service import create_pipeline
+    return create_pipeline(params["name"])
+
+
+def _h_rename_pipeline(params):
+    from scistack_gui.services.scope_service import rename_pipeline
+    return rename_pipeline(params["pipeline_id"], params["name"])
+
+
+def _h_delete_pipeline(params):
+    from scistack_gui.services.scope_service import delete_pipeline
+    return delete_pipeline(params["pipeline_id"])
+
+
+def _h_get_pipeline_interface(params):
+    from scistack_gui.services.scope_service import pipeline_interface
+    return pipeline_interface(params["pipeline_id"])
+
+
+def _h_add_pipeline_use(params):
+    from scistack_gui.services.scope_service import add_pipeline_use
+    return add_pipeline_use(
+        params["parent_pipeline_id"], params["child_pipeline_id"],
+        params.get("binding"), params.get("x", 0.0), params.get("y", 0.0),
+    )
+
+
+def _h_update_use_binding(params):
+    from scistack_gui.services.scope_service import update_use_binding
+    return update_use_binding(params["use_id"], params["binding"])
+
+
+def _h_remove_pipeline_use(params):
+    from scistack_gui.services.scope_service import remove_pipeline_use
+    return remove_pipeline_use(params["use_id"])
 
 
 def _h_get_schema(params):
@@ -142,7 +189,8 @@ def _h_get_path_inputs(params):
 def _h_put_layout(params):
     from scistack_gui.services.layout_service import put_layout
     return put_layout(params["node_id"], params["x"], params["y"],
-                      params.get("node_type"), params.get("label"))
+                      params.get("node_type"), params.get("label"),
+                      params.get("pipeline_id", "main"))
 
 
 def _h_delete_layout(params):
@@ -455,6 +503,14 @@ METHODS = {
     "get_project_code": _h_get_project_code,
     "get_project_libraries": _h_get_project_libraries,
     "refresh_project": _h_refresh_project,
+    "list_pipelines": _h_list_pipelines,
+    "create_pipeline": _h_create_pipeline,
+    "rename_pipeline": _h_rename_pipeline,
+    "delete_pipeline": _h_delete_pipeline,
+    "get_pipeline_interface": _h_get_pipeline_interface,
+    "add_pipeline_use": _h_add_pipeline_use,
+    "update_use_binding": _h_update_use_binding,
+    "remove_pipeline_use": _h_remove_pipeline_use,
     "get_indexes": _h_get_indexes,
     "search_index_packages": _h_search_index_packages,
     "add_library": _h_add_library,
