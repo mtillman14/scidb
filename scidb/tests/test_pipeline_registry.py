@@ -300,6 +300,58 @@ class TestExecution:
 
 
 # ---------------------------------------------------------------------------
+# last_run_report — honest per-step outcomes
+# ---------------------------------------------------------------------------
+
+
+def exploder(signal):
+    """A step whose every combo fails — for_each's continue-and-report
+    policy swallows these, so the run report is the only honest signal."""
+    raise ValueError("boom")
+
+
+class TestLastRunReport:
+    def test_report_counts_failures_per_step(self, db):
+        """Iteration failures never raise out of _run — the report carries
+        them (regression: GUI showed success for completed=0/failed=N runs,
+        2026-07-18)."""
+        _seed(db)
+        pipe = db.pipeline("gait")
+        for_each(halve, {"signal": RawSignal}, [Filtered],
+                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(exploder, {"signal": RawSignal}, [UnrelatedOut],
+                 subject=SUBJECTS, trial=TRIALS, db=db)
+
+        pipe.run_all()
+
+        report = {e["step"]: e for e in pipe.last_run_report}
+        assert report["halve"]["completed"] == 4
+        assert report["halve"]["failed"] == 0
+        assert report["exploder"]["completed"] == 0
+        assert report["exploder"]["failed"] == 4
+        assert report["exploder"]["pipeline"] == "gait"
+        assert report["exploder"]["cancelled"] is False
+
+    def test_memoized_rerun_reports_clean(self, db):
+        """skip_computed removes up-to-date combos BEFORE the loop — they
+        must never inflate the report's failed count."""
+        _seed(db)
+        pipe = db.pipeline("gait")
+        for_each(halve, {"signal": RawSignal}, [Filtered],
+                 subject=SUBJECTS, trial=TRIALS, db=db)
+        pipe.run_all()
+        assert pipe.last_run_report[0]["failed"] == 0
+        assert pipe.last_run_report[0]["completed"] == 4
+
+        pipe.run_all()  # everything current → all combos pre-skipped
+
+        entry = pipe.last_run_report[0]
+        assert entry["step"] == "halve"
+        assert entry["failed"] == 0
+        assert entry["completed"] == 0
+
+
+# ---------------------------------------------------------------------------
 # plan() dry run
 # ---------------------------------------------------------------------------
 

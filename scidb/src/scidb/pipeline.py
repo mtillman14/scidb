@@ -569,6 +569,13 @@ class Pipeline:
         # True once run_all/run_until/plan/deactivate acknowledged this
         # pipeline; guards the never-run atexit warning.
         self._acknowledged = False
+        # Per-step outcome of the most recent _run (run_all/run_until/
+        # run_endpoints): [{"step", "label", "pipeline", "completed",
+        # "failed", "total", "cancelled"}]. for_each's continue-and-report
+        # policy means iteration failures never raise, so callers that need
+        # an honest verdict (the GUI's run status, CI wrappers) read this
+        # instead of inferring success from "the call returned".
+        self.last_run_report: list[dict] = []
         _all_pipelines.append(self)
         for other in uses:
             self.use(other)
@@ -1199,6 +1206,7 @@ class Pipeline:
             f"dependency order: {names}"
         )
         results = []
+        report: list[dict] = []
         for i in order:
             apply_finalized = (
                 finalized
@@ -1206,9 +1214,15 @@ class Pipeline:
                 else None
             )
             results.append(
-                self._execute_step(pairs, i, skip_computed, apply_finalized)
+                self._execute_step(pairs, i, skip_computed, apply_finalized,
+                                   report=report)
             )
-        Log.info(f"pipeline_run_finished: '{self.name}' ({len(order)} step(s))")
+        self.last_run_report = report
+        failed_total = sum(e["failed"] for e in report)
+        Log.info(
+            f"pipeline_run_finished: '{self.name}' ({len(order)} step(s), "
+            f"{failed_total} failed combo(s))"
+        )
         return results
 
     def _execute_step(
@@ -1217,10 +1231,16 @@ class Pipeline:
         i: int,
         skip_computed: bool = True,
         finalized: "bool | None" = None,
+        report: "list[dict] | None" = None,
     ):
         """Execute ONE composed step through eager for_each. Shared by the
         ``_run`` loop and the MATLAB bridge's mixed-pipeline driver (which
-        runs Python-registered steps here while MATLAB runs its own)."""
+        runs Python-registered steps here while MATLAB runs its own).
+
+        When ``report`` is given, a per-step outcome entry is appended to it
+        (populated from scifor's authoritative ``summary`` progress event;
+        combos removed up-front by skip_computed never enter these counts).
+        """
         from .foreach import for_each as _for_each
 
         owner, spec = pairs[i]
@@ -1228,6 +1248,31 @@ class Pipeline:
         opts.pop("__matlab__", None)
         opts.pop("__matlab_fn_hash__", None)
         opts["db"] = self._db_for(owner, spec)
+        if report is not None:
+            entry = {
+                "step": spec.name,
+                "label": self._step_label(owner, spec, self),
+                "pipeline": owner.name,
+                "completed": 0,
+                "failed": 0,
+                "total": 0,
+                "cancelled": False,
+            }
+            report.append(entry)
+            _caller_progress_fn = opts.get("_progress_fn")
+
+            def _collecting_progress_fn(info: dict, _entry=entry,
+                                        _next=_caller_progress_fn):
+                if info.get("event") == "summary":
+                    _entry["completed"] = info.get("completed", 0)
+                    _entry["failed"] = info.get(
+                        "failed", info.get("skipped", 0))
+                    _entry["total"] = info.get("total", 0)
+                    _entry["cancelled"] = bool(info.get("cancelled"))
+                if _next is not None:
+                    _next(info)
+
+            opts["_progress_fn"] = _collecting_progress_fn
         # Pull execution defaults to memoized runs; a step's explicitly
         # registered skip_computed=True always wins, and untracked steps
         # are left alone (skip_computed requires lineage).
