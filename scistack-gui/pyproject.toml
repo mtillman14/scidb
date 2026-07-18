@@ -13,7 +13,10 @@ description = "GUI for SciStack pipelines"
 requires-python = ">=3.9"
 dependencies = [
     "fastapi>=0.100.0",
-    "uvicorn>=0.20.0",
+    # [standard] pulls in a WebSocket protocol library — bare uvicorn
+    # rejects /ws upgrades ("Unsupported upgrade request") and the GUI
+    # silently never receives run_output/run_done/dag_updated pushes.
+    "uvicorn[standard]>=0.20.0",
     "scidb",
     "scihist",
     "jupyter_client>=8.0.0",

@@ -25,6 +25,17 @@ function getSocket(): WebSocket | null {
 
   _socket = new WebSocket(WS_URL)
 
+  // Lifecycle logs: "run stuck on Running…" usually means push messages
+  // aren't arriving — the browser console should show whether the socket
+  // is even open (pair with the backend's [ws] lines in scidb.log).
+  _socket.onopen = () => {
+    console.info(`[ws] connected to ${WS_URL}`)
+  }
+
+  _socket.onerror = (event) => {
+    console.warn('[ws] socket error', event)
+  }
+
   _socket.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data)
@@ -34,7 +45,8 @@ function getSocket(): WebSocket | null {
     }
   }
 
-  _socket.onclose = () => {
+  _socket.onclose = (event) => {
+    console.warn(`[ws] closed (code=${event.code}); reconnecting in 2s`)
     // Reconnect after 2 seconds
     setTimeout(getSocket, 2000)
   }
