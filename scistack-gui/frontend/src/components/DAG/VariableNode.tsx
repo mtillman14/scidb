@@ -16,7 +16,8 @@ export interface Variant {
 export interface VariableNodeData {
   label: string
   total_records: number
-  run_state?: 'green' | 'grey' | 'red'
+  // 'pending' is GUI-only: a staged (unrun) constant value — not in the DB.
+  run_state?: 'green' | 'pending' | 'red'
 }
 
 interface Props {
@@ -24,9 +25,11 @@ interface Props {
 }
 
 const STATE_STYLES: Record<string, { border: string; background: string }> = {
-  green: { border: '#16a34a', background: '#f0fdf4' },
-  grey:  { border: '#6b7280', background: '#f3f4f6' },
-  red:   { border: '#dc2626', background: '#fef2f2' },
+  green:   { border: '#16a34a', background: '#f0fdf4' },
+  // Yellow (not orange — orange belongs to path-input nodes): a change
+  // staged in the GUI that isn't in the database yet.
+  pending: { border: '#eab308', background: '#fefce8' },
+  red:     { border: '#dc2626', background: '#fef2f2' },
 }
 
 export default function VariableNode({ data }: Props) {

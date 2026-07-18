@@ -12,7 +12,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_STATE_ORDER = {"red": 0, "grey": 1, "green": 2}
+_STATE_ORDER = {"red": 0, "pending": 1, "green": 2}
 
 
 FnKey = tuple[str, str]
@@ -34,22 +34,27 @@ def propagate_run_states(
     broken upstream variant correctly degrades downstream nodes.
 
     Args:
-        fn_own_states: {(fn_name, call_id): "green"|"grey"|"red"}.
+        fn_own_states: {(fn_name, call_id): "green"|"pending"|"red"}.
         fn_input_params: {(fn_name, call_id): {param_name: variable_type_name}}.
         fn_outputs: {(fn_name, call_id): {output_type_name, ...}}.
         fn_constants: {(fn_name, call_id): {constant_param_name, ...}} — optional.
         pending_constants: {constant_name: {pending_value, ...}} — optional.
 
     Returns:
-        {node_id: "green"|"grey"|"red"} for fn__ and var__ nodes, where
+        {node_id: "green"|"pending"|"red"} for fn__ and var__ nodes, where
         function nodes use ``fn__{fn_name}__{call_id}`` IDs.
+
+    State vocabulary: scidb node state is BINARY (green/red). "pending" is
+    a GUI-ONLY third state meaning "a change staged in the GUI (an unrun
+    pending constant value) — nothing in the database yet"; it never comes
+    from scidb.
     """
     logger.info("[run_state] propagate_run_states: processing %d function call site(s)", len(fn_own_states))
 
     # Make a mutable copy so we don't modify the caller's dict.
     fn_own_state = dict(fn_own_states)
 
-    # Downgrade "green" → "grey" for call sites that have unrun pending
+    # Downgrade "green" → "pending" for call sites that have unrun pending
     # constant values.  fn_constants is keyed per call site, so a call site
     # that doesn't use the pending constant is unaffected.
     logger.debug("[run_state] Checking for pending constants that affect green nodes")
@@ -60,10 +65,10 @@ def propagate_run_states(
                 for const_name in fn_constants.get(fkey, set()):
                     if pending_constants.get(const_name):
                         logger.debug(
-                            "[run_state] downgrading %s green→grey: pending constant %r",
+                            "[run_state] downgrading %s green→pending: pending constant %r",
                             fkey, const_name,
                         )
-                        fn_own_state[fkey] = "grey"
+                        fn_own_state[fkey] = "pending"
                         downgrade_count += 1
                         break
         if downgrade_count > 0:
@@ -148,10 +153,10 @@ def propagate_run_states(
     for vtype, state in var_state.items():
         result[f"var__{vtype}"] = state
 
-    state_counts = {"green": 0, "grey": 0, "red": 0}
+    state_counts = {"green": 0, "pending": 0, "red": 0}
     for s in result.values():
         state_counts[s] = state_counts.get(s, 0) + 1
-    logger.info("[run_state] propagate_run_states complete: %d total nodes (%d green, %d grey, %d red)",
-                len(result), state_counts["green"], state_counts["grey"], state_counts["red"])
+    logger.info("[run_state] propagate_run_states complete: %d total nodes (%d green, %d pending, %d red)",
+                len(result), state_counts["green"], state_counts["pending"], state_counts["red"])
 
     return result

@@ -52,14 +52,14 @@ class TestSingleFunction:
         assert result[fn("f")] == "green"
         assert result[var("Out")] == "green"
 
-    def test_grey_own_state_propagates_to_output(self):
+    def test_pending_own_state_propagates_to_output(self):
         result = propagate_run_states(
-            fn_own_states={K("f"): "grey"},
+            fn_own_states={K("f"): "pending"},
             fn_input_params={K("f"): {}},
             fn_outputs={K("f"): {"Out"}},
         )
-        assert result[fn("f")] == "grey"
-        assert result[var("Out")] == "grey"
+        assert result[fn("f")] == "pending"
+        assert result[var("Out")] == "pending"
 
     def test_red_own_state_propagates_to_output(self):
         result = propagate_run_states(
@@ -114,12 +114,12 @@ class TestChainedFunctions:
         assert result[fn("B")] == "red"
         assert result[var("FinalOut")] == "red"
 
-    def test_upstream_grey_propagates_down(self):
-        result = self._chain("grey", "green")
-        assert result[fn("A")] == "grey"
-        assert result[var("Out")] == "grey"
-        assert result[fn("B")] == "grey"
-        assert result[var("FinalOut")] == "grey"
+    def test_upstream_pending_propagates_down(self):
+        result = self._chain("pending", "green")
+        assert result[fn("A")] == "pending"
+        assert result[var("Out")] == "pending"
+        assert result[fn("B")] == "pending"
+        assert result[var("FinalOut")] == "pending"
 
     def test_downstream_red_doesnt_affect_upstream(self):
         result = self._chain("green", "red")
@@ -128,19 +128,19 @@ class TestChainedFunctions:
         assert result[fn("B")] == "red"
         assert result[var("FinalOut")] == "red"
 
-    def test_downstream_grey_doesnt_affect_upstream(self):
-        result = self._chain("green", "grey")
+    def test_downstream_pending_doesnt_affect_upstream(self):
+        result = self._chain("green", "pending")
         assert result[fn("A")] == "green"
-        assert result[fn("B")] == "grey"
+        assert result[fn("B")] == "pending"
 
     def test_minimum_state_wins(self):
-        # A is grey, B is green → B becomes grey because its input is grey.
-        result = self._chain("grey", "green")
-        assert result[fn("B")] == "grey"
+        # A is pending, B is green → B becomes pending because its input is pending.
+        result = self._chain("pending", "green")
+        assert result[fn("B")] == "pending"
 
 
 # ---------------------------------------------------------------------------
-# Pending constants downgrade green → grey
+# Pending constants downgrade green → pending
 # ---------------------------------------------------------------------------
 
 class TestPendingConstants:
@@ -152,8 +152,8 @@ class TestPendingConstants:
             fn_constants={K("f"): {"low_hz"}},
             pending_constants={"low_hz": {42}},
         )
-        assert result[fn("f")] == "grey"
-        assert result[var("Out")] == "grey"
+        assert result[fn("f")] == "pending"
+        assert result[var("Out")] == "pending"
 
     def test_no_downgrade_when_pending_constant_empty(self):
         result = propagate_run_states(
@@ -194,8 +194,8 @@ class TestPendingConstants:
             fn_constants={K("A"): {"low_hz"}},
             pending_constants={"low_hz": {20}},
         )
-        assert result[fn("A")] == "grey"
-        assert result[fn("B")] == "grey"
+        assert result[fn("A")] == "pending"
+        assert result[fn("B")] == "pending"
 
     def test_none_fn_constants_is_safe(self):
         result = propagate_run_states(
@@ -215,13 +215,13 @@ class TestPendingConstants:
 class TestMultipleOutputs:
     def test_all_outputs_get_same_state(self):
         result = propagate_run_states(
-            fn_own_states={K("f"): "grey"},
+            fn_own_states={K("f"): "pending"},
             fn_input_params={K("f"): {}},
             fn_outputs={K("f"): {"A", "B", "C"}},
         )
-        assert result[var("A")] == "grey"
-        assert result[var("B")] == "grey"
-        assert result[var("C")] == "grey"
+        assert result[var("A")] == "pending"
+        assert result[var("B")] == "pending"
+        assert result[var("C")] == "pending"
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ class TestMultipleInputs:
     def test_worst_input_determines_function_state(self):
         result = propagate_run_states(
             fn_own_states={
-                K("ProducerA"): "grey",
+                K("ProducerA"): "pending",
                 K("ProducerB"): "green",
                 K("Consumer"): "green",
             },
@@ -247,7 +247,7 @@ class TestMultipleInputs:
                 K("Consumer"): {"Out"},
             },
         )
-        assert result[fn("Consumer")] == "grey"
+        assert result[fn("Consumer")] == "pending"
 
 
 # ---------------------------------------------------------------------------

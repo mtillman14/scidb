@@ -639,11 +639,12 @@ class TestRunStateRed:
             assert state == "red"
 
 
-class TestRunStateGrey:
+class TestRunStatePartialIsRed:
     """Partially-run pipeline → red. scidb node state is BINARY green/red
     ('needs attention' is one state whether never-run, partial, or stale —
-    the former 'grey' staleness verdict was removed with the bipartite
-    graph). GUI 'grey' now ONLY means the pending-constant downgrade."""
+    the former tri-state staleness verdict was removed with the bipartite
+    graph). The GUI's only third state is 'pending' (yellow), which ONLY
+    means an unrun pending constant value staged in the GUI."""
 
     @pytest.fixture
     def client_partial(self, tmp_path):
@@ -651,7 +652,7 @@ class TestRunStateGrey:
             delattr(_local, "database")
         _gui_db._db = None
 
-        db = configure_database(tmp_path / "grey.duckdb", ["subject", "session"])
+        db = configure_database(tmp_path / "partial.duckdb", ["subject", "session"])
         for subj in [1, 2]:
             for sess in ["pre", "post"]:
                 RawSignal.save(np.random.randn(10), subject=subj, session=sess)
@@ -666,7 +667,7 @@ class TestRunStateGrey:
         )
 
         _gui_db._db = db
-        _gui_db._db_path = tmp_path / "grey.duckdb"
+        _gui_db._db_path = tmp_path / "partial.duckdb"
         _registry._functions["bandpass_filter"] = bandpass_filter
 
         from fastapi.testclient import TestClient
@@ -676,14 +677,14 @@ class TestRunStateGrey:
 
         db.close()
 
-    def test_function_node_is_grey(self, client_partial):
+    def test_function_node_is_red_when_partial(self, client_partial):
         nodes = client_partial.get("/api/pipeline").json()["nodes"]
         # One call site (low_hz=20), partially run → red (binary state).
         node_id = find_fn_node_id_by_label(nodes, "bandpass_filter")
         fn_node = next(n for n in nodes if n["id"] == node_id)
         assert fn_node["data"].get("run_state") == "red"
 
-    def test_output_variable_is_grey(self, client_partial):
+    def test_output_variable_is_red_when_partial(self, client_partial):
         nodes = client_partial.get("/api/pipeline").json()["nodes"]
         var_node = next(n for n in nodes if n["id"] == "var__FilteredSignal")
         assert var_node["data"].get("run_state") == "red"
@@ -738,33 +739,33 @@ class TestRunStatePropagation:
 
         db.close()
 
-    def test_upstream_is_grey(self, client_propagation):
+    def test_upstream_is_red(self, client_propagation):
         nodes = client_propagation.get("/api/pipeline").json()["nodes"]
         node_id = find_fn_node_id_by_label(nodes, "bandpass_filter")
         fn_node = next(n for n in nodes if n["id"] == node_id)
         # Partial run → red (binary node state).
         assert fn_node["data"].get("run_state") == "red"
 
-    def test_downstream_function_is_grey_due_to_staleness(self, client_propagation):
+    def test_downstream_function_is_red_due_to_staleness(self, client_propagation):
         nodes = client_propagation.get("/api/pipeline").json()["nodes"]
         node_id = find_fn_node_id_by_label(nodes, "process_signal")
         fn_node = next(n for n in nodes if n["id"] == node_id)
         # process_signal ran for all available inputs, but upstream is red → red
         assert fn_node["data"].get("run_state") == "red"
 
-    def test_downstream_variable_is_grey_due_to_staleness(self, client_propagation):
+    def test_downstream_variable_is_red_due_to_staleness(self, client_propagation):
         nodes = client_propagation.get("/api/pipeline").json()["nodes"]
         var_node = next(n for n in nodes if n["id"] == "var__ProcessedSignal")
         assert var_node["data"].get("run_state") == "red"
 
 
 # ---------------------------------------------------------------------------
-# Pending constant lifecycle: green → pending → grey → run → green
+# Pending constant lifecycle: green → staged value → pending → run → green
 # ---------------------------------------------------------------------------
 
 class TestPendingConstantLifecycle:
     """End-to-end: user drags a new constant value in the GUI, the consumer
-    function node greys out, the user runs for_each with that new value, and
+    function node turns pending, the user runs for_each with that new value, and
     on the next /api/pipeline request the pending value is auto-cleaned and
     the function returns to green.
 
@@ -788,19 +789,19 @@ class TestPendingConstantLifecycle:
     def test_starts_green(self, client):
         assert self._fn_state(client) == "green"
 
-    def test_adding_pending_value_greys_consumer(self, client):
+    def test_adding_pending_value_marks_consumer_pending(self, client):
         assert self._fn_state(client) == "green"
 
         r = client.put("/api/constants/low_hz/pending/42")
         assert r.status_code == 200
 
-        # Consumer downgraded green → grey.
-        assert self._fn_state(client) == "grey"
+        # Consumer downgraded green → pending.
+        assert self._fn_state(client) == "pending"
 
-        # Downstream variable inherits the grey via DAG propagation.
+        # Downstream variable inherits the pending state via DAG propagation.
         nodes = client.get("/api/pipeline").json()["nodes"]
         var_node = next(n for n in nodes if n["id"] == "var__FilteredSignal")
-        assert var_node["data"].get("run_state") == "grey"
+        assert var_node["data"].get("run_state") == "pending"
 
     def test_pending_value_appears_under_constant_node(self, client):
         client.put("/api/constants/low_hz/pending/42")
@@ -809,7 +810,7 @@ class TestPendingConstantLifecycle:
 
     def test_removing_pending_restores_green(self, client):
         client.put("/api/constants/low_hz/pending/42")
-        assert self._fn_state(client) == "grey"
+        assert self._fn_state(client) == "pending"
 
         r = client.delete("/api/constants/low_hz/pending/42")
         assert r.status_code == 200
@@ -821,7 +822,7 @@ class TestPendingConstantLifecycle:
         on the next /api/pipeline call, auto_clean_pending_constants removes
         the pending row and the node returns to green."""
         client.put("/api/constants/low_hz/pending/42")
-        assert self._fn_state(client) == "grey"
+        assert self._fn_state(client) == "pending"
 
         # Simulate the user running with the new constant value.
         for_each(
@@ -842,7 +843,7 @@ class TestPendingConstantLifecycle:
 
     def test_already_red_not_affected_by_pending(self, client, populated_db):
         """If a function is already red (stale input), adding a pending value
-        does NOT reset it to grey — the more severe state wins."""
+        does NOT reset it to pending — the more severe state wins."""
         # Re-save an input record to put the function into red.
         RawSignal.save(np.ones(10), subject=1, session="pre")
         assert self._fn_state(client) == "red"
@@ -852,8 +853,8 @@ class TestPendingConstantLifecycle:
 
 
 class TestPendingConstantRecovery:
-    """Recovery paths — a function that is grey or red, has a pending
-    constant added, and then is fully run, should end up green.
+    """Recovery paths — a function that is red (partial) or never-run, has a
+    pending constant added, and then is fully run, should end up green.
     """
 
     def _fn_state(self, c):
@@ -862,12 +863,12 @@ class TestPendingConstantRecovery:
 
     @pytest.fixture
     def client_partial(self, tmp_path):
-        """bandpass_filter ran for subject=1 only with low_hz=20 → grey."""
+        """bandpass_filter ran for subject=1 only with low_hz=20 → red (partial)."""
         if hasattr(_local, "database"):
             delattr(_local, "database")
         _gui_db._db = None
 
-        db = configure_database(tmp_path / "grey_recover.duckdb", ["subject", "session"])
+        db = configure_database(tmp_path / "partial_recover.duckdb", ["subject", "session"])
         for subj in [1, 2]:
             for sess in ["pre", "post"]:
                 RawSignal.save(np.random.randn(10), subject=subj, session=sess)
@@ -881,7 +882,7 @@ class TestPendingConstantRecovery:
         )
 
         _gui_db._db = db
-        _gui_db._db_path = tmp_path / "grey_recover.duckdb"
+        _gui_db._db_path = tmp_path / "partial_recover.duckdb"
         _registry._functions["bandpass_filter"] = bandpass_filter
 
         from fastapi.testclient import TestClient
@@ -914,7 +915,7 @@ class TestPendingConstantRecovery:
 
         db.close()
 
-    def test_grey_plus_pending_resolves_to_green_after_full_run(self, client_partial):
+    def test_red_plus_pending_resolves_to_green_after_full_run(self, client_partial):
         """red (partial run) + pending low_hz=42 → run both variants fully → green."""
         assert self._fn_state(client_partial) == "red"
 
