@@ -93,8 +93,8 @@ function callVSCode(method: string, params: Record<string, unknown>): Promise<un
  */
 async function callFetch(method: string, params: Record<string, unknown>): Promise<unknown> {
   const routes: Record<string, { path: string | ((p: Record<string, unknown>) => string); method?: string; body?: boolean }> = {
-    get_pipeline:           { path: '/api/pipeline' },
-    get_layout:             { path: '/api/layout' },
+    get_pipeline:           { path: (p) => `/api/pipeline?pipeline_id=${encodeURIComponent((p.pipeline_id as string) ?? 'main')}` },
+    get_layout:             { path: (p) => `/api/layout?pipeline_id=${encodeURIComponent((p.pipeline_id as string) ?? 'main')}` },
     get_schema:             { path: '/api/schema' },
     get_info:               { path: '/api/info' },
     get_registry:           { path: '/api/registry' },
@@ -126,6 +126,17 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     search_index_packages:  { path: (p) => `/api/indexes/${encodeURIComponent(p.name as string)}/packages?q=${encodeURIComponent((p.q as string) || '')}` },
     add_library:            { path: '/api/project/libraries', method: 'POST', body: true },
     remove_library:         { path: (p) => `/api/project/libraries/${encodeURIComponent(p.name as string)}`, method: 'DELETE' },
+    // Nested-pipeline scopes (method names match the JSON-RPC handlers in server.py)
+    list_pipelines:         { path: '/api/pipelines' },
+    create_pipeline:        { path: '/api/pipelines', method: 'POST', body: true },
+    rename_pipeline:        { path: (p) => `/api/pipelines/${encodeURIComponent(p.pipeline_id as string)}`, method: 'PUT', body: true },
+    delete_pipeline:        { path: (p) => `/api/pipelines/${encodeURIComponent(p.pipeline_id as string)}`, method: 'DELETE' },
+    get_pipeline_interface: { path: (p) => `/api/pipelines/${encodeURIComponent(p.pipeline_id as string)}/interface` },
+    add_pipeline_use:       { path: (p) => `/api/pipelines/${encodeURIComponent(p.parent_pipeline_id as string)}/uses`, method: 'POST', body: true },
+    remove_pipeline_use:    { path: (p) => `/api/pipeline-uses/${encodeURIComponent(p.use_id as string)}`, method: 'DELETE' },
+    update_use_binding:     { path: (p) => `/api/pipeline-uses/${encodeURIComponent(p.use_id as string)}/binding`, method: 'PUT', body: true },
+    get_pipeline_plan:      { path: (p) => `/api/pipelines/${encodeURIComponent(p.pipeline_id as string)}/plan?target=${encodeURIComponent((p.target as string) ?? '')}` },
+    start_pipeline_run:     { path: (p) => `/api/pipelines/${encodeURIComponent(p.pipeline_id as string)}/run`, method: 'POST', body: true },
   };
 
   const route = routes[method];
@@ -141,6 +152,16 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
   }
 
   const res = await fetch(url, fetchOpts);
+  if (!res.ok) {
+    // FastAPI validation guards return {"detail": <message>}; surface the
+    // backend's message verbatim (parity with the JSON-RPC error path).
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const err = await res.json();
+      if (err && typeof err.detail === 'string') detail = err.detail;
+    } catch { /* non-JSON error body */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 

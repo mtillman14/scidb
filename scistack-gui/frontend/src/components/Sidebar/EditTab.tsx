@@ -9,12 +9,18 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { callBackend } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
+import { useScope } from '../../context/ScopeContext'
 
 interface Registry {
   functions: string[]
   variables: string[]
   matlab_functions?: string[]
   matlab_functions_mismatched?: string[]
+}
+
+interface PipelineInfo {
+  pipeline_id: string
+  name: string
 }
 
 export default function EditTab() {
@@ -35,9 +41,26 @@ export default function EditTab() {
   const [varSubmitting, setVarSubmitting] = useState(false)
   const varInputRef = useRef<HTMLInputElement>(null)
 
+  // Nested pipelines: the scopes list + navigation state.
+  const { currentScope, jumpTo, renameInPath, bumpGraph, graphVersion } = useScope()
+  const [pipelines, setPipelines] = useState<PipelineInfo[]>([])
+  const [addingPipe, setAddingPipe] = useState(false)
+  const [pipeDraft, setPipeDraft] = useState('')
+  const [pipeError, setPipeError] = useState('')
+  const [renamingPid, setRenamingPid] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const pipeInputRef = useRef<HTMLInputElement>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
+
   function fetchRegistry() {
     callBackend('get_registry')
       .then(d => setRegistry(d as Registry))
+      .catch(console.error)
+  }
+
+  function fetchPipelines() {
+    callBackend('list_pipelines')
+      .then(d => setPipelines((d as { pipelines: PipelineInfo[] }).pipelines))
       .catch(console.error)
   }
 
@@ -47,11 +70,18 @@ export default function EditTab() {
     fetchPathInputs()
   }, [])
 
+  // Scope mutations elsewhere (e.g. a use placed on the canvas) bump
+  // graphVersion — keep the pipelines list in sync.
+  useEffect(() => {
+    fetchPipelines()
+  }, [graphVersion])
+
   // Re-fetch registry when the backend signals a refresh (e.g. module reload).
   useBackendMessage(useCallback((msg) => {
     if (msg.type === 'dag_updated' || msg.method === 'dag_updated') {
       fetchRegistry()
       fetchPathInputs()
+      fetchPipelines()
     }
   }, []))
 
@@ -81,6 +111,14 @@ export default function EditTab() {
   useEffect(() => {
     if (addingVar) varInputRef.current?.focus()
   }, [addingVar])
+
+  useEffect(() => {
+    if (addingPipe) pipeInputRef.current?.focus()
+  }, [addingPipe])
+
+  useEffect(() => {
+    if (renamingPid) renameInputRef.current?.focus()
+  }, [renamingPid])
 
   const commitConstDraft = () => {
     const name = constDraft.trim()
@@ -131,6 +169,51 @@ export default function EditTab() {
     setAddingPI(false)
   }
 
+  // Backend 400s (duplicate names, root mutations, still-used deletes)
+  // carry a clear message — surface it verbatim under the section.
+  const commitPipeDraft = () => {
+    const name = pipeDraft.trim()
+    if (name) {
+      callBackend('create_pipeline', { name })
+        .then(() => { setPipeError(''); fetchPipelines() })
+        .catch(err => setPipeError((err as Error).message))
+    }
+    setPipeDraft('')
+    setAddingPipe(false)
+  }
+
+  const commitRename = () => {
+    const pid = renamingPid
+    const name = renameDraft.trim()
+    setRenamingPid(null)
+    setRenameDraft('')
+    if (!pid || !name) return
+    callBackend('rename_pipeline', { pipeline_id: pid, name })
+      .then(() => {
+        setPipeError('')
+        fetchPipelines()
+        renameInPath(pid, name)
+        bumpGraph()  // pipelineNode labels on parent canvases change
+      })
+      .catch(err => setPipeError((err as Error).message))
+  }
+
+  const handleDeletePipeline = (pid: string) => {
+    callBackend('delete_pipeline', { pipeline_id: pid })
+      .then(() => {
+        setPipeError('')
+        fetchPipelines()
+        if (pid === currentScope) jumpTo('main', 'main')
+        else bumpGraph()
+      })
+      .catch(err => setPipeError((err as Error).message))
+  }
+
+  const onPipelineDragStart = (e: React.DragEvent, p: PipelineInfo) => {
+    e.dataTransfer.setData('application/scistack-pipeline', JSON.stringify(p))
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
   const onDragStart = (
     e: React.DragEvent,
     nodeType: 'functionNode' | 'variableNode' | 'constantNode' | 'pathInputNode',
@@ -145,6 +228,93 @@ export default function EditTab() {
 
   return (
     <div style={styles.root}>
+      <Section
+        title="Pipelines"
+        action={
+          <button style={styles.addBtn} onClick={() => setAddingPipe(true)} title="New pipeline">
+            +
+          </button>
+        }
+      >
+        {pipelines.map(p => (
+          renamingPid === p.pipeline_id ? (
+            <input
+              key={p.pipeline_id}
+              ref={renameInputRef}
+              style={styles.draftInput}
+              value={renameDraft}
+              onChange={e => setRenameDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') commitRename()
+                if (e.key === 'Escape') { setRenamingPid(null); setRenameDraft('') }
+              }}
+              onBlur={commitRename}
+            />
+          ) : (
+            <div
+              key={p.pipeline_id}
+              draggable
+              onDragStart={e => onPipelineDragStart(e, p)}
+              onClick={() => jumpTo(p.pipeline_id, p.name)}
+              style={{
+                ...styles.item,
+                borderLeftColor: '#a21caf',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                ...(p.pipeline_id === currentScope ? styles.pipelineCurrent : {}),
+              }}
+              title={p.pipeline_id === currentScope
+                ? 'Current scope'
+                : 'Click to open; drag onto the canvas to place as a node'}
+            >
+              <span style={{ flex: 1 }}>⧉ {p.name}</span>
+              {p.pipeline_id !== 'main' && (
+                <>
+                  <button
+                    style={styles.rowBtn}
+                    title="Rename pipeline"
+                    onClick={e => {
+                      e.stopPropagation()
+                      setRenamingPid(p.pipeline_id)
+                      setRenameDraft(p.name)
+                    }}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    style={styles.rowBtn}
+                    title="Delete pipeline"
+                    onClick={e => {
+                      e.stopPropagation()
+                      handleDeletePipeline(p.pipeline_id)
+                    }}
+                  >
+                    ×
+                  </button>
+                </>
+              )}
+            </div>
+          )
+        ))}
+        {addingPipe && (
+          <input
+            ref={pipeInputRef}
+            style={styles.draftInput}
+            value={pipeDraft}
+            placeholder="pipeline name…"
+            onChange={e => setPipeDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitPipeDraft()
+              if (e.key === 'Escape') { setPipeDraft(''); setAddingPipe(false) }
+            }}
+            onBlur={commitPipeDraft}
+          />
+        )}
+        {pipeError && (
+          <div style={styles.errorText}>{pipeError}</div>
+        )}
+      </Section>
       <Section title="Functions">
         {[...registry.functions, ...(registry.matlab_functions ?? [])].map(fn => {
           const mismatch = registry.matlab_functions_mismatched?.includes(fn)
@@ -357,5 +527,19 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 12px',
     fontSize: 11,
     color: '#f87171',
+  },
+  pipelineCurrent: {
+    background: '#2a2a4a',
+    color: '#fff',
+  },
+  rowBtn: {
+    flexShrink: 0,
+    background: 'transparent',
+    border: 'none',
+    color: '#888',
+    fontSize: 12,
+    lineHeight: 1,
+    cursor: 'pointer',
+    padding: '0 2px',
   },
 }

@@ -13,3 +13,4 @@ __pycache__/
 *.duckdb
 *.duckdb.wal
 *.wal
+scistack-gui/frontend/node_modules/

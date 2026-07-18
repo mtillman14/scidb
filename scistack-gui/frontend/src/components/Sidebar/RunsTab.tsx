@@ -58,6 +58,19 @@ function formatDuration(ms: number): string {
 
 function RunCard({ run }: { run: RunEntry }) {
   const [logOpen, setLogOpen] = useState(false)
+  const isPipeline = run.kind === 'pipeline'
+
+  // Pipeline runs have no cooperative cancel (v1: no between-step hook in
+  // Pipeline._run) — force-cancel is the only control, so no soft-cancel
+  // button is offered for them.
+  const handleForceCancel = useCallback(async () => {
+    try {
+      await callBackend('force_cancel_run', { run_id: run.run_id })
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`force_cancel_run failed for ${run.run_id}:`, err)
+    }
+  }, [run.run_id])
 
   const handleOpenSource = useCallback(async () => {
     try {
@@ -101,13 +114,29 @@ function RunCard({ run }: { run: RunEntry }) {
       {/* Header: status + function name + time */}
       <div style={styles.header}>
         <span style={{ color: statusColor, marginRight: 6, flexShrink: 0 }}>{statusIcon}</span>
-        <span
-          style={styles.fnName}
-          onDoubleClick={handleOpenSource}
-          title="Double-click to open source"
-        >
-          {run.function_name}
-        </span>
+        {isPipeline ? (
+          <span style={styles.fnNamePlain} title="Pipeline run">
+            ⧉ {run.function_name}
+          </span>
+        ) : (
+          <span
+            style={styles.fnName}
+            onDoubleClick={handleOpenSource}
+            title="Double-click to open source"
+          >
+            {run.function_name}
+          </span>
+        )}
+        {isPipeline && (run.status === 'running' || run.status === 'cancelling') && (
+          <button
+            style={styles.forceCancelBtn}
+            onClick={handleForceCancel}
+            type="button"
+            title="Force cancel — best effort (injects KeyboardInterrupt). Pipeline runs have no cooperative cancel."
+          >
+            ✕
+          </button>
+        )}
         <span style={styles.time}>{relativeTime(run.started_at)}</span>
       </div>
 
@@ -214,6 +243,25 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#ccc',
     fontWeight: 600,
     cursor: 'pointer',
+  },
+  fnNamePlain: {
+    flex: 1,
+    fontFamily: 'monospace',
+    fontSize: 12,
+    color: '#d8b4fe',
+    fontWeight: 600,
+  },
+  forceCancelBtn: {
+    flexShrink: 0,
+    padding: '0 6px',
+    background: '#991b1b',
+    color: '#fde68a',
+    border: 'none',
+    borderRadius: 3,
+    cursor: 'pointer',
+    fontSize: 11,
+    fontWeight: 700,
+    lineHeight: '16px',
   },
   time: {
     fontFamily: 'monospace',

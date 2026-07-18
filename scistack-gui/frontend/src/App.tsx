@@ -13,9 +13,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import PipelineDAG from "./components/DAG/PipelineDAG";
+import Breadcrumb from "./components/DAG/Breadcrumb";
 import Sidebar from "./components/Sidebar/Sidebar";
+import PipelineRunController from "./components/PipelineRunController";
 import { RunLogProvider } from "./context/RunLogContext";
 import { SelectedNodeProvider } from "./context/SelectedNodeContext";
+import { ScopeProvider } from "./context/ScopeContext";
+import { PlanRunProvider } from "./context/PlanRunContext";
 import { callBackend } from "./api";
 
 /**
@@ -90,6 +94,12 @@ const styles: Record<string, React.CSSProperties> = {
   dagArea: {
     flex: 3,
     minWidth: 0,
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+  },
+  canvasWrap: {
+    flex: 1,
     minHeight: 0,
   },
   sidebar: {
@@ -189,39 +199,47 @@ export default function App() {
   return (
     <RunLogProvider>
       <SelectedNodeProvider>
-        <div style={styles.root}>
-          <header style={styles.header}>
-            <span style={styles.title}>SciStack</span>
-            <span style={styles.separator}>|</span>
-            <span style={styles.dbName}>{dbName || "loading…"}</span>
-            <button
-              style={styles.refreshBtn}
-              onClick={handleRestart}
-              disabled={restarting}
-              title="Restart the Python process to pick up edits to server or pipeline code"
-            >
-              {restarting ? "Restarting..." : "Restart"}
-            </button>
-            {schema.keys.length > 0 && (
-              <span style={styles.schemaKeys}>
-                schema: [{schema.keys.join(", ")}]
-              </span>
-            )}
-          </header>
-          <ReactFlowProvider>
-            <div style={styles.body}>
-              <div style={styles.dagArea}>
-                <PipelineDAG />
-              </div>
-              <div style={styles.sidebar}>
-                <Sidebar />
-              </div>
+        <ScopeProvider>
+          <PlanRunProvider>
+            <div style={styles.root}>
+              <header style={styles.header}>
+                <span style={styles.title}>SciStack</span>
+                <span style={styles.separator}>|</span>
+                <span style={styles.dbName}>{dbName || "loading…"}</span>
+                <button
+                  style={styles.refreshBtn}
+                  onClick={handleRestart}
+                  disabled={restarting}
+                  title="Restart the Python process to pick up edits to server or pipeline code"
+                >
+                  {restarting ? "Restarting..." : "Restart"}
+                </button>
+                {schema.keys.length > 0 && (
+                  <span style={styles.schemaKeys}>
+                    schema: [{schema.keys.join(", ")}]
+                  </span>
+                )}
+              </header>
+              <ReactFlowProvider>
+                <div style={styles.body}>
+                  <div style={styles.dagArea}>
+                    <Breadcrumb />
+                    <div style={styles.canvasWrap}>
+                      <PipelineDAG />
+                    </div>
+                  </div>
+                  <div style={styles.sidebar}>
+                    <Sidebar />
+                  </div>
+                </div>
+              </ReactFlowProvider>
+              <PipelineRunController />
+              {blockingErrors.length > 0 && (
+                <StartupErrorDialog errors={blockingErrors} />
+              )}
             </div>
-          </ReactFlowProvider>
-          {blockingErrors.length > 0 && (
-            <StartupErrorDialog errors={blockingErrors} />
-          )}
-        </div>
+          </PlanRunProvider>
+        </ScopeProvider>
       </SelectedNodeProvider>
     </RunLogProvider>
   );

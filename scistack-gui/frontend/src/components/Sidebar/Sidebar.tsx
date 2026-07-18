@@ -19,7 +19,9 @@ import type { SchemaFilter, RunOptions, WhereFilter } from './FunctionSettingsPa
 import ConstantSettingsPanel from './ConstantSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
 import PathInputSettingsPanel from './PathInputSettingsPanel'
+import PipelineSettingsPanel from './PipelineSettingsPanel'
 import ProjectConfigPanel from './ProjectConfigPanel'
+import type { PipelineNodeData } from '../DAG/PipelineNode'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import type { Node } from '@xyflow/react'
 import type { ConstantValue } from '../DAG/ConstantNode'
@@ -63,6 +65,10 @@ function isPathInputNode(node: Node | null): node is Node & { data: PathInputNod
   return node?.type === 'pathInputNode'
 }
 
+function isPipelineNode(node: Node | null): node is Node & { data: PipelineNodeData } {
+  return node?.type === 'pipelineNode'
+}
+
 /** Compute the Cartesian product of value arrays. */
 function cartesian(arrays: string[][]): string[][] {
   if (arrays.length === 0) return []
@@ -82,14 +88,14 @@ export default function Sidebar() {
 
   // Auto-switch to Node tab when a function, constant, or variable node is selected; revert when deselected.
   useEffect(() => {
-    if (isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode)) {
+    if (isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)) {
       setActiveTab('Node')
     } else if (activeTab === 'Node') {
       setActiveTab('Runs')
     }
   }, [selectedNode])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode)
+  const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)
   const tabs: Tab[] = hasNodeTab ? ['Runs', 'Edit', 'Node'] : ['Runs', 'Edit']
 
   // Compute variant combinations from constant nodes and multi-wired variable inputs
@@ -212,6 +218,12 @@ export default function Sidebar() {
             label={(selectedNode.data as PathInputNodeData).label}
             template={(selectedNode.data as PathInputNodeData).template}
             root_folder={(selectedNode.data as PathInputNodeData).root_folder}
+          />
+        )}
+        {activeTab === 'Node' && isPipelineNode(selectedNode) && (
+          <PipelineSettingsPanel
+            useId={selectedNode.id}
+            data={selectedNode.data as PipelineNodeData}
           />
         )}
       </div>

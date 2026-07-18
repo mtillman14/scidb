@@ -15,6 +15,9 @@ export interface VariantEntry {
 export interface RunEntry {
   run_id: string
   function_name: string
+  // 'pipeline' entries are scope runs (plan-preview dialog); they have no
+  // cooperative cancel (v1) — only force-cancel — and no function source.
+  kind: 'function' | 'pipeline'
   constants: Record<string, unknown>
   input_types: Record<string, string>     // param → variable type name
   output_types: string[]                  // accumulated across variants
@@ -49,7 +52,7 @@ export interface RunMeta {
 
 interface RunLogContextValue {
   runs: RunEntry[]
-  startRun: (run_id: string, function_name: string) => void
+  startRun: (run_id: string, function_name: string, kind?: 'function' | 'pipeline') => void
   appendLine: (run_id: string, line: string) => void
   finishRun: (run_id: string, success: boolean, duration_ms?: number, cancelled?: boolean) => void
   markCancelling: (run_id: string) => void
@@ -62,10 +65,11 @@ const RunLogContext = createContext<RunLogContextValue | null>(null)
 export function RunLogProvider({ children }: { children: React.ReactNode }) {
   const [runs, setRuns] = useState<RunEntry[]>([])
 
-  const startRun = useCallback((run_id: string, function_name: string) => {
+  const startRun = useCallback((run_id: string, function_name: string, kind: 'function' | 'pipeline' = 'function') => {
     setRuns(prev => [{
       run_id,
       function_name,
+      kind,
       constants: {},
       input_types: {},
       output_types: [],
