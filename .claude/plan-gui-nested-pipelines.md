@@ -134,9 +134,87 @@ As built:
   composed cross-scope plan, skip_computed no-op run via invocation
   count, run validation 400s, transient-compile cleanup).
 
-Remaining checkpoint: frontend (pipeline node + ports + binding badge,
-double-click descend, breadcrumb path + sidebar, scope-swapped canvas,
-plan-preview dialog + run controls wired to the new endpoints).
+**Checkpoint 4 — frontend IMPLEMENTED 2026-07-16 (awaiting user visual
+verification + `npm run build`).** As built (all in `frontend/src`, shared
+by the standalone and webview builds — no extension changes needed, the
+extension forwards JSON-RPC methods generically):
+- `api.ts`: scope routes added to the fetch table under the SAME names as
+  the JSON-RPC handlers (list/create/rename/delete_pipeline,
+  add/remove_pipeline_use, update_use_binding, get_pipeline_interface,
+  get_pipeline_plan, start_pipeline_run); `get_pipeline`/`get_layout` now
+  send `?pipeline_id=`; non-ok fetch responses throw `Error(detail)` so
+  backend 400 messages surface verbatim (parity with the RPC error path).
+- `context/ScopeContext.tsx`: `currentScope` + `breadcrumb` (navigation
+  PATH of `{use_id, pipeline_id, name, binding}` crumbs, root always
+  first — G3), descend/ascendTo/jumpTo/renameInPath, `graphVersion` bump
+  for refetch-after-mutation; exports `bindingSummary` (badge/crumb text).
+- `context/PlanRunContext.tsx`: pending PlanRequest ({pipeline_id, mode,
+  target?, finalized?, label}) — every pipeline run control funnels here.
+- `components/DAG/PipelineNode.tsx`: double-bordered magenta node; ports
+  from `data.inputs/outputs` (`in__`/`out__` handles like FunctionNode);
+  compact binding badge; ▶ Run requests a plan for mode=all on the CHILD.
+- `PipelineDAG.tsx`: scoped fetch (positions never carry across a scope
+  switch; fitView on switch), pipelineNode in nodeTypes, double-click
+  descend (crumb carries binding), sidebar-pipeline drop →
+  add_pipeline_use (cycle 400s alerted verbatim), pipelineNode delete →
+  remove_pipeline_use, palette drops + drags write layout with
+  pipeline_id=currentScope, function-node right-click menu "Run until
+  here" (mode=until, target=fn name), top-right Panel "Run endpoints"
+  with draft/finalized toggle.
+- `components/DAG/Breadcrumb.tsx`: `main ▸ loading (low_hz=30) ▸ filters`;
+  click ascends; HIDDEN at root with no path (root-scope pixel parity).
+- `Sidebar/EditTab.tsx`: "Pipelines" section (list from list_pipelines,
+  current scope highlighted, click jumps, drag places a use, + creates,
+  ✎ inline-renames — also patches crumbs via renameInPath — × deletes;
+  store 400s shown verbatim under the section; root has no ✎/×).
+- `Sidebar/PipelineSettingsPanel.tsx` (+ Sidebar Node-tab wiring):
+  binding editor — key_map/params/iterate rows, values JSON-parsed with
+  string fallback; save via update_use_binding, unknown-key 400 verbatim;
+  ports summary; "Open pipeline" descends.
+- `components/PipelineRunController.tsx`: plan-preview dialog (R2) —
+  ordered step table (step, owner pipeline, combo count, green/red chip;
+  endpoint rows tinted + tagged), Run/Cancel; runs post
+  start_pipeline_run with a frontend run_id and stream run_output/
+  run_done into the EXISTING run console.
+- `RunLogContext`/`RunsTab`: RunEntry gains `kind`; pipeline cards have
+  NO soft-cancel (v1 no-op) — force-cancel button only.
+Backend untouched (no contract bugs found).
+
+**Post-checkpoint fixes (2026-07-18, found during user visual verification
+with gui_test_data):**
+- State rename: GUI third state `grey` → `pending` (yellow #eab308/#fefce8;
+  orange belongs to path inputs) = "GUI change only, not in database";
+  scidb stays binary green/red. run_state.py + both node components + 5
+  test files (test names asserting red under grey names also corrected).
+- Stuck-"Running…" chain, three independent causes, all fixed:
+  1. `uvicorn` without a WS protocol lib rejects /ws upgrades — dependency
+     is now `uvicorn[standard]` (pyproject); users must reinstall.
+  2. api/ws.py shared ONE queue across all pump tasks and gather leaked
+     the pump on disconnect → an orphaned pump could consume run_done for
+     a dead connection. Rewritten: per-client outbox queues, pump
+     explicitly cancelled in the connection's finally, fan-out on the
+     loop; every drop point logs `[ws] DROPPED … <why>`. Regression:
+     tests/test_ws.py (the reconnect test HANGS on the old design).
+  3. Frontend useWebSocket logs connect/close/error to the console.
+- Run-status honesty: for_each never raises on iteration failures
+  (continue-and-report), so "the call returned" ≠ success. scidb
+  `Pipeline.last_run_report` (per-step {completed, failed, total,
+  cancelled} from scifor's authoritative summary progress event, collected
+  via a chained `_progress_fn` in `_execute_step`; skip_computed combos
+  never inflate counts). GUI: eager thread tallies summary events,
+  pipeline thread reads the report; both set success=False when failed>0,
+  emit ⚠/✗ console lines, and put completed_combos/failed_combos on
+  run_done. Tests: TestLastRunReport (scidb), report pass-through (GUI).
+- Schema-iteration default: for_each only auto-iterates when
+  schema_filter/schema_level is set — GUI passed neither, so canvas runs
+  pooled ALL schema rows into one call (per-combo functions crash on
+  multi-row tables; silently broken until the honesty fix exposed it).
+  Eager runs now default schema_level=all schema keys (except explicit
+  as_table); compiled pipeline steps carry EXPLICIT metadata iterables
+  (full grid, like a hand-written script) — explicit, not schema_level,
+  so binding `iterate` overrides compose per key instead of conflicting.
+  Test: test_compiled_steps_iterate_schema_grid.
+
 Grounding: `docs/claude/scistack-gui-backend-internals.md` (dual-protocol
 server, service layer, `_pipeline_*` DuckDB tables + JSON layout);
 backend stages 1–3 all verified (registry, composition, bindings,
