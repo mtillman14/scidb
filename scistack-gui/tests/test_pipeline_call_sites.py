@@ -1,6 +1,12 @@
-"""Integration tests: same function reused at multiple for_each call sites
-must render as multiple distinct function nodes, each with its own state,
-edges, and constants.
+"""Integration tests: canvas nodes group for_each call sites by WIRING.
+
+Since 2026-07-18 (user decision), the same function invoked with different
+constant values renders as ONE canvas node (fn + loadable inputs + outputs
+= the wiring), with each call site as a variant row carrying its OWN state
+chip. The 2026-07-16 no-blur guarantee ("a partial run for one constant
+value degrades only that call site") is preserved — it moved from separate
+nodes to separate chips: scidb call_id semantics and per-call-site state
+computation are untouched, only the presentation groups.
 
 Sits at the same layer as test_api.py (TestClient + populated_db).
 """
@@ -14,10 +20,9 @@ from fastapi.testclient import TestClient
 import scistack_gui.db as _gui_db
 from scidb import configure_database, for_each
 from scidb.database import _local
-from scidb.foreach_config import ForEachConfig
 from scistack_gui import registry as _registry
 from scistack_gui.app import create_app
-from scistack_gui.domain.graph_builder import fn_node_id
+from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
 
 from conftest import RawSignal, FilteredSignal, bandpass_filter
 
@@ -62,78 +67,72 @@ def two_call_sites_client(tmp_path):
     db.close()
 
 
-def _bp_node_ids() -> tuple[str, str]:
-    cid_a = ForEachConfig(
-        fn=bandpass_filter, inputs={"signal": RawSignal, "low_hz": 20}
-    ).to_call_id()
-    cid_b = ForEachConfig(
-        fn=bandpass_filter, inputs={"signal": RawSignal, "low_hz": 50}
-    ).to_call_id()
-    return fn_node_id("bandpass_filter", cid_a), fn_node_id("bandpass_filter", cid_b)
+def _bp_group_node_id() -> str:
+    """Both call sites share one wiring (same fn, loadable inputs, outputs),
+    so they group into a single node id."""
+    return fn_node_id(
+        "bandpass_filter",
+        wiring_id("bandpass_filter", {"signal": "RawSignal"},
+                  {"FilteredSignal"}),
+    )
 
 
-def test_two_call_sites_produce_two_function_nodes(two_call_sites_client):
+def _bp_nodes(nodes) -> list[dict]:
+    return [n for n in nodes
+            if n.get("type") == "functionNode"
+            and n["data"]["label"] == "bandpass_filter"]
+
+
+def test_two_call_sites_group_into_one_node(two_call_sites_client):
     nodes = two_call_sites_client.get("/api/pipeline").json()["nodes"]
-    bp_nodes = [n for n in nodes
-                if n.get("type") == "functionNode"
-                and n["data"]["label"] == "bandpass_filter"]
-    assert len(bp_nodes) == 2, (
-        f"expected 2 bandpass_filter call-site nodes, got {len(bp_nodes)}: "
+    bp_nodes = _bp_nodes(nodes)
+    assert len(bp_nodes) == 1, (
+        f"expected ONE wiring-grouped bandpass_filter node, got "
         f"{[n['id'] for n in bp_nodes]}"
     )
-    nid_a, nid_b = _bp_node_ids()
-    ids = {n["id"] for n in bp_nodes}
-    assert ids == {nid_a, nid_b}
+    assert bp_nodes[0]["id"] == _bp_group_node_id()
 
 
-def test_each_call_site_carries_its_own_call_id(two_call_sites_client):
+def test_grouped_node_carries_both_variants_with_states(two_call_sites_client):
     nodes = two_call_sites_client.get("/api/pipeline").json()["nodes"]
-    bp_nodes = [n for n in nodes if n["data"].get("label") == "bandpass_filter"
-                and n.get("type") == "functionNode"]
-    for n in bp_nodes:
-        cid = n["data"].get("call_id")
-        assert cid and len(cid) == 16
-        assert n["id"].endswith("__" + cid)
+    node = _bp_nodes(nodes)[0]
+    variants = node["data"]["variants"]
+    by_low_hz = {v["constants"]["low_hz"]: v for v in variants
+                 if "low_hz" in v.get("constants", {})}
+    assert set(by_low_hz) == {20, 50}
+    # Both fully run → both chips green; the composite id suffix is the
+    # wiring id, and each row keeps its own call_id.
+    assert by_low_hz[20]["state"] == "green"
+    assert by_low_hz[50]["state"] == "green"
+    assert by_low_hz[20]["call_id"] != by_low_hz[50]["call_id"]
+    assert node["id"].endswith("__" + node["data"]["call_id"])
 
 
-def test_each_call_site_has_its_own_input_edge(two_call_sites_client):
-    """RawSignal should connect to BOTH call-site nodes via separate edges."""
-    edges = two_call_sites_client.get("/api/pipeline").json()["edges"]
-    nid_a, nid_b = _bp_node_ids()
-    targets = {e["target"] for e in edges if e["source"] == "var__RawSignal"}
-    assert nid_a in targets and nid_b in targets
+def test_grouped_node_has_single_edge_set(two_call_sites_client):
+    """RawSignal/const/output edges target the ONE grouped node (deduped)."""
+    graph = two_call_sites_client.get("/api/pipeline").json()
+    nid = _bp_group_node_id()
+
+    in_edges = [e for e in graph["edges"]
+                if e["source"] == "var__RawSignal" and e["target"] == nid]
+    const_edges = [e for e in graph["edges"]
+                   if e["source"] == "const__low_hz" and e["target"] == nid]
+    out_edges = [e for e in graph["edges"]
+                 if e["source"] == nid and e["target"] == "var__FilteredSignal"]
+    assert len(in_edges) == 1
+    assert len(const_edges) == 1
+    assert len(out_edges) == 1
 
 
-def test_each_call_site_has_its_own_output_edge(two_call_sites_client):
-    edges = two_call_sites_client.get("/api/pipeline").json()["edges"]
-    nid_a, nid_b = _bp_node_ids()
-    sources = {e["source"] for e in edges if e["target"] == "var__FilteredSignal"}
-    assert nid_a in sources and nid_b in sources
-
-
-def test_each_call_site_has_constant_edge(two_call_sites_client):
-    """const__low_hz feeds both call sites independently."""
-    edges = two_call_sites_client.get("/api/pipeline").json()["edges"]
-    nid_a, nid_b = _bp_node_ids()
-    targets = {e["target"] for e in edges if e["source"] == "const__low_hz"}
-    assert nid_a in targets and nid_b in targets
-
-
-def test_each_call_site_reports_independent_state(two_call_sites_client):
-    """Both fully-run call sites are green independently."""
+def test_grouped_node_state_is_green_when_all_variants_current(two_call_sites_client):
     nodes = two_call_sites_client.get("/api/pipeline").json()["nodes"]
-    nid_a, nid_b = _bp_node_ids()
-    a = next(n for n in nodes if n["id"] == nid_a)
-    b = next(n for n in nodes if n["id"] == nid_b)
-    assert a["data"]["run_state"] == "green"
-    assert b["data"]["run_state"] == "green"
+    assert _bp_nodes(nodes)[0]["data"]["run_state"] == "green"
 
 
-def test_partial_run_only_greys_its_own_call_site(tmp_path):
-    """A partial run for one constant value degrades ONLY that call site,
-    not the other (this is the behavior the user explicitly asked for —
-    they should be able to tell the two call sites apart). Under scidb's
-    binary node state, partial = red (the former grey verdict is gone)."""
+def test_partial_run_reddens_only_its_own_variant_chip(tmp_path):
+    """A partial run for one constant value degrades ONLY that variant's
+    chip (the no-blur behavior the user asked for on 2026-07-16, now at
+    chip level); the node border shows the worst member state."""
     if hasattr(_local, "database"):
         delattr(_local, "database")
     _gui_db._db = None
@@ -143,14 +142,14 @@ def test_partial_run_only_greys_its_own_call_site(tmp_path):
         for sess in ["pre", "post"]:
             RawSignal.save(np.random.randn(10), subject=subj, session=sess)
 
-    # Call site A: fully run.
+    # Variant A: fully run.
     for_each(
         bandpass_filter,
         inputs={"signal": RawSignal, "low_hz": 20},
         outputs=[FilteredSignal],
         subject=[1, 2], session=["pre", "post"],
     )
-    # Call site B: only subject=1 (partial).
+    # Variant B: only subject=1 (partial).
     for_each(
         bandpass_filter,
         inputs={"signal": RawSignal, "low_hz": 50},
@@ -170,8 +169,39 @@ def test_partial_run_only_greys_its_own_call_site(tmp_path):
     finally:
         db.close()
 
-    nid_a, nid_b = _bp_node_ids()
-    a = next(n for n in nodes if n["id"] == nid_a)
-    b = next(n for n in nodes if n["id"] == nid_b)
-    assert a["data"]["run_state"] == "green", "fully-run call site must remain green"
-    assert b["data"]["run_state"] == "red", "partial call site must be red (binary state)"
+    node = _bp_nodes(nodes)[0]
+    by_low_hz = {v["constants"]["low_hz"]: v for v in node["data"]["variants"]
+                 if "low_hz" in v.get("constants", {})}
+    assert by_low_hz[20]["state"] == "green", \
+        "fully-run variant chip must remain green"
+    assert by_low_hz[50]["state"] == "red", \
+        "partial variant chip must be red (binary call-site state)"
+    assert node["data"]["run_state"] == "red", \
+        "node border shows the worst member state"
+
+
+def test_legacy_call_site_position_is_adopted(two_call_sites_client):
+    """One-time migration: a position saved under a pre-grouping
+    per-call-site node id is adopted by the group node (same scope) and the
+    legacy key is dropped."""
+    from scidb.foreach_config import ForEachConfig
+    from scistack_gui import layout as layout_store
+
+    cid = ForEachConfig(
+        fn=bandpass_filter, inputs={"signal": RawSignal, "low_hz": 20},
+    ).to_call_id()
+    legacy_id = fn_node_id("bandpass_filter", cid)
+    group_id = _bp_group_node_id()
+
+    # Simulate a pre-grouping document: position keyed by the call-site id.
+    layout_store.write_node_position(legacy_id, 123.0, 456.0,
+                                     pipeline_id="main")
+    layout_store.drop_node_positions(group_id)
+
+    # A graph build runs the migration.
+    two_call_sites_client.get("/api/pipeline")
+
+    positions = layout_store.read_positions_by_scope()
+    main_positions = positions.get("main", {})
+    assert legacy_id not in main_positions, "legacy key must be dropped"
+    assert main_positions.get(group_id) == {"x": 123.0, "y": 456.0}

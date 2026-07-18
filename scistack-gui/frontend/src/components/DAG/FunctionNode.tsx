@@ -15,12 +15,23 @@ import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useRunLog } from '../../context/RunLogContext'
 import type { Variant } from './VariableNode'
 
+interface FnVariantRow {
+  constants: Record<string, unknown>
+  // Per-call-site state — nodes group call sites by wiring, so each
+  // constant-value variant keeps its own chip (state never blurs).
+  state?: 'green' | 'pending' | 'red'
+  // True for synthesized rows: a staged pending value with no call site yet.
+  staged?: boolean
+}
+
 interface FunctionNodeData {
   label: string
   input_params?: Record<string, string>  // param_name → type_name
   output_types?: string[]
   constant_params?: string[]
-  run_state?: 'green' | 'grey' | 'red'
+  variants?: FnVariantRow[]
+  // 'pending' is GUI-only: a staged (unrun) constant value — not in the DB.
+  run_state?: 'green' | 'pending' | 'red'
   schemaFilter?: Record<string, unknown[]> | null
   schemaLevel?: string[] | null
   runOptions?: { dry_run: boolean; save: boolean; distribute: boolean; as_table: boolean }
@@ -31,9 +42,17 @@ interface FunctionNodeData {
 }
 
 const STATE_STYLES: Record<string, { border: string; background: string }> = {
-  green: { border: '#16a34a', background: '#f0fdf4' },
-  grey:  { border: '#6b7280', background: '#f3f4f6' },
-  red:   { border: '#dc2626', background: '#fef2f2' },
+  green:   { border: '#16a34a', background: '#f0fdf4' },
+  // Yellow (not orange — orange belongs to path-input nodes): a change
+  // staged in the GUI that isn't in the database yet.
+  pending: { border: '#eab308', background: '#fefce8' },
+  red:     { border: '#dc2626', background: '#fef2f2' },
+}
+
+const VARIANT_DOT: Record<string, string> = {
+  green:   '#16a34a',
+  pending: '#eab308',
+  red:     '#dc2626',
 }
 
 interface Props {
@@ -226,6 +245,41 @@ export default function FunctionNode({ id, data }: Props) {
       </div>
 
       {(() => {
+        // Variant rows: one per constant-value call site of this wiring,
+        // each with its own state chip. Shown when there is more than one
+        // variant or a staged (pending) value to surface.
+        const variants = data.variants ?? []
+        const withConstants = variants.filter(
+          v => Object.keys(v.constants ?? {}).length > 0
+        )
+        if (withConstants.length <= 1 && !withConstants.some(v => v.staged)) {
+          return null
+        }
+        return (
+          <div style={styles.variantList}>
+            {withConstants.map((v, i) => {
+              const text = Object.entries(v.constants)
+                .map(([k, val]) => `${k}=${val}`)
+                .join(' ')
+              const dotColor = v.state ? VARIANT_DOT[v.state] : '#9ca3af'
+              return (
+                <div key={i} style={styles.variantRow} title={
+                  v.staged
+                    ? `${text} — staged in the GUI, not run yet`
+                    : `${text} — ${v.state ?? 'unknown'}`
+                }>
+                  <span style={{ ...styles.variantDot, background: dotColor }} />
+                  <span style={v.staged ? styles.variantTextStaged : styles.variantText}>
+                    {text}{v.staged ? ' (staged)' : ''}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
+
+      {(() => {
         const isMatlab = data.language === 'matlab'
         if (!running) {
           return (
@@ -312,6 +366,42 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'underline',
     textDecorationStyle: 'dotted',
     textUnderlineOffset: '2px',
+  },
+  variantList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    marginBottom: 6,
+    maxHeight: 96,
+    overflowY: 'auto',
+  },
+  variantRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+  },
+  variantDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    flexShrink: 0,
+  },
+  variantText: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+    color: '#444',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  variantTextStaged: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+    color: '#a16207',
+    fontStyle: 'italic',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
   button: {
     width: '100%',

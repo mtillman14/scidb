@@ -309,8 +309,8 @@ class TestBuildVariableNodes:
         assert n["data"]["total_records"] == 4
 
     def test_run_state_from_map(self):
-        nodes = build_variable_nodes({"A"}, {}, run_states={"var__A": "grey"})
-        assert nodes[0]["data"]["run_state"] == "grey"
+        nodes = build_variable_nodes({"A"}, {}, run_states={"var__A": "pending"})
+        assert nodes[0]["data"]["run_state"] == "pending"
 
     def test_default_run_state_green(self):
         nodes = build_variable_nodes({"A"}, {}, run_states={})
@@ -435,8 +435,8 @@ class TestBuildFunctionNodes:
         assert n["data"]["call_id"] == self.BP_CID
 
     def test_run_state_applied(self):
-        nodes = self._make(run_states={self.BP_NODE: "grey"})
-        assert nodes[0]["data"]["run_state"] == "grey"
+        nodes = self._make(run_states={self.BP_NODE: "pending"})
+        assert nodes[0]["data"]["run_state"] == "pending"
 
     def test_matlab_language_flag(self):
         nodes = self._make(matlab_functions={"bandpass"})
@@ -624,13 +624,13 @@ class TestBuildManualNode:
     def test_function_node(self):
         n = build_manual_node(
             "uuid-3", {"type": "functionNode", "label": "my_fn", "config": None},
-            pending_constants={}, manual_fn_state="grey",
+            pending_constants={}, manual_fn_state="pending",
             resolved_input_params={"signal": "Raw"},
             resolved_output_types=["Filtered"],
             matlab_functions=set(),
         )
         assert n["type"] == "functionNode"
-        assert n["data"]["run_state"] == "grey"
+        assert n["data"]["run_state"] == "pending"
         assert n["data"]["input_params"] == {"signal": "Raw"}
         assert n["data"]["output_types"] == ["Filtered"]
 
@@ -829,3 +829,146 @@ class TestMatlabParamNameHandles:
         )
         fn_to_var = [e for e in edges if e.get("source") == self.EX_NODE]
         assert fn_to_var[0]["sourceHandle"] == "out__Unmapped"
+
+
+# ---------------------------------------------------------------------------
+# Wiring grouping (group_call_sites_by_wiring + migration helpers)
+# ---------------------------------------------------------------------------
+
+from scistack_gui.domain.graph_builder import (  # noqa: E402
+    group_call_sites_by_wiring,
+    legacy_edge_rewrites,
+    legacy_position_adoptions,
+    wiring_id,
+)
+
+
+def _two_site_agg():
+    """Two call sites of one fn differing ONLY in a constant value."""
+    agg = AggregatedData()
+    a = ("bp", "a" * 16)
+    b = ("bp", "b" * 16)
+    for fkey, hz in ((a, 20), (b, 50)):
+        agg.fn_input_params[fkey] = {"signal": "Raw"}
+        agg.fn_outputs[fkey] = {"Filtered"}
+        agg.fn_constants[fkey] = {"low_hz"}
+        agg.fn_variants_map[fkey] = [{"constants": {"low_hz": hz}}]
+    agg.const_fns["low_hz"] = {a, b}
+    agg.all_var_types = {"Raw", "Filtered"}
+    return agg, a, b
+
+
+class TestWiringId:
+    def test_deterministic_and_constant_independent(self):
+        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        assert wid == wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        assert len(wid) == 16
+
+    def test_different_wiring_different_id(self):
+        base = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        assert wiring_id("bp", {"signal": "Other"}, {"Filtered"}) != base
+        assert wiring_id("bp", {"signal": "Raw"}, {"Smoothed"}) != base
+        assert wiring_id("other", {"signal": "Raw"}, {"Filtered"}) != base
+
+
+class TestGroupCallSitesByWiring:
+    def test_same_wiring_groups_to_one_key(self):
+        agg, a, b = _two_site_agg()
+        states = {fn_node_id(*a): "green", fn_node_id(*b): "red",
+                  "var__Filtered": "red"}
+
+        grouped, node_states, member_map = group_call_sites_by_wiring(
+            agg, states)
+
+        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        gkey = ("bp", wid)
+        assert list(grouped.fn_input_params) == [gkey]
+        # Variant rows keep per-call-site call_id and state.
+        rows = grouped.fn_variants_map[gkey]
+        by_hz = {r["constants"]["low_hz"]: r for r in rows}
+        assert by_hz[20]["state"] == "green" and by_hz[20]["call_id"] == "a" * 16
+        assert by_hz[50]["state"] == "red" and by_hz[50]["call_id"] == "b" * 16
+        # Node state = worst member; var states pass through.
+        assert node_states[fn_node_id("bp", wid)] == "red"
+        assert node_states["var__Filtered"] == "red"
+        # const edge targets re-keyed to the group.
+        assert grouped.const_fns["low_hz"] == {gkey}
+        # member map records both legacy ids.
+        assert set(member_map[fn_node_id("bp", wid)]) == {
+            fn_node_id(*a), fn_node_id(*b)}
+
+    def test_different_wiring_stays_separate(self):
+        agg = AggregatedData()
+        k1 = ("bp", "a" * 16)
+        k2 = ("bp", "b" * 16)
+        agg.fn_input_params[k1] = {"signal": "Raw"}
+        agg.fn_outputs[k1] = {"Filtered"}
+        agg.fn_input_params[k2] = {"signal": "Other"}
+        agg.fn_outputs[k2] = {"Filtered"}
+
+        grouped, _, _ = group_call_sites_by_wiring(agg, {})
+
+        assert len(grouped.fn_input_params) == 2
+
+    def test_staged_pending_value_synthesizes_row_and_pending_state(self):
+        agg, a, b = _two_site_agg()
+        states = {fn_node_id(*a): "green", fn_node_id(*b): "green"}
+
+        grouped, node_states, _ = group_call_sites_by_wiring(
+            agg, states, pending_constants={"low_hz": {"99"}})
+
+        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        rows = grouped.fn_variants_map[("bp", wid)]
+        staged = [r for r in rows if r.get("staged")]
+        assert staged == [{"constants": {"low_hz": "99"},
+                           "state": "pending", "staged": True}]
+        # A green group with a staged value downgrades to pending, not red.
+        assert node_states[fn_node_id("bp", wid)] == "pending"
+
+
+class TestLegacyMigrationHelpers:
+    GROUP = fn_node_id("bp", "c" * 16)
+    LEGACY_A = fn_node_id("bp", "a" * 16)
+    LEGACY_B = fn_node_id("bp", "b" * 16)
+
+    def test_first_member_position_adopted_others_dropped(self):
+        member_map = {self.GROUP: [self.LEGACY_A, self.LEGACY_B]}
+        positions = {"main": {self.LEGACY_A: {"x": 1, "y": 2},
+                              self.LEGACY_B: {"x": 3, "y": 4}}}
+
+        adoptions, drops = legacy_position_adoptions(member_map, positions)
+
+        assert adoptions == [{"new_id": self.GROUP, "scope": "main",
+                              "x": 1, "y": 2}]
+        assert set(drops) == {self.LEGACY_A, self.LEGACY_B}
+
+    def test_scope_of_adopted_position_is_kept(self):
+        member_map = {self.GROUP: [self.LEGACY_A]}
+        positions = {"pipe_sub": {self.LEGACY_A: {"x": 5, "y": 6}}}
+
+        adoptions, _ = legacy_position_adoptions(member_map, positions)
+
+        assert adoptions[0]["scope"] == "pipe_sub"
+
+    def test_already_placed_group_only_drops_legacy_keys(self):
+        member_map = {self.GROUP: [self.LEGACY_A]}
+        positions = {"main": {self.GROUP: {"x": 9, "y": 9},
+                              self.LEGACY_A: {"x": 1, "y": 2}}}
+
+        adoptions, drops = legacy_position_adoptions(member_map, positions)
+
+        assert adoptions == []
+        assert drops == [self.LEGACY_A]
+
+    def test_manual_edges_rewritten_to_group_id(self):
+        member_map = {self.GROUP: [self.LEGACY_A]}
+        edges = [
+            {"id": "m1", "source": "var__Raw", "target": self.LEGACY_A},
+            {"id": "m2", "source": self.LEGACY_A, "target": "var__Filtered"},
+            {"id": "m3", "source": "var__Raw", "target": "var__Filtered"},
+        ]
+
+        rewrites = legacy_edge_rewrites(member_map, edges)
+
+        assert {r["id"] for r in rewrites} == {"m1", "m2"}
+        assert all(self.GROUP in (r["source"], r["target"]) for r in rewrites)

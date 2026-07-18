@@ -59,6 +59,16 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     for nid, meta in manual_nodes.items():
         if meta["type"] == "functionNode" and meta["label"] == function_name:
             fn_node_ids.add(nid)
+    # Manual edges may reference WIRING-GROUPED node ids (fn__{fn}__{wid} —
+    # the canvas groups call sites since 2026-07-18) whose suffix is not any
+    # call_id: adopt any edge endpoint whose parsed fn name matches.
+    from scistack_gui.domain.graph_builder import parse_fn_node_id
+    for edge in all_edges:
+        for endpoint in (edge.get("source"), edge.get("target")):
+            if endpoint and endpoint not in fn_node_ids:
+                parsed_ep = parse_fn_node_id(endpoint)
+                if parsed_ep is not None and parsed_ep[0] == function_name:
+                    fn_node_ids.add(endpoint)
 
     manual_output_types = infer_manual_fn_output_types(
         fn_node_ids, all_edges, manual_nodes, existing_node_labels={})
@@ -129,6 +139,43 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     ]
 
 
+def apply_pending_overrides(targets: list[dict],
+                            pending_constants: dict) -> list[dict]:
+    """Staged pending values override DB history on every derived target
+    that uses the constant — the SHARED seam for eager per-node runs and
+    compiled pipeline runs, so both materialize staged values identically
+    (Strategy 2: first staged value wins, replacing the DB value; string
+    values are literal_eval'd so ``"10"`` runs as ``10``).
+
+    Overriding can collapse targets that differed only in the overridden
+    constant into duplicates — callers should re-deduplicate after.
+    Returns a new list; input targets are not mutated.
+    """
+    if not pending_constants:
+        return targets
+    out = []
+    for target in targets:
+        constants = dict(target["constants"])
+        overridden = []
+        for const_name, values in pending_constants.items():
+            if const_name in constants and values:
+                raw = next(iter(values))
+                try:
+                    typed = ast.literal_eval(raw)
+                except (ValueError, SyntaxError):
+                    typed = raw
+                constants[const_name] = typed
+                overridden.append(const_name)
+        if overridden:
+            logger.info("[execution] pending override on %s target: %s",
+                        target.get("output_type"),
+                        {k: constants[k] for k in overridden})
+            out.append({**target, "constants": constants})
+        else:
+            out.append(target)
+    return out
+
+
 def _build_inputs(target: dict):
     """for_each inputs dict from a derived target (types + constants)."""
     from scidb import EachOf
@@ -174,14 +221,20 @@ def _scope_function_labels(db, pipeline_id: str) -> list[str]:
             if node_scope(nid, manual_nodes, positions_by_scope) == pipeline_id:
                 if parsed[0] not in labels:
                     labels.append(parsed[0])
-    # DB-derived fn nodes with NO saved position default to root.
+    # DB-derived fn nodes with NO saved position default to root. Position
+    # keys are wiring-grouped node ids (or legacy call-site ids before the
+    # one-time migration), so "placed" is judged by parsed fn NAME — the
+    # same granularity derivation works at.
     if pipeline_id == "main":
+        placed_fns = set()
+        for positions in positions_by_scope.values():
+            for nid in positions:
+                parsed = parse_fn_node_id(nid)
+                if parsed is not None:
+                    placed_fns.add(parsed[0])
         for v in db.list_pipeline_variants():
             fn = v["function_name"]
-            from scistack_gui.domain.graph_builder import fn_node_id as _fnid
-            nid = _fnid(fn, v.get("call_id") or "")
-            placed = any(nid in pos for pos in positions_by_scope.values())
-            if not placed and fn not in labels:
+            if fn not in placed_fns and fn not in labels:
                 labels.append(fn)
     return labels
 
@@ -210,6 +263,26 @@ def build_backend_pipeline(db, pipeline_id: str,
     pipe = Pipeline(names.get(pipeline_id, pipeline_id), db=db)
     _built[pipeline_id] = pipe
 
+    # Steps iterate the full schema grid, like a hand-written script's
+    # ``for_each(..., subject=subjects)``. Passed as EXPLICIT metadata
+    # iterables (not schema_level) so a use-edge binding's ``iterate``
+    # overrides compose per key instead of conflicting with schema_level
+    # (for_each forbids mixing the two). Without iterables, for_each pools
+    # every schema row into ONE call — functions written per-combo then
+    # crash on multi-row tables (found via gui_test_data 2026-07-18).
+    schema_iterables = {
+        key: db.distinct_schema_values(key)
+        for key in db.dataset_schema_keys
+    }
+
+    # Staged pending constants override DB history at compile time, so the
+    # plan previews the staged variant and pull runs materialize it — same
+    # helper as the eager run thread (Stage 2 of wiring-grouped plan).
+    # Post-override dedup keys on (constants, output_type) — overriding can
+    # collapse constant-only differences, but a multi-output fn's per-output
+    # targets must all survive.
+    pending_consts = pipeline_store.get_pending_constants(db)
+
     for fn_label in _scope_function_labels(db, pipeline_id):
         try:
             fn = registry.get_function(fn_label)
@@ -217,7 +290,15 @@ def build_backend_pipeline(db, pipeline_id: str,
             logger.warning("[execution] scope %s: function '%s' not in "
                            "registry — skipped", pipeline_id, fn_label)
             continue
-        for target in derive_fn_targets(db, fn_label):
+        targets = apply_pending_overrides(
+            derive_fn_targets(db, fn_label), pending_consts)
+        seen_target_keys: set = set()
+        for target in targets:
+            target_key = (tuple(sorted(target["constants"].items())),
+                          target["output_type"])
+            if target_key in seen_target_keys:
+                continue
+            seen_target_keys.add(target_key)
             try:
                 inputs = _build_inputs(target)
                 output_cls = registry.get_variable_class(target["output_type"])
@@ -226,7 +307,7 @@ def build_backend_pipeline(db, pipeline_id: str,
                                "(%s)", pipeline_id, fn_label, exc)
                 continue
             for_each(fn, inputs, [output_cls], db=db, pipeline=pipe,
-                     schema_filter=None)
+                     **schema_iterables)
 
     for use in pipeline_store.get_pipeline_uses(db, pipeline_id):
         child = build_backend_pipeline(db, use["child_pipeline_id"], _built)
@@ -302,4 +383,7 @@ def run_pipeline(db, pipeline_id: str, mode: str = "all",
             raise ValueError(f"unknown run mode {mode!r}")
     finally:
         _discard_compiled(built)
-    return {"ok": True, "pipeline": pipe.name, "mode": mode}
+    # for_each never raises on iteration failures (continue-and-report),
+    # so the caller decides success from the per-step report.
+    return {"ok": True, "pipeline": pipe.name, "mode": mode,
+            "report": pipe.last_run_report}

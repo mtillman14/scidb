@@ -7,6 +7,7 @@ entirely on plain Python data structures (dicts, lists, sets, strings).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -21,7 +22,11 @@ FnKey = tuple[str, str]
 
 Two for_each() invocations of the same fn that differ in inputs, constants,
 where, distribute, or as_table produce different call_ids and therefore
-different FnKeys, so they render as separate function nodes in the DAG.
+different FnKeys. Since 2026-07-18 the CANVAS no longer shows one node per
+call site: call sites are grouped by WIRING (see ``wiring_id`` /
+``group_call_sites_by_wiring``) and render as variant rows inside one
+node — a new constant value forks a new call_id in scidb (by design) but
+lands in the SAME canvas node. State computation stays per call site.
 """
 
 
@@ -93,6 +98,188 @@ class GraduationAction:
     """Side-effect to execute after merge_manual_nodes (pure return value)."""
     old_id: str
     new_id: str
+
+
+# ---------------------------------------------------------------------------
+# Wiring grouping (one canvas node per function + input/output shape)
+# ---------------------------------------------------------------------------
+
+_STATE_WORST_ORDER = {"red": 0, "pending": 1, "green": 2}
+
+
+def wiring_id(fn_name: str, input_params: dict, out_types) -> str:
+    """16-hex id for a function's WIRING: name + loadable-input shape +
+    output types — the call_id recipe minus constants, so constant-value
+    variants of the same call share one canvas node. Deterministic across
+    graph builds (node ids key saved positions and scope membership)."""
+    payload = json.dumps({
+        "fn": fn_name,
+        "inputs": {
+            k: (sorted(v) if isinstance(v, (list, set, tuple)) else v)
+            for k, v in sorted(input_params.items())
+        },
+        "outputs": sorted(out_types),
+    }, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def group_call_sites_by_wiring(
+    agg: AggregatedData,
+    run_states: dict[str, str],
+    pending_constants: dict[str, set] | None = None,
+) -> tuple[AggregatedData, dict[str, str], dict[str, list[str]]]:
+    """Re-key the aggregated call-site data to (fn_name, wiring_id) groups.
+
+    User decision 2026-07-18: one canvas node per function + wiring;
+    constant-value call sites become variant rows INSIDE the node (each row
+    keeps its own per-call-site state chip — the no-blur guarantee moves
+    from separate nodes to separate chips). scidb call identity is
+    untouched; this is presentation-layer grouping only.
+
+    Args:
+        agg: call-site-keyed aggregate (NOT mutated).
+        run_states: propagate_run_states output — per-call-site
+            ``fn__{fn}__{call_id}`` keys plus ``var__*`` keys.
+        pending_constants: staged values ({name: {value, ...}}); each gets a
+            SYNTHESIZED ``staged`` variant row on every group that uses the
+            constant, so the value is visible in the node it will land in.
+
+    Returns:
+        (grouped AggregatedData,
+         node_states — run_states re-keyed to group node ids, group state =
+         worst member state (red < pending < green), var__ entries kept,
+         member_map — {group_node_id: [legacy member node ids]} for the
+         one-time position/edge adoption).
+    """
+    pending_constants = pending_constants or {}
+    grouped = AggregatedData()
+    grouped.all_var_types = agg.all_var_types
+    grouped.const_counts = agg.const_counts
+    grouped.path_inputs = {}
+
+    fkey_to_gkey: dict[FnKey, FnKey] = {}
+    member_map: dict[str, list[str]] = {}
+    group_member_states: dict[FnKey, list[str]] = defaultdict(list)
+
+    for fkey in sorted(agg.fn_input_params.keys()):
+        fn, cid = fkey
+        wid = wiring_id(fn, agg.fn_input_params[fkey], agg.fn_outputs.get(fkey, set()))
+        gkey = (fn, wid)
+        fkey_to_gkey[fkey] = gkey
+
+        grouped.fn_input_params[gkey].update(agg.fn_input_params[fkey])
+        grouped.fn_outputs[gkey] |= set(agg.fn_outputs.get(fkey, set()))
+        grouped.fn_constants[gkey] |= set(agg.fn_constants.get(fkey, set()))
+
+        member_state = run_states.get(fn_node_id(fn, cid))
+        if member_state:
+            group_member_states[gkey].append(member_state)
+        for row in agg.fn_variants_map.get(fkey, []):
+            grouped.fn_variants_map[gkey].append({
+                **row, "call_id": cid,
+                **({"state": member_state} if member_state else {}),
+            })
+
+        member_map.setdefault(fn_node_id(fn, wid), []).append(fn_node_id(fn, cid))
+
+    # const/path-input edge targets follow their call sites into the groups.
+    for const_name, fkeys in agg.const_fns.items():
+        grouped.const_fns[const_name] = {
+            fkey_to_gkey.get(f, f) for f in fkeys
+        }
+    for param_name, pi in agg.path_inputs.items():
+        grouped.path_inputs[param_name] = {
+            **pi,
+            "functions": {fkey_to_gkey.get(f, f) for f in pi["functions"]},
+        }
+
+    # Staged pending values: a synthesized row per (constant, value) on
+    # every group that uses the constant — no call site exists yet.
+    for gkey in list(grouped.fn_constants.keys()):
+        for const_name in sorted(grouped.fn_constants[gkey]):
+            for pval in sorted(pending_constants.get(const_name, set())):
+                grouped.fn_variants_map[gkey].append({
+                    "constants": {const_name: pval},
+                    "state": "pending",
+                    "staged": True,
+                })
+                if "pending" not in group_member_states[gkey]:
+                    group_member_states[gkey].append("pending")
+
+    # Group node state = worst member state.
+    node_states = {k: v for k, v in run_states.items()
+                   if not k.startswith("fn__")}
+    for (fn, wid), states in group_member_states.items():
+        if states:
+            node_states[fn_node_id(fn, wid)] = min(
+                states, key=lambda s: _STATE_WORST_ORDER.get(s, 0))
+
+    n_groups = len(grouped.fn_input_params)
+    n_sites = len(agg.fn_input_params)
+    if n_groups != n_sites:
+        logger.info(
+            "[graph_builder] wiring grouping: %d call site(s) -> %d node(s)",
+            n_sites, n_groups)
+    return grouped, node_states, member_map
+
+
+def legacy_position_adoptions(
+    member_map: dict[str, list[str]],
+    positions_by_scope: dict[str, dict],
+) -> tuple[list[dict], list[str]]:
+    """One-time migration plan (pure): pre-grouping documents saved
+    positions under per-call-site node ids; the group node adopts the first
+    member position found (keeping its SCOPE — position location IS scope
+    membership) and every legacy key is dropped.
+
+    Returns (adoptions [{new_id, scope, x, y}], drop_ids [legacy ids]).
+    """
+    adoptions: list[dict] = []
+    drop_ids: list[str] = []
+    for group_id, legacy_ids in member_map.items():
+        placed = any(group_id in pos for pos in positions_by_scope.values())
+        for legacy_id in legacy_ids:
+            if legacy_id == group_id:
+                continue
+            for scope, positions in positions_by_scope.items():
+                if legacy_id not in positions:
+                    continue
+                if not placed:
+                    xy = positions[legacy_id]
+                    adoptions.append({
+                        "new_id": group_id, "scope": scope,
+                        "x": xy.get("x", 0), "y": xy.get("y", 0),
+                    })
+                    placed = True
+                if legacy_id not in drop_ids:
+                    drop_ids.append(legacy_id)
+    return adoptions, drop_ids
+
+
+def legacy_edge_rewrites(
+    member_map: dict[str, list[str]],
+    manual_edges: list[dict],
+) -> list[dict]:
+    """Manual edges whose endpoints reference legacy per-call-site node ids,
+    rewritten to the group node id (pure; caller persists via the edge
+    upsert)."""
+    legacy_to_group = {
+        legacy_id: group_id
+        for group_id, legacy_ids in member_map.items()
+        for legacy_id in legacy_ids
+        if legacy_id != group_id
+    }
+    rewrites = []
+    for edge in manual_edges:
+        new_source = legacy_to_group.get(edge["source"])
+        new_target = legacy_to_group.get(edge["target"])
+        if new_source or new_target:
+            rewrites.append({
+                **edge,
+                "source": new_source or edge["source"],
+                "target": new_target or edge["target"],
+            })
+    return rewrites
 
 
 def parse_path_input(value: str) -> dict | None:
@@ -408,7 +595,14 @@ def build_function_nodes(
     matlab_output_order: dict[str, list[str]] | None = None,
     matlab_param_to_class: dict[str, dict[str, str]] | None = None,
 ) -> list[dict]:
-    """Build React Flow function nodes — one per ``(fn_name, call_id)``.
+    """Build React Flow function nodes — one per aggregate key.
+
+    Keys arrive as ``(fn_name, wiring_id)`` when the caller grouped call
+    sites via ``group_call_sites_by_wiring`` (the canvas default since
+    2026-07-18); the builder is agnostic and works for raw
+    ``(fn_name, call_id)`` keys too (unit tests, ungrouped callers).
+    ``data.call_id`` is set to the key's suffix either way — the node id
+    always ends with it.
 
     Args:
         fn_input_params: {(fn_name, call_id): {param: var_type}}.

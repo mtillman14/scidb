@@ -130,7 +130,9 @@ def _compute_run_states(
 
     Pass 2 — propagate staleness through the DAG (delegated to domain layer).
 
-    Returns {node_id: "green"|"grey"|"red"} for fn__ and var__ nodes.
+    Returns {node_id: "green"|"pending"|"red"} for fn__ and var__ nodes
+    ("pending" is GUI-only: an unrun pending constant value staged in the
+    GUI — scidb's own node state is binary green/red).
     """
     from scistack_gui.domain.run_state import propagate_run_states
     from scihist import check_multiple_nodes_state
@@ -197,14 +199,14 @@ def _compute_run_states(
     )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
-    counts = {"green": 0, "grey": 0, "red": 0}
+    counts = {"green": 0, "pending": 0, "red": 0}
     for nid, s in result.items():
         if nid.startswith("fn__"):
             counts[s] = counts.get(s, 0) + 1
     logger.debug(
-        "run_states complete: %d call sites in %.1fms (%d green, %d grey, %d red)",
+        "run_states complete: %d call sites in %.1fms (%d green, %d pending, %d red)",
         len([k for k in result if k.startswith("fn__")]), elapsed_ms,
-        counts["green"], counts["grey"], counts["red"],
+        counts["green"], counts["pending"], counts["red"],
     )
     return result
 
@@ -292,13 +294,24 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     if removals:
         logger.debug("[pipeline] removed %d pending constant value(s) that are now in database", len(removals))
 
-    # --- Compute run states ---
+    # --- Compute run states (per call site — state never blurs) ---
     logger.info("[pipeline] Computing run states (delegating to run_state)")
     run_states = _compute_run_states(
         db, agg.fn_input_params, agg.fn_outputs,
         agg.fn_constants, pending_constants,
     )
     logger.info("[pipeline] computed run states for %d nodes", len(run_states))
+
+    # --- Group call sites by wiring (one canvas node per fn + IO shape) ---
+    # Constant-value call sites become variant rows (with their own state
+    # chips) inside one node; staged pending values get synthesized rows.
+    logger.info("[pipeline] Grouping call sites by wiring")
+    agg, run_states, wiring_member_map = gb.group_call_sites_by_wiring(
+        agg, run_states, pending_constants)
+    # Hidden-id filtering ran pre-grouping for LEGACY per-call-site ids;
+    # run it again now so deletions of wiring-grouped nodes (hidden id =
+    # fn__{fn}__{wiring_id}) also apply.
+    gb.filter_hidden(agg, hidden_ids)
 
     # --- Build fn_params_map and saved_configs ---
     # fn_params_map and saved_configs are keyed by fn_name (the signature
@@ -523,6 +536,37 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         manual_nodes = _ps.get_manual_nodes(db)
         logger.debug("[pipeline] refreshed scope-membership inputs after "
                      "%d graduation(s)", len(graduations))
+
+    # --- One-time wiring migration ---
+    # Pre-grouping documents keyed positions (= scope membership) and manual
+    # edges by per-call-site node ids; adopt them onto the group node ids.
+    # Idempotent: legacy keys are dropped after adoption.
+    adoptions, drop_ids = gb.legacy_position_adoptions(
+        wiring_member_map, positions_by_scope)
+    for action in adoptions:
+        layout_store.write_node_position(
+            action["new_id"], action["x"], action["y"],
+            pipeline_id=action["scope"])
+        logger.info("[pipeline] wiring migration: adopted position of "
+                    "legacy call-site node into %s (scope=%s)",
+                    action["new_id"], action["scope"])
+    for old_id in drop_ids:
+        layout_store.drop_node_positions(old_id)
+    edge_rewrites = gb.legacy_edge_rewrites(
+        wiring_member_map, manual_edges_list)
+    for rewritten in edge_rewrites:
+        _ps.write_manual_edge(db, rewritten)
+        # Patch the already-built in-memory edge too so THIS response is
+        # correct without a second fetch.
+        for e in edges:
+            if e["id"] == rewritten["id"]:
+                e["source"] = rewritten["source"]
+                e["target"] = rewritten["target"]
+        logger.info("[pipeline] wiring migration: rewrote manual edge %s "
+                    "endpoints to group node ids", rewritten["id"])
+    if adoptions or drop_ids:
+        positions_by_scope = layout_store.read_positions_by_scope()
+
     logger.info("[pipeline] Filtering graph to scope %s", pipeline_id)
     from scistack_gui.domain.scope_filter import filter_graph_to_scope
     from scistack_gui.services.scope_service import build_pipeline_nodes

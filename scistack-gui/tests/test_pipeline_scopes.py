@@ -525,3 +525,109 @@ class TestExecutionCompiler:
         before = len(_all_pipelines)
         plan_pipeline(get_db(), "main")
         assert len(_all_pipelines) == before  # transient compiles cleaned
+
+    def test_compiled_steps_iterate_schema_grid(self, client):
+        """Compiled steps must carry the FULL schema grid as explicit
+        iterables — without them for_each pools every schema row into ONE
+        call and per-combo functions crash on multi-row tables (regression
+        found via gui_test_data, 2026-07-18). Explicit iterables (not
+        schema_level) so binding `iterate` overrides compose per key."""
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            _discard_compiled, build_backend_pipeline,
+        )
+
+        built: dict = {}
+        pipe = build_backend_pipeline(get_db(), "main", built)
+        try:
+            spec = pipe.steps[0]
+            assert set(spec.metadata_iterables) == {"subject", "session"}
+            assert len(spec.metadata_iterables["subject"]) == 2
+            assert sorted(spec.metadata_iterables["session"]) == ["post", "pre"]
+        finally:
+            _discard_compiled(built)
+
+    def test_compile_applies_pending_constant_override(self, client):
+        """Staged pending values override DB history at COMPILE time (Stage
+        2 of the wiring-grouped plan) — the same Strategy-2 semantics as the
+        eager run thread, via the shared apply_pending_overrides helper."""
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            _discard_compiled, build_backend_pipeline,
+        )
+
+        client.put("/api/constants/low_hz/pending/42")
+
+        built: dict = {}
+        pipe = build_backend_pipeline(get_db(), "main", built)
+        try:
+            spec = pipe.steps[0]
+            assert spec.inputs["low_hz"] == 42  # literal_eval'd, not "42"
+        finally:
+            _discard_compiled(built)
+            client.delete("/api/constants/low_hz/pending/42")
+
+    def test_plan_previews_staged_variant_as_red(self, client):
+        """The plan dialog shows what materializing the staged value will
+        run: the overridden variant has no records yet -> red, full grid."""
+        client.put("/api/constants/low_hz/pending/42")
+        try:
+            entries = client.get("/api/pipelines/main/plan").json()
+            by_name = {e["step"]: e for e in entries}
+            assert by_name["bandpass_filter"]["state"] == "red"
+            assert by_name["bandpass_filter"]["n_combos"] == 4
+        finally:
+            client.delete("/api/constants/low_hz/pending/42")
+
+    def test_pull_run_materializes_staged_value_and_pending_clears(self, client):
+        """The full Stage-2 loop: stage a value -> pull run writes the
+        staged variant's records -> next graph build auto-cleans the
+        pending value and the node returns to green."""
+        from scistack_gui import layout as layout_store
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import run_pipeline
+
+        client.put("/api/constants/low_hz/pending/42")
+
+        result = run_pipeline(get_db(), "main", mode="until",
+                              target="bandpass_filter")
+
+        entry = result["report"][0]
+        assert entry["failed"] == 0
+        assert entry["completed"] == 4  # staged variant: full grid computed
+
+        # The staged variant now exists in DB history.
+        constants_seen = {
+            v["constants"].get("low_hz")
+            for v in get_db().list_pipeline_variants()
+            if v["function_name"] == "bandpass_filter"
+        }
+        assert 42 in constants_seen
+
+        # Next graph build: pending auto-cleans, node green with both
+        # variant chips.
+        nodes = client.get("/api/pipeline").json()["nodes"]
+        assert "42" not in layout_store.get_pending_constants().get(
+            "low_hz", set())
+        node = next(n for n in nodes if n.get("type") == "functionNode"
+                    and n["data"]["label"] == "bandpass_filter")
+        assert node["data"]["run_state"] == "green"
+        chip_values = {v["constants"].get("low_hz")
+                       for v in node["data"]["variants"]}
+        assert chip_values == {20, 42}
+
+    def test_run_pipeline_returns_step_report(self, client):
+        """run_pipeline surfaces the backend's last_run_report so the run
+        thread can report honest success (iteration failures never raise
+        out of for_each)."""
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import run_pipeline
+
+        result = run_pipeline(get_db(), "main", mode="until",
+                              target="bandpass_filter")
+
+        assert [e["step"] for e in result["report"]] == ["bandpass_filter"]
+        entry = result["report"][0]
+        assert entry["failed"] == 0
+        # Seed already ran everything → memoized skip, nothing re-computed.
+        assert entry["completed"] == 0

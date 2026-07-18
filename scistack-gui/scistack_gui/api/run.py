@@ -200,26 +200,20 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         logger.debug("[run_thread] Using all %d DB variants (run_id=%s)", len(fn_variants), run_id)
         targets = fn_variants
 
-    unique_targets = deduplicate_variants(targets)
-    logger.debug("[run_thread] After deduplication: %d unique targets (run_id=%s)",
-                len(unique_targets), run_id)
-
-    # Get pending constants to override during execution.
-    # Note: Pending constants are applied per-variant during input construction
-    # rather than creating synthetic cross-product variants.
+    # Staged pending constants override DB values on the derived targets —
+    # shared helper with the pipeline compiler so eager and pull runs
+    # materialize staged values identically. Deduplicate AFTER overriding:
+    # targets differing only in the overridden constant collapse together.
     from scistack_gui import pipeline_store as _ps
+    from scistack_gui.services.execution_service import apply_pending_overrides
     pending_consts = _ps.get_pending_constants(db)
     if pending_consts:
         logger.info("[run_thread] Pending constants will override DB values: %s (run_id=%s)",
                     list(pending_consts.keys()), run_id)
-
-    # Schema iteration will be handled directly by for_each via schema_filter and schema_level.
-    logger.info("[run_thread] Schema iteration parameters will be handled by for_each (run_id=%s)", run_id)
-    if schema_level:
-        logger.debug("[run_thread] Schema level: %s (run_id=%s)", schema_level, run_id)
-    if schema_filter:
-        logger.debug("[run_thread] Schema filter: %s (run_id=%s)",
-                     {k: f"{len(v)} values" for k, v in schema_filter.items()}, run_id)
+    unique_targets = deduplicate_variants(
+        apply_pending_overrides(targets, pending_consts))
+    logger.debug("[run_thread] After override + deduplication: %d unique targets (run_id=%s)",
+                len(unique_targets), run_id)
 
     # Extract run options (dry_run, save, distribute, as_table).
     logger.info("[run_thread] Extracting run options (run_id=%s)", run_id)
@@ -231,8 +225,30 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     logger.debug("[run_thread] Run options: dry_run=%s, save=%s, distribute=%s, as_table=%s (run_id=%s)",
                 opt_dry_run, opt_save, opt_distribute, opt_as_table, run_id)
 
+    # Schema iteration is handled by for_each via schema_filter/schema_level —
+    # but for_each ONLY auto-iterates when one of them is set. With both None
+    # it pools every schema row into a single call, which is never what a
+    # canvas Run means for per-combo functions (the seed scripts pass
+    # explicit iterables). Default to iterating ALL schema keys — EXCEPT
+    # when the user explicitly chose as_table, which means "pool the rows".
+    if schema_level is None and schema_filter is None and not opt_as_table:
+        schema_level = list(db.dataset_schema_keys)
+        logger.info("[run_thread] No schema iteration requested — defaulting "
+                    "to all schema keys: %s (run_id=%s)", schema_level, run_id)
+    if schema_level:
+        logger.debug("[run_thread] Schema level: %s (run_id=%s)", schema_level, run_id)
+    if schema_filter:
+        logger.debug("[run_thread] Schema filter: %s (run_id=%s)",
+                     {k: f"{len(v)} values" for k, v in schema_filter.items()}, run_id)
+
     success = True
     run_started_at = time.time()
+    # Accumulated across targets from scifor's authoritative "summary"
+    # progress events: for_each never raises on iteration failures
+    # (continue-and-report), so success must be decided from these counts —
+    # NOT from "the for_each call returned". skip_computed skips are
+    # removed before the loop and never inflate 'failed'.
+    combo_totals = {"completed": 0, "failed": 0}
     # Build where= argument from where_filters.
     logger.info("[run_thread] Building where filters (run_id=%s)", run_id)
     where_arg = _build_where(where_filters)
@@ -279,24 +295,11 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                         inputs[param] = registry.get_variable_class(type_names)
                         logger.debug("[run_thread] Input '%s' is type: %s (run_id=%s)",
                                    param, type_names, run_id)
-                inputs.update(v["constants"])   # add constants
+                # Constants arrive already pending-overridden (see
+                # apply_pending_overrides above the loop).
+                inputs.update(v["constants"])
                 logger.debug("[run_thread] Added constants to inputs: %s (run_id=%s)",
                            v["constants"], run_id)
-
-                # Override with pending constants if any match this variant's constants.
-                if pending_consts:
-                    import ast as _ast
-                    for const_name, pending_values in pending_consts.items():
-                        if const_name in v["constants"]:
-                            # Use the first pending value (Strategy 2: simplest approach)
-                            pending_str = next(iter(pending_values))
-                            try:
-                                pending_typed = _ast.literal_eval(pending_str)
-                            except (ValueError, SyntaxError):
-                                pending_typed = pending_str
-                            inputs[const_name] = pending_typed
-                            logger.info("[run_thread] Overriding constant '%s' with pending value: %s (run_id=%s)",
-                                       const_name, pending_typed, run_id)
 
                 OutputCls = registry.get_variable_class(v["output_type"])
                 logger.debug("[run_thread] Output class: %s (run_id=%s)", v["output_type"], run_id)
@@ -307,11 +310,9 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                 success = False
                 continue
 
-            # Build label from actual constants that will be used (after pending overrides)
-            actual_constants = {k: val for k, val in inputs.items()
-                               if k in v["constants"] or (pending_consts and k in pending_consts)}
-            label = f"{function_name}({', '.join(f'{k}={val}' for k, val in actual_constants.items())})" \
-                    if actual_constants else function_name
+            # Target constants are final (pending overrides already applied).
+            label = f"{function_name}({', '.join(f'{k}={val}' for k, val in v['constants'].items())})" \
+                    if v["constants"] else function_name
             logger.info(
                 "[run_thread] Target %d/%d -> %s, inputs=%s, output=%s (run_id=%s)",
                 idx, len(unique_targets), label,
@@ -336,6 +337,11 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
 
             # Progress callback: relay structured progress to the frontend.
             def _progress_fn(info: dict):
+                # The end-of-run summary carries this target's final counts.
+                if info.get("event") == "summary":
+                    combo_totals["completed"] += info.get("completed", 0)
+                    combo_totals["failed"] += info.get(
+                        "failed", info.get("skipped", 0))
                 # Convert metadata values to strings for JSON serialization.
                 meta = {str(k): str(val) for k, val in info.get("metadata", {}).items()}
                 logger.debug("[run_thread] Progress update: event=%s, current=%d, total=%d (run_id=%s)",
@@ -357,6 +363,7 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
             logger.info("[run_thread] Executing for_each for target %d (run_id=%s)",
                        idx, run_id)
             buf = StringIO()
+            target_snapshot = dict(combo_totals)
             try:
                 with _RunLogRelay(), redirect_stdout(buf):
                     for_each(fn, inputs=inputs, outputs=[OutputCls],
@@ -375,8 +382,20 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
                                len(output), run_id)
                     emit(output)
                 target_ms = int((time.time() - started_at) * 1000)
-                logger.info("[run_thread] Target %d/%d (%s) completed successfully in %d ms (run_id=%s)",
-                            idx, len(unique_targets), label, target_ms, run_id)
+                target_failed = combo_totals["failed"] - target_snapshot["failed"]
+                target_completed = (combo_totals["completed"]
+                                    - target_snapshot["completed"])
+                if target_failed:
+                    logger.warning(
+                        "[run_thread] Target %d/%d (%s) finished in %d ms with "
+                        "%d failed combo(s) (completed=%d) (run_id=%s)",
+                        idx, len(unique_targets), label, target_ms,
+                        target_failed, target_completed, run_id)
+                    emit(f"⚠ {label}: {target_failed} combo(s) failed "
+                         f"({target_completed} completed) — see log above\n")
+                else:
+                    logger.info("[run_thread] Target %d/%d (%s) completed successfully in %d ms (run_id=%s)",
+                                idx, len(unique_targets), label, target_ms, run_id)
             except KeyboardInterrupt:
                 # Force-cancel injected an interrupt into this thread (or the
                 # user pressed Ctrl-C in CLI mode).  Treat as cancel and stop.
@@ -407,6 +426,10 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
     finally:
         logger.info("[run_thread] Cleanup and completion (run_id=%s)", run_id)
         duration_ms = int((time.time() - run_started_at) * 1000)
+        # Honest verdict: iteration failures never raise out of for_each,
+        # so a run with any failed combos is NOT a success.
+        if combo_totals["failed"] > 0:
+            success = False
         # Read the final cancel flags from the registry before popping it.
         logger.debug("[run_thread] Removing run from active registry (run_id=%s)", run_id)
         with _active_runs_lock:
@@ -415,13 +438,17 @@ def _run_in_thread(run_id: str, function_name: str, variants: list[dict], db: Da
         if cancel_event.is_set():
             cancelled = True
         logger.info(
-            "[run_thread] Thread finished (success=%s, cancelled=%s, force=%s) in %d ms (run_id=%s)",
-            success, cancelled, was_force, duration_ms, run_id,
+            "[run_thread] Thread finished (success=%s, cancelled=%s, force=%s, "
+            "completed_combos=%d, failed_combos=%d) in %d ms (run_id=%s)",
+            success, cancelled, was_force, combo_totals["completed"],
+            combo_totals["failed"], duration_ms, run_id,
         )
         logger.debug("[run_thread] Emitting run_done message (run_id=%s)", run_id)
         push_message({"type": "run_done", "run_id": run_id, "success": success,
                       "duration_ms": duration_ms,
-                      "cancelled": cancelled, "force_cancelled": was_force})
+                      "cancelled": cancelled, "force_cancelled": was_force,
+                      "completed_combos": combo_totals["completed"],
+                      "failed_combos": combo_totals["failed"]})
         logger.debug("[run_thread] Emitting dag_updated message (run_id=%s)", run_id)
         push_message({"type": "dag_updated"})
 
@@ -542,10 +569,13 @@ def _run_pipeline_in_thread(run_id: str, pipeline_id: str, mode: str,
     success, cancelled = True, False
     run_started_at = time.time()
     buf = StringIO()
+    report: list = []
     try:
         with _RunLogRelay(), redirect_stdout(buf):
-            run_pipeline(db, pipeline_id, mode=mode, target=target,
-                         finalized=finalized, skip_computed=skip_computed)
+            result = run_pipeline(db, pipeline_id, mode=mode, target=target,
+                                  finalized=finalized,
+                                  skip_computed=skip_computed)
+        report = (result or {}).get("report") or []
     except KeyboardInterrupt:
         cancelled = True
         emit("⛔ Force-cancelled\n")
@@ -557,6 +587,21 @@ def _run_pipeline_in_thread(run_id: str, pipeline_id: str, mode: str,
         output = buf.getvalue()
         if output:
             emit(output)
+        # Honest verdict: step for_each calls never raise on iteration
+        # failures (continue-and-report), so success comes from the
+        # pipeline's per-step run report.
+        completed_combos = sum(e.get("completed", 0) for e in report)
+        failed_combos = sum(e.get("failed", 0) for e in report)
+        for e in report:
+            if e.get("failed"):
+                emit(f"⚠ {e.get('label', e.get('step'))}: "
+                     f"{e['failed']} combo(s) failed "
+                     f"({e.get('completed', 0)} completed)\n")
+        if failed_combos > 0:
+            success = False
+            emit(f"✗ Pipeline run finished with {failed_combos} failed "
+                 f"combo(s) across {sum(1 for e in report if e.get('failed'))}"
+                 f" step(s) — see log above\n")
         duration_ms = int((time.time() - run_started_at) * 1000)
         with _active_runs_lock:
             entry = _active_runs.pop(run_id, None)
@@ -564,11 +609,14 @@ def _run_pipeline_in_thread(run_id: str, pipeline_id: str, mode: str,
         if cancel_event.is_set():
             cancelled = True
         logger.info("[pipeline_run] finished (run_id=%s success=%s "
-                    "cancelled=%s) in %d ms", run_id, success, cancelled,
-                    duration_ms)
+                    "cancelled=%s completed_combos=%d failed_combos=%d) "
+                    "in %d ms", run_id, success, cancelled,
+                    completed_combos, failed_combos, duration_ms)
         push_message({"type": "run_done", "run_id": run_id,
                       "success": success, "duration_ms": duration_ms,
-                      "cancelled": cancelled, "force_cancelled": was_force})
+                      "cancelled": cancelled, "force_cancelled": was_force,
+                      "completed_combos": completed_combos,
+                      "failed_combos": failed_combos})
         push_message({"type": "dag_updated"})
 
 

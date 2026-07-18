@@ -145,16 +145,14 @@ def client(populated_db):
 
 @pytest.fixture
 def bp_node_id(populated_db):
-    """The composite ``fn__bandpass_filter__{call_id}`` ID for the seeded
-    for_each call site in ``populated_db``.  Lets tests target the call-site
-    node without hard-coding the call_id."""
-    from scidb.foreach_config import ForEachConfig
-    from scistack_gui.domain.graph_builder import fn_node_id
-    cid = ForEachConfig(
-        fn=bandpass_filter,
-        inputs={"signal": RawSignal, "low_hz": 20},
-    ).to_call_id()
-    return fn_node_id("bandpass_filter", cid)
+    """The composite ``fn__bandpass_filter__{wiring_id}`` ID for the seeded
+    bandpass node.  Canvas nodes group call sites by WIRING (fn + loadable
+    inputs + outputs — constants excluded), so the node id suffix is the
+    wiring_id, not any single call site's call_id."""
+    from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+    wid = wiring_id("bandpass_filter", {"signal": "RawSignal"},
+                    {"FilteredSignal"})
+    return fn_node_id("bandpass_filter", wid)
 
 
 def find_fn_node_id_by_label(nodes, label: str) -> str:
@@ -183,9 +181,9 @@ def fn_min_state_across_call_sites(nodes, label: str) -> str | None:
 
       - ``None`` if no node with that label exists (preserves the old
         ``next(..., None)`` semantics).
-      - The worst state (red < grey < green) across all matching nodes.
+      - The worst state (red < pending < green) across all matching nodes.
     """
-    _ORDER = {"red": 0, "grey": 1, "green": 2}
+    _ORDER = {"red": 0, "pending": 1, "green": 2}
     states = [n["data"].get("run_state") for n in nodes
               if n.get("type") == "functionNode" and n.get("data", {}).get("label") == label]
     states = [s for s in states if s is not None]
