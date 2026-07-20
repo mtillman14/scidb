@@ -262,17 +262,37 @@ def _load_entry_points() -> None:
 # ---------------------------------------------------------------------------
 
 def _scan_module_functions(module, *, source: str) -> None:
-    """Scan a module for top-level callables and register them."""
+    """Scan a module for top-level callables and register them.
+
+    Only callables actually *defined* in ``module`` are registered — objects
+    merely imported into its namespace (e.g. a pipeline file doing
+    ``from scidb import for_each, configure_database``) are skipped by
+    comparing ``__module__``. Without this, internal scistack helpers
+    re-exported into a user file leak into the GUI's discovered-functions
+    list as if they were pipeline steps. Mirrors the same filter already
+    used by :func:`scidb.discover.discover_module`.
+    """
+    module_name = getattr(module, "__name__", None)
     logger.debug("[registry] Scanning module for functions: %s", source)
     discovered = []
+    skipped_reexports = []
     for name, obj in inspect.getmembers(
         module, lambda o: callable(o) and not inspect.isclass(o)
     ):
-        if not name.startswith('_'):
-            _register_function(name, obj, source=source)
-            discovered.append(name)
+        if name.startswith('_'):
+            continue
+        if getattr(obj, "__module__", None) != module_name:
+            skipped_reexports.append(name)
+            continue
+        _register_function(name, obj, source=source)
+        discovered.append(name)
     if discovered:
         logger.debug("[registry] Discovered %d functions from %s: %s", len(discovered), source, discovered)
+    if skipped_reexports:
+        logger.debug(
+            "[registry] Skipped %d imported/re-exported callables from %s (not defined there): %s",
+            len(skipped_reexports), source, skipped_reexports,
+        )
 
 
 def _register_function(name: str, fn, *, source: str) -> None:

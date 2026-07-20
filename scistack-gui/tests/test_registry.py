@@ -14,7 +14,25 @@ from scistack_gui import registry
 # ---------------------------------------------------------------------------
 
 def _make_module(**attrs) -> types.ModuleType:
-    """Create a throwaway module with the given attributes."""
+    """Create a throwaway module with the given attributes.
+
+    Callables are stamped with ``__module__`` matching this fake module's
+    name, simulating a function actually *defined* there — otherwise they'd
+    carry the real ``__module__`` of wherever they were written in the test
+    file (e.g. ``tests.test_registry``), which is exactly the "imported,
+    not defined" case the registry is now expected to filter out. Use
+    ``_make_module_with_reexport`` to construct that case on purpose.
+    """
+    mod = types.ModuleType("test_pipeline_module")
+    for k, v in attrs.items():
+        if callable(v) and not isinstance(v, type):
+            v.__module__ = mod.__name__
+        setattr(mod, k, v)
+    return mod
+
+
+def _make_module_with_reexport(**attrs) -> types.ModuleType:
+    """Like _make_module, but leaves __module__ untouched (simulates an import)."""
     mod = types.ModuleType("test_pipeline_module")
     for k, v in attrs.items():
         setattr(mod, k, v)
@@ -72,6 +90,44 @@ class TestRegisterModule:
         registry.register_module(_make_module(my_fn=fn_v1))
         registry.register_module(_make_module(my_fn=fn_v2))
         assert registry._functions["my_fn"] is fn_v2
+
+    def test_skips_reexported_callables(self):
+        # Simulates `from scidb import for_each` inside a user pipeline
+        # file: the name is bound in the module's namespace, but the
+        # function was defined elsewhere, so it shouldn't be treated as a
+        # discoverable pipeline step.
+        def helper(x): return x
+
+        mod = _make_module_with_reexport(helper=helper)
+        registry.register_module(mod)
+        assert "helper" not in registry._functions
+
+    def test_skips_real_scidb_reexports(self):
+        # Regression test for the reported bug: `for_each` and
+        # `configure_database` showing up as "discovered functions" because
+        # a pipeline file does `from scidb import for_each,
+        # configure_database`.
+        from scidb import configure_database, for_each
+
+        mod = _make_module_with_reexport(
+            for_each=for_each, configure_database=configure_database,
+        )
+        registry.register_module(mod)
+        assert "for_each" not in registry._functions
+        assert "configure_database" not in registry._functions
+
+    def test_locally_defined_function_still_registered_alongside_reexport(self):
+        # The filter should only remove imports, not everything in a file
+        # that also happens to import scidb helpers.
+        from scidb import for_each
+
+        def compute_thing(x): return x
+
+        mod = _make_module_with_reexport(compute_thing=compute_thing, for_each=for_each)
+        compute_thing.__module__ = mod.__name__  # simulate "defined in this file"
+        registry.register_module(mod)
+        assert "compute_thing" in registry._functions
+        assert "for_each" not in registry._functions
 
 
 # ---------------------------------------------------------------------------
