@@ -365,9 +365,13 @@ def run_pipeline(db, pipeline_id: str, mode: str = "all",
     API wraps this in its background-thread/relay machinery).
 
     mode: "all" -> run_all; "until" -> run_until(target);
-    "endpoints" -> run_endpoints(finalized=...).
+    "endpoints" -> run_endpoints(finalized=...); "show" -> show(target)
+    (draft-run one endpoint + ancestors, zero endpoint records — the
+    returned "rendered" list of paths/payloads is the ONLY handle on the
+    draft outputs).
     """
     built: dict = {}
+    rendered: list = []
     try:
         pipe = build_backend_pipeline(db, pipeline_id, built)
         if mode == "all":
@@ -379,6 +383,8 @@ def run_pipeline(db, pipeline_id: str, mode: str = "all",
             pipe.run_endpoints(finalized=bool(finalized),
                                skip_computed=skip_computed,
                                include_used=True)
+        elif mode == "show":
+            rendered = pipe.show(target, skip_computed=skip_computed)
         else:
             raise ValueError(f"unknown run mode {mode!r}")
     finally:
@@ -386,4 +392,5 @@ def run_pipeline(db, pipeline_id: str, mode: str = "all",
     # for_each never raises on iteration failures (continue-and-report),
     # so the caller decides success from the per-step report.
     return {"ok": True, "pipeline": pipe.name, "mode": mode,
-            "report": pipe.last_run_report}
+            "report": pipe.last_run_report,
+            "rendered": rendered}

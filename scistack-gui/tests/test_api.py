@@ -394,6 +394,65 @@ class TestVariableRecordsEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# Wiring mutations broadcast dag_updated
+# ---------------------------------------------------------------------------
+
+class TestWiringMutationBroadcasts:
+    """Node/edge create+delete must broadcast dag_updated so the canvas
+    refetches and a freshly placed node gets its real DB-checked state —
+    a re-dropped, re-wired, already-computed function must come back green,
+    not the frontend-local red (user-found 2026-07-19). Position-only
+    writes must NOT broadcast (a rebuild per drag would be pathological).
+    """
+
+    @pytest.fixture
+    def captured(self, monkeypatch):
+        from scistack_gui.api import ws as ws_mod
+        messages: list[dict] = []
+        monkeypatch.setattr(ws_mod, "push_message",
+                            lambda msg: messages.append(msg))
+        return messages
+
+    def _dag_updates(self, messages):
+        return [m for m in messages if m.get("type") == "dag_updated"]
+
+    def test_node_creation_broadcasts(self, client, captured):
+        client.put("/api/layout/manual__bcast_test", json={
+            "x": 1.0, "y": 2.0,
+            "node_type": "variableNode", "label": "BcastVar",
+        })
+        assert len(self._dag_updates(captured)) == 1
+
+    def test_position_only_write_does_not_broadcast(self, client, captured):
+        client.put("/api/layout/manual__bcast_test2", json={
+            "x": 1.0, "y": 2.0,
+            "node_type": "variableNode", "label": "BcastVar2",
+        })
+        captured.clear()
+        client.put("/api/layout/manual__bcast_test2",
+                   json={"x": 50.0, "y": 60.0})
+        assert self._dag_updates(captured) == []
+
+    def test_node_delete_broadcasts(self, client, captured):
+        client.put("/api/layout/manual__bcast_test3", json={
+            "x": 0.0, "y": 0.0,
+            "node_type": "variableNode", "label": "BcastVar3",
+        })
+        captured.clear()
+        client.delete("/api/layout/manual__bcast_test3")
+        assert len(self._dag_updates(captured)) == 1
+
+    def test_edge_create_and_delete_broadcast(self, client, captured):
+        client.put("/api/edges/manual__bcast_e1", json={
+            "source": "var__RawSignal", "target": "var__FilteredSignal",
+        })
+        assert len(self._dag_updates(captured)) == 1
+        captured.clear()
+        client.delete("/api/edges/manual__bcast_e1")
+        assert len(self._dag_updates(captured)) == 1
+
+
+# ---------------------------------------------------------------------------
 # /api/run
 # ---------------------------------------------------------------------------
 

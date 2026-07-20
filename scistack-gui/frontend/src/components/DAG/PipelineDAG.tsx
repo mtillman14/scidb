@@ -241,12 +241,16 @@ export default function PipelineDAG() {
           params: string[]
           output_names?: string[]
           language?: string
+          endpoint_kind?: 'plot' | 'stat' | null
         }
         const input_params: Record<string, string> = {}
         for (const p of info.params) input_params[p] = ''
         const output_types = info.output_names ?? []
         const extra: Record<string, unknown> = {}
         if (info.language === 'matlab') extra.language = 'matlab'
+        // Endpoint badge/Show button must appear on the freshly dropped
+        // node, before any run creates DB history.
+        if (info.endpoint_kind) extra.endpoint_kind = info.endpoint_kind
         return { input_params, output_types, constant_params: [] as string[], run_state: 'red' as const, ...extra }
       } catch {
         return { run_state: 'red' as const }
@@ -255,6 +259,9 @@ export default function PipelineDAG() {
 
     buildFnData().then(fnExtra => {
       setNodes(prev => {
+        // put_layout broadcasts dag_updated, so the refetched graph may
+        // already contain this node — never append a duplicate id.
+        if (prev.some(n => n.id === nodeId)) return prev
         const newNode: Node = {
           id: nodeId,
           type: nodeType,

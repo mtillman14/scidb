@@ -21,6 +21,7 @@ from scistack_gui.api.variables import router as variables_router
 from scistack_gui.api.project import router as project_router
 from scistack_gui.api.indexes import router as indexes_router
 from scistack_gui.api.scopes import router as scopes_router
+from scistack_gui.api.artifacts import router as artifacts_router
 
 
 def create_app() -> FastAPI:
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(project_router, prefix="/api")
     app.include_router(indexes_router, prefix="/api")
     app.include_router(scopes_router, prefix="/api")
+    app.include_router(artifacts_router, prefix="/api")
     app.include_router(ws_router)
 
     # Serve the pre-built React frontend if the static folder exists.

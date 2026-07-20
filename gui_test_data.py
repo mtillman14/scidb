@@ -45,6 +45,11 @@ class MaxHeartRate(BaseVariable):
     pass
 
 
+class VO2Summary(BaseVariable):
+    """Cohort-level stat summary of MaxVO2 (stat_ endpoint output)."""
+    pass
+
+
 class RawHeartRate(BaseVariable):
     """Raw heart rate signal (bpm)."""
     pass
@@ -88,6 +93,21 @@ def compute_50_perc_max_hr(max_hr):
 def compute_perc_max_hr(max_hr: int, perc: float):
     """Max HR * perc"""
     return max_hr * perc
+
+
+def stat_vo2_summary(max_vo2):
+    """Cohort summary of MaxVO2 — a stat_ ENDPOINT (endpoint-first GUI
+    demo). stat_ functions pool their input rows (as_table default), so
+    this receives a DataFrame across the iterated combos."""
+    if isinstance(max_vo2, pd.DataFrame):
+        vals = np.ravel([np.ravel(v) for v in max_vo2["MaxVO2"]])
+    else:
+        vals = np.ravel(max_vo2)
+    return {
+        "mean_max_vo2": float(np.mean(vals)),
+        "best_max_vo2": float(np.max(vals)),
+        "n_subjects": int(vals.size),
+    }
 
 
 # ------------------------------------------------------------------

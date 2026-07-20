@@ -137,6 +137,9 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     update_use_binding:     { path: (p) => `/api/pipeline-uses/${encodeURIComponent(p.use_id as string)}/binding`, method: 'PUT', body: true },
     get_pipeline_plan:      { path: (p) => `/api/pipelines/${encodeURIComponent(p.pipeline_id as string)}/plan?target=${encodeURIComponent((p.target as string) ?? '')}` },
     start_pipeline_run:     { path: (p) => `/api/pipelines/${encodeURIComponent(p.pipeline_id as string)}/run`, method: 'POST', body: true },
+    // Endpoint presentation (plot_/stat_ artifacts, report)
+    get_endpoint_artifacts: { path: (p) => `/api/endpoints/${encodeURIComponent(p.fn_name as string)}/artifacts` },
+    write_report:           { path: '/api/report', method: 'POST' },
   };
 
   const route = routes[method];

@@ -20,6 +20,7 @@ import ConstantSettingsPanel from './ConstantSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
 import PathInputSettingsPanel from './PathInputSettingsPanel'
 import PipelineSettingsPanel from './PipelineSettingsPanel'
+import EndpointPanel from './EndpointPanel'
 import ProjectConfigPanel from './ProjectConfigPanel'
 import type { PipelineNodeData } from '../DAG/PipelineNode'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
@@ -32,6 +33,7 @@ type Tab = BaseTab | 'Node'
 
 interface FnNodeData {
   label: string
+  endpoint_kind?: 'plot' | 'stat'
   schemaFilter?: SchemaFilter | null
   schemaLevel?: string[] | null
   whereFilters?: WhereFilter[]
@@ -187,6 +189,13 @@ export default function Sidebar() {
         {activeTab === 'Runs' && <RunsTab />}
         {activeTab === 'Edit' && <EditTab />}
         {activeTab === 'Project' && <ProjectConfigPanel />}
+        {activeTab === 'Node' && isFunctionNode(selectedNode)
+          && (selectedNode.data as FnNodeData).endpoint_kind && (
+          <EndpointPanel
+            fnName={(selectedNode.data as FnNodeData).label}
+            kind={(selectedNode.data as FnNodeData).endpoint_kind!}
+          />
+        )}
         {activeTab === 'Node' && isFunctionNode(selectedNode) && (
           <FunctionSettingsPanel
             id={selectedNode.id}

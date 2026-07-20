@@ -11,6 +11,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _notify_dag_updated() -> None:
+    """Broadcast dag_updated after a WIRING mutation (node create/delete,
+    edge create/delete) so the canvas refetches and freshly placed nodes
+    get their real DB-checked state — a re-dropped, re-wired function that
+    is already computed must come back GREEN, not the frontend-local red
+    (user-found 2026-07-19). Deliberately NOT called for position-only
+    writes: drags would trigger a full graph rebuild per drop."""
+    from scistack_gui.api.ws import push_message
+    push_message({"type": "dag_updated"})
+
+
 def get_layout(pipeline_id: str = "main") -> dict:
     from scistack_gui import layout as layout_store
     return layout_store.read_layout(pipeline_id)
@@ -40,6 +51,7 @@ def put_layout(node_id: str, x: float, y: float,
         layout_store.write_manual_node(node_id, x, y, node_type, label,
                                        pipeline_id=pipeline_id)
         logger.info("[layout_service] Manual node created/updated successfully")
+        _notify_dag_updated()
     else:
         logger.info("[layout_service] Updating node position only (no type/label)")
         layout_store.write_node_position(node_id, x, y,
@@ -53,6 +65,7 @@ def delete_layout(node_id: str) -> dict:
     logger.info("[layout_service] delete_layout called (node_id=%r)", node_id)
     layout_store.delete_node(node_id)
     logger.info("[layout_service] Node deleted successfully")
+    _notify_dag_updated()
     return {"ok": True}
 
 
@@ -70,6 +83,7 @@ def put_edge(edge_id: str, source: str, target: str,
         "targetHandle": target_handle,
     })
     logger.info("[layout_service] Edge created successfully")
+    _notify_dag_updated()
     return {"ok": True}
 
 
@@ -78,6 +92,7 @@ def delete_edge(edge_id: str) -> dict:
     logger.info("[layout_service] delete_edge called (edge_id=%r)", edge_id)
     layout_store.delete_manual_edge(edge_id)
     logger.info("[layout_service] Edge deleted successfully")
+    _notify_dag_updated()
     return {"ok": True}
 
 

@@ -13,6 +13,7 @@ import { Handle, Position, useReactFlow } from '@xyflow/react'
 import { callBackend, isVSCodeMode } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useRunLog } from '../../context/RunLogContext'
+import { useScope } from '../../context/ScopeContext'
 import type { Variant } from './VariableNode'
 
 interface FnVariantRow {
@@ -30,6 +31,9 @@ interface FunctionNodeData {
   output_types?: string[]
   constant_params?: string[]
   variants?: FnVariantRow[]
+  // Endpoint classification from scidb's _endpoint_kind (plot_/stat_ name
+  // prefixes). Endpoint nodes get a kind badge and a Show button.
+  endpoint_kind?: 'plot' | 'stat'
   // 'pending' is GUI-only: a staged (unrun) constant value — not in the DB.
   run_state?: 'green' | 'pending' | 'red'
   schemaFilter?: Record<string, unknown[]> | null
@@ -62,6 +66,7 @@ interface Props {
 
 export default function FunctionNode({ id, data }: Props) {
   const { getNodes, getEdges } = useReactFlow()
+  const { currentScope } = useScope()
   const [running, setRunning] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const { startRun, appendLine, finishRun, markCancelling, setRunMeta, updateProgress } = useRunLog()
@@ -150,6 +155,30 @@ export default function FunctionNode({ id, data }: Props) {
     })
   }, [id, data, getNodes, getEdges, startRun])
 
+  // Show (endpoint nodes only): draft-run this endpoint + ancestors via
+  // the pipeline compiler — zero DB writes; rendered outputs arrive on the
+  // show_rendered message and display in the sidebar EndpointPanel. No
+  // plan dialog on purpose: this is the everyday "let me look at it" loop.
+  const handleShow = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const newRunId = Math.random().toString(36).slice(2, 10)
+    runIdRef.current = newRunId
+    setRunning(true)
+    startRun(newRunId, `show ${data.label}`, 'pipeline')
+    try {
+      await callBackend('start_pipeline_run', {
+        pipeline_id: currentScope,
+        mode: 'show',
+        target: data.label,
+        run_id: newRunId,
+      })
+    } catch (err) {
+      appendLine(newRunId, `Error: ${(err as Error).message}\n`)
+      finishRun(newRunId, false)
+      setRunning(false)
+    }
+  }, [data.label, currentScope, startRun, appendLine, finishRun])
+
   const handleCancel = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
     const runId = runIdRef.current
@@ -236,6 +265,15 @@ export default function FunctionNode({ id, data }: Props) {
         : <Handle type="target" position={Position.Left} />
       }
 
+      {data.endpoint_kind && (
+        <div style={{
+          ...styles.kindBadge,
+          ...(data.endpoint_kind === 'plot' ? styles.kindPlot : styles.kindStat),
+        }}>
+          {data.endpoint_kind === 'plot' ? '◫ plot' : 'Σ stat'}
+        </div>
+      )}
+
       <div
         style={styles.label}
         onDoubleClick={handleOpenSource}
@@ -282,6 +320,24 @@ export default function FunctionNode({ id, data }: Props) {
       {(() => {
         const isMatlab = data.language === 'matlab'
         if (!running) {
+          // Endpoint nodes: Run (eager, records) + Show (draft, no writes).
+          if (data.endpoint_kind && !isMatlab) {
+            return (
+              <div style={styles.splitButton}>
+                <button style={styles.runHalf} onClick={handleRun} type="button">
+                  ▶ Run
+                </button>
+                <button
+                  style={styles.showHalf}
+                  onClick={handleShow}
+                  type="button"
+                  title="Draft-run this endpoint (+ ancestors) and preview — nothing is recorded"
+                >
+                  👁 Show
+                </button>
+              </div>
+            )
+          }
           return (
             <button
               style={styles.button}
@@ -402,6 +458,48 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
+  },
+  kindBadge: {
+    display: 'block',
+    margin: '0 auto 3px',
+    padding: '0 8px',
+    width: 'fit-content',
+    borderRadius: 10,
+    fontSize: 9,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  kindPlot: {
+    background: '#cffafe',
+    color: '#0e7490',
+    border: '1px solid #0891b2',
+  },
+  kindStat: {
+    background: '#ede9fe',
+    color: '#5b21b6',
+    border: '1px solid #6d28d9',
+  },
+  runHalf: {
+    flex: 1,
+    padding: '4px 0',
+    background: '#7b68ee',
+    color: '#fff',
+    border: 'none',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 12,
+  },
+  showHalf: {
+    flex: 1,
+    padding: '4px 0',
+    background: '#0891b2',
+    color: '#fff',
+    border: 'none',
+    borderLeft: '1px solid #fff',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 12,
   },
   button: {
     width: '100%',

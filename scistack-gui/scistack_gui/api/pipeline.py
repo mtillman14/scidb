@@ -574,6 +574,20 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         nodes, edges, pipeline_id, manual_nodes, positions_by_scope)
     nodes += build_pipeline_nodes(db, pipeline_id)
 
+    # --- Endpoint classification (plot_/stat_ prefixes) ---
+    # Detection lives in scidb (_endpoint_kind — same source of truth as
+    # Pipeline.endpoints()/for_each's endpoint policy); the GUI only tags.
+    from scidb.foreach import _endpoint_kind
+    endpoint_count = 0
+    for n in nodes:
+        if n["type"] == "functionNode":
+            kind = _endpoint_kind(n["data"]["label"])
+            if kind is not None:
+                n["data"]["endpoint_kind"] = kind
+                endpoint_count += 1
+    if endpoint_count:
+        logger.info("[pipeline] tagged %d endpoint node(s)", endpoint_count)
+
     logger.info("[pipeline] Graph build complete - assembling final result")
     node_types = {}
     for n in nodes:

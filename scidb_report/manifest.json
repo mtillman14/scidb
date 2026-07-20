@@ -1,0 +1,643 @@
+{
+  "db_name": "test_gui.duckdb",
+  "generated_at": "2026-07-19T10:06:27",
+  "filters": {
+    "fn": null,
+    "variable": null,
+    "all_versions": false
+  },
+  "figures": [],
+  "stats": [
+    {
+      "record_id": "2045974d19cb6a11",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 15
+      },
+      "result": {
+        "best_max_vo2": 4167.593196129311,
+        "mean_max_vo2": 4167.593196129311,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "dc85bcd4921a11c5",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 15
+      },
+      "result": {
+        "best_max_vo2": 4252.1760831183165,
+        "mean_max_vo2": 4252.1760831183165,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "68d0a77694ba929f",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 60,
+        "compute_rolling_vo2.sample_interval": 5
+      },
+      "result": {
+        "best_max_vo2": 4071.1450062365902,
+        "mean_max_vo2": 4071.1450062365902,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "d8d406b2201d3fcd",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 20
+      },
+      "result": {
+        "best_max_vo2": 4293.489641317976,
+        "mean_max_vo2": 4293.489641317976,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "ca41d0fe67dcf351",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 60,
+        "compute_rolling_vo2.sample_interval": 10
+      },
+      "result": {
+        "best_max_vo2": 4158.443747774009,
+        "mean_max_vo2": 4158.443747774009,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "5b00469fb06ab2b0",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 15
+      },
+      "result": {
+        "best_max_vo2": 4300.6093427847045,
+        "mean_max_vo2": 4300.6093427847045,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "de519eaf46a66ef2",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 10,
+        "compute_rolling_vo2.sample_interval": 10
+      },
+      "result": {
+        "best_max_vo2": 4314.3492330815825,
+        "mean_max_vo2": 4314.3492330815825,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "7c0bf6d824d0e9d1",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 10
+      },
+      "result": {
+        "best_max_vo2": 4293.489641317976,
+        "mean_max_vo2": 4293.489641317976,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "89164554042ae854",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 30,
+        "compute_rolling_vo2.sample_interval": 5
+      },
+      "result": {
+        "best_max_vo2": 4158.443747774009,
+        "mean_max_vo2": 4158.443747774009,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "9eff0e2a7dcd1bb5",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 10
+      },
+      "result": {
+        "best_max_vo2": 4252.1760831183165,
+        "mean_max_vo2": 4252.1760831183165,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "5a2f6e550573078f",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 60,
+        "compute_rolling_vo2.sample_interval": 10
+      },
+      "result": {
+        "best_max_vo2": 4082.9305112220045,
+        "mean_max_vo2": 4082.9305112220045,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "58966733166db107",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 60,
+        "compute_rolling_vo2.sample_interval": 5
+      },
+      "result": {
+        "best_max_vo2": 4120.532537004998,
+        "mean_max_vo2": 4120.532537004998,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "2cdef134eb55e0c4",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 20
+      },
+      "result": {
+        "best_max_vo2": 4233.979071965121,
+        "mean_max_vo2": 4233.979071965121,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "e844ec17b5260b13",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 15
+      },
+      "result": {
+        "best_max_vo2": 4253.2834740022845,
+        "mean_max_vo2": 4253.2834740022845,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "d09c80a615c837d0",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 20
+      },
+      "result": {
+        "best_max_vo2": 4146.490755181179,
+        "mean_max_vo2": 4146.490755181179,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "bb23d074edd3a91a",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 10
+      },
+      "result": {
+        "best_max_vo2": 4233.979071965121,
+        "mean_max_vo2": 4233.979071965121,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "1578c5180885d001",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 10
+      },
+      "result": {
+        "best_max_vo2": 4300.6093427847045,
+        "mean_max_vo2": 4300.6093427847045,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "f55a80110d652ebe",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 20
+      },
+      "result": {
+        "best_max_vo2": 4218.220825581433,
+        "mean_max_vo2": 4218.220825581433,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "1e822c8011d7b34c",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 30,
+        "compute_rolling_vo2.sample_interval": 5
+      },
+      "result": {
+        "best_max_vo2": 4082.9305112220045,
+        "mean_max_vo2": 4082.9305112220045,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "296d1d0ca83ffcc6",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 10
+      },
+      "result": {
+        "best_max_vo2": 4226.947456038139,
+        "mean_max_vo2": 4226.947456038139,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "4202e16d2f6f5faa",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 30,
+        "compute_rolling_vo2.sample_interval": 10
+      },
+      "result": {
+        "best_max_vo2": 4253.2834740022845,
+        "mean_max_vo2": 4253.2834740022845,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "c5c3c9c2d0bb3963",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 20
+      },
+      "result": {
+        "best_max_vo2": 4226.947456038139,
+        "mean_max_vo2": 4226.947456038139,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "15982e96f2aaee8d",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 20
+      },
+      "result": {
+        "best_max_vo2": 4203.968067672399,
+        "mean_max_vo2": 4203.968067672399,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "cea547ba1505e7ea",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 5,
+        "compute_rolling_vo2.window_seconds": 15
+      },
+      "result": {
+        "best_max_vo2": 4208.0783160620085,
+        "mean_max_vo2": 4208.0783160620085,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "8d2f8fcedfa39e20",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 60,
+        "compute_rolling_vo2.sample_interval": 10
+      },
+      "result": {
+        "best_max_vo2": 4176.434463831804,
+        "mean_max_vo2": 4176.434463831804,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "3e0e23ccb11fe47c",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 30,
+        "compute_rolling_vo2.sample_interval": 10
+      },
+      "result": {
+        "best_max_vo2": 4167.593196129311,
+        "mean_max_vo2": 4167.593196129311,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "d816e87b5faab291",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 30,
+        "compute_rolling_vo2.sample_interval": 5
+      },
+      "result": {
+        "best_max_vo2": 4176.434463831804,
+        "mean_max_vo2": 4176.434463831804,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:05:25.803581"
+    },
+    {
+      "record_id": "184a013d286197f2",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S03"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.sample_interval": 10,
+        "compute_rolling_vo2.window_seconds": 15
+      },
+      "result": {
+        "best_max_vo2": 4314.3492330815825,
+        "mean_max_vo2": 4314.3492330815825,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:03:42.656801"
+    },
+    {
+      "record_id": "a3336edcfb64daa5",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S02"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 30,
+        "compute_rolling_vo2.sample_interval": 10
+      },
+      "result": {
+        "best_max_vo2": 4208.0783160620085,
+        "mean_max_vo2": 4208.0783160620085,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:03:42.656801"
+    },
+    {
+      "record_id": "eeb06bc342bae792",
+      "fn": "stat_vo2_summary",
+      "variable": "VO2Summary",
+      "schema": {
+        "subject": "S01"
+      },
+      "branch_params": {
+        "compute_rolling_vo2.window_seconds": 60,
+        "compute_rolling_vo2.sample_interval": 5
+      },
+      "result": {
+        "best_max_vo2": 4074.759240817354,
+        "mean_max_vo2": 4074.759240817354,
+        "n_subjects": 1
+      },
+      "result_parsed": true,
+      "report_path": null,
+      "report_exists": null,
+      "timestamp": "2026-07-19T10:03:42.656801"
+    }
+  ],
+  "warnings": []
+}

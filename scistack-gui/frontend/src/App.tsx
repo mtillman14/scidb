@@ -20,7 +20,7 @@ import { RunLogProvider } from "./context/RunLogContext";
 import { SelectedNodeProvider } from "./context/SelectedNodeContext";
 import { ScopeProvider } from "./context/ScopeContext";
 import { PlanRunProvider } from "./context/PlanRunContext";
-import { callBackend } from "./api";
+import { callBackend, isVSCodeMode } from "./api";
 
 /**
  * Startup diagnostics reported by the backend's get_info response.
@@ -76,6 +76,16 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#2a2a4a",
     color: "#ccc",
     border: "1px solid #3a3a5a",
+    borderRadius: 4,
+    cursor: "pointer",
+    fontSize: 12,
+    fontFamily: "inherit",
+  },
+  reportBtn: {
+    padding: "4px 12px",
+    background: "#164e63",
+    color: "#a5f3fc",
+    border: "1px solid #0891b2",
     borderRadius: 4,
     cursor: "pointer",
     fontSize: 12,
@@ -164,7 +174,32 @@ export default function App() {
   const [schema, setSchema] = useState<{ keys: string[] }>({ keys: [] });
   const [dbName, setDbName] = useState("");
   const [restarting, setRestarting] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const [startupErrors, setStartupErrors] = useState<StartupError[]>([]);
+
+  // Endpoint report: db.inspect.write_report → self-contained index.html
+  // (figures embedded). Standalone opens it via the artifacts file route;
+  // the VS Code webview can't open new tabs, so it shows the path.
+  const handleReport = useCallback(async () => {
+    setReporting(true);
+    try {
+      const res = (await callBackend("write_report")) as {
+        index_path: string;
+      };
+      if (isVSCodeMode) {
+        window.alert(`Report written to:\n${res.index_path}`);
+      } else {
+        window.open(
+          `/api/artifacts/file?path=${encodeURIComponent(res.index_path)}`,
+          "_blank",
+        );
+      }
+    } catch (err) {
+      window.alert(`Report failed: ${(err as Error).message}`);
+    } finally {
+      setReporting(false);
+    }
+  }, []);
 
   const handleRestart = useCallback(async () => {
     setRestarting(true);
@@ -213,6 +248,14 @@ export default function App() {
                   title="Restart the Python process to pick up edits to server or pipeline code"
                 >
                   {restarting ? "Restarting..." : "Restart"}
+                </button>
+                <button
+                  style={styles.reportBtn}
+                  onClick={handleReport}
+                  disabled={reporting}
+                  title="Write the endpoint report (figures + stats with provenance) and open it"
+                >
+                  {reporting ? "Writing…" : "📄 Report"}
                 </button>
                 {schema.keys.length > 0 && (
                   <span style={styles.schemaKeys}>

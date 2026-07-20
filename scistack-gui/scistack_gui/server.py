@@ -163,6 +163,18 @@ def _h_start_pipeline_run(params):
     )
 
 
+def _h_get_endpoint_artifacts(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.endpoint_service import endpoint_artifacts
+    return endpoint_artifacts(get_db(), params["fn_name"])
+
+
+def _h_write_report(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.endpoint_service import write_report
+    return write_report(get_db())
+
+
 def _h_get_schema(params):
     from scistack_gui.services.pipeline_service import get_schema
     from scistack_gui.db import get_db
@@ -532,6 +544,8 @@ METHODS = {
     "remove_pipeline_use": _h_remove_pipeline_use,
     "get_pipeline_plan": _h_get_pipeline_plan,
     "start_pipeline_run": _h_start_pipeline_run,
+    "get_endpoint_artifacts": _h_get_endpoint_artifacts,
+    "write_report": _h_write_report,
     "get_indexes": _h_get_indexes,
     "search_index_packages": _h_search_index_packages,
     "add_library": _h_add_library,

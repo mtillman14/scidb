@@ -576,6 +576,15 @@ def _run_pipeline_in_thread(run_id: str, pipeline_id: str, mode: str,
                                   finalized=finalized,
                                   skip_computed=skip_computed)
         report = (result or {}).get("report") or []
+        # Draft outputs of a show run exist ONLY in this return value (no
+        # records are written) — push them to the preview panel before
+        # run_done. Payloads may be non-JSON scalars; stringify defensively.
+        if mode == "show":
+            rendered = (result or {}).get("rendered") or []
+            safe = [r if isinstance(r, (str, int, float, bool, dict, list))
+                    else str(r) for r in rendered]
+            push_message({"type": "show_rendered", "run_id": run_id,
+                          "step": target, "rendered": safe})
     except KeyboardInterrupt:
         cancelled = True
         emit("⛔ Force-cancelled\n")
@@ -628,10 +637,10 @@ def start_pipeline_run(pipeline_id: str, mode: str = "all", target: str = "",
     requests fail synchronously."""
     from scistack_gui.db import get_db
 
-    if mode not in ("all", "until", "endpoints"):
+    if mode not in ("all", "until", "endpoints", "show"):
         raise ValueError(f"unknown run mode {mode!r}")
-    if mode == "until" and not target:
-        raise ValueError("mode='until' requires a target step name")
+    if mode in ("until", "show") and not target:
+        raise ValueError(f"mode={mode!r} requires a target step name")
     rid = run_id or str(uuid.uuid4())[:8]
     thread = threading.Thread(
         target=_run_pipeline_in_thread,

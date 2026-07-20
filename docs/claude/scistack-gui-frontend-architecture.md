@@ -120,6 +120,19 @@ differences: pipeline cards have no source-open double-click and no
 soft-cancel (cooperative cancel is a v1 no-op for pipeline runs —
 `Pipeline._run` has no between-step hook), only a force-cancel ✕.
 
+**Exception to the plan-dialog funnel:** the 👁 Show button on endpoint
+nodes (plot_/stat_, tagged `data.endpoint_kind` by scidb's
+`_endpoint_kind`) fires `mode:'show'` DIRECTLY — it is the everyday
+"look at it" loop, deliberately ungated. Draft outputs write no records;
+they arrive only on the `show_rendered` push message ({step, rendered}),
+consumed by `Sidebar/EndpointPanel` (shown above FunctionSettingsPanel
+for endpoint nodes: draft section + finalized manifest from
+`get_endpoint_artifacts`, images via `/api/artifacts/file?path=` which is
+project-dir guarded, 403 outside). The header 📄 Report button calls
+`write_report` and opens the self-contained index.html through the same
+file route. VS Code webview mode has no HTTP origin for image bytes —
+EndpointPanel degrades to paths + provenance text there (v1).
+
 ## The canvas (PipelineDAG.tsx)
 
 Node type registry: `variableNode`, `functionNode`, `constantNode`,

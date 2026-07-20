@@ -82,7 +82,16 @@
       "Bash(cd *)",
       "Bash(awk 'NR>=2820 && NR<=2882 && /^def |^    def |result_tbl|combo_to_rids_keys|rid_keys|input_selectors|def _/' scidb/src/scidb/foreach.py)",
       "Bash(awk 'NR<=2880 && /^def /{l=NR\": \"$0} END{print l}' scidb/src/scidb/foreach.py)",
-      "Bash(awk '/case \"_all_combos\"/{found=1} found{print NR\": \"$0; c++} c>4{exit}' scimatlab/src/scimatlab/matlab/+scifor/for_each.m)"
+      "Bash(awk '/case \"_all_combos\"/{found=1} found{print NR\": \"$0; c++} c>4{exit}' scimatlab/src/scimatlab/matlab/+scifor/for_each.m)",
+      "Bash(sed -i 's/``@lineage_fcn`` → ``@pipeline`` migration/``@lineage_fcn`` → ``@scistack`` migration/' scidb/src/scidb/lineage_save.py scimatlab/src/scimatlab/bridge.py)",
+      "Bash(sed -i 's/``@pipeline``/``@scistack``/g; s/@pipeline-tagged/@scistack-tagged/g; s/is_pipeline_function/is_scistack_function/g' scidb/src/scidb/discover.py)",
+      "Bash(sed -i 's/@pipeline marker/@scistack marker/' scidb/src/scidb/foreach.py)",
+      "Bash(sed -i \"s/of scidb's \\\\`\\\\`@pipeline\\\\`\\\\`/of scidb's \\\\`\\\\`@scistack\\\\`\\\\`/\" scilineage/src/scilineage/__init__.py)",
+      "Bash(node -e \"1\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('scidb/src/scidb/pipeline.py'\\).read\\(\\)\\); print\\('pipeline.py OK'\\)\")",
+      "Bash(sed -i 's/\"grey\\\\.duckdb\"/\"partial.duckdb\"/g; s/\"grey_recover\\\\.duckdb\"/\"partial_recover.duckdb\"/g' test_api.py)",
+      "Bash(echo \"remaining-grey-exit:$?\")",
+      "Bash(echo \"code-sweep-exit:$?\")"
     ]
   }
 }
