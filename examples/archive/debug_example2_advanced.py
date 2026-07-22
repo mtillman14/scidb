@@ -16,26 +16,24 @@ Set a breakpoint at line 35 to start exploring.
 Documentation: See docs/guide/caching.md for caching details.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
+from scidb.database import DatabaseManager
 from scipy import signal as scipy_signal  # External library to wrap
 
 # -----------------------------------------------------------------------------
 # STEP 1: Import scidb components
 # Documentation: See docs/api.md for the complete API reference
 # -----------------------------------------------------------------------------
-
 from scidb import (
     BaseVariable,
+    Thunk,  # For wrapping external functions
     configure_database,
-    get_database,
+    extract_lineage,  # For inspecting lineage records
     thunk,
-    Thunk,             # For wrapping external functions
-    extract_lineage,   # For inspecting lineage records
-    check_cache,       # For manual cache checking
 )
-from scidb.database import DatabaseManager
 
 # Set a breakpoint here to start debugging
 print("Starting scidb debug example 2: Advanced Features")
@@ -286,7 +284,7 @@ print(f"Saved envelope: {envelope_record_id[:12]}...")
 # Check cache statistics
 # Set a breakpoint here to inspect cache state
 stats = db.get_cache_stats()
-print(f"\nCache statistics after first run:")
+print("\nCache statistics after first run:")
 print(f"  Total entries: {stats['total_entries']}")
 print(f"  Functions cached: {list(stats['entries_by_function'].keys())}")
 
@@ -318,7 +316,7 @@ print(f"analytic2.was_cached: {analytic2.was_cached}")
 print(f"envelope2.was_cached: {envelope2.was_cached}")
 
 # Verify the cached results match
-print(f"\nResults match original:")
+print("\nResults match original:")
 print(f"  Filter b: {np.allclose(b.data, b2.data)}")
 print(f"  Filter a: {np.allclose(a.data, a2.data)}")
 print(f"  Filtered: {np.allclose(filtered.data, filtered2.data)}")
@@ -357,7 +355,7 @@ print("Saved both halves - cache now populated")
 
 # Re-run split - should hit cache
 left2, right2 = split_signal(raw_loaded, split_point=500)
-print(f"\nAfter re-run:")
+print("\nAfter re-run:")
 print(f"Left2.was_cached: {left2.was_cached}")
 print(f"Right2.was_cached: {right2.was_cached}")
 
@@ -412,7 +410,7 @@ db_manager = DatabaseManager(db_path=str(db_path))
 full_lineage = db_manager.get_full_lineage(type(envelope.data), subject=1, session="morning", channel="EMG")
 
 if lineage_record:
-    print(f"Lineage for envelope computation:")
+    print("Lineage for envelope computation:")
     print(f"  Function name: {lineage_record.function_name}")
     print(f"  Function hash: {lineage_record.function_hash[:16]}...")
     print(f"  Number of inputs: {len(lineage_record.inputs)}")
@@ -434,7 +432,7 @@ print("\n--- Derived Variables Query ---")
 # What variables were derived from the raw signal?
 derived = db.get_derived_from(RawSignal, subject=1, session="morning")
 
-print(f"Variables derived from raw signal:")
+print("Variables derived from raw signal:")
 for item in derived:
     print(f"  - {item.get('type_name', 'Unknown')}: {item.get('record_id', 'N/A')[:12]}...")
 
@@ -526,7 +524,7 @@ AnalysisResult.save(late_stats, subject=1, session="morning", segment="late")
 
 # Re-run to verify caching
 early2, middle2, late2 = analyze_segments(raw_loaded)
-print(f"\nAfter save and re-run:")
+print("\nAfter save and re-run:")
 print(f"  early.was_cached: {early2.was_cached}")
 print(f"  middle.was_cached: {middle2.was_cached}")
 print(f"  late.was_cached: {late2.was_cached}")
@@ -573,7 +571,7 @@ for var_class in [RawSignal, FilteredSignal, EnvelopeSignal, SignalHalf, TrialSi
 
 # Final cache stats
 final_stats = db.get_cache_stats()
-print(f"\nFinal cache statistics:")
+print("\nFinal cache statistics:")
 print(f"  Total entries: {final_stats['total_entries']}")
 print(f"  By function: {final_stats['by_function']}")
 

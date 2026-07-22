@@ -1,8 +1,10 @@
-import pandas as pd
-import numpy as np
-from statsmodels.stats.outliers_influence import variance_inflation_factor
-import pingouin as pg
 import os
+
+import numpy as np
+import pandas as pd
+import pingouin as pg
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+
 
 # ----------------------------------------------------------------------
 # Helper functions for CGAM Pipeline: VIF, CGAM, Cohen's
@@ -19,24 +21,24 @@ def compute_vif(df, feature_cols, vif_threshold=10, export=True):
     list: List of selected features after VIF filtering.
     """
     selected_features = feature_cols.copy()
-    
+
     while len(selected_features) > 1:
         X = df[selected_features].to_numpy()
         vif_values = [variance_inflation_factor(X, i) for i in range(X.shape[1])]
-        
+
         # Create a DataFrame for VIF values
         vif_df = pd.DataFrame({"Feature": selected_features, "VIF": vif_values})
         max_vif = vif_df["VIF"].max()
-        
+
         # Stop if all VIF values are below the threshold
         if max_vif < vif_threshold:
             break
-        
+
         # Drop the feature with the highest VIF
         drop_feature = vif_df.loc[vif_df["VIF"].idxmax(), "Feature"]
         selected_features.remove(drop_feature)
         print(f"Dropping '{drop_feature}' with VIF={max_vif:.2f}")
-    if export:   
+    if export:
         # EXPORT SELECTED FEATURES
         export_path = r"Y:\LabMembers\Ameen\Stroke-R01-Aim-2\SavedOutcomesAim2\Overground_EMG_Kinematics\2_FromPython_CGAM"
         os.makedirs(export_path, exist_ok=True)
@@ -47,11 +49,11 @@ def compute_vif(df, feature_cols, vif_threshold=10, export=True):
             f.write("\n".join(selected_features))
 
         print(f"\nExported {len(selected_features)} selected features to:\n{txt_file}\n")
-    
+
     return selected_features
 
 def calculate_cgam_grouped(df, groupby_cols, feature_cols):
-    
+
     """
     Compute CGAM using features selected from VIF.
 
@@ -76,7 +78,7 @@ def calculate_cgam_grouped(df, groupby_cols, feature_cols):
 
         # Covariance matrix across all strides (features x features)
         K_S = np.cov(S, rowvar=False, bias=False)
-        
+
         cond_number = np.linalg.cond(K_S)
         if cond_number > 1e10:
             print("Warning: Matrix is ill-conditioned")
@@ -114,8 +116,8 @@ def calculate_cgam_grouped(df, groupby_cols, feature_cols):
     result_df = pd.DataFrame(results, columns=groupby_cols + ['Trial','Cycle','CGAM'])
     return result_df
 
-def cohens_d(df, features, timepoints, 
-             group_keys=['Subject'],
+def cohens_d(df, features, timepoints,
+             group_keys=None,
              paired=False, smaller_is_better=True):
     """
     Compute Cohen's d between BL and every other intervention for each group.
@@ -129,11 +131,13 @@ def cohens_d(df, features, timepoints,
     paired : use paired Cohen's d if trials align
     smaller_is_better : flip sign so positive = improvement
     """
+    if group_keys is None:
+        group_keys = ['Subject']
     results = []
     grouped = df.groupby(group_keys)
 
     for key, group in grouped:
-        row = dict(zip(group_keys, key))
+        row = dict(zip(group_keys, key, strict=False))
         times = [tp for tp in timepoints if tp in group['Intervention'].values]
         if 'BL' not in times or len(times) < 2:
             continue
@@ -174,10 +178,10 @@ class CGAMPipeline:
 
     def load_and_filter_data(self, speed='FV'):
         self.df = pd.read_csv(self.data_path)
-        
+
         # Filter by speed
         self.filtered_df = self.df[self.df['Speed'] == speed].copy()
-        
+
         # Filter out features not going to be used in CGAM (Before VIF)
         drop_cols = [
             'StanceDurations_GR_Sym', 'StrideWidths_GR_Sym',
@@ -185,7 +189,7 @@ class CGAMPipeline:
         ]
         self.filtered_df.drop(columns=drop_cols, inplace=True, errors='ignore')
 
-        
+
         # Robustness check - confirm that there are no significant missing values in the dataset
         missing_counts = self.filtered_df.isnull().sum()
         filtered_missing = missing_counts[missing_counts > 0]
@@ -245,8 +249,8 @@ class CGAMPipeline:
                 raise ValueError("No features found in EMG.")
             else:
                 raise ValueError("No features found after filtering.")
-            
-            
+
+
         # Drop rows with NaNs only in selected features
         self.filtered_df.dropna(subset=feature_cols, inplace=True)
 
@@ -272,10 +276,12 @@ class CGAMPipeline:
         print("CGAM calculation complete.")
         return self.cgam_matrix, self.filtered_df_vif
     # Compute Cohen's d for Pre-Post CGAM values
-    def get_cohens_d(self, features=['CGAM', 'StepLengths_GR_Sym', 'SwingDurations_GR_Sym'], timepoints=None):
+    def get_cohens_d(self, features=None, timepoints=None):
         """
         Compute Cohen's d on CGAM values across interventions.
         """
+        if features is None:
+            features = ['CGAM', 'StepLengths_GR_Sym', 'SwingDurations_GR_Sym']
         if timepoints is None:
             # Default to all interventions present in cgam_matrix
             timepoints = self.cgam_matrix['Intervention'].unique().tolist()
@@ -283,13 +289,13 @@ class CGAMPipeline:
         print("Calculating Cohen's d across interventions...")
 
         cohens_df = cohens_d(self.cgam_matrix, features, timepoints,
-                            group_keys=['Subject'], 
-                            paired=False, 
+                            group_keys=['Subject'],
+                            paired=False,
                             smaller_is_better=True)
-        
+
         print("Cohen's d calculation complete.")
         return cohens_df
-        
+
     def run_random_feature_stability(self, n_samples=1000, subset_size=15, groupby_cols=None,
                                      export_path=r"..\..\SavedOutcomesAim2\Overground_EMG_Kinematics\2_FromPython_CGAM"):
         """
@@ -314,11 +320,11 @@ class CGAMPipeline:
         print(f"Random subset size: {subset_size}\n")
 
         for i in range(n_samples):
-    
+
             # Random subset of features
             random_subset = list(np.random.choice(all_features, size=subset_size, replace=False))
 
-            
+
             # Apply VIF to the subset
             df_demeaned = self.filtered_df.copy()
             df_demeaned[random_subset] = df_demeaned[random_subset].apply(lambda x: x - x.mean())
@@ -333,7 +339,7 @@ class CGAMPipeline:
                 print(f"[Warning] Less than 2 features after VIF for sample {i}. Skipping.")
                 continue
 
-        
+
             # Compute CGAM on VIF-selected subset
             try:
                 cgam_i = calculate_cgam_grouped(self.filtered_df, groupby_cols, vif_selected)
@@ -358,7 +364,7 @@ class CGAMPipeline:
             out_csv = os.path.join(export_path, "CGAM_Stability_1000Runs.csv")
             stability_df.to_csv(out_csv, index=False)
 
-            print(f"\nSUCCESS")
+            print("\nSUCCESS")
             print(f"Exported CGAM stability results to:\n{out_csv}")
             return stability_df
         else:
@@ -367,12 +373,12 @@ class CGAMPipeline:
 
 
 
-    
-    
+
+
 
 # ----------------------------------------------------------------------
 # Main callable function to run the CGAM pipeline
-def run_CGAM_pipeline(data_path, speed='FV', feature_type='all', time_order = ["BL","MID18","MID24","POST18","POST24", "MO1FU", "MO3FU"]):
+def run_CGAM_pipeline(data_path, speed='FV', feature_type='all', time_order = None):
     """
     Function to call CGAM Pipeline.
 
@@ -384,6 +390,8 @@ def run_CGAM_pipeline(data_path, speed='FV', feature_type='all', time_order = ["
     Returns:
     pd.DataFrame for CGAM values, and Cohen's d for Pre vs Post.
     """
+    if time_order is None:
+        time_order = ["BL", "MID18", "MID24", "POST18", "POST24", "MO1FU", "MO3FU"]
     groupby_cols = ['Subject', 'Intervention', 'Speed']
 
     pipeline = CGAMPipeline(data_path)

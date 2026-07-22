@@ -1,7 +1,7 @@
 
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from scidb import BaseVariable
 
@@ -16,7 +16,7 @@ class ScalarList(BaseVariable):
 
     @classmethod
     def from_db(cls, df: pd.DataFrame) -> np.ndarray:
-        return np.ndarray([v for v in df["value"]])
+        return np.ndarray(list(df["value"]))
 
 
 class StepLength(ScalarList):

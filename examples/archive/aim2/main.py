@@ -7,13 +7,11 @@ to the database with full metadata for querying.
 """
 
 import tomllib
-
-from scidb import PathGenerator, configure_database, for_each, for_each
-from vars import *
-
 from lib.load_gaitrite import load_gaitrite_file
 from lib.preprocess_gaitrite import preprocess_walk, split_into_walks
+from vars import *
 
+from scidb import PathGenerator, configure_database, for_each
 
 # Load config - tomllib requires binary mode
 with open("config.toml", "rb") as f:

@@ -1,5 +1,6 @@
-import pandas as pd
 import os
+
+import pandas as pd
 
 
 # Load raw demographic and gait cycle data
@@ -25,15 +26,7 @@ def clean_matched_cycles(df):
     base_cols = df.columns[:11].tolist()
 
     # Filter valid symmetry-based features
-    feature_cols = [
-        col for col in df.columns[11:]
-        # if isinstance(col, str)
-        # and 'Sym' in col
-        # and col != 'NumSynergies_Sym'
-        # and all(x not in col for x in ['RMSE_EMG', 'Lag_EMG', 'Mag_EMG',
-        #                                'AUC_EMG', 'RMS_EMG', 'AUC_JointAngles',
-        #                                'JointAngles_Max', 'JointAngles_Min'])
-    ]
+    feature_cols = list(df.columns[11:])
     # Add TenMWT as a feature
     # return df[base_cols + feature_cols + ['TenMWT']]
     return df[base_cols + feature_cols]
@@ -96,7 +89,7 @@ def load_subject_level_features(base_dir, subjects, demographics_df):
         if not os.path.exists(file_path):
             print(f"Warning: File not found for subject {subj}: {file_path}")
             continue
-        
+
         # Determine paretic side for this subject
         paretic_side = demographics_df.loc[demographics_df["Subject"] == subj, "Paretic Side"].values
         if len(paretic_side) == 0:
@@ -161,7 +154,7 @@ def compute_pre_post_deltas(df):
     agg_features = df.columns[10:]
 
     agg_dict = {'Cycle': 'count'}
-    agg_dict.update({col: 'median' for col in agg_features})
+    agg_dict.update(dict.fromkeys(agg_features, 'median'))
 
     grouped_df = (
         df.groupby(group_cols)
@@ -208,7 +201,7 @@ def split_dataframes(final_df):
     # Create masks
     subjectMask = final_df.columns.str.contains(r"Subject|Trial")
     gaitMask    = final_df.columns.str.contains(r"Cycle|Sym|TenMWT")
-    mepMask     = final_df.columns.str.contains(r"TEP|RMT|Excitability|Slope|R2|X_intercept")
+    final_df.columns.str.contains(r"TEP|RMT|Excitability|Slope|R2|X_intercept")
 
     # All combined data
     AllData_df = final_df.copy()
@@ -268,7 +261,7 @@ def run_preprocessing_pipeline(demographics_path, matchedCycles_path, export_dir
     # )
     # median_df = pd.merge(median_df, muscle_slope_features, on="Subject", how="left")
     # expanded_df = pd.merge(expanded_df, muscle_slope_features, on="Subject", how="left")
-    
+
     # Load and merge subject-level Slope and X-Intercept features
     subject_features = load_subject_level_features(
     base_dir=r"Y:\Spinal Stim_Stroke R01\AIM 1\Subject Data",
@@ -280,7 +273,7 @@ def run_preprocessing_pipeline(demographics_path, matchedCycles_path, export_dir
 
 
     # Merge demographics with median/diff tables
-    merged_df = pd.merge(median_df, cleaned_demo, on='Subject', how='inner')
+    pd.merge(median_df, cleaned_demo, on='Subject', how='inner')
     final_df = pd.merge(expanded_df, cleaned_demo, on='Subject', how='left')
 
     # Drop any duplicate columns (keeping the first occurrence)

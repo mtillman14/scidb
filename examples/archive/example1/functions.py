@@ -7,8 +7,8 @@
 # - Return an ThunkOutput that carries lineage information
 
 import numpy as np
-
 from thunk import thunk
+
 
 @thunk
 def apply_moving_average(signal: np.ndarray, window_size: int) -> np.ndarray:

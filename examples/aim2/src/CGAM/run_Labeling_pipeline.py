@@ -1,8 +1,8 @@
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from scipy.stats import ttest_rel
-from matplotlib import cm
+
 
 # Helper to count binary labels
 def print_binary_label_counts_from_labels(df, column_name, true_label, false_label, description):
@@ -13,7 +13,7 @@ def print_binary_label_counts_from_labels(df, column_name, true_label, false_lab
 
 # Main labeling and stats pipeline
 def run_labeling_pipeline(cohens_df, plot=False):
-    
+
     # relabel_dict = {'SS06':'TOL50', 'SS10':'TOL50','SS01':'TOL30'}
     # for subject, intervention in relabel_dict.items():
     #     mask = (cohens_df['Subject'] == subject) & (cohens_df['Intervention'] == intervention)

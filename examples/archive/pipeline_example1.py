@@ -7,7 +7,6 @@ import pandas as pd
 
 from scidb import BaseVariable, configure_database, thunk
 
-
 # =============================================================================
 # Variable Type Definition
 # =============================================================================

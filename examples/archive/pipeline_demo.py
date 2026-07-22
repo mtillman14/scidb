@@ -35,12 +35,10 @@ import pandas as pd
 # Import everything from scidb
 from scidb import (
     BaseVariable,
+    check_cache,
     configure_database,
     thunk,
-    check_cache,
-    PipelineThunk,
 )
-
 
 # =============================================================================
 # STEP 1: Define Variable Types (Phase 1)
@@ -127,7 +125,7 @@ def normalize(data: np.ndarray) -> np.ndarray:
 @thunk()
 def compute_stats(data: np.ndarray) -> dict:
     """Compute statistics on data."""
-    print(f"  [COMPUTING] Computing statistics...")
+    print("  [COMPUTING] Computing statistics...")
     return {
         "mean": float(np.mean(data)),
         "std": float(np.std(data)),
@@ -310,7 +308,7 @@ def main():
         # Check if it's cached
         cached = check_cache(temp_stats_2.pipeline_thunk, Statistics, db=db)
         if cached:
-            print(f"    CACHE HIT! Found cached result.")
+            print("    CACHE HIT! Found cached result.")
             print(f"    was_cached: {cached.was_cached}")
             print(f"    cached_id: {cached.cached_id[:16]}...")
             print(f"    Value matches: {cached.data == temp_stats_2.data}")

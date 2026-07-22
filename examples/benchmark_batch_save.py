@@ -9,12 +9,12 @@ Usage:
     python examples/benchmark_batch_save.py
 """
 
-import sys
-import time
-import tempfile
 import os
-from pathlib import Path
+import sys
+import tempfile
+import time
 from itertools import product
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -25,8 +25,9 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root / "sciduckdb" / "src"))
 sys.path.insert(0, str(project_root / "thunk-lib" / "src"))
 
-from scidb import BaseVariable
 from scidb.database import configure_database
+
+from scidb import BaseVariable
 
 
 class BenchScalar(BaseVariable):
@@ -59,7 +60,7 @@ def main():
 
     # root_dir = "/Users/mitchelltillman/Documents/ICNR-2026-analysis/tmp_data"
     # df_csv = os.path.join(root_dir, "value1.csv")
-    # df.to_csv(df_csv, index=False)    
+    # df.to_csv(df_csv, index=False)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "bench.duckdb")

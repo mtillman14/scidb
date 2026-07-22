@@ -16,9 +16,10 @@ Usage:
     python generate_data.py
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 
 def generate_vo2max_data(seed: int = 42) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

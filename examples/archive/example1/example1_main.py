@@ -14,20 +14,19 @@ Set a breakpoint at line 30 to start exploring.
 Documentation: See docs/quickstart.md for the getting started guide.
 """
 
-import numpy as np
 from pathlib import Path
+
+import numpy as np
+from functions import *  # Import all of the functions from functions.py
+from vars import *  # Import all of the variables from vars.py
 
 # -----------------------------------------------------------------------------
 # STEP 1: Import scidb components
 # Documentation: See docs/api.md for the complete API reference
 # -----------------------------------------------------------------------------
-
-from scidb import (    
+from scidb import (
     configure_database,  # Configure the global database
 )
-
-from vars import * # Import all of the variables from vars.py
-from functions import * # Import all of the functions from functions.py
 
 # Set a breakpoint here to start debugging
 print("Starting scidb debug example 1: Core Concepts")
@@ -207,7 +206,7 @@ provenance = db.get_provenance(
 )
 
 if provenance:
-    print(f"\nProvenance for processed signal:")
+    print("\nProvenance for processed signal:")
     print(f"  Function: {provenance.get('function_name')}")
     print(f"  Function hash: {provenance.get('function_hash', 'N/A')[:16]}...")
     print(f"  Inputs: {provenance.get('inputs', [])}")

@@ -18,9 +18,10 @@ Usage:
     python pipeline.py        # Run the pipeline
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 # =============================================================================
 # SCIDB IMPORTS
@@ -33,9 +34,7 @@ from pathlib import Path
 #               Constants passed in `inputs` are tracked as pipeline variants
 #               so the GUI can show them as ConstantNodes.
 # =============================================================================
-
 from scidb import BaseVariable, configure_database, for_each
-
 
 # =============================================================================
 # STEP 1: DEFINE VARIABLE TYPES  [scidb.BaseVariable]
