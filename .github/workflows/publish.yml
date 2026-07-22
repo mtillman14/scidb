@@ -47,8 +47,8 @@ jobs:
           # build backend), but listed by layer for readability.
           # scistack-gui is intentionally excluded — it needs a JS frontend
           # build before it can ship a correct wheel.
-          for pkg in scicanonicalhash path-gen scifor sciduckdb \
-                     scilineage scidb \
+          for pkg in scicanonicalhash path-gen scistacklog sciduckdb \
+                     scifor scilineage scidb \
                      scimatlab scihist scidb-net scistack; do
             echo "== build $pkg =="
             python -m build --outdir dist "$pkg"
