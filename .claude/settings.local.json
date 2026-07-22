@@ -91,7 +91,12 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('scidb/src/scidb/pipeline.py'\\).read\\(\\)\\); print\\('pipeline.py OK'\\)\")",
       "Bash(sed -i 's/\"grey\\\\.duckdb\"/\"partial.duckdb\"/g; s/\"grey_recover\\\\.duckdb\"/\"partial_recover.duckdb\"/g' test_api.py)",
       "Bash(echo \"remaining-grey-exit:$?\")",
-      "Bash(echo \"code-sweep-exit:$?\")"
+      "Bash(echo \"code-sweep-exit:$?\")",
+      "Bash(bash check_pypi.sh)",
+      "Bash(ruff check *)",
+      "Bash(awk '/^def / {print NR\": \"$0}' scistack-gui/scistack_gui/api/pipeline.py)",
+      "Bash(awk 'NR<=512 && /^def /{name=$0; line=NR} END{print line\": \"name}' scistack-gui/scistack_gui/api/pipeline.py)",
+      "Bash(awk '{print $1, $4}')"
     ]
   }
 }

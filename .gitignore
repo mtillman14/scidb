@@ -8,7 +8,7 @@ scistack-gui/frontend/node_modules/__pycache__/
 __pycache__/ 
 *.pyc
 *.pyo
-
+*.egg-info/
 # Generated database artifacts (DuckDB data/lineage + write-ahead logs)
 *.duckdb
 *.duckdb.wal
