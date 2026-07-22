@@ -11,36 +11,36 @@ Tests verify that:
 import numpy as np
 import pandas as pd
 import pytest
+from scidb.exceptions import NotFoundError
 
 from scidb import BaseVariable, configure_database, raw_sql
-from scidb.database import _local
-from scidb.exceptions import NotFoundError
-from scidb.filters import VariableFilter, ColumnFilter, CompoundFilter
-
-from conftest import DEFAULT_TEST_SCHEMA_KEYS
-
 
 # ===========================================================================
 # Variable classes for integration tests
 # ===========================================================================
 
+
 class StepLength(BaseVariable):
     """Trial-level step length (scalar)."""
+
     schema_version = 1
 
 
 class Side(BaseVariable):
     """Trial-level gait side ('L' or 'R') — scalar string."""
+
     schema_version = 1
 
 
 class Speed(BaseVariable):
     """Trial-level walking speed (float scalar)."""
+
     schema_version = 1
 
 
 class GaitData(BaseVariable):
     """Trial-level tabular gait data (DataFrame with Side and Speed columns)."""
+
     schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
@@ -54,6 +54,7 @@ class GaitData(BaseVariable):
 # ===========================================================================
 # Fixtures
 # ===========================================================================
+
 
 @pytest.fixture
 def populated_db(db):
@@ -105,6 +106,7 @@ def columnar_db(db):
 # ===========================================================================
 # Basic equality filter tests
 # ===========================================================================
+
 
 class TestBasicEqualityFilter:
     """End-to-end tests for simple equality filters."""
@@ -172,6 +174,7 @@ class TestBasicEqualityFilter:
 # Compound filter tests
 # ===========================================================================
 
+
 class TestCompoundFilter:
     """Tests for AND/OR compound filters."""
 
@@ -207,6 +210,7 @@ class TestCompoundFilter:
 # ===========================================================================
 # ColumnFilter tests (MyVar["col"] == val)
 # ===========================================================================
+
 
 class TestColumnFilter:
     """Tests for column-level filtering on tabular variables."""
@@ -246,6 +250,7 @@ class TestColumnFilter:
 # raw_sql escape hatch tests
 # ===========================================================================
 
+
 class TestRawSqlFilter:
     """Tests for the raw_sql() escape hatch."""
 
@@ -266,6 +271,7 @@ class TestRawSqlFilter:
 # ===========================================================================
 # Error case tests
 # ===========================================================================
+
 
 class TestFilterErrorCases:
     """Tests for informative error messages on misuse."""
@@ -288,7 +294,6 @@ class TestFilterErrorCases:
         skips it (returning all target schema_ids) rather than erroring, so the
         load behaves as if no where= had been supplied.
         """
-        from scidb import configure_database
         db = configure_database(
             tmp_path / "test.duckdb",
             ["subject", "trial"],
@@ -343,12 +348,12 @@ class TestFilterErrorCases:
 # Coarse-to-fine level expansion tests
 # ===========================================================================
 
+
 class TestCoarseFilterExpansion:
     """Tests for coarse-level filter expanding to fine-level target."""
 
     def test_subject_level_filter_expands_to_trials(self, tmp_path):
         """Subject-level filter variable correctly filters trial-level target."""
-        from scidb import configure_database
 
         db = configure_database(
             tmp_path / "test.duckdb",
@@ -384,6 +389,7 @@ class TestCoarseFilterExpansion:
 # ===========================================================================
 # Cross-level where= variant coexistence (latest-collapse regression)
 # ===========================================================================
+
 
 class TestCrossLevelWhereVariants:
     """Two for_each runs that emit output at the SAME output schema_id but
@@ -425,12 +431,10 @@ class TestCrossLevelWhereVariants:
         RawSig.save(20.0, subject="S01", trial="2")
 
         # where=L → consumes RawSig(S01,1)=10 → sum 10 at subject=S01
-        for_each(agg_sum, {"x": RawSig}, [Summed],
-                 subject=["S01"], where=(Side == "L"))
+        for_each(agg_sum, {"x": RawSig}, [Summed], subject=["S01"], where=(Side == "L"))
         # where=R → consumes RawSig(S01,2)=20 → sum 20 at the SAME output
         # schema_id (subject=S01); differs only by consumed input location.
-        for_each(agg_sum, {"x": RawSig}, [Summed],
-                 subject=["S01"], where=(Side == "R"))
+        for_each(agg_sum, {"x": RawSig}, [Summed], subject=["S01"], where=(Side == "R"))
 
         # Both variants survive the latest-collapse and are individually
         # loadable by the where= that produced them.

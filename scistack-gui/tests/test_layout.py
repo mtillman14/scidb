@@ -6,14 +6,13 @@ points at a temp directory, so layout.py reads/writes a temp JSON file.
 """
 
 import json
-import pytest
 
 from scistack_gui import layout as layout_store
-
 
 # ---------------------------------------------------------------------------
 # read_layout — default state
 # ---------------------------------------------------------------------------
+
 
 class TestReadLayout:
     def test_missing_file_returns_defaults(self, layout_path):
@@ -29,7 +28,14 @@ class TestReadLayout:
 
     def test_existing_empty_file_returns_defaults(self, layout_path):
         layout_path.write_text(
-            json.dumps({"positions": {}, "manual_nodes": {}, "constants": [], "manual_edges": []})
+            json.dumps(
+                {
+                    "positions": {},
+                    "manual_nodes": {},
+                    "constants": [],
+                    "manual_edges": [],
+                }
+            )
         )
         result = layout_store.read_layout()
         assert result["positions"] == {}
@@ -51,6 +57,7 @@ class TestReadLayout:
 # ---------------------------------------------------------------------------
 # write_node_position / read_layout round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestNodePosition:
     def test_write_and_read_position(self, layout_path):
@@ -75,6 +82,7 @@ class TestNodePosition:
 # ---------------------------------------------------------------------------
 # write_manual_node / get_manual_nodes
 # ---------------------------------------------------------------------------
+
 
 class TestManualNodes:
     def test_write_manual_node_stores_position_and_metadata(self, layout_path):
@@ -107,6 +115,7 @@ class TestManualNodes:
 # delete_node
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteNode:
     def test_delete_regular_node(self, layout_path):
         layout_store.write_node_position("fn__foo", 1.0, 2.0)
@@ -128,6 +137,7 @@ class TestDeleteNode:
 # ---------------------------------------------------------------------------
 # constants
 # ---------------------------------------------------------------------------
+
 
 class TestConstants:
     def test_read_empty(self, layout_path):
@@ -164,6 +174,7 @@ class TestConstants:
 # ---------------------------------------------------------------------------
 # manual edges
 # ---------------------------------------------------------------------------
+
 
 class TestManualEdges:
     def test_read_empty(self, layout_path):
@@ -209,16 +220,21 @@ class TestManualEdges:
 # graduate_manual_node
 # ---------------------------------------------------------------------------
 
+
 class TestGraduateManualNode:
     def test_transfers_position_to_new_id(self, layout_path):
-        layout_store.write_manual_node("manual__fn_a", 10.0, 20.0, "functionNode", "fn_a")
+        layout_store.write_manual_node(
+            "manual__fn_a", 10.0, 20.0, "functionNode", "fn_a"
+        )
         layout_store.graduate_manual_node("manual__fn_a", "fn__fn_a")
         data = layout_store.read_layout()
         assert "fn__fn_a" in data["positions"]
         assert data["positions"]["fn__fn_a"] == {"x": 10.0, "y": 20.0}
 
     def test_removes_old_position_and_manual_entry(self, layout_path):
-        layout_store.write_manual_node("manual__fn_a", 10.0, 20.0, "functionNode", "fn_a")
+        layout_store.write_manual_node(
+            "manual__fn_a", 10.0, 20.0, "functionNode", "fn_a"
+        )
         layout_store.graduate_manual_node("manual__fn_a", "fn__fn_a")
         data = layout_store.read_layout()
         assert "manual__fn_a" not in data["positions"]
@@ -227,7 +243,9 @@ class TestGraduateManualNode:
     def test_does_not_overwrite_existing_canonical_position(self, layout_path):
         """If canonical node already has a position, graduation must not clobber it."""
         layout_store.write_node_position("fn__fn_a", 999.0, 888.0)
-        layout_store.write_manual_node("manual__fn_a", 10.0, 20.0, "functionNode", "fn_a")
+        layout_store.write_manual_node(
+            "manual__fn_a", 10.0, 20.0, "functionNode", "fn_a"
+        )
         layout_store.graduate_manual_node("manual__fn_a", "fn__fn_a")
         pos = layout_store.read_layout()["positions"]["fn__fn_a"]
         assert pos == {"x": 999.0, "y": 888.0}

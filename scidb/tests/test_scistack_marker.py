@@ -6,13 +6,14 @@ finds it and for_each can read its ``generates_file`` option.
 
 import types
 
-from scidb import scistack
+from scidb.discover import discover_module
 from scidb.pipeline import (
     GENERATES_FILE_ATTR,
     SCISTACK_FLAG,
     is_scistack_function,
 )
-from scidb.discover import discover_module
+
+from scidb import scistack
 
 
 def test_bare_marker_tags_and_returns_plain_function():
@@ -56,6 +57,7 @@ def test_discover_module_finds_scistack_functions():
 
     def helper(x):  # plain, untagged → not discovered
         return x
+
     helper.__module__ = "fake_pipeline_mod"
     mod.helper = helper
 

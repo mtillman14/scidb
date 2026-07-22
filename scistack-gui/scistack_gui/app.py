@@ -6,22 +6,23 @@ React frontend as static files from scistack_gui/static/.
 """
 
 from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from scistack_gui.api.pipeline import router as pipeline_router
-from scistack_gui.api.registry import router as registry_router
-from scistack_gui.api.schema import router as schema_router
-from scistack_gui.api.run import router as run_router
-from scistack_gui.api.layout import router as layout_router
-from scistack_gui.api.ws import router as ws_router
-from scistack_gui.api.variables import router as variables_router
-from scistack_gui.api.project import router as project_router
-from scistack_gui.api.indexes import router as indexes_router
-from scistack_gui.api.scopes import router as scopes_router
 from scistack_gui.api.artifacts import router as artifacts_router
+from scistack_gui.api.indexes import router as indexes_router
+from scistack_gui.api.layout import router as layout_router
+from scistack_gui.api.pipeline import router as pipeline_router
+from scistack_gui.api.project import router as project_router
+from scistack_gui.api.registry import router as registry_router
+from scistack_gui.api.run import router as run_router
+from scistack_gui.api.schema import router as schema_router
+from scistack_gui.api.scopes import router as scopes_router
+from scistack_gui.api.variables import router as variables_router
+from scistack_gui.api.ws import router as ws_router
 
 
 def create_app() -> FastAPI:
@@ -53,7 +54,9 @@ def create_app() -> FastAPI:
     # During development the Vite dev server handles this instead.
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
-        app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
+        app.mount(
+            "/assets", StaticFiles(directory=static_dir / "assets"), name="assets"
+        )
 
         @app.get("/{full_path:path}")
         def serve_frontend(full_path: str):

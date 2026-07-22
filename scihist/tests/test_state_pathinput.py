@@ -15,17 +15,15 @@ a partially-run loader looks green, because the combos that were never run leave
 no trace to count as missing.
 """
 
-import numpy as np
-import pytest
-
-from scidb import BaseVariable, scistack, exclude_schema
-from scihist import for_each
 from scihist.state import check_node_state, check_pathinput_node_state
 
+from scidb import BaseVariable, exclude_schema, scistack
+from scihist import for_each
 
 # ---------------------------------------------------------------------------
 # Variable types
 # ---------------------------------------------------------------------------
+
 
 class PathInputOutput(BaseVariable):
     schema_version = 1
@@ -34,6 +32,7 @@ class PathInputOutput(BaseVariable):
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
+
 
 @scistack
 def import_from_file(filepath):
@@ -52,6 +51,7 @@ _GRID = [("1", "A"), ("1", "B"), ("2", "A"), ("2", "B")]
 def _write_combo_files(root, combos):
     """Create ``sub{subject}/trial{trial}.txt`` files under ``root``."""
     from pathlib import Path
+
     for i, (subj, trial) in enumerate(combos):
         d = Path(root) / f"sub{subj}"
         d.mkdir(parents=True, exist_ok=True)
@@ -60,12 +60,14 @@ def _write_combo_files(root, combos):
 
 def _path_input(root):
     from scifor import PathInput
+
     return PathInput("sub{subject}/trial{trial}.txt", root_folder=str(root))
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestCheckNodeStatePathInput:
     """Integration tests: check_node_state with a real PathInput-only function.
@@ -112,6 +114,7 @@ class TestCheckNodeStatePathInput:
     def test_red_when_none_succeed(self, db, tmp_path):
         """No files → no combos run → no realized invocations → red."""
         from pathlib import Path
+
         Path(tmp_path).mkdir(parents=True, exist_ok=True)
         for_each(
             import_from_file,
@@ -166,17 +169,24 @@ class TestCheckPathInputNodeState:
         """Files + run over the 2×2 grid → realized = {1,2}×{A,B}."""
         _write_combo_files(tmp_path, _GRID)
         for_each(
-            import_from_file, inputs=self._path(tmp_path),
+            import_from_file,
+            inputs=self._path(tmp_path),
             outputs=[PathInputOutput],
-            subject=["1", "2"], trial=["A", "B"], db=db,
+            subject=["1", "2"],
+            trial=["A", "B"],
+            db=db,
         )
 
     def test_green_when_all_realized(self, db, tmp_path):
         """Every discovered ∩ grid combo has produced output → green."""
         self._run_full(db, tmp_path)
         result = check_pathinput_node_state(
-            import_from_file, [PathInputOutput], self._path(tmp_path), db=db,
-            subject=["1", "2"], trial=["A", "B"],
+            import_from_file,
+            [PathInputOutput],
+            self._path(tmp_path),
+            db=db,
+            subject=["1", "2"],
+            trial=["A", "B"],
         )
         assert result["state"] == "green"
         assert result["counts"] == {"up_to_date": 4, "stale": 0, "missing": 0}
@@ -188,11 +198,17 @@ class TestCheckPathInputNodeState:
 
         # The grid now includes subject 3, so the new file is in scope.
         result = check_pathinput_node_state(
-            import_from_file, [PathInputOutput], self._path(tmp_path), db=db,
-            subject=["1", "2", "3"], trial=["A", "B"],
+            import_from_file,
+            [PathInputOutput],
+            self._path(tmp_path),
+            db=db,
+            subject=["1", "2", "3"],
+            trial=["A", "B"],
         )
         assert result["state"] == "red"
-        missing = [c["schema_combo"] for c in result["combos"] if c["state"] == "missing"]
+        missing = [
+            c["schema_combo"] for c in result["combos"] if c["state"] == "missing"
+        ]
         assert {"subject": "3", "trial": "A"} in missing
 
     def test_new_file_outside_grid_stays_green(self, db, tmp_path):
@@ -201,8 +217,12 @@ class TestCheckPathInputNodeState:
         _write_combo_files(tmp_path, [("3", "A")])  # subject 3 is NOT in the grid below
 
         result = check_pathinput_node_state(
-            import_from_file, [PathInputOutput], self._path(tmp_path), db=db,
-            subject=["1", "2"], trial=["A", "B"],
+            import_from_file,
+            [PathInputOutput],
+            self._path(tmp_path),
+            db=db,
+            subject=["1", "2"],
+            trial=["A", "B"],
         )
         assert result["state"] == "green"
         assert result["counts"]["missing"] == 0
@@ -212,8 +232,12 @@ class TestCheckPathInputNodeState:
         self._run_full(db, tmp_path)
         # Grid declares subject 3, but no file exists for it.
         result = check_pathinput_node_state(
-            import_from_file, [PathInputOutput], self._path(tmp_path), db=db,
-            subject=["1", "2", "3"], trial=["A", "B"],
+            import_from_file,
+            [PathInputOutput],
+            self._path(tmp_path),
+            db=db,
+            subject=["1", "2", "3"],
+            trial=["A", "B"],
         )
         assert result["state"] == "green"
         assert result["counts"]["up_to_date"] == 4
@@ -224,15 +248,23 @@ class TestCheckPathInputNodeState:
         self._run_full(db, tmp_path)
         _write_combo_files(tmp_path, [("3", "A")])
 
-        grid = dict(subject=["1", "2", "3"], trial=["A", "B"])
+        grid = {"subject": ["1", "2", "3"], "trial": ["A", "B"]}
         red = check_pathinput_node_state(
-            import_from_file, [PathInputOutput], self._path(tmp_path), db=db, **grid,
+            import_from_file,
+            [PathInputOutput],
+            self._path(tmp_path),
+            db=db,
+            **grid,
         )
         assert red["state"] == "red"
 
         exclude_schema("not part of this analysis", db=db, subject="3")
         green = check_pathinput_node_state(
-            import_from_file, [PathInputOutput], self._path(tmp_path), db=db, **grid,
+            import_from_file,
+            [PathInputOutput],
+            self._path(tmp_path),
+            db=db,
+            **grid,
         )
         assert green["state"] == "green"
         assert green["counts"]["missing"] == 0

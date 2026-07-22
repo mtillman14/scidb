@@ -19,19 +19,18 @@ sys.path.insert(0, str(_root / "scimatlab" / "src"))
 
 import numpy as np
 import pytest
-
+from scidb.variable import BaseVariable
 from scimatlab.bridge import (
     MatlabLineageFcn,
-    register_matlab_variable,
     get_surrogate_class,
+    register_matlab_variable,
     split_flat_to_lists,
 )
-from scidb.variable import BaseVariable
-
 
 # ---------------------------------------------------------------------------
 # MatlabLineageFcn proxy tests
 # ---------------------------------------------------------------------------
+
 
 class TestMatlabLineageFcn:
     """Verify MatlabLineageFcn is a usable node-state handle."""
@@ -72,8 +71,8 @@ class TestMatlabLineageFcn:
 # Variable registration tests
 # ---------------------------------------------------------------------------
 
-class TestVariableRegistration:
 
+class TestVariableRegistration:
     def test_register_creates_subclass(self):
         cls = register_matlab_variable("TestMatlabVar_1")
         assert issubclass(cls, BaseVariable)
@@ -95,7 +94,6 @@ class TestVariableRegistration:
         assert cls.__name__ == "TestMatlabVar_4"
 
     def test_get_surrogate_class_not_registered(self):
-        import pytest
         with pytest.raises(ValueError, match="not registered"):
             get_surrogate_class("NonExistentType_xyz")
 
@@ -107,6 +105,7 @@ class TestVariableRegistration:
 # ---------------------------------------------------------------------------
 # split_flat_to_lists tests
 # ---------------------------------------------------------------------------
+
 
 class TestSplitFlatToLists:
     """Verify split_flat_to_lists correctly splits flat arrays into Python lists."""

@@ -11,26 +11,26 @@ function that produced them.
 import logging
 
 import numpy as np
-import pytest
 
-from scidb import BaseVariable, Fixed, scistack
+from scidb import BaseVariable, scistack
 from scihist import for_each
-
-from conftest import DEFAULT_TEST_SCHEMA_KEYS
-
 
 # ---------------------------------------------------------------------------
 # Variable types
 # ---------------------------------------------------------------------------
 
+
 class RawData(BaseVariable):
     schema_version = 1
+
 
 class ProcessedData(BaseVariable):
     schema_version = 1
 
+
 class AuxData(BaseVariable):
     schema_version = 1
+
 
 class Figure(BaseVariable):
     schema_version = 1
@@ -44,14 +44,17 @@ class Figure(BaseVariable):
 # caplog rather than stdout.
 # ---------------------------------------------------------------------------
 
+
 def _messages(caplog) -> list[str]:
     # skip_computed decisions come from the "scidb" logger; filter by name so
     # scifor's per-iteration records (which also propagate to root) don't
     # inflate the counts.
     return [r.getMessage() for r in caplog.records if r.name == "scidb"]
 
+
 def _skip_lines(caplog) -> list[str]:
     return [m for m in _messages(caplog) if m.startswith("[skip]")]
+
 
 def _recompute_lines(caplog) -> list[str]:
     return [m for m in _messages(caplog) if m.startswith("[recompute]")]
@@ -61,18 +64,25 @@ def _recompute_lines(caplog) -> list[str]:
 # list_pipeline_variants visibility
 # ===========================================================================
 
+
 class TestListPipelineVariantsVisibility:
     """Scihist outputs must appear in db.list_pipeline_variants()."""
 
     def test_single_output_visible(self, db):
         """After scihist.for_each, list_pipeline_variants finds the function."""
+
         @scistack
         def double(x):
             return x * 2
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
 
         variants = db.list_pipeline_variants()
         fn_names = {v["function_name"] for v in variants}
@@ -80,13 +90,19 @@ class TestListPipelineVariantsVisibility:
 
     def test_output_type_correct(self, db):
         """The variant's output_type matches the output variable class."""
+
         @scistack
         def double(x):
             return x * 2
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
 
         variants = db.list_pipeline_variants(output_type="ProcessedData")
         assert len(variants) >= 1
@@ -94,6 +110,7 @@ class TestListPipelineVariantsVisibility:
 
     def test_record_count_matches(self, db):
         """Variant record_count should match the number of saved combos."""
+
         @scistack
         def double(x):
             return x * 2
@@ -101,8 +118,13 @@ class TestListPipelineVariantsVisibility:
         for s in [1, 2, 3]:
             RawData.save(np.array([s * 10]), subject=s, trial=1)
 
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1, 2, 3], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1, 2, 3],
+            trial=[1],
+        )
 
         variants = db.list_pipeline_variants(output_type="ProcessedData")
         total = sum(v["record_count"] for v in variants)
@@ -110,6 +132,7 @@ class TestListPipelineVariantsVisibility:
 
     def test_multiple_functions_both_visible(self, db):
         """Two different pipeline functions produce two separate variants."""
+
         @scistack
         def step1(x):
             return x + 1
@@ -119,10 +142,20 @@ class TestListPipelineVariantsVisibility:
             return y * 2
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(step1, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": ProcessedData}, outputs=[AuxData],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": ProcessedData},
+            outputs=[AuxData],
+            subject=[1],
+            trial=[1],
+        )
 
         variants = db.list_pipeline_variants()
         fn_names = {v["function_name"] for v in variants}
@@ -131,15 +164,26 @@ class TestListPipelineVariantsVisibility:
 
     def test_constant_variants_visible(self, db):
         """Different constant values produce distinct variants."""
+
         @scistack
         def scale(x, factor):
             return x * factor
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(scale, inputs={"x": RawData, "factor": 2},
-                 outputs=[ProcessedData], subject=[1], trial=[1])
-        for_each(scale, inputs={"x": RawData, "factor": 3},
-                 outputs=[ProcessedData], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawData, "factor": 2},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            scale,
+            inputs={"x": RawData, "factor": 3},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
 
         variants = db.list_pipeline_variants(output_type="ProcessedData")
         assert len(variants) >= 2
@@ -148,13 +192,19 @@ class TestListPipelineVariantsVisibility:
 
     def test_generates_file_visible(self, db):
         """generates_file=True functions should also be visible."""
+
         @scistack(generates_file=True)
         def make_plot(data, subject, trial):
             return None
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(make_plot, inputs={"data": RawData}, outputs=[Figure],
-                 subject=[1], trial=[1])
+        for_each(
+            make_plot,
+            inputs={"data": RawData},
+            outputs=[Figure],
+            subject=[1],
+            trial=[1],
+        )
 
         variants = db.list_pipeline_variants(output_type="Figure")
         fn_names = {v["function_name"] for v in variants}
@@ -165,41 +215,64 @@ class TestListPipelineVariantsVisibility:
 # skip_computed with __fn in version_keys
 # ===========================================================================
 
+
 class TestSkipComputedWithFnVersionKeys:
     """skip_computed must still work after __fn/__fn_hash are in version_keys."""
 
     def test_skip_works_after_fn_version_keys_added(self, db, caplog):
         """Records with __fn in version_keys are found by skip_computed lookup."""
+
         @scistack
         def double(x):
             return x * 2
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         # Second run — must skip
         with caplog.at_level(logging.DEBUG, logger="scidb"):
-            for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                     subject=[1], trial=[1])
+            for_each(
+                double,
+                inputs={"x": RawData},
+                outputs=[ProcessedData],
+                subject=[1],
+                trial=[1],
+            )
         assert len(_skip_lines(caplog)) == 1
         assert not _recompute_lines(caplog)
 
     def test_skip_works_with_constants(self, db, caplog):
         """skip_computed correctly finds records when constants + __fn are in version_keys."""
+
         @scistack
         def scale(x, factor):
             return x * factor
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(scale, inputs={"x": RawData, "factor": 2},
-                 outputs=[ProcessedData], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawData, "factor": 2},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         with caplog.at_level(logging.DEBUG, logger="scidb"):
-            for_each(scale, inputs={"x": RawData, "factor": 2},
-                     outputs=[ProcessedData], subject=[1], trial=[1])
+            for_each(
+                scale,
+                inputs={"x": RawData, "factor": 2},
+                outputs=[ProcessedData],
+                subject=[1],
+                trial=[1],
+            )
         assert len(_skip_lines(caplog)) == 1
         assert not _recompute_lines(caplog)
 
@@ -213,8 +286,13 @@ class TestSkipComputedWithFnVersionKeys:
             return x * 2
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
         assert call_count[0] == 1
 
         # Change input
@@ -222,8 +300,13 @@ class TestSkipComputedWithFnVersionKeys:
         caplog.clear()
 
         with caplog.at_level(logging.DEBUG, logger="scidb"):
-            for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                     subject=[1], trial=[1])
+            for_each(
+                double,
+                inputs={"x": RawData},
+                outputs=[ProcessedData],
+                subject=[1],
+                trial=[1],
+            )
         assert _recompute_lines(caplog)
         assert call_count[0] == 2
 
@@ -242,13 +325,23 @@ class TestSkipComputedWithFnVersionKeys:
             return x * 3
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(process_v1, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
+        for_each(
+            process_v1,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         with caplog.at_level(logging.DEBUG, logger="scidb"):
-            for_each(process_v2, inputs={"x": RawData}, outputs=[ProcessedData],
-                     subject=[1], trial=[1])
+            for_each(
+                process_v2,
+                inputs={"x": RawData},
+                outputs=[ProcessedData],
+                subject=[1],
+                trial=[1],
+            )
         # process_v2 has a different __fn, so no existing record matches →
         # skip_computed sees "output missing" and lets it run
         assert call_count[0] == 1
@@ -256,13 +349,19 @@ class TestSkipComputedWithFnVersionKeys:
 
     def test_load_still_works_with_schema_keys_only(self, db):
         """BaseVariable.load(subject=1, trial=1) returns correct data despite __fn in version_keys."""
+
         @scistack
         def double(x):
             return x * 2
 
         RawData.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
 
         loaded = ProcessedData.load(subject=1, trial=1)
         np.testing.assert_array_equal(loaded.data, np.array([2, 4, 6]))
@@ -279,8 +378,13 @@ class TestSkipComputedWithFnVersionKeys:
         for s in [1, 2, 3]:
             RawData.save(np.array([s * 10]), subject=s, trial=1)
 
-        for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                 subject=[1, 2, 3], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawData},
+            outputs=[ProcessedData],
+            subject=[1, 2, 3],
+            trial=[1],
+        )
         assert call_count[0] == 3
 
         # Change only subject=2
@@ -288,8 +392,13 @@ class TestSkipComputedWithFnVersionKeys:
         caplog.clear()
 
         with caplog.at_level(logging.DEBUG, logger="scidb"):
-            for_each(double, inputs={"x": RawData}, outputs=[ProcessedData],
-                     subject=[1, 2, 3], trial=[1])
+            for_each(
+                double,
+                inputs={"x": RawData},
+                outputs=[ProcessedData],
+                subject=[1, 2, 3],
+                trial=[1],
+            )
 
         assert len(_skip_lines(caplog)) == 2
         assert len(_recompute_lines(caplog)) == 1

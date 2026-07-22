@@ -25,21 +25,24 @@ DEFAULT_TEST_SCHEMA_KEYS = ["subject", "trial"]
 def db(tmp_path):
     """Provide a fresh configured database."""
     from scihist import configure_database
+
     db_path = tmp_path / "test_db.duckdb"
     db = configure_database(db_path, DEFAULT_TEST_SCHEMA_KEYS)
     yield db
     db.close()
     from scidb.database import _local
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
+
+    if hasattr(_local, "database"):
+        delattr(_local, "database")
 
 
 @pytest.fixture(autouse=True)
 def clear_global_state():
     """Clear global state before and after each test."""
     from scidb.database import _local
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
+
+    if hasattr(_local, "database"):
+        delattr(_local, "database")
     yield
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
+    if hasattr(_local, "database"):
+        delattr(_local, "database")

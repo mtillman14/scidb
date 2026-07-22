@@ -24,7 +24,9 @@ def main(argv: list[str] | None = None) -> int:
     proj = sub.add_parser("project", help="Project management commands.")
     proj_sub = proj.add_subparsers(dest="project_command")
     new = proj_sub.add_parser("new", help="Scaffold a new SciStack project.")
-    new.add_argument("name", help="Project name (lowercase, underscores, starts with a letter).")
+    new.add_argument(
+        "name", help="Project name (lowercase, underscores, starts with a letter)."
+    )
     new.add_argument(
         "--schema-keys",
         nargs="+",
@@ -46,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     # --- db (alias for the scidb CLI; wiring lives in scidb.inspect.cli) ---
     try:
         from scidb.inspect.cli import add_db_subparser
+
         add_db_subparser(sub)
     except ImportError:
         pass

@@ -88,9 +88,9 @@ def get_pipeline_plan(pipeline_id: str, target: str = "") -> list[dict]:
 
 
 class PipelineRunRequest(BaseModel):
-    mode: str = "all"                 # all | until | endpoints
-    target: str = ""                  # step/fn name (mode="until")
-    finalized: bool | None = None     # endpoint draft/record flag
+    mode: str = "all"  # all | until | endpoints
+    target: str = ""  # step/fn name (mode="until")
+    finalized: bool | None = None  # endpoint draft/record flag
     skip_computed: bool = True
     run_id: str | None = None
 
@@ -103,8 +103,12 @@ def post_pipeline_run(pipeline_id: str, body: PipelineRunRequest) -> dict:
 
     return _guard(
         start_pipeline_run,
-        pipeline_id, body.mode, body.target, body.finalized,
-        body.skip_computed, body.run_id,
+        pipeline_id,
+        body.mode,
+        body.target,
+        body.finalized,
+        body.skip_computed,
+        body.run_id,
     )
 
 
@@ -112,7 +116,11 @@ def post_pipeline_run(pipeline_id: str, body: PipelineRunRequest) -> dict:
 def post_pipeline_use(pipeline_id: str, body: UseCreate) -> dict:
     return _guard(
         scope_service.add_pipeline_use,
-        pipeline_id, body.child_pipeline_id, body.binding, body.x, body.y,
+        pipeline_id,
+        body.child_pipeline_id,
+        body.binding,
+        body.x,
+        body.y,
     )
 
 

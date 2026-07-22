@@ -44,49 +44,50 @@ if TYPE_CHECKING:
 # Dataclasses (JSON-serializable via dataclasses.asdict)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class VariantSummary:
     function_name: str
     call_id: str
     output_type: str
     output_num: int | None
-    input_types: dict[str, str]     # param → type name (PathInput params → spec string)
-    constants: dict[str, str]       # param → display string of the value
+    input_types: dict[str, str]  # param → type name (PathInput params → spec string)
+    constants: dict[str, str]  # param → display string of the value
     record_count: int
 
 
 @dataclass
 class FunctionNode:
-    id: str                         # fn__{name}__{8-hex step hash}
+    id: str  # fn__{name}__{8-hex step hash}
     function_name: str
-    input_params: dict[str, str]    # param → variable type (PathInputs excluded)
-    path_inputs: dict[str, str]     # param → template string
+    input_params: dict[str, str]  # param → variable type (PathInputs excluded)
+    path_inputs: dict[str, str]  # param → template string
     output_types: list[str]
-    constants: dict[str, list[str]] # param → sorted distinct value strings
-    variant_count: int              # distinct constants combinations
+    constants: dict[str, list[str]]  # param → sorted distinct value strings
+    variant_count: int  # distinct constants combinations
     call_ids: list[str]
     record_count: int
-    state: str                      # "green" | "red" | "unknown"
-    state_counts: dict[str, int]    # {"up_to_date": N, "missing": N} when known
-    state_basis: str                # "live_fn" | "stored_hash" | "none"
+    state: str  # "green" | "red" | "unknown"
+    state_counts: dict[str, int]  # {"up_to_date": N, "missing": N} when known
+    state_basis: str  # "live_fn" | "stored_hash" | "none"
     variants: list[VariantSummary] = field(default_factory=list)
 
 
 @dataclass
 class VariableNode:
-    id: str                         # var__{name}
+    id: str  # var__{name}
     name: str
-    record_count: int               # distinct non-excluded records
-    produced_by: list[str] = field(default_factory=list)   # FunctionNode ids
+    record_count: int  # distinct non-excluded records
+    produced_by: list[str] = field(default_factory=list)  # FunctionNode ids
     consumed_by: list[str] = field(default_factory=list)
 
 
 @dataclass
 class PipelineEdge:
-    source: str                     # node id
+    source: str  # node id
     target: str
-    param: str | None = None        # var→fn edges
-    output_num: int | None = None   # fn→var edges
+    param: str | None = None  # var→fn edges
+    output_num: int | None = None  # fn→var edges
 
 
 @dataclass
@@ -99,6 +100,7 @@ class PipelineGraph:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def var_node_id(name: str) -> str:
     return f"var__{name}"
@@ -194,16 +196,21 @@ def _node_states(db, fn_names, fn_registry=None) -> dict[str, dict]:
             basis = "stored_hash"
         else:
             states[fn_name] = {
-                "state": "unknown", "counts": {}, "basis": "none",
+                "state": "unknown",
+                "counts": {},
+                "basis": "none",
                 "missing_schema_ids": [],
             }
             continue
 
         expected = provenance_query.expected_invocations_for_function(
-            db, fn_name, fn_hash,
+            db,
+            fn_name,
+            fn_hash,
         )
         present = provenance_query.present_invocation_schema_pairs(
-            db._duck, {inv_id for inv_id, _sid in expected},
+            db._duck,
+            {inv_id for inv_id, _sid in expected},
         )
         missing_pairs = [pair for pair in expected if pair not in present]
         state = "green" if expected and not missing_pairs else "red"
@@ -216,7 +223,9 @@ def _node_states(db, fn_names, fn_registry=None) -> dict[str, dict]:
             f"({counts['up_to_date']} up-to-date, {counts['missing']} missing)"
         )
         states[fn_name] = {
-            "state": state, "counts": counts, "basis": basis,
+            "state": state,
+            "counts": counts,
+            "basis": basis,
             "missing_schema_ids": sorted(
                 (sid for _inv, sid in missing_pairs),
                 key=lambda s: (s is None, s),
@@ -239,8 +248,9 @@ def _variable_record_counts(duck) -> dict[str, int]:
 # Build
 # ---------------------------------------------------------------------------
 
+
 def build_pipeline_graph(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     output_type: str | None = None,
     fn_registry: dict | None = None,
 ) -> PipelineGraph:
@@ -274,9 +284,9 @@ def build_pipeline_graph(
                 "fn_name": v["function_name"],
                 "input_params": var_inputs,
                 "path_inputs": dict(path_inputs),
-                "outputs": {},          # output_type → set(output_num)
-                "constants": {},        # param → set(display str)
-                "constant_keys": set(), # distinct constants dicts
+                "outputs": {},  # output_type → set(output_num)
+                "constants": {},  # param → set(display str)
+                "constant_keys": set(),  # distinct constants dicts
                 "call_ids": set(),
                 "record_count": 0,
                 "variants": [],
@@ -289,15 +299,17 @@ def build_pipeline_graph(
         )
         step["call_ids"].add(v["call_id"])
         step["record_count"] += int(v["record_count"])
-        step["variants"].append(VariantSummary(
-            function_name=v["function_name"],
-            call_id=v["call_id"],
-            output_type=v["output_type"],
-            output_num=v["output_num"],
-            input_types=dict(v["input_types"]),
-            constants={k: _value_str(val) for k, val in v["constants"].items()},
-            record_count=int(v["record_count"]),
-        ))
+        step["variants"].append(
+            VariantSummary(
+                function_name=v["function_name"],
+                call_id=v["call_id"],
+                output_type=v["output_type"],
+                output_num=v["output_num"],
+                input_types=dict(v["input_types"]),
+                constants={k: _value_str(val) for k, val in v["constants"].items()},
+                record_count=int(v["record_count"]),
+            )
+        )
 
     # --- node state per function name (shared across its steps) ---
     fn_names = {s["fn_name"] for s in steps.values()}
@@ -311,7 +323,8 @@ def build_pipeline_graph(
     def var_node(name: str) -> VariableNode:
         if name not in var_nodes:
             node = VariableNode(
-                id=var_node_id(name), name=name,
+                id=var_node_id(name),
+                name=name,
                 record_count=counts.get(name, 0),
             )
             var_nodes[name] = node
@@ -324,17 +337,22 @@ def build_pipeline_graph(
         fid = _step_id(step["fn_name"], wiring_key)
         st = states[step["fn_name"]]
         state, state_counts, basis = st["state"], st["counts"], st["basis"]
-        step["variants"].sort(key=lambda s: (
-            s.output_type, s.output_num if s.output_num is not None else -1,
-            sorted(s.constants.items()),
-        ))
+        step["variants"].sort(
+            key=lambda s: (
+                s.output_type,
+                s.output_num if s.output_num is not None else -1,
+                sorted(s.constants.items()),
+            )
+        )
         node = FunctionNode(
             id=fid,
             function_name=step["fn_name"],
             input_params=step["input_params"],
             path_inputs=step["path_inputs"],
             output_types=sorted(step["outputs"]),
-            constants={k: sorted(vals) for k, vals in sorted(step["constants"].items())},
+            constants={
+                k: sorted(vals) for k, vals in sorted(step["constants"].items())
+            },
             variant_count=len(step["constant_keys"]),
             call_ids=sorted(step["call_ids"]),
             record_count=step["record_count"],

@@ -49,7 +49,10 @@ def propagate_run_states(
     pending constant value) — nothing in the database yet"; it never comes
     from scidb.
     """
-    logger.info("[run_state] propagate_run_states: processing %d function call site(s)", len(fn_own_states))
+    logger.info(
+        "[run_state] propagate_run_states: processing %d function call site(s)",
+        len(fn_own_states),
+    )
 
     # Make a mutable copy so we don't modify the caller's dict.
     fn_own_state = dict(fn_own_states)
@@ -66,25 +69,34 @@ def propagate_run_states(
                     if pending_constants.get(const_name):
                         logger.debug(
                             "[run_state] downgrading %s green→pending: pending constant %r",
-                            fkey, const_name,
+                            fkey,
+                            const_name,
                         )
                         fn_own_state[fkey] = "pending"
                         downgrade_count += 1
                         break
         if downgrade_count > 0:
-            logger.debug("[run_state] downgraded %d node(s) due to pending constants", downgrade_count)
+            logger.debug(
+                "[run_state] downgraded %d node(s) due to pending constants",
+                downgrade_count,
+            )
     else:
         logger.debug("[run_state] no pending constants to check")
 
     # --- DAG propagation ---
     # var_producers[var_type] = set of FnKeys producing this variable.
     # The variable's state is the worst (min) of all producer states.
-    logger.info("[run_state] Building variable producer map and propagating states through DAG")
+    logger.info(
+        "[run_state] Building variable producer map and propagating states through DAG"
+    )
     var_producers: dict[str, set[FnKey]] = {}
     for fkey, out_types in fn_outputs.items():
         for ot in out_types:
             var_producers.setdefault(ot, set()).add(fkey)
-    logger.debug("[run_state] identified %d variable type(s) with producer(s)", len(var_producers))
+    logger.debug(
+        "[run_state] identified %d variable type(s) with producer(s)",
+        len(var_producers),
+    )
 
     fn_effective_state: dict[FnKey, str] = {}
     var_state: dict[str, str] = {}
@@ -94,14 +106,20 @@ def propagate_run_states(
     }
 
     remaining = set(fn_own_state.keys())
-    logger.debug("[run_state] starting DAG propagation for %d call site(s)", len(remaining))
+    logger.debug(
+        "[run_state] starting DAG propagation for %d call site(s)", len(remaining)
+    )
     iteration = 0
     for _ in range(len(remaining) + 1):
         if not remaining:
             break
         progress = False
         iteration += 1
-        logger.debug("[run_state] propagation iteration %d: %d node(s) remaining", iteration, len(remaining))
+        logger.debug(
+            "[run_state] propagation iteration %d: %d node(s) remaining",
+            iteration,
+            len(remaining),
+        )
         for fkey in list(remaining):
             input_var_states: list[str] = []
             all_resolved = True
@@ -135,7 +153,9 @@ def propagate_run_states(
             # Cycle or unresolvable — mark remaining as red.
             logger.warning(
                 "[run_state] DAG propagation stalled at iteration %d — possible cycle among %d node(s): %s",
-                iteration, len(remaining), sorted(remaining),
+                iteration,
+                len(remaining),
+                sorted(remaining),
             )
             for fkey in remaining:
                 fn_effective_state[fkey] = "red"
@@ -156,7 +176,12 @@ def propagate_run_states(
     state_counts = {"green": 0, "pending": 0, "red": 0}
     for s in result.values():
         state_counts[s] = state_counts.get(s, 0) + 1
-    logger.info("[run_state] propagate_run_states complete: %d total nodes (%d green, %d pending, %d red)",
-                len(result), state_counts["green"], state_counts["pending"], state_counts["red"])
+    logger.info(
+        "[run_state] propagate_run_states complete: %d total nodes (%d green, %d pending, %d red)",
+        len(result),
+        state_counts["green"],
+        state_counts["pending"],
+        state_counts["red"],
+    )
 
     return result

@@ -31,8 +31,10 @@ sys.path.insert(0, str(_root / "scimatlab" / "src"))
 
 import numpy as np
 import pytest
-
+from scidb.database import _local, configure_database
+from scidb.pipeline import _reset_pipeline_state
 from scimatlab.bridge import (
+    _pipeline_cache,
     pipeline_active_name,
     pipeline_bind,
     pipeline_create,
@@ -45,12 +47,9 @@ from scimatlab.bridge import (
     pipeline_run_python_step,
     pipeline_use,
     register_matlab_variable,
-    _pipeline_cache,
 )
-from scidb import for_each
-from scidb.database import configure_database, _local
-from scidb.pipeline import _reset_pipeline_state
 
+from scidb import for_each
 
 SCHEMA = ["subject", "trial"]
 SUBJECTS = ["1", "2"]
@@ -60,6 +59,7 @@ TRIALS = ["1", "2"]
 @pytest.fixture
 def db(tmp_path):
     import scifor as _scifor
+
     _scifor.set_schema([])
     _reset_pipeline_state()
     db = configure_database(tmp_path / "bridge_pipe.duckdb", SCHEMA)
@@ -141,6 +141,7 @@ class TestExecutionOrder:
         def py_mean(x):
             py_mean.calls += 1
             return float(np.mean(np.asarray(x, dtype=float)))
+
         py_mean.calls = 0
 
         from scidb.variable import BaseVariable
@@ -148,8 +149,7 @@ class TestExecutionOrder:
         class PyMean(BaseVariable):
             schema_version = 1
 
-        for_each(py_mean, {"x": MFilt}, [PyMean],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(py_mean, {"x": MFilt}, [PyMean], subject=SUBJECTS, trial=TRIALS, db=db)
 
         result = pipeline_execution_order(h, mode="all")
         steps = result["steps"]
@@ -161,7 +161,9 @@ class TestExecutionOrder:
         assert by_name["m_filter"]["is_matlab"] is True
         assert by_name["py_mean"]["is_matlab"] is False
         assert by_name["m_filter"]["metadata_iterables"] == {
-            "subject": SUBJECTS, "trial": TRIALS}
+            "subject": SUBJECTS,
+            "trial": TRIALS,
+        }
         assert pipeline_active_name() == ""  # order resolution deactivates
         pipeline_run_free(result["run_handle"])
 
@@ -187,8 +189,9 @@ class TestExecutionOrder:
         class PyMean2(BaseVariable):
             schema_version = 1
 
-        for_each(py_mean, {"x": MFilt}, [PyMean2],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            py_mean, {"x": MFilt}, [PyMean2], subject=SUBJECTS, trial=TRIALS, db=db
+        )
 
         result = pipeline_execution_order(h, mode="all")
         steps = result["steps"]
@@ -218,21 +221,25 @@ class TestExecutionOrder:
             fn_hash="plot-hash",
             inputs_spec={
                 "x": {"kind": "var_type", "type_name": "MFilt"},
-                "filename": {"kind": "path_output",
-                             "template": "figs/{subject}_{trial}.png"},
+                "filename": {
+                    "kind": "path_output",
+                    "template": "figs/{subject}_{trial}.png",
+                },
             },
             output_class_names=["MFig"],
             metadata_iterables={"subject": SUBJECTS, "trial": TRIALS},
         )
 
         result = pipeline_execution_order(
-            h, mode="until", target_name="plot_m", finalized=True)
+            h, mode="until", target_name="plot_m", finalized=True
+        )
         by_name = {d["step"]: d for d in result["steps"]}
 
         assert by_name["plot_m"]["apply_finalized"] is True
         assert by_name["m_load"]["apply_finalized"] is None
         assert by_name["plot_m"]["path_templates"] == {
-            "filename": "figs/{subject}_{trial}.png"}
+            "filename": "figs/{subject}_{trial}.png"
+        }
         pipeline_run_free(result["run_handle"])
 
 
@@ -251,8 +258,10 @@ class TestBindingBridge:
             inputs_spec={
                 "x": {"kind": "var_type", "type_name": "MRaw"},
                 "factor": {"kind": "constant", "value": 2},
-                "out": {"kind": "path_output",
-                        "template": "figs/{session}_{trial}.png"},
+                "out": {
+                    "kind": "path_output",
+                    "template": "figs/{session}_{trial}.png",
+                },
             },
             output_class_names=["MFilt"],
             metadata_iterables={"session": ["9"], "trial": TRIALS},
@@ -267,8 +276,7 @@ class TestBindingBridge:
         h_top = pipeline_create("m_analysis", db=db)
         pipeline_use(h_top, binding_handle=b)
 
-        result = pipeline_execution_order(h_top, mode="until",
-                                          target_name="m_scale")
+        result = pipeline_execution_order(h_top, mode="until", target_name="m_scale")
         (d,) = result["steps"]
 
         assert d["metadata_iterables"] == {"subject": SUBJECTS, "trial": TRIALS}
@@ -301,8 +309,7 @@ class TestForwarders:
             fn_hash="plot-hash",
             inputs_spec={
                 "x": {"kind": "var_type", "type_name": "MFilt"},
-                "filename": {"kind": "path_output",
-                             "template": "figs/{subject}.png"},
+                "filename": {"kind": "path_output", "template": "figs/{subject}.png"},
             },
             output_class_names=["MFig"],
             metadata_iterables={"subject": SUBJECTS},
@@ -316,4 +323,9 @@ class TestForwarders:
         assert by_name["plot_m"]["endpoint"] is True
         assert by_name["m_load"]["endpoint"] is False
         assert set(by_name["m_load"]) == {
-            "step", "pipeline", "endpoint", "state", "n_combos"}
+            "step",
+            "pipeline",
+            "endpoint",
+            "state",
+            "n_combos",
+        }

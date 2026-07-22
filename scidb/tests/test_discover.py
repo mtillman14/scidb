@@ -7,8 +7,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
-from scidb import Constant
 from scidb.discover import (
     DiscoveryResult,
     _dist_to_import_names,
@@ -16,6 +14,8 @@ from scidb.discover import (
     _read_uv_lock_packages,
     scan_project,
 )
+
+from scidb import Constant
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +140,7 @@ class TestDiscoverModule:
             },
         )
         result = scan_project(root)
-        all_constants = [
-            c for m in result.project_code.modules for c in m.constants
-        ]
+        all_constants = [c for m in result.project_code.modules for c in m.constants]
         assert len(all_constants) == 2
         names = {name for name, _ in all_constants}
         assert names == {"SAMPLING_RATE_HZ", "DEFAULT_BANDPASS"}
@@ -515,6 +513,7 @@ class TestModuleExportsProperties:
 
     def test_is_empty_false_with_constant(self):
         from scidb.discover import ModuleExports
+
         from scidb import constant
 
         c = constant(42)
@@ -524,6 +523,7 @@ class TestModuleExportsProperties:
 
     def test_total_count_mixed(self):
         from scidb.discover import ModuleExports
+
         from scidb import constant
 
         c = constant(42)
@@ -542,6 +542,7 @@ class TestModuleExportsProperties:
 class TestPackageResultProperties:
     def test_counts_across_modules(self):
         from scidb.discover import ModuleExports, PackageResult
+
         from scidb import constant
 
         c = constant(1)
@@ -582,7 +583,9 @@ class TestDiscoveryResultNonEmptyLibraries:
     def test_filters_empty_libraries(self):
         from scidb.discover import ModuleExports, PackageResult
 
-        empty_pkg = PackageResult(name="empty_lib", modules=[ModuleExports(module_name="e")])
+        empty_pkg = PackageResult(
+            name="empty_lib", modules=[ModuleExports(module_name="e")]
+        )
         nonempty_pkg = PackageResult(
             name="good_lib",
             modules=[ModuleExports(module_name="g", variables=[object])],
@@ -635,8 +638,8 @@ class TestPathInsert:
             sys.path.remove(target)
 
     def test_invalidates_caches_on_exit(self, tmp_path):
+
         from scidb.discover import _PathInsert
-        import importlib
 
         target = str(tmp_path / "cache_test")
         # Just verify it doesn't raise
@@ -654,7 +657,9 @@ class TestPurgeModule:
         # Inject fake modules
         sys.modules["_fake_purge_test"] = type(sys)("_fake_purge_test")
         sys.modules["_fake_purge_test.sub1"] = type(sys)("_fake_purge_test.sub1")
-        sys.modules["_fake_purge_test.sub2.deep"] = type(sys)("_fake_purge_test.sub2.deep")
+        sys.modules["_fake_purge_test.sub2.deep"] = type(sys)(
+            "_fake_purge_test.sub2.deep"
+        )
 
         _purge_module("_fake_purge_test")
 

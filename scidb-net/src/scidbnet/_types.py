@@ -2,10 +2,10 @@
 
 from pydantic import BaseModel
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
 
 class RegisterRequest(BaseModel):
     type_name: str
@@ -22,8 +22,10 @@ class RegisterResponse(BaseModel):
 # Save
 # ---------------------------------------------------------------------------
 
+
 class SaveMeta(BaseModel):
     """JSON metadata sent alongside save binary payload."""
+
     type_name: str
     metadata: dict
     lineage: dict | None = None
@@ -39,6 +41,7 @@ class SaveResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Load
 # ---------------------------------------------------------------------------
+
 
 class LoadRequest(BaseModel):
     type_name: str
@@ -56,6 +59,7 @@ class LoadAllRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # List / Provenance
 # ---------------------------------------------------------------------------
+
 
 class ListVersionsRequest(BaseModel):
     type_name: str
@@ -88,6 +92,7 @@ class ProvenanceBySchemaResponse(BaseModel):
 # Pipeline / Lineage
 # ---------------------------------------------------------------------------
 
+
 class PipelineStructureResponse(BaseModel):
     structure: list[dict]
 
@@ -104,6 +109,7 @@ class HasLineageResponse(BaseModel):
 # Export
 # ---------------------------------------------------------------------------
 
+
 class ExportToCsvRequest(BaseModel):
     type_name: str
     path: str
@@ -118,6 +124,7 @@ class ExportToCsvResponse(BaseModel):
 # Cache
 # ---------------------------------------------------------------------------
 
+
 class FindByLineageRequest(BaseModel):
     lineage_hash: str
 
@@ -125,6 +132,7 @@ class FindByLineageRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Health / Close
 # ---------------------------------------------------------------------------
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -137,6 +145,7 @@ class CloseResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Error
 # ---------------------------------------------------------------------------
+
 
 class ErrorResponse(BaseModel):
     error: str

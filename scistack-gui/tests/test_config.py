@@ -15,10 +15,10 @@ from scistack_gui.config import (
     load_config,
 )
 
-
 # ---------------------------------------------------------------------------
 # _extract_scistack_section
 # ---------------------------------------------------------------------------
+
 
 def test_empty_scistack_toml_returns_empty_dict():
     """An empty scistack.toml should return {} (valid all-defaults config)."""
@@ -51,6 +51,7 @@ def test_pyproject_without_scistack_section():
 # load_config — integration tests using tmp_path
 # ---------------------------------------------------------------------------
 
+
 def test_empty_scistack_toml_loads_defaults(tmp_path):
     """An empty scistack.toml should produce a SciStackConfig with defaults."""
     toml_file = tmp_path / "scistack.toml"
@@ -67,7 +68,7 @@ def test_empty_scistack_toml_loads_defaults(tmp_path):
 def test_pyproject_without_scistack_section_loads_defaults(tmp_path):
     """A pyproject.toml lacking [tool.scistack] should use all defaults."""
     toml_file = tmp_path / "pyproject.toml"
-    toml_file.write_text('[tool.black]\nline-length = 88\n')
+    toml_file.write_text("[tool.black]\nline-length = 88\n")
 
     config = load_config(tmp_path, tmp_path / "dummy.duckdb")
     assert isinstance(config, SciStackConfig)
@@ -101,6 +102,7 @@ def test_pyproject_with_scistack_section_loads_normally(tmp_path):
 # ---------------------------------------------------------------------------
 # modules — directory and glob support
 # ---------------------------------------------------------------------------
+
 
 def test_modules_directory_recursively_discovers_py_files(tmp_path):
     """A directory entry in modules should recursively find all .py files."""
@@ -144,9 +146,7 @@ def test_modules_glob_pattern(tmp_path):
 def test_modules_mixed_files_dirs_and_globs(tmp_path):
     """modules list can mix individual files, directories, and globs."""
     toml_file = tmp_path / "scistack.toml"
-    toml_file.write_text(
-        'modules = ["single.py", "lib_dir", "extra/*.py"]'
-    )
+    toml_file.write_text('modules = ["single.py", "lib_dir", "extra/*.py"]')
 
     (tmp_path / "single.py").write_text("")
 
@@ -172,6 +172,7 @@ def test_modules_empty_directory_warns(tmp_path, caplog):
     (tmp_path / "empty_dir").mkdir()
 
     import logging
+
     with caplog.at_level(logging.WARNING):
         config = load_config(tmp_path, tmp_path / "dummy.duckdb")
 
@@ -182,6 +183,7 @@ def test_modules_empty_directory_warns(tmp_path, caplog):
 # ---------------------------------------------------------------------------
 # matlab.functions / matlab.variables — directory and glob support
 # ---------------------------------------------------------------------------
+
 
 def test_matlab_functions_directory_recursively_discovers_m_files(tmp_path):
     """A directory entry in matlab.functions should recursively find .m files."""
@@ -242,6 +244,7 @@ def test_matlab_empty_directory_warns(tmp_path, caplog):
     (tmp_path / "empty").mkdir()
 
     import logging
+
     with caplog.at_level(logging.WARNING):
         config = load_config(tmp_path, tmp_path / "dummy.duckdb")
 
@@ -253,11 +256,12 @@ def test_matlab_empty_directory_warns(tmp_path, caplog):
 # matlab_addpath auto-derivation
 # ---------------------------------------------------------------------------
 
+
 def test_matlab_addpath_auto_derived_from_functions_and_variables(tmp_path):
     """matlab_addpath should be auto-derived from parent dirs of functions, variables, and variable_dir."""
     toml_file = tmp_path / "scistack.toml"
     toml_file.write_text(
-        '[matlab]\n'
+        "[matlab]\n"
         'functions = ["matlab/funcs/foo.m"]\n'
         'variables = ["matlab/types/MyVar.m"]\n'
         'variable_dir = "matlab/types"\n'
@@ -267,7 +271,9 @@ def test_matlab_addpath_auto_derived_from_functions_and_variables(tmp_path):
     (tmp_path / "matlab" / "funcs").mkdir(parents=True)
     (tmp_path / "matlab" / "types").mkdir(parents=True)
     (tmp_path / "matlab" / "funcs" / "foo.m").write_text("function y = foo(x)\nend\n")
-    (tmp_path / "matlab" / "types" / "MyVar.m").write_text("classdef MyVar < scidb.BaseVariable\nend\n")
+    (tmp_path / "matlab" / "types" / "MyVar.m").write_text(
+        "classdef MyVar < scidb.BaseVariable\nend\n"
+    )
 
     config = load_config(tmp_path, tmp_path / "dummy.duckdb")
 
@@ -298,11 +304,7 @@ def test_matlab_variables_excluded_from_functions(tmp_path):
     functions list, producing spurious parse warnings.
     """
     toml_file = tmp_path / "scistack.toml"
-    toml_file.write_text(
-        '[matlab]\n'
-        'functions = ["src/"]\n'
-        'variables = ["src/vars/"]\n'
-    )
+    toml_file.write_text('[matlab]\nfunctions = ["src/"]\nvariables = ["src/vars/"]\n')
 
     src = tmp_path / "src"
     src.mkdir()
@@ -319,6 +321,7 @@ def test_matlab_variables_excluded_from_functions(tmp_path):
 # ---------------------------------------------------------------------------
 # _normalize — preserves user's drive-letter form
 # ---------------------------------------------------------------------------
+
 
 def test_normalize_is_absolute_and_normpath(tmp_path):
     """_normalize should make the path absolute and collapse ``.``/``..``."""
@@ -371,9 +374,7 @@ def test_matlab_functions_not_canonicalized_through_symlink(tmp_path):
     real_root = tmp_path / "real"
     real_root.mkdir()
     (real_root / "func.m").write_text("function y = func(x)\ny=x;\nend\n")
-    (real_root / "scistack.toml").write_text(
-        '[matlab]\nfunctions = ["func.m"]\n'
-    )
+    (real_root / "scistack.toml").write_text('[matlab]\nfunctions = ["func.m"]\n')
 
     link_root = tmp_path / "link"
     try:
@@ -392,14 +393,14 @@ def test_matlab_addpath_deduplicates(tmp_path):
     """matlab_addpath should deduplicate when functions and variables are in the same directory."""
     toml_file = tmp_path / "scistack.toml"
     toml_file.write_text(
-        '[matlab]\n'
-        'functions = ["matlab/foo.m"]\n'
-        'variables = ["matlab/MyVar.m"]\n'
+        '[matlab]\nfunctions = ["matlab/foo.m"]\nvariables = ["matlab/MyVar.m"]\n'
     )
 
     (tmp_path / "matlab").mkdir()
     (tmp_path / "matlab" / "foo.m").write_text("function y = foo(x)\nend\n")
-    (tmp_path / "matlab" / "MyVar.m").write_text("classdef MyVar < scidb.BaseVariable\nend\n")
+    (tmp_path / "matlab" / "MyVar.m").write_text(
+        "classdef MyVar < scidb.BaseVariable\nend\n"
+    )
 
     config = load_config(tmp_path, tmp_path / "dummy.duckdb")
 

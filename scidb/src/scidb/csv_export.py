@@ -182,8 +182,7 @@ def _constituent_flat_df(var_type, columns, *, where, version, db, metadata):
         )
 
     schema_cols = [
-        k for k in _db.dataset_schema_keys
-        if k in df.columns and not df[k].isna().all()
+        k for k in _db.dataset_schema_keys if k in df.columns and not df[k].isna().all()
     ]
 
     rows = []
@@ -215,8 +214,11 @@ def build_flat_table(spec, *, where, version, db, metadata):
     part_dfs = []
     for var_type, columns, extra in constituents:
         part, _ = _constituent_flat_df(
-            var_type, columns,
-            where=where, version=version, db=db,
+            var_type,
+            columns,
+            where=where,
+            version=version,
+            db=db,
             metadata={**metadata, **extra},
         )
         part_dfs.append(part)
@@ -224,8 +226,7 @@ def build_flat_table(spec, *, where, version, db, metadata):
     result = part_dfs[0]
     schema_key_set = set(_db.dataset_schema_keys)
     for nxt in part_dfs[1:]:
-        shared = [c for c in result.columns
-                  if c in nxt.columns and c in schema_key_set]
+        shared = [c for c in result.columns if c in nxt.columns and c in schema_key_set]
         if not shared:
             raise ValueError(
                 "Merge constituents share no schema keys to join on; cannot "

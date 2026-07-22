@@ -7,7 +7,6 @@ integer value (trial=1 finds 6MWT-001.mat).
 """
 
 import pytest
-
 from scifor.pathinput import PathInput
 
 
@@ -41,44 +40,50 @@ class TestLiteralFirst:
 
     def test_padded_string_value_is_literal_hit(self, padded_tree):
         pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
-        assert pi.load(subject=1, trial="001") == (
-            padded_tree / "1" / "6MWT-001.mat"
-        ).resolve()
+        assert (
+            pi.load(subject=1, trial="001")
+            == (padded_tree / "1" / "6MWT-001.mat").resolve()
+        )
 
 
 class TestNumericFallback:
     def test_int_value_finds_padded_file(self, padded_tree):
         pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
-        assert pi.load(subject=1, trial=1) == (
-            padded_tree / "1" / "6MWT-001.mat"
-        ).resolve()
+        assert (
+            pi.load(subject=1, trial=1)
+            == (padded_tree / "1" / "6MWT-001.mat").resolve()
+        )
 
     def test_digit_string_value_finds_padded_file(self, padded_tree):
         # MATLAB's num2str marshaling sends "1"; must match 001 too.
         pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
-        assert pi.load(subject="1", trial="1") == (
-            padded_tree / "1" / "6MWT-001.mat"
-        ).resolve()
+        assert (
+            pi.load(subject="1", trial="1")
+            == (padded_tree / "1" / "6MWT-001.mat").resolve()
+        )
 
     def test_integral_float_finds_padded_file(self, padded_tree):
         # MATLAB doubles cross the bridge as 1.0.
         pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
-        assert pi.load(subject=1.0, trial=1.0) == (
-            padded_tree / "1" / "6MWT-001.mat"
-        ).resolve()
+        assert (
+            pi.load(subject=1.0, trial=1.0)
+            == (padded_tree / "1" / "6MWT-001.mat").resolve()
+        )
 
     def test_multi_digit_padded(self, padded_tree):
         pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
-        assert pi.load(subject=1, trial=10) == (
-            padded_tree / "1" / "6MWT-010.mat"
-        ).resolve()
+        assert (
+            pi.load(subject=1, trial=10)
+            == (padded_tree / "1" / "6MWT-010.mat").resolve()
+        )
 
     def test_padded_directory_segment(self, padded_tree):
         # Padding in an intermediate directory name, not just the filename.
         pi = PathInput("sub-{subject}/trial_{trial}.mat", root_folder=str(padded_tree))
-        assert pi.load(subject=2, trial=1) == (
-            padded_tree / "sub-002" / "trial_1.mat"
-        ).resolve()
+        assert (
+            pi.load(subject=2, trial=1)
+            == (padded_tree / "sub-002" / "trial_1.mat").resolve()
+        )
 
     def test_pad_width_cache_second_load(self, padded_tree):
         # Second load reuses the learned width via a direct stat (no scan);
@@ -100,15 +105,17 @@ class TestFallbackBoundaries:
     def test_zero_matches_returns_literal_path(self, padded_tree):
         # Historical behavior: load() never raised on missing files.
         pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
-        assert pi.load(subject=1, trial=99) == (
-            padded_tree / "1" / "6MWT-99.mat"
-        ).resolve()
+        assert (
+            pi.load(subject=1, trial=99)
+            == (padded_tree / "1" / "6MWT-99.mat").resolve()
+        )
 
     def test_non_numeric_values_never_scan(self, padded_tree):
         pi = PathInput("{group}/results.csv", root_folder=str(padded_tree))
-        assert pi.load(group="control") == (
-            padded_tree / "control" / "results.csv"
-        ).resolve()
+        assert (
+            pi.load(group="control")
+            == (padded_tree / "control" / "results.csv").resolve()
+        )
 
     def test_bool_is_not_numeric(self, padded_tree):
         (padded_tree / "flag-True.csv").touch()
@@ -145,7 +152,7 @@ class TestLoadWithCaptures:
 
     def test_pad_cache_hit_also_reports(self, padded_tree):
         pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree))
-        pi.load_with_captures({"subject": 1, "trial": 1})   # learns width 3
+        pi.load_with_captures({"subject": 1, "trial": 1})  # learns width 3
         path, resolutions = pi.load_with_captures({"subject": 1, "trial": 10})
         assert path.name == "6MWT-010.mat"
         assert resolutions == {"trial": "010"}

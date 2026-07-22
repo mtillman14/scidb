@@ -7,7 +7,6 @@ schema arguments — all formatted as MATLAB syntax.
 """
 
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,10 @@ def generate_matlab_command(
         # and output types inferred from manual edges.
         if path_inputs:
             inputs_str = _format_matlab_struct(
-                {p: _format_path_input(pi, project_root) for p, pi in path_inputs.items()}
+                {
+                    p: _format_path_input(pi, project_root)
+                    for p, pi in path_inputs.items()
+                }
             )
         else:
             inputs_str = "struct()"
@@ -96,21 +98,27 @@ def generate_matlab_command(
             outputs_str = _format_matlab_cell([f"{t}()" for t in output_types])
         else:
             outputs_str = "{}"
-            logger.warning("generate_matlab_command: no output_types for %s — "
-                           "outputs will be empty, saves will be skipped",
-                           function_name)
+            logger.warning(
+                "generate_matlab_command: no output_types for %s — "
+                "outputs will be empty, saves will be skipped",
+                function_name,
+            )
         lines.append("try")
-        lines.append(f"    % Run (fill in inputs/outputs)")
+        lines.append("    % Run (fill in inputs/outputs)")
         lines.append(f"    scihist.for_each(@{function_name}, ...")
         lines.append(f"        {inputs_str}, ...")
         lines.append(f"        {outputs_str});")
         lines.append("    scidb.close_database(db);")
         lines.append("catch scistack_err__")
-        lines.append("    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);")
+        lines.append(
+            "    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);"
+        )
         lines.append("    try")
         lines.append("        scidb.close_database(db);")
         lines.append("    catch")
-        lines.append("        % close already logged its own error; don't mask the original")
+        lines.append(
+            "        % close already logged its own error; don't mask the original"
+        )
         lines.append("    end")
         lines.append("    rethrow(scistack_err__);")
         lines.append("end")
@@ -146,11 +154,14 @@ def generate_matlab_command(
             tuple(sorted(input_types.items())) if isinstance(input_types, dict) else (),
             tuple(sorted(constants.items())) if isinstance(constants, dict) else (),
         )
-        entry = grouped.setdefault(key, {
-            "input_types": input_types,
-            "constants": constants,
-            "output_types": [],
-        })
+        entry = grouped.setdefault(
+            key,
+            {
+                "input_types": input_types,
+                "constants": constants,
+                "output_types": [],
+            },
+        )
         output_type = v.get("output_type", "")
         if output_type and output_type not in entry["output_types"]:
             entry["output_types"].append(output_type)
@@ -167,6 +178,7 @@ def generate_matlab_command(
 
         # Build inputs struct — skip PathInput entries (handled via path_inputs).
         from scistack_gui.api.pipeline import _parse_path_input
+
         inputs_dict = {}
         if isinstance(input_types, dict):
             for param_name, type_name in input_types.items():
@@ -183,7 +195,8 @@ def generate_matlab_command(
         inputs_str = _format_matlab_struct(inputs_dict)
         outputs_str = (
             _format_matlab_cell([f"{t}()" for t in output_types_list])
-            if output_types_list else "{}"
+            if output_types_list
+            else "{}"
         )
 
         # Build schema kwargs
@@ -204,11 +217,15 @@ def generate_matlab_command(
 
     lines.append("    scidb.close_database(db);")
     lines.append("catch scistack_err__")
-    lines.append("    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);")
+    lines.append(
+        "    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);"
+    )
     lines.append("    try")
     lines.append("        scidb.close_database(db);")
     lines.append("    catch")
-    lines.append("        % close already logged its own error; don't mask the original")
+    lines.append(
+        "        % close already logged its own error; don't mask the original"
+    )
     lines.append("    end")
     lines.append("    rethrow(scistack_err__);")
     lines.append("end")

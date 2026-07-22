@@ -26,11 +26,11 @@ sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "scimatlab" / "src"))
 
 import pytest
-
-from scidb import configure_database
 from scidb.database import _local
 from scidb.exceptions import NotFoundError
 from scimatlab.bridge import load_and_extract, register_matlab_variable
+
+from scidb import configure_database
 
 
 @pytest.fixture(autouse=True)

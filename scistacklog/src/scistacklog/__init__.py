@@ -128,7 +128,7 @@ class _Timer:
     """Collects named phase durations for :meth:`Log.timer`."""
 
     def __init__(self) -> None:
-        self.phases: "list[tuple[str, float]]" = []
+        self.phases: list[tuple[str, float]] = []
 
     @contextmanager
     def phase(self, name: str):
@@ -154,12 +154,12 @@ class Log:
     _lock = threading.RLock()
     _attached = False
     _tagger = _RecordTagger()
-    _console_handler: "logging.Handler | None" = None
-    _file_handler: "logging.FileHandler | None" = None
-    _path: "str | None" = None
+    _console_handler: logging.Handler | None = None
+    _file_handler: logging.FileHandler | None = None
+    _path: str | None = None
     _console_py_level: int = logging.INFO
     _file_py_level: int = logging.INFO
-    _unknown_layers: "set[str]" = set()
+    _unknown_layers: set[str] = set()
 
     # -- setup ------------------------------------------------------------
 
@@ -203,7 +203,7 @@ class Log:
         cls.attach()
 
     @classmethod
-    def set_path(cls, log_path: "str | None") -> None:
+    def set_path(cls, log_path: str | None) -> None:
         """Point the file sink at ``log_path`` (``None`` detaches it).
 
         Called automatically by ``scidb.configure_database()``.
@@ -222,23 +222,21 @@ class Log:
                 cls._path, mode="a", encoding="utf-8", delay=True
             )
             handler.setLevel(cls._file_py_level)
-            handler.setFormatter(
-                logging.Formatter(_FILE_FORMAT, datefmt=_FILE_DATEFMT)
-            )
+            handler.setFormatter(logging.Formatter(_FILE_FORMAT, datefmt=_FILE_DATEFMT))
             handler.addFilter(cls._tagger)
             cls._file_handler = handler
             for name in LAYERS:
                 logging.getLogger(name).addHandler(handler)
 
     @classmethod
-    def get_path(cls) -> "str | None":
+    def get_path(cls) -> str | None:
         """Current log file path (``None`` if the file sink is detached)."""
         return cls._path
 
     # -- levels -----------------------------------------------------------
 
     @classmethod
-    def set_level(cls, level: "int | str", sink: str = "both") -> None:
+    def set_level(cls, level: int | str, sink: str = "both") -> None:
         """Set the level of one or both sinks.
 
         Args:
@@ -262,7 +260,7 @@ class Log:
                     cls._file_handler.setLevel(py_level)
 
     @classmethod
-    def get_level(cls, sink: "str | None" = None) -> int:
+    def get_level(cls, sink: str | None = None) -> int:
         """Level of a sink on the 0-3 scale; min of both sinks when ``None``.
 
         The ``None`` form is what MATLAB caches to gate calls client-side:
@@ -272,33 +270,35 @@ class Log:
             return cls._from_py_level(cls._console_py_level)
         if sink == "file":
             return cls._from_py_level(cls._file_py_level)
-        return cls._from_py_level(
-            min(cls._console_py_level, cls._file_py_level)
-        )
+        return cls._from_py_level(min(cls._console_py_level, cls._file_py_level))
 
     # -- emission ---------------------------------------------------------
 
     @classmethod
-    def debug(cls, msg: str, *args, layer: str = "scidb",
-              exc_info: bool = False) -> None:
+    def debug(
+        cls, msg: str, *args, layer: str = "scidb", exc_info: bool = False
+    ) -> None:
         """Log a message at DEBUG level."""
         cls._log(logging.DEBUG, msg, args, layer, exc_info)
 
     @classmethod
-    def info(cls, msg: str, *args, layer: str = "scidb",
-             exc_info: bool = False) -> None:
+    def info(
+        cls, msg: str, *args, layer: str = "scidb", exc_info: bool = False
+    ) -> None:
         """Log a message at INFO level."""
         cls._log(logging.INFO, msg, args, layer, exc_info)
 
     @classmethod
-    def warn(cls, msg: str, *args, layer: str = "scidb",
-             exc_info: bool = False) -> None:
+    def warn(
+        cls, msg: str, *args, layer: str = "scidb", exc_info: bool = False
+    ) -> None:
         """Log a message at WARN level."""
         cls._log(logging.WARNING, msg, args, layer, exc_info)
 
     @classmethod
-    def error(cls, msg: str, *args, layer: str = "scidb",
-              exc_info: bool = False) -> None:
+    def error(
+        cls, msg: str, *args, layer: str = "scidb", exc_info: bool = False
+    ) -> None:
         """Log a message at ERROR level."""
         cls._log(logging.ERROR, msg, args, layer, exc_info)
 
@@ -330,16 +330,15 @@ class Log:
             cls.error(
                 f"✗ {name} failed after {time.perf_counter() - t0:.3f}s: "
                 f"{type(e).__name__}: {e}",
-                layer=layer, exc_info=True,
+                layer=layer,
+                exc_info=True,
             )
             raise
-        cls.debug(f"← {name} done in {time.perf_counter() - t0:.3f}s",
-                  layer=layer)
+        cls.debug(f"← {name} done in {time.perf_counter() - t0:.3f}s", layer=layer)
 
     @classmethod
     @contextmanager
-    def timer(cls, name: str, *, layer: str = "scidb",
-              extra: "str | None" = None):
+    def timer(cls, name: str, *, layer: str = "scidb", extra: str | None = None):
         """Phase timing for a hot operation, emitted under the ``[timing]`` tag.
 
         Yields a :class:`_Timer`; wrap sub-phases with ``t.phase("name")``
@@ -363,16 +362,18 @@ class Log:
             parts = ", ".join(f"{p}={s:.3f}s" for p, s in t.phases)
             detail = f" ({parts})" if parts else ""
             prefix = f"{extra}, " if extra else ""
-            cls.info(f"[timing] {name}: {prefix}TOTAL={total:.3f}s{detail}",
-                     layer=layer)
+            cls.info(
+                f"[timing] {name}: {prefix}TOTAL={total:.3f}s{detail}", layer=layer
+            )
             for p, s in t.phases:
                 cls.debug(f"  {name} {p:<30s} {s:.3f}s", layer=layer)
 
     # -- internals ---------------------------------------------------------
 
     @classmethod
-    def _log(cls, py_level: int, msg: str, args: tuple, layer: str,
-             exc_info: bool) -> None:
+    def _log(
+        cls, py_level: int, msg: str, args: tuple, layer: str, exc_info: bool
+    ) -> None:
         cls.attach()
         name = str(layer).split(".", 1)[0]
         if name not in LAYERS:
@@ -382,18 +383,20 @@ class Log:
                     warnings.warn(
                         f"Unknown scistack layer '{layer}', logging as 'scidb'.",
                         UserWarning,
+                        stacklevel=2,
                     )
             name = "scidb"
         logging.getLogger(name).log(py_level, msg, *args, exc_info=exc_info)
 
     @classmethod
-    def _to_py_level(cls, level: "int | str") -> int:
+    def _to_py_level(cls, level: int | str) -> int:
         if isinstance(level, str):
             name = level.upper()
             if name not in _NAME_TO_SCIDB:
                 warnings.warn(
                     f"Unknown log level '{name}', defaulting to INFO.",
                     UserWarning,
+                    stacklevel=2,
                 )
                 return logging.INFO
             return _SCIDB_TO_PY[_NAME_TO_SCIDB[name]]
@@ -401,12 +404,16 @@ class Log:
             numeric = int(level)
         except (TypeError, ValueError):
             warnings.warn(
-                f"Unknown log level {level!r}, defaulting to INFO.", UserWarning
+                f"Unknown log level {level!r}, defaulting to INFO.",
+                UserWarning,
+                stacklevel=2,
             )
             return logging.INFO
         if numeric not in _SCIDB_TO_PY:
             warnings.warn(
-                f"Unknown log level {level!r}, defaulting to INFO.", UserWarning
+                f"Unknown log level {level!r}, defaulting to INFO.",
+                UserWarning,
+                stacklevel=2,
             )
             return logging.INFO
         return _SCIDB_TO_PY[numeric]

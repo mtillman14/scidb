@@ -23,7 +23,6 @@ import pytest
 import scifor as _scifor
 from scidb import BaseVariable, configure_database, for_each
 
-
 SCHEMA = ["subject", "session", "cycle"]
 
 
@@ -38,6 +37,7 @@ def db(tmp_path):
 
 class CoarseInput(BaseVariable):
     """Stored at subject/session — the finest key ('cycle') is left unpopulated."""
+
     pass
 
 
@@ -70,8 +70,9 @@ def test_coarse_input_records_input_edges_in_aggregation(db):
     c1_sid = _schema_id_of(db, c1.record_id)
 
     # Aggregation mode: iterate subject+session; 'cycle' is the aggregated axis.
-    for_each(_sum, {"signal": CoarseInput}, [AggOut],
-             subject=["S01", "S02"], session=["1"])
+    for_each(
+        _sum, {"signal": CoarseInput}, [AggOut], subject=["S01", "S02"], session=["1"]
+    )
 
     out = AggOut.load(subject="S01", session="1")
     consumed = provenance_query.consumed_input_schema_ids(db._duck, [out.record_id])

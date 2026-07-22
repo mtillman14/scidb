@@ -13,13 +13,10 @@ Each test class covers a distinct aspect of the skip logic:
 import logging
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from scidb import BaseVariable, Fixed, scistack
 from scihist import for_each
-
-from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 
 @pytest.fixture(autouse=True)
@@ -35,27 +32,36 @@ def _capture_debug_logs(caplog):
 # All defined at module level so BaseVariable's registry can find them.
 # ---------------------------------------------------------------------------
 
+
 class RawSignal(BaseVariable):
     schema_version = 1
+
 
 class Filtered(BaseVariable):
     schema_version = 1
 
+
 class Intermediate(BaseVariable):
     schema_version = 1
+
 
 class ScalarOut(BaseVariable):
     schema_version = 1
 
+
 class DictOut(BaseVariable):
     schema_version = 1
 
+
 class Baseline(BaseVariable):
     """Used as a Fixed() input in tests."""
+
     schema_version = 1
+
 
 class AltSignal(BaseVariable):
     """Second signal type for multi-input tests."""
+
     schema_version = 1
 
 
@@ -63,11 +69,14 @@ class AltSignal(BaseVariable):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _skip_lines(text: str) -> list[str]:
     return [l for l in text.splitlines() if l.startswith("[skip]")]
 
+
 def _recompute_lines(text: str) -> list[str]:
     return [l for l in text.splitlines() if l.startswith("[recompute]")]
+
 
 def _drain(caplog) -> str:
     """Captured log messages as text, then clear the capture.
@@ -83,8 +92,8 @@ def _drain(caplog) -> str:
 # Basic skip / compute behaviour
 # ===========================================================================
 
-class TestSkipComputedBasic:
 
+class TestSkipComputedBasic:
     def test_first_run_always_computes(self, db, caplog):
         """No prior output → hook returns False → function runs."""
         call_count = [0]
@@ -95,25 +104,29 @@ class TestSkipComputedBasic:
             return x * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
 
         assert call_count[0] == 1
         assert not _skip_lines(_drain(caplog))
 
     def test_second_run_skips_when_nothing_changed(self, db, caplog):
         """Identical state on second call → [skip] printed, output unchanged."""
+
         @scistack
         def double(x):
             return x * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         caplog.clear()
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
 
         out = _drain(caplog)
         assert len(_skip_lines(out)) == 1
@@ -124,17 +137,25 @@ class TestSkipComputedBasic:
 
     def test_skip_computed_false_bypasses_hook(self, db, caplog):
         """skip_computed=False: combo is never filtered → no [skip] line."""
+
         @scistack
         def double(x):
             return x * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         caplog.clear()
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 skip_computed=False, subject=[1], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            skip_computed=False,
+            subject=[1],
+            trial=[1],
+        )
 
         assert not _skip_lines(_drain(caplog))
 
@@ -151,8 +172,9 @@ class TestSkipComputedBasic:
         # Save output manually — no lineage record written
         Filtered.save(np.array([2, 4, 6]), subject=1, trial=1)
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
 
         assert call_count[0] == 1
         assert not _skip_lines(_drain(caplog))
@@ -169,13 +191,23 @@ class TestSkipComputedBasic:
         for s in [1, 2, 3]:
             RawSignal.save(np.array([s, s + 1]), subject=s, trial=1)
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2, 3], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2, 3],
+            trial=[1],
+        )
         count_after_first = call_count[0]
         caplog.clear()
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2, 3], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2, 3],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert len(_skip_lines(out)) == 3
@@ -187,28 +219,33 @@ class TestSkipComputedBasic:
 
     def test_skip_then_rerun_after_change(self, db, caplog):
         """Skip → input changes → recompute → skip again on third run."""
+
         @scistack
         def double(x):
             return x * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
 
         # Second run: skip
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         assert len(_skip_lines(_drain(caplog))) == 1
 
         # Change input
         RawSignal.save(np.array([10, 20, 30]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         assert len(_recompute_lines(_drain(caplog))) == 1
 
         # Fourth run: skip again (now stable)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         assert len(_skip_lines(_drain(caplog))) == 1
 
 
@@ -216,8 +253,8 @@ class TestSkipComputedBasic:
 # Upstream input changes
 # ===========================================================================
 
-class TestSkipComputedInputChanges:
 
+class TestSkipComputedInputChanges:
     def test_new_data_triggers_recompute(self, db, caplog):
         """Resaving input with different data → new record_id → [recompute]."""
         call_count = [0]
@@ -228,13 +265,15 @@ class TestSkipComputedInputChanges:
             return x * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         assert call_count[0] == 1
 
         RawSignal.save(np.array([10, 20, 30]), subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
 
         assert call_count[0] == 2
         out = _drain(caplog)
@@ -254,16 +293,18 @@ class TestSkipComputedInputChanges:
 
         data = np.array([1, 2, 3])
         RawSignal.save(data, subject=1, trial=1)
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         count_after_first = call_count[0]
 
         # Exact same bytes → same content_hash → same record_id
         RawSignal.save(data.copy(), subject=1, trial=1)
         caplog.clear()
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            double, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
 
         out = _drain(caplog)
         assert _skip_lines(out)
@@ -282,16 +323,26 @@ class TestSkipComputedInputChanges:
         for s in [1, 2]:
             RawSignal.save(np.array([s * 10, s * 10 + 1]), subject=s, trial=1)
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2],
+            trial=[1],
+        )
         count_after_first = call_count[0]
         caplog.clear()
 
         # Only subject=2 changes
         RawSignal.save(np.array([999, 1000]), subject=2, trial=1)
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2], trial=[1])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert any("subject=1" in l for l in _skip_lines(out))
@@ -309,13 +360,23 @@ class TestSkipComputedInputChanges:
             return float(x) + 1.0
 
         ScalarOut.save(5.0, subject=1, trial=1)
-        for_each(increment, inputs={"x": ScalarOut}, outputs=[ScalarOut],
-                 subject=[1], trial=[1])
+        for_each(
+            increment,
+            inputs={"x": ScalarOut},
+            outputs=[ScalarOut],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         ScalarOut.save(99.0, subject=1, trial=1)
-        for_each(increment, inputs={"x": ScalarOut}, outputs=[ScalarOut],
-                 subject=[1], trial=[1])
+        for_each(
+            increment,
+            inputs={"x": ScalarOut},
+            outputs=[ScalarOut],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert _recompute_lines(out)
@@ -331,14 +392,24 @@ class TestSkipComputedInputChanges:
             return {"vals": x["vals"] * 2}
 
         DictOut.save({"vals": np.array([1, 2, 3])}, subject=1, trial=1)
-        for_each(process_dict, inputs={"x": DictOut}, outputs=[DictOut],
-                 subject=[1], trial=[1])
+        for_each(
+            process_dict,
+            inputs={"x": DictOut},
+            outputs=[DictOut],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         # Change the dict content
         DictOut.save({"vals": np.array([10, 20, 30])}, subject=1, trial=1)
-        for_each(process_dict, inputs={"x": DictOut}, outputs=[DictOut],
-                 subject=[1], trial=[1])
+        for_each(
+            process_dict,
+            inputs={"x": DictOut},
+            outputs=[DictOut],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert _recompute_lines(out)
@@ -346,17 +417,28 @@ class TestSkipComputedInputChanges:
 
     def test_dict_of_arrays_unchanged_skips(self, db, caplog):
         """Dict-of-arrays: same content → skip."""
+
         @scistack
         def process_dict(x):
             return {"vals": x["vals"] * 2}
 
         DictOut.save({"vals": np.array([1, 2, 3])}, subject=1, trial=1)
-        for_each(process_dict, inputs={"x": DictOut}, outputs=[DictOut],
-                 subject=[1], trial=[1])
+        for_each(
+            process_dict,
+            inputs={"x": DictOut},
+            outputs=[DictOut],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
-        for_each(process_dict, inputs={"x": DictOut}, outputs=[DictOut],
-                 subject=[1], trial=[1])
+        for_each(
+            process_dict,
+            inputs={"x": DictOut},
+            outputs=[DictOut],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert _skip_lines(out)
@@ -367,8 +449,8 @@ class TestSkipComputedInputChanges:
 # Function bytecode changes
 # ===========================================================================
 
-class TestSkipComputedFunctionChanges:
 
+class TestSkipComputedFunctionChanges:
     def test_different_function_triggers_recompute(self, db, caplog):
         """Swapping to a function with a different name → no matching record
         (different __fn in version_keys) → function runs (not skipped)."""
@@ -384,12 +466,22 @@ class TestSkipComputedFunctionChanges:
             return x * 3  # deliberately different
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(process_v1, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            process_v1,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
-        for_each(process_v2, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            process_v2,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         # Different __fn means no existing record matches → "output missing",
@@ -399,17 +491,20 @@ class TestSkipComputedFunctionChanges:
 
     def test_same_function_object_skips(self, db, caplog):
         """Using the exact same function object on rerun → skip."""
+
         @scistack
         def process(x):
             return x * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(process, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            process, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
         caplog.clear()
 
-        for_each(process, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            process, inputs={"x": RawSignal}, outputs=[Filtered], subject=[1], trial=[1]
+        )
 
         out = _drain(caplog)
         assert _skip_lines(out)
@@ -420,10 +515,11 @@ class TestSkipComputedFunctionChanges:
 # Multi-step (deep) pipelines
 # ===========================================================================
 
-class TestSkipComputedDeepPipeline:
 
+class TestSkipComputedDeepPipeline:
     def test_unchanged_two_step_pipeline_both_skip(self, db, caplog):
         """Two-step pipeline with no changes: both steps skip."""
+
         @scistack
         def step1(x):
             return x + 1
@@ -433,16 +529,36 @@ class TestSkipComputedDeepPipeline:
             return y * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert len(_skip_lines(out)) == 2
@@ -464,23 +580,43 @@ class TestSkipComputedDeepPipeline:
             return y * 2
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         assert step1_calls[0] == 1
         assert step2_calls[0] == 1
 
         # Update raw input, re-run step1
         RawSignal.save(np.array([10, 20, 30]), subject=1, trial=1)
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
         assert step1_calls[0] == 2
         caplog.clear()
 
         # step2 should detect Intermediate changed → recompute
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert _recompute_lines(out)
@@ -491,6 +627,7 @@ class TestSkipComputedDeepPipeline:
 
     def test_step1_skip_does_not_change_step2_decision(self, db, caplog):
         """If step1 skips (nothing changed), step2 also correctly skips."""
+
         @scistack
         def step1(x):
             return x + 1
@@ -500,17 +637,37 @@ class TestSkipComputedDeepPipeline:
             return y * 2
 
         RawSignal.save(np.array([5, 6, 7]), subject=1, trial=1)
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         # Re-run both with no changes
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         skips = _skip_lines(out)
@@ -519,6 +676,7 @@ class TestSkipComputedDeepPipeline:
 
     def test_three_step_pipeline_middle_change(self, db, caplog):
         """Three-step pipeline: changing middle output triggers step3 recompute."""
+
         @scistack
         def step1(x):
             return x + 1
@@ -532,25 +690,47 @@ class TestSkipComputedDeepPipeline:
             return z - 1
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
-        for_each(step3, inputs={"z": Filtered}, outputs=[ScalarOut],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step3, inputs={"z": Filtered}, outputs=[ScalarOut], subject=[1], trial=[1]
+        )
         caplog.clear()
 
         # Change raw input and re-run step1 and step2
         RawSignal.save(np.array([10, 20, 30]), subject=1, trial=1)
-        for_each(step1, inputs={"x": RawSignal}, outputs=[Intermediate],
-                 subject=[1], trial=[1])
-        for_each(step2, inputs={"y": Intermediate}, outputs=[Filtered],
-                 subject=[1], trial=[1])
+        for_each(
+            step1,
+            inputs={"x": RawSignal},
+            outputs=[Intermediate],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            step2,
+            inputs={"y": Intermediate},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         # step3 should detect Filtered changed → recompute
-        for_each(step3, inputs={"z": Filtered}, outputs=[ScalarOut],
-                 subject=[1], trial=[1])
+        for_each(
+            step3, inputs={"z": Filtered}, outputs=[ScalarOut], subject=[1], trial=[1]
+        )
 
         out = _drain(caplog)
         assert _recompute_lines(out)
@@ -560,8 +740,8 @@ class TestSkipComputedDeepPipeline:
 # Constants / branch_params variants
 # ===========================================================================
 
-class TestSkipComputedConstants:
 
+class TestSkipComputedConstants:
     def test_each_constant_variant_tracked_independently(self, db, caplog):
         """factor=2 and factor=3 are separate pipeline branches; each skips."""
         call_count = [0]
@@ -572,18 +752,38 @@ class TestSkipComputedConstants:
             return x * factor
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(scale, inputs={"x": RawSignal, "factor": 2},
-                 outputs=[Filtered], subject=[1], trial=[1])
-        for_each(scale, inputs={"x": RawSignal, "factor": 3},
-                 outputs=[Filtered], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 2},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 3},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         count_after_setup = call_count[0]
         caplog.clear()
 
         # Re-run both variants — both should skip
-        for_each(scale, inputs={"x": RawSignal, "factor": 2},
-                 outputs=[Filtered], subject=[1], trial=[1])
-        for_each(scale, inputs={"x": RawSignal, "factor": 3},
-                 outputs=[Filtered], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 2},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 3},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert len(_skip_lines(out)) == 2
@@ -600,13 +800,23 @@ class TestSkipComputedConstants:
             return x * factor
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(scale, inputs={"x": RawSignal, "factor": 2},
-                 outputs=[Filtered], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 2},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         caplog.clear()
 
         # factor=7 has never been run → no output → must compute
-        for_each(scale, inputs={"x": RawSignal, "factor": 7},
-                 outputs=[Filtered], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 7},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert not _skip_lines(out)
@@ -622,20 +832,40 @@ class TestSkipComputedConstants:
             return x * factor
 
         RawSignal.save(np.array([1, 2, 3]), subject=1, trial=1)
-        for_each(scale, inputs={"x": RawSignal, "factor": 2},
-                 outputs=[Filtered], subject=[1], trial=[1])
-        for_each(scale, inputs={"x": RawSignal, "factor": 3},
-                 outputs=[Filtered], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 2},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 3},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
         count_after_setup = call_count[0]
 
         # Change input
         RawSignal.save(np.array([10, 20, 30]), subject=1, trial=1)
         caplog.clear()
 
-        for_each(scale, inputs={"x": RawSignal, "factor": 2},
-                 outputs=[Filtered], subject=[1], trial=[1])
-        for_each(scale, inputs={"x": RawSignal, "factor": 3},
-                 outputs=[Filtered], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 2},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            scale,
+            inputs={"x": RawSignal, "factor": 3},
+            outputs=[Filtered],
+            subject=[1],
+            trial=[1],
+        )
 
         out = _drain(caplog)
         assert len(_recompute_lines(out)) == 2
@@ -646,10 +876,11 @@ class TestSkipComputedConstants:
 # Fixed() inputs
 # ===========================================================================
 
-class TestSkipComputedFixed:
 
+class TestSkipComputedFixed:
     def test_fixed_input_unchanged_skips(self, db, caplog):
         """Fixed input at a specific schema location: unchanged → skip."""
+
         @scistack
         def subtract_baseline(signal, baseline):
             return signal - baseline
@@ -659,17 +890,25 @@ class TestSkipComputedFixed:
 
         for_each(
             subtract_baseline,
-            inputs={"signal": RawSignal, "baseline": Fixed(Baseline, subject=1, trial=1)},
+            inputs={
+                "signal": RawSignal,
+                "baseline": Fixed(Baseline, subject=1, trial=1),
+            },
             outputs=[Filtered],
-            subject=[1], trial=[1],
+            subject=[1],
+            trial=[1],
         )
         caplog.clear()
 
         for_each(
             subtract_baseline,
-            inputs={"signal": RawSignal, "baseline": Fixed(Baseline, subject=1, trial=1)},
+            inputs={
+                "signal": RawSignal,
+                "baseline": Fixed(Baseline, subject=1, trial=1),
+            },
             outputs=[Filtered],
-            subject=[1], trial=[1],
+            subject=[1],
+            trial=[1],
         )
 
         out = _drain(caplog)
@@ -690,9 +929,13 @@ class TestSkipComputedFixed:
 
         for_each(
             subtract_baseline,
-            inputs={"signal": RawSignal, "baseline": Fixed(Baseline, subject=1, trial=1)},
+            inputs={
+                "signal": RawSignal,
+                "baseline": Fixed(Baseline, subject=1, trial=1),
+            },
             outputs=[Filtered],
-            subject=[1], trial=[1],
+            subject=[1],
+            trial=[1],
         )
         assert call_count[0] == 1
 
@@ -702,9 +945,13 @@ class TestSkipComputedFixed:
 
         for_each(
             subtract_baseline,
-            inputs={"signal": RawSignal, "baseline": Fixed(Baseline, subject=1, trial=1)},
+            inputs={
+                "signal": RawSignal,
+                "baseline": Fixed(Baseline, subject=1, trial=1),
+            },
             outputs=[Filtered],
-            subject=[1], trial=[1],
+            subject=[1],
+            trial=[1],
         )
 
         out = _drain(caplog)
@@ -728,9 +975,13 @@ class TestSkipComputedFixed:
 
         for_each(
             subtract_baseline,
-            inputs={"signal": RawSignal, "baseline": Fixed(Baseline, subject=1, trial=1)},
+            inputs={
+                "signal": RawSignal,
+                "baseline": Fixed(Baseline, subject=1, trial=1),
+            },
             outputs=[Filtered],
-            subject=[1], trial=[1],
+            subject=[1],
+            trial=[1],
         )
         caplog.clear()
 
@@ -739,9 +990,13 @@ class TestSkipComputedFixed:
 
         for_each(
             subtract_baseline,
-            inputs={"signal": RawSignal, "baseline": Fixed(Baseline, subject=1, trial=1)},
+            inputs={
+                "signal": RawSignal,
+                "baseline": Fixed(Baseline, subject=1, trial=1),
+            },
             outputs=[Filtered],
-            subject=[1], trial=[1],
+            subject=[1],
+            trial=[1],
         )
 
         out = _drain(caplog)
@@ -753,10 +1008,11 @@ class TestSkipComputedFixed:
 # Multiple schema dimensions (subject × trial grid)
 # ===========================================================================
 
-class TestSkipComputedMultipleSchemaKeys:
 
+class TestSkipComputedMultipleSchemaKeys:
     def test_full_grid_all_skip(self, db, caplog):
         """2×2 subject/trial grid: all four combos skip when unchanged."""
+
         @scistack
         def double(x):
             return x * 2
@@ -765,12 +1021,22 @@ class TestSkipComputedMultipleSchemaKeys:
             for t in [1, 2]:
                 RawSignal.save(np.array([s * 10 + t]), subject=s, trial=t)
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2], trial=[1, 2])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2],
+            trial=[1, 2],
+        )
         caplog.clear()
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2], trial=[1, 2])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2],
+            trial=[1, 2],
+        )
 
         out = _drain(caplog)
         assert len(_skip_lines(out)) == 4
@@ -789,16 +1055,26 @@ class TestSkipComputedMultipleSchemaKeys:
             for t in [1, 2]:
                 RawSignal.save(np.array([s * 10 + t]), subject=s, trial=t)
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2], trial=[1, 2])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2],
+            trial=[1, 2],
+        )
         count_after_first = call_count[0]
         caplog.clear()
 
         # Only change subject=2, trial=2
         RawSignal.save(np.array([999]), subject=2, trial=2)
 
-        for_each(double, inputs={"x": RawSignal}, outputs=[Filtered],
-                 subject=[1, 2], trial=[1, 2])
+        for_each(
+            double,
+            inputs={"x": RawSignal},
+            outputs=[Filtered],
+            subject=[1, 2],
+            trial=[1, 2],
+        )
 
         out = _drain(caplog)
         assert len(_skip_lines(out)) == 3

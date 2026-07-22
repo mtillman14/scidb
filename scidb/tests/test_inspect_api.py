@@ -10,9 +10,9 @@ import json
 
 import numpy as np
 import pytest
+from scidb.inspect import Inspector
 
 from scidb import BaseVariable, NotFoundError, configure_database, for_each
-from scidb.inspect import Inspector
 
 SCHEMA_KEYS = ["subject", "session"]
 
@@ -35,10 +35,20 @@ def build_populated_db(db_path):
     db = configure_database(db_path, SCHEMA_KEYS)
     InspRaw.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
     InspRaw.save(np.array([4.0, 5.0, 6.0]), subject="S02", session="1")
-    for_each(bandpass, {"signal": InspRaw, "low_hz": 20}, [InspFiltered],
-             subject=["S01", "S02"], session=["1"])
-    for_each(bandpass, {"signal": InspRaw, "low_hz": 30}, [InspFiltered],
-             subject=["S01", "S02"], session=["1"])
+    for_each(
+        bandpass,
+        {"signal": InspRaw, "low_hz": 20},
+        [InspFiltered],
+        subject=["S01", "S02"],
+        session=["1"],
+    )
+    for_each(
+        bandpass,
+        {"signal": InspRaw, "low_hz": 30},
+        [InspFiltered],
+        subject=["S01", "S02"],
+        session=["1"],
+    )
     # Re-save S01 raw with different content → new record, old one superseded.
     InspRaw.save(np.array([9.0, 9.0, 9.0]), subject="S01", session="1")
     db.close()
@@ -63,8 +73,8 @@ class TestOverview:
         o = insp.overview()
         # 3 raw (incl. the superseded S01) + 4 filtered; constants excluded.
         assert o.n_records == 7
-        assert o.n_invocations == 4      # 2 subjects × 2 low_hz variants
-        assert o.n_runs == 2             # one _run per for_each execution
+        assert o.n_invocations == 4  # 2 subjects × 2 low_hz variants
+        assert o.n_runs == 2  # one _run per for_each execution
         assert o.n_excluded_records == 0
         assert o.schema_keys == SCHEMA_KEYS
         assert o.n_schema_locations >= 2
@@ -84,7 +94,7 @@ class TestVariables:
         # configure_database registers every known BaseVariable subclass, so
         # other test modules' types may appear too — assert on ours only.
         assert by_name["InspRaw"].record_count == 3
-        assert by_name["InspRaw"].variant_count == 0     # raw saves, no producing fn
+        assert by_name["InspRaw"].variant_count == 0  # raw saves, no producing fn
         assert by_name["InspRaw"].schema_level == "session"
         assert by_name["InspRaw"].last_saved is not None
         assert by_name["InspFiltered"].record_count == 4
@@ -134,8 +144,7 @@ class TestRecords:
         assert len(latest) == 1
 
     def test_versions_expose_resave_trail(self, insp):
-        all_versions = insp.records("InspRaw", latest=False,
-                                    subject="S01", session="1")
+        all_versions = insp.records("InspRaw", latest=False, subject="S01", session="1")
         assert len(all_versions) == 2
         # Distinct content → distinct records.
         assert len({r.record_id for r in all_versions}) == 2

@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 _FUNCTION_RE = re.compile(
     r"^\s*function\s+"
     r"(?:"
-    r"(?:\[([^\]]*)\]\s*=\s*)"    # [out1, out2] = ...
+    r"(?:\[([^\]]*)\]\s*=\s*)"  # [out1, out2] = ...
     r"|"
-    r"(?:(\w+)\s*=\s*)"          # out = ...
+    r"(?:(\w+)\s*=\s*)"  # out = ...
     r")?"
-    r"(\w+)"                      # function name
-    r"\s*\(([^)]*)\)",            # (param1, param2, ...)
+    r"(\w+)"  # function name
+    r"\s*\(([^)]*)\)",  # (param1, param2, ...)
     re.MULTILINE,
 )
 
@@ -72,7 +72,9 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
     try:
         raw = path.read_bytes()
     except OSError as e:
-        logger.warning("[matlab_parser] Cannot read MATLAB function file %s: %s", path, e)
+        logger.warning(
+            "[matlab_parser] Cannot read MATLAB function file %s: %s", path, e
+        )
         return None
 
     # Hash raw bytes so the digest matches MATLAB's fileread() which
@@ -92,7 +94,9 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
     logger.debug("[matlab_parser] Found function: %s", fn_name)
     # Group 4 is the parameter list.
     raw_params = m.group(4).strip()
-    params = [p.strip() for p in raw_params.split(",") if p.strip()] if raw_params else []
+    params = (
+        [p.strip() for p in raw_params.split(",") if p.strip()] if raw_params else []
+    )
     logger.debug("[matlab_parser] Function has %d parameters", len(params))
 
     # Count output arguments and extract names from the declaration.
@@ -137,7 +141,9 @@ def parse_matlab_variable(path: Path) -> str | None:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
-        logger.warning("[matlab_parser] Cannot read MATLAB variable file %s: %s", path, e)
+        logger.warning(
+            "[matlab_parser] Cannot read MATLAB variable file %s: %s", path, e
+        )
         return None
 
     logger.debug("[matlab_parser] Searching for classdef declaration")
@@ -155,5 +161,7 @@ def parse_matlab_variable(path: Path) -> str | None:
         logger.debug("[matlab_parser] Class %s is a BaseVariable subclass", class_name)
         return class_name
 
-    logger.debug("[matlab_parser] Class %s does not inherit from BaseVariable", class_name)
+    logger.debug(
+        "[matlab_parser] Class %s does not inherit from BaseVariable", class_name
+    )
     return None

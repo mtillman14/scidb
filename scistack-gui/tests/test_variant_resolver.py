@@ -4,8 +4,6 @@ Unit tests for scistack_gui.domain.variant_resolver.
 All functions are pure — no DB or fixtures required.
 """
 
-import pytest
-
 from scistack_gui.domain.variant_resolver import (
     build_inferred_variants,
     build_schema_kwargs,
@@ -14,10 +12,10 @@ from scistack_gui.domain.variant_resolver import (
     merge_pending_constants,
 )
 
-
 # ---------------------------------------------------------------------------
 # build_inferred_variants
 # ---------------------------------------------------------------------------
+
 
 class TestBuildInferredVariants:
     def test_no_constants_single_output(self):
@@ -27,7 +25,11 @@ class TestBuildInferredVariants:
             inferred_constants={},
         )
         assert result == [
-            {"input_types": {"signal": ["RawEMG"]}, "output_type": "Filtered", "constants": {}}
+            {
+                "input_types": {"signal": ["RawEMG"]},
+                "output_type": "Filtered",
+                "constants": {},
+            }
         ]
 
     def test_no_constants_multiple_outputs(self):
@@ -93,6 +95,7 @@ class TestBuildInferredVariants:
 # filter_variants
 # ---------------------------------------------------------------------------
 
+
 class TestFilterVariants:
     def _make_variants(self, const_dicts):
         return [
@@ -136,9 +139,12 @@ class TestFilterVariants:
 # deduplicate_variants
 # ---------------------------------------------------------------------------
 
+
 class TestDeduplicateVariants:
     def _make(self, consts):
-        return [{"input_types": {}, "output_type": "Out", "constants": c} for c in consts]
+        return [
+            {"input_types": {}, "output_type": "Out", "constants": c} for c in consts
+        ]
 
     def test_no_duplicates_unchanged(self):
         variants = self._make([{"hz": 10}, {"hz": 20}])
@@ -168,6 +174,7 @@ class TestDeduplicateVariants:
 # ---------------------------------------------------------------------------
 # merge_pending_constants
 # ---------------------------------------------------------------------------
+
 
 class TestMergePendingConstants:
     def _make(self, const_dicts, out="Out"):
@@ -231,6 +238,7 @@ class TestMergePendingConstants:
 # ---------------------------------------------------------------------------
 # build_schema_kwargs
 # ---------------------------------------------------------------------------
+
 
 class TestBuildSchemaKwargs:
     def test_no_filter_no_level_returns_all(self):

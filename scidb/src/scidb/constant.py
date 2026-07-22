@@ -75,9 +75,7 @@ class Constant:
         return self._value
 
     def __repr__(self) -> str:
-        return (
-            f"Constant({self._value!r}, description={self.description!r})"
-        )
+        return f"Constant({self._value!r}, description={self.description!r})"
 
     # ------------------------------------------------------------------
     # Attribute passthrough

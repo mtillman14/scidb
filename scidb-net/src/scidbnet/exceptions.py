@@ -3,11 +3,13 @@
 
 class SciStackNetError(Exception):
     """Base exception for scidb-net errors."""
+
     pass
 
 
 class NetworkError(SciStackNetError):
     """Raised when an HTTP request fails (connection error, timeout, etc.)."""
+
     pass
 
 
@@ -21,4 +23,5 @@ class ServerError(SciStackNetError):
 
 class SerializationError(SciStackNetError):
     """Raised when data serialization or deserialization fails."""
+
     pass

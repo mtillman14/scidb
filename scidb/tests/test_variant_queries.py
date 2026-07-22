@@ -4,13 +4,11 @@ These methods provide aggregated pipeline data for visualization and variant
 filtering for execution, used primarily by the GUI but available to all tools.
 """
 
-import json
 import numpy as np
 import pytest
+
 import scifor as _scifor
-
-from scidb import BaseVariable, configure_database, for_each, PathInput
-
+from scidb import BaseVariable, PathInput, configure_database, for_each
 
 SCHEMA = ["subject", "session"]
 
@@ -27,6 +25,7 @@ def db(tmp_path):
 # ---------------------------------------------------------------------------
 # Variable types
 # ---------------------------------------------------------------------------
+
 
 class RawSignal(BaseVariable):
     pass
@@ -47,6 +46,7 @@ class Stats(BaseVariable):
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
+
 
 def bandpass_filter(signal, low_hz, high_hz):
     """Filter signal with bandpass."""
@@ -74,6 +74,7 @@ def process_file(filepath):
 # Helper functions
 # ---------------------------------------------------------------------------
 
+
 def _seed_raw(db, subjects=(1, 2), sessions=("A", "B")):
     for subj in subjects:
         for sess in sessions:
@@ -89,6 +90,7 @@ def _seed_filtered(db, subjects=(1, 2), sessions=("A", "B")):
 # ---------------------------------------------------------------------------
 # get_aggregated_variants() tests
 # ---------------------------------------------------------------------------
+
 
 class TestGetAggregatedVariants:
     def test_empty_database(self, db):
@@ -180,7 +182,8 @@ class TestGetAggregatedVariants:
 
         # Get all function entries for multi_output_filter
         filter_entries = {
-            fkey: fdata for fkey, fdata in result["functions"].items()
+            fkey: fdata
+            for fkey, fdata in result["functions"].items()
             if fkey[0] == "multi_output_filter"
         }
 
@@ -215,7 +218,9 @@ class TestGetAggregatedVariants:
         assert "FilteredSignal" in result["variables"]
 
         # Record counts should be present
-        assert result["variables"]["RawSignal"]["record_count"] == 4  # 2 subjects × 2 sessions
+        assert (
+            result["variables"]["RawSignal"]["record_count"] == 4
+        )  # 2 subjects × 2 sessions
         assert result["variables"]["FilteredSignal"]["record_count"] == 4
 
     def test_constants_aggregation(self, db):
@@ -329,8 +334,7 @@ class TestGetAggregatedVariants:
 
         # Filter by that call_id
         filtered_result = db.get_aggregated_variants(
-            fn_name="bandpass_filter",
-            call_id=first_call_id
+            fn_name="bandpass_filter", call_id=first_call_id
         )
 
         # Should have only one function entry
@@ -342,12 +346,12 @@ class TestGetAggregatedVariants:
 # filter_variants_for_execution() tests
 # ---------------------------------------------------------------------------
 
+
 class TestFilterVariantsForExecution:
     def test_no_variants_returns_empty(self, db):
         """No variants for function returns empty list."""
         result = db.filter_variants_for_execution(
-            fn_name="bandpass_filter",
-            call_id="0123456789abcdef"
+            fn_name="bandpass_filter", call_id="0123456789abcdef"
         )
         assert result == []
 
@@ -370,8 +374,7 @@ class TestFilterVariantsForExecution:
 
         # Filter variants
         result = db.filter_variants_for_execution(
-            fn_name="bandpass_filter",
-            call_id=call_id
+            fn_name="bandpass_filter", call_id=call_id
         )
 
         # Should return variants
@@ -401,7 +404,7 @@ class TestFilterVariantsForExecution:
         result = db.filter_variants_for_execution(
             fn_name="bandpass_filter",
             call_id=call_id,
-            constant_overrides={"low_hz": 50}  # Override to 50
+            constant_overrides={"low_hz": 50},  # Override to 50
         )
 
         # Should return variants with overridden constant
@@ -429,7 +432,7 @@ class TestFilterVariantsForExecution:
         result = db.filter_variants_for_execution(
             fn_name="bandpass_filter",
             call_id=call_id,
-            constant_overrides={"low_hz": 100, "high_hz": 1000}
+            constant_overrides={"low_hz": 100, "high_hz": 1000},
         )
 
         assert len(result) > 0
@@ -457,8 +460,7 @@ class TestFilterVariantsForExecution:
 
         # Get variants without override
         result_no_override = db.filter_variants_for_execution(
-            fn_name="multi_output_filter",
-            call_id=call_id
+            fn_name="multi_output_filter", call_id=call_id
         )
 
         # Should have 2 variants (different output types)
@@ -470,7 +472,7 @@ class TestFilterVariantsForExecution:
             key = (
                 v["output_type"],
                 tuple(sorted(v["input_types"].items())),
-                tuple(sorted(v["constants"].items()))
+                tuple(sorted(v["constants"].items())),
             )
             assert key not in seen, "Found duplicate variant"
             seen.add(key)
@@ -494,7 +496,7 @@ class TestFilterVariantsForExecution:
         result = db.filter_variants_for_execution(
             fn_name="bandpass_filter",
             call_id=call_id,
-            constant_overrides={"nonexistent_param": 999}
+            constant_overrides={"nonexistent_param": 999},
         )
 
         # Should still return variants, just ignore the non-existent override
@@ -523,19 +525,17 @@ class TestFilterVariantsForExecution:
 
         # Get both call_ids
         all_variants = db.list_pipeline_variants()
-        call_ids = list(set(v["call_id"] for v in all_variants))
+        call_ids = list({v["call_id"] for v in all_variants})
         assert len(call_ids) == 2
 
         # Filter by first call_id
         result1 = db.filter_variants_for_execution(
-            fn_name="bandpass_filter",
-            call_id=call_ids[0]
+            fn_name="bandpass_filter", call_id=call_ids[0]
         )
 
         # Filter by second call_id
         result2 = db.filter_variants_for_execution(
-            fn_name="bandpass_filter",
-            call_id=call_ids[1]
+            fn_name="bandpass_filter", call_id=call_ids[1]
         )
 
         # Results should be different (different constants)
@@ -554,6 +554,7 @@ class TestFilterVariantsForExecution:
 # ---------------------------------------------------------------------------
 # Integration tests
 # ---------------------------------------------------------------------------
+
 
 class TestIntegration:
     def test_aggregated_variants_and_filtering_consistency(self, db):
@@ -578,10 +579,7 @@ class TestIntegration:
         fn_name, call_id = fn_key
 
         # Get filtered variants
-        filtered = db.filter_variants_for_execution(
-            fn_name=fn_name,
-            call_id=call_id
-        )
+        filtered = db.filter_variants_for_execution(fn_name=fn_name, call_id=call_id)
 
         # Variant count should match
         assert len(filtered) == fn_data["variant_count"]
@@ -626,7 +624,9 @@ class TestIntegration:
         assert "Stats" in agg["variables"]
 
         # Each variable should have correct record count
-        assert agg["variables"]["RawSignal"]["record_count"] == 6  # 3 subjects × 2 sessions
+        assert (
+            agg["variables"]["RawSignal"]["record_count"] == 6
+        )  # 3 subjects × 2 sessions
         assert agg["variables"]["FilteredSignal"]["record_count"] == 6
         assert agg["variables"]["Stats"]["record_count"] == 6
 

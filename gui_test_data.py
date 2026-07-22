@@ -13,11 +13,13 @@ Run from the workspace root:
     python gui_test_data.py
 """
 
-import numpy as np
-import pandas as pd
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 from scidb import BaseVariable, configure_database, for_each
+
 # from scilineage.src.scilineage import lineage_fcn
 
 # ------------------------------------------------------------------
@@ -25,33 +27,40 @@ from scidb import BaseVariable, configure_database, for_each
 # them and register them with the DB.
 # ------------------------------------------------------------------
 
+
 class RawVO2(BaseVariable):
     """Raw VO2 signal (mL/min) — one array per subject."""
+
     pass
 
 
 class RollingVO2(BaseVariable):
     """Rolling average VO2. Varies by window_seconds (pipeline variant)."""
+
     pass
 
 
 class MaxVO2(BaseVariable):
     """VO2 max scalar — mean of the two highest rolling averages."""
+
     pass
 
 
 class MaxHeartRate(BaseVariable):
     """Peak heart rate. Demonstrates a second parallel branch."""
+
     pass
 
 
 class VO2Summary(BaseVariable):
     """Cohort-level stat summary of MaxVO2 (stat_ endpoint output)."""
+
     pass
 
 
 class RawHeartRate(BaseVariable):
     """Raw heart rate signal (bpm)."""
+
     pass
 
 
@@ -60,15 +69,11 @@ class RawHeartRate(BaseVariable):
 # Defined at module level so scistack-gui can find them by name.
 # ------------------------------------------------------------------
 
+
 def compute_rolling_vo2(signal, window_seconds, sample_interval):
     """Rolling average of VO2 over a time window."""
     window_size = window_seconds // sample_interval
-    return (
-        pd.Series(signal)
-        .rolling(window=window_size, min_periods=1)
-        .mean()
-        .values
-    )
+    return pd.Series(signal).rolling(window=window_size, min_periods=1).mean().values
 
 
 def compute_max_vo2(rolling_vo2):
@@ -81,13 +86,16 @@ def compute_max_hr(signal):
     """Peak heart rate."""
     return float(np.max(signal))
 
+
 def compute_80_perc_max_hr(max_hr):
     """Max HR * 0.8"""
     return max_hr * 0.8
 
+
 def compute_50_perc_max_hr(max_hr):
     """Max HR * 0.5"""
     return max_hr * 0.5
+
 
 # @lineage_fcn
 def compute_perc_max_hr(max_hr: int, perc: float):
@@ -143,8 +151,10 @@ if __name__ == "__main__":
 
         RawVO2.save(vo2, subject=subject)
         RawHeartRate.save(hr, subject=subject)
-        print(f"  {subject}: VO2 [{vo2.min():.0f}, {vo2.max():.0f}], "
-              f"HR [{hr.min():.0f}, {hr.max():.0f}]")
+        print(
+            f"  {subject}: VO2 [{vo2.min():.0f}, {vo2.max():.0f}], "
+            f"HR [{hr.min():.0f}, {hr.max():.0f}]"
+        )
 
     print()
 
@@ -182,17 +192,22 @@ if __name__ == "__main__":
 
     print("\nPipeline variants in DB:")
     for v in db.list_pipeline_variants():
-        print(f"  {v['function_name']} -> {v['output_type']} "
-              f"| constants={v['constants']} | {v['record_count']} records")
+        print(
+            f"  {v['function_name']} -> {v['output_type']} "
+            f"| constants={v['constants']} | {v['record_count']} records"
+        )
 
-    print(f"\nDone. Open with: scistack-gui --module gui_test_data.py test_gui.duckdb")
+    print("\nDone. Open with: scistack-gui --module gui_test_data.py test_gui.duckdb")
     db.close()
+
 
 class MaxHR_80Perc(BaseVariable):
     pass
 
+
 class MaxHR_50Perc(BaseVariable):
     pass
+
 
 class MaxHR_Perc(BaseVariable):
     pass

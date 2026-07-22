@@ -38,7 +38,9 @@ def _find_project_root(start: Path | None = None) -> Path:
     """
     current = (start or Path.cwd()).resolve()
     for directory in [current, *current.parents]:
-        if (directory / "pyproject.toml").exists() or (directory / "scistack.toml").exists():
+        if (directory / "pyproject.toml").exists() or (
+            directory / "scistack.toml"
+        ).exists():
             return directory
     return current
 
@@ -100,7 +102,9 @@ class PathInput:
         payload: dict = {
             "__type": "PathInput",
             "template": self.path_template,
-            "root_folder": str(self.root_folder) if self.root_folder is not None else None,
+            "root_folder": str(self.root_folder)
+            if self.root_folder is not None
+            else None,
         }
         if self.regex:
             payload["regex"] = True
@@ -175,9 +179,9 @@ class PathInput:
                 return literal, {}
 
             numeric_keys = {
-                k: int(v) for k, v in metadata.items()
-                if _numeric_like(v)
-                and (numeric_match is None or k in numeric_match)
+                k: int(v)
+                for k, v in metadata.items()
+                if _numeric_like(v) and (numeric_match is None or k in numeric_match)
             }
             if not numeric_keys:
                 return literal, {}
@@ -187,19 +191,22 @@ class PathInput:
             padded, spellings = self._padded_literal(metadata, numeric_keys)
             if padded is not None and padded != literal and padded.exists():
                 resolutions = {
-                    k: sp for k, sp in spellings.items()
-                    if sp != str(metadata[k])
+                    k: sp for k, sp in spellings.items() if sp != str(metadata[k])
                 }
                 Log.debug(
                     "pathinput_numeric_fallback: pad-width cache hit: %s "
-                    "(resolved spellings: %s)", padded, resolutions,
+                    "(resolved spellings: %s)",
+                    padded,
+                    resolutions,
                     layer="scifor",
                 )
                 return padded, resolutions
 
             Log.debug(
                 "pathinput_numeric_fallback: literal path missing, scanning "
-                "for numeric-equivalent match: %s", literal, layer="scifor",
+                "for numeric-equivalent match: %s",
+                literal,
+                layer="scifor",
             )
             matches = self._numeric_fallback_scan(metadata, numeric_keys)
             if len(matches) == 1:
@@ -207,12 +214,13 @@ class PathInput:
                 for key, captured in bindings.items():
                     self._pad_width[key] = len(captured)
                 resolutions = {
-                    k: cap for k, cap in bindings.items()
-                    if cap != str(metadata[k])
+                    k: cap for k, cap in bindings.items() if cap != str(metadata[k])
                 }
                 Log.debug(
                     "pathinput_numeric_fallback: matched %s (captures: %s)",
-                    path, bindings, layer="scifor",
+                    path,
+                    bindings,
+                    layer="scifor",
                 )
                 return path.resolve(), resolutions
             if len(matches) > 1:
@@ -224,7 +232,9 @@ class PathInput:
                 )
             Log.debug(
                 "pathinput_numeric_fallback: no numeric-equivalent match, "
-                "returning literal path %s", literal, layer="scifor",
+                "returning literal path %s",
+                literal,
+                layer="scifor",
             )
             return literal, {}
 
@@ -242,7 +252,9 @@ class PathInput:
         elif self.root_folder is not None:
             dir_path = self.root_folder / dir_part if dir_part else self.root_folder
         else:
-            dir_path = _find_project_root() / dir_part if dir_part else _find_project_root()
+            dir_path = (
+                _find_project_root() / dir_part if dir_part else _find_project_root()
+            )
         dir_path = dir_path.resolve()
 
         try:
@@ -491,7 +503,9 @@ class PathInput:
         if not metadata_iterables:
             for key in combo_keys:
                 metadata_iterables[key] = list(dict.fromkeys(c[key] for c in combos))
-                _log(f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem")
+                _log(
+                    f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem"
+                )
             return metadata_iterables, combos
 
         # Case B: keys provided (some may be []).  Fill empty template keys
@@ -503,7 +517,9 @@ class PathInput:
             user_vals = metadata_iterables[key]
             if not user_vals:
                 metadata_iterables[key] = list(dict.fromkeys(c[key] for c in combos))
-                _log(f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem")
+                _log(
+                    f"discovered {key} -> {len(metadata_iterables[key])} values from filesystem"
+                )
             elif key in user_explicit_keys:
                 user_filter_seen = True
 
@@ -518,7 +534,9 @@ class PathInput:
             return metadata_iterables, None
 
         # All template keys filled from disk -> use discovered combos directly.
-        _log(f"no user-explicit template keys; using {len(combos)} disk combos directly")
+        _log(
+            f"no user-explicit template keys; using {len(combos)} disk combos directly"
+        )
         return metadata_iterables, combos
 
     def discover(self) -> list[dict[str, str]]:
@@ -637,7 +655,4 @@ class PathInput:
         return regex
 
     def __repr__(self) -> str:
-        return (
-            f"PathInput({self.path_template!r}, "
-            f"root_folder={self.root_folder!r})"
-        )
+        return f"PathInput({self.path_template!r}, root_folder={self.root_folder!r})"

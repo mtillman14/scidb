@@ -18,14 +18,15 @@ JSON format (post-migration):
 import json
 import logging
 from pathlib import Path
-from scistack_gui.db import get_db_path, get_db
+
 from scistack_gui import pipeline_store
+from scistack_gui.db import get_db, get_db_path
 
 logger = logging.getLogger(__name__)
 
 
 def _layout_path() -> Path:
-    return get_db_path().with_suffix('.layout.json')
+    return get_db_path().with_suffix(".layout.json")
 
 
 def _load() -> dict:
@@ -40,14 +41,20 @@ def _load() -> dict:
     logger.debug("[layout] Loading layout file from %s", p)
     if not p.exists():
         logger.debug("[layout] Layout file does not exist, returning empty structure")
-        return {"positions": {}, "constants": [], "path_inputs": [],
-                "positions_scoped": True}
+        return {
+            "positions": {},
+            "constants": [],
+            "path_inputs": [],
+            "positions_scoped": True,
+        }
     with p.open() as f:
         raw = json.load(f)
     logger.debug("[layout] Loaded layout file with %d top-level keys", len(raw))
     # Migrate legacy flat format: { "node_id": {"x":..,"y":..}, ... }
     if raw and "positions" not in raw:
-        logger.debug("[layout] Migrating legacy flat format to nested positions structure")
+        logger.debug(
+            "[layout] Migrating legacy flat format to nested positions structure"
+        )
         raw = {"positions": raw, "constants": [], "path_inputs": []}
     raw.setdefault("positions", {})
     raw.setdefault("constants", [])
@@ -55,16 +62,24 @@ def _load() -> dict:
     # Migrate flat positions to per-scope: everything predating scoping
     # lived on the one canvas that is now the root pipeline.
     if not raw.get("positions_scoped"):
-        logger.info("[layout] scoping migration: moving %d flat position(s) "
-                    "under root scope '%s'", len(raw["positions"]),
-                    pipeline_store.ROOT_PIPELINE_ID)
+        logger.info(
+            "[layout] scoping migration: moving %d flat position(s) "
+            "under root scope '%s'",
+            len(raw["positions"]),
+            pipeline_store.ROOT_PIPELINE_ID,
+        )
         raw["positions"] = (
             {pipeline_store.ROOT_PIPELINE_ID: raw["positions"]}
-            if raw["positions"] else {}
+            if raw["positions"]
+            else {}
         )
         raw["positions_scoped"] = True
-    logger.debug("[layout] Layout has %d scope(s), %d constants, %d path_inputs",
-                 len(raw["positions"]), len(raw["constants"]), len(raw["path_inputs"]))
+    logger.debug(
+        "[layout] Layout has %d scope(s), %d constants, %d path_inputs",
+        len(raw["positions"]),
+        len(raw["constants"]),
+        len(raw["path_inputs"]),
+    )
     return raw
 
 
@@ -85,8 +100,12 @@ def _positions_all(data: dict) -> dict:
 def _save(data: dict) -> None:
     p = _layout_path()
     logger.debug("[layout] Saving layout file to %s", p)
-    logger.debug("[layout] Writing %d positions, %d constants, %d path_inputs",
-                 len(data.get("positions", {})), len(data.get("constants", [])), len(data.get("path_inputs", [])))
+    logger.debug(
+        "[layout] Writing %d positions, %d constants, %d path_inputs",
+        len(data.get("positions", {})),
+        len(data.get("constants", [])),
+        len(data.get("path_inputs", [])),
+    )
     with p.open("w") as f:
         json.dump(data, f, indent=2)
     logger.debug("[layout] Layout file saved successfully")
@@ -139,10 +158,16 @@ def read_layout(pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> dict:
     }
 
 
-def write_node_position(node_id: str, x: float, y: float,
-                        pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> None:
-    logger.info("[layout] write_node_position called (node_id=%r, x=%.1f, y=%.1f, scope=%r)",
-                node_id, x, y, pipeline_id)
+def write_node_position(
+    node_id: str, x: float, y: float, pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID
+) -> None:
+    logger.info(
+        "[layout] write_node_position called (node_id=%r, x=%.1f, y=%.1f, scope=%r)",
+        node_id,
+        x,
+        y,
+        pipeline_id,
+    )
     data = _load()
     logger.info("[layout] Writing position to JSON")
     _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
@@ -150,12 +175,24 @@ def write_node_position(node_id: str, x: float, y: float,
     logger.info("[layout] Node position written successfully")
 
 
-def write_manual_node(node_id: str, x: float, y: float,
-                      node_type: str, label: str,
-                      pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> None:
+def write_manual_node(
+    node_id: str,
+    x: float,
+    y: float,
+    node_type: str,
+    label: str,
+    pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID,
+) -> None:
     # Position goes to JSON; structural info goes to DB.
-    logger.info("[layout] write_manual_node called (node_id=%r, type=%r, label=%r, x=%.1f, y=%.1f, scope=%r)",
-                node_id, node_type, label, x, y, pipeline_id)
+    logger.info(
+        "[layout] write_manual_node called (node_id=%r, type=%r, label=%r, x=%.1f, y=%.1f, scope=%r)",
+        node_id,
+        node_type,
+        label,
+        x,
+        y,
+        pipeline_id,
+    )
     logger.info("[layout] Writing position to JSON")
     data = _load()
     _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
@@ -175,7 +212,11 @@ def write_manual_node(node_id: str, x: float, y: float,
     }
     prefix = prefix_map.get(node_type)
     if prefix:
-        logger.debug("[layout] Unhiding canonical DB-derived nodes for type=%r, label=%r", node_type, label)
+        logger.debug(
+            "[layout] Unhiding canonical DB-derived nodes for type=%r, label=%r",
+            node_type,
+            label,
+        )
         if node_type == "functionNode":
             # DB-derived function nodes use composite ``fn__{label}__{call_id}``
             # IDs — there can be multiple canonical nodes per label.  Unhide
@@ -238,7 +279,7 @@ def read_all_constant_names() -> list[str]:
     # Canonical DB-derived constant nodes not already covered by manual_nodes.
     for node_id in _positions_all(data):
         if node_id.startswith("const__") and node_id not in manual_nodes:
-            names.add(node_id[len("const__"):])
+            names.add(node_id[len("const__") :])
     return sorted(names)
 
 
@@ -270,7 +311,7 @@ def read_all_path_input_names() -> list[dict]:
         if node_id.startswith("pathInput__"):
             # Node IDs are "pathInput__<name>__<random>"; extract just <name>.
             parts = node_id.split("__")
-            name = parts[1] if len(parts) >= 2 else node_id[len("pathInput__"):]
+            name = parts[1] if len(parts) >= 2 else node_id[len("pathInput__") :]
             if name not in by_name:
                 by_name[name] = {"name": name, "template": "", "root_folder": None}
     return sorted(by_name.values(), key=lambda p: p["name"])
@@ -285,7 +326,9 @@ def write_path_input(name: str, template: str, root_folder: str | None = None) -
             pi["root_folder"] = root_folder
             _save(data)
             return
-    data["path_inputs"].append({"name": name, "template": template, "root_folder": root_folder})
+    data["path_inputs"].append(
+        {"name": name, "template": template, "root_folder": root_folder}
+    )
     _save(data)
 
 
@@ -300,8 +343,12 @@ def read_manual_edges() -> list[dict]:
 
 
 def write_manual_edge(edge: dict) -> None:
-    logger.info("[layout] write_manual_edge called (edge_id=%r, source=%r, target=%r)",
-                edge.get("id"), edge.get("source"), edge.get("target"))
+    logger.info(
+        "[layout] write_manual_edge called (edge_id=%r, source=%r, target=%r)",
+        edge.get("id"),
+        edge.get("source"),
+        edge.get("target"),
+    )
     pipeline_store.write_manual_edge(get_db(), edge)
     logger.info("[layout] Edge written to DuckDB successfully")
 
@@ -313,13 +360,17 @@ def delete_manual_edge(edge_id: str) -> None:
 
 
 def add_pending_constant(const_name: str, value: str) -> None:
-    logger.info("[layout] add_pending_constant called (name=%r, value=%r)", const_name, value)
+    logger.info(
+        "[layout] add_pending_constant called (name=%r, value=%r)", const_name, value
+    )
     pipeline_store.add_pending_constant(get_db(), const_name, value)
     logger.info("[layout] Pending constant added to DuckDB successfully")
 
 
 def remove_pending_constant(const_name: str, value: str) -> None:
-    logger.info("[layout] remove_pending_constant called (name=%r, value=%r)", const_name, value)
+    logger.info(
+        "[layout] remove_pending_constant called (name=%r, value=%r)", const_name, value
+    )
     pipeline_store.remove_pending_constant(get_db(), const_name, value)
     logger.info("[layout] Pending constant removed from DuckDB successfully")
 

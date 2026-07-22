@@ -9,10 +9,9 @@ each key. This guarantees predictable ordering for downstream processing.
 import numpy as np
 import pandas as pd
 import pytest
+
 import scifor as _scifor
-
 from scidb import BaseVariable, configure_database
-
 
 SCHEMA = ["subject", "trial"]
 
@@ -48,7 +47,9 @@ class TestLoadAllOrdering:
         results = TestData.load(version="all")
 
         # Extract schema keys in the order they were loaded (convert to strings)
-        loaded_order = [(str(v.metadata["subject"]), str(v.metadata["trial"])) for v in results]
+        loaded_order = [
+            (str(v.metadata["subject"]), str(v.metadata["trial"])) for v in results
+        ]
 
         # Expected order: sorted by subject, then by trial within each subject
         expected_order = [
@@ -69,18 +70,9 @@ class TestLoadAllOrdering:
     def test_load_all_with_dataframe_data_orders_rows(self, db):
         """load_all() should maintain schema ordering for DataFrame variables."""
         # Save DataFrames with multiple rows per schema location
-        TestData.save(
-            pd.DataFrame({"value": [30, 31]}),
-            subject="S03", trial="T01"
-        )
-        TestData.save(
-            pd.DataFrame({"value": [10, 11]}),
-            subject="S01", trial="T01"
-        )
-        TestData.save(
-            pd.DataFrame({"value": [20, 21]}),
-            subject="S02", trial="T01"
-        )
+        TestData.save(pd.DataFrame({"value": [30, 31]}), subject="S03", trial="T01")
+        TestData.save(pd.DataFrame({"value": [10, 11]}), subject="S01", trial="T01")
+        TestData.save(pd.DataFrame({"value": [20, 21]}), subject="S02", trial="T01")
 
         # Load all data
         results = TestData.load(version="all")
@@ -148,7 +140,9 @@ class TestLoadAllOrdering:
         results = TestData.load(version="all", subject=["S01", "S03"])
 
         # Should still be ordered by schema keys (convert to strings)
-        loaded_order = [(str(v.metadata["subject"]), str(v.metadata["trial"])) for v in results]
+        loaded_order = [
+            (str(v.metadata["subject"]), str(v.metadata["trial"])) for v in results
+        ]
         expected_order = [
             ("S01", "T01"),
             ("S01", "T02"),
@@ -167,8 +161,7 @@ class TestLoadAllOrdering:
         # Create database with 3-level schema
         _scifor.set_schema([])
         db = configure_database(
-            tmp_path / "test_three_level.duckdb",
-            ["subject", "session", "trial"]
+            tmp_path / "test_three_level.duckdb", ["subject", "session", "trial"]
         )
 
         class MultiLevelData(BaseVariable):
@@ -184,7 +177,11 @@ class TestLoadAllOrdering:
         # Load and verify ordering (convert to strings)
         results = MultiLevelData.load(version="all")
         loaded_order = [
-            (str(v.metadata["subject"]), str(v.metadata["session"]), str(v.metadata["trial"]))
+            (
+                str(v.metadata["subject"]),
+                str(v.metadata["session"]),
+                str(v.metadata["trial"]),
+            )
             for v in results
         ]
 

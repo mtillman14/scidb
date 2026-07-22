@@ -13,12 +13,14 @@ import re as _re
 import warnings as _warnings
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-import scifor as _scifor
+from scidb.database import _local
 
+import scifor as _scifor
 from scidb import (
     BaseVariable,
     PathOutput,
@@ -27,8 +29,6 @@ from scidb import (
     for_each,
     read_artifact_stamp,
 )
-from scidb.database import _local
-
 
 SCHEMA = ["subject", "session"]
 
@@ -73,8 +73,13 @@ def _make_two_groups(db, subjects=("S01",), sessions=("1", "2")):
         for sess in sessions:
             RawSignal.save(np.array([1.0, 2.0]), subject=subj, session=sess)
     for low_hz in [20, 30]:
-        for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                 subject=list(subjects), session=list(sessions))
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": low_hz},
+            [Filtered],
+            subject=list(subjects),
+            session=list(sessions),
+        )
 
 
 def _plot_fig(signal, filename):
@@ -87,6 +92,7 @@ def _plot_fig(signal, filename):
 # 1. Bare-name placeholder, aggregation: one artifact per variant group
 # ---------------------------------------------------------------------------
 
+
 class TestAggregationPlaceholders:
     def test_stat_pdf_per_group_with_correct_stamps(self, db, tmp_path):
         """The stage-3 test we couldn't write: two groups -> two stamped PDFs."""
@@ -98,10 +104,16 @@ class TestAggregationPlaceholders:
             plt.close(fig)
             return {"n_rows": len(df)}
 
-        for_each(stat_summary,
-                 {"df": Filtered,
-                  "filename": PathOutput(str(tmp_path / "report_{low_hz}.pdf"))},
-                 [StatOut], finalized=True, subject=["S01"])
+        for_each(
+            stat_summary,
+            {
+                "df": Filtered,
+                "filename": PathOutput(str(tmp_path / "report_{low_hz}.pdf")),
+            },
+            [StatOut],
+            finalized=True,
+            subject=["S01"],
+        )
 
         pdf20 = tmp_path / "report_20.pdf"
         pdf30 = tmp_path / "report_30.pdf"
@@ -126,18 +138,27 @@ class TestAggregationPlaceholders:
             seen.append(filename)
             return {"n": len(df)}
 
-        for_each(stat_summary,
-                 {"df": Filtered,
-                  "filename": PathOutput(str(tmp_path / "r_{bandpass.low_hz}.pdf"))},
-                 [StatOut], finalized=True, subject=["S01"])
+        for_each(
+            stat_summary,
+            {
+                "df": Filtered,
+                "filename": PathOutput(str(tmp_path / "r_{bandpass.low_hz}.pdf")),
+            },
+            [StatOut],
+            finalized=True,
+            subject=["S01"],
+        )
 
-        assert sorted(str(p).rsplit("/", 1)[-1] for p in seen) == \
-            ["r_20.pdf", "r_30.pdf"]
+        assert sorted(str(p).rsplit("/", 1)[-1] for p in seen) == [
+            "r_20.pdf",
+            "r_30.pdf",
+        ]
 
 
 # ---------------------------------------------------------------------------
 # 2. Full iteration: one file per (location x variant)
 # ---------------------------------------------------------------------------
+
 
 class TestFullIterationPlaceholders:
     def test_plot_file_per_variant(self, db, tmp_path):
@@ -146,23 +167,34 @@ class TestFullIterationPlaceholders:
         def plot_sig(signal, filename):
             return _plot_fig(signal, filename)
 
-        for_each(plot_sig,
-                 {"signal": Filtered,
-                  "filename": PathOutput(str(tmp_path / "{subject}_{session}_{low_hz}.png"))},
-                 [PlotOut], finalized=True,
-                 subject=["S01"], session=["1"])
+        for_each(
+            plot_sig,
+            {
+                "signal": Filtered,
+                "filename": PathOutput(
+                    str(tmp_path / "{subject}_{session}_{low_hz}.png")
+                ),
+            },
+            [PlotOut],
+            finalized=True,
+            subject=["S01"],
+            session=["1"],
+        )
 
         f20 = tmp_path / "S01_1_20.png"
         f30 = tmp_path / "S01_1_30.png"
         assert f20.exists() and f30.exists()
         # Stamps carry the right per-variant records.
-        assert read_artifact_stamp(f20)["record_id"] != \
-            read_artifact_stamp(f30)["record_id"]
+        assert (
+            read_artifact_stamp(f20)["record_id"]
+            != read_artifact_stamp(f30)["record_id"]
+        )
 
 
 # ---------------------------------------------------------------------------
 # 3. Ambiguity: bare name matching two namespaced keys errors
 # ---------------------------------------------------------------------------
+
 
 class TestAmbiguity:
     def test_ambiguous_bare_name_errors(self, db, tmp_path):
@@ -174,25 +206,39 @@ class TestAmbiguity:
         def beta(signal, cut):
             return signal + cut
 
-        for_each(alpha, {"signal": RawSignal, "cut": 2}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            alpha,
+            {"signal": RawSignal, "cut": 2},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
         # Chained: bp inherits alpha.cut AND adds beta.cut.
-        for_each(beta, {"signal": Filtered, "cut": 3}, [Chained],
-                 subject=["S01"], session=["1"])
+        for_each(
+            beta,
+            {"signal": Filtered, "cut": 3},
+            [Chained],
+            subject=["S01"],
+            session=["1"],
+        )
 
         def stat_summary(df, filename):
             return {"n": len(df)}
 
         with pytest.raises(ValueError, match="ambiguous"):
-            for_each(stat_summary,
-                     {"df": Chained,
-                      "filename": PathOutput(str(tmp_path / "r_{cut}.pdf"))},
-                     [StatOut], finalized=True, subject=["S01"])
+            for_each(
+                stat_summary,
+                {"df": Chained, "filename": PathOutput(str(tmp_path / "r_{cut}.pdf"))},
+                [StatOut],
+                finalized=True,
+                subject=["S01"],
+            )
 
 
 # ---------------------------------------------------------------------------
 # 4. {variant} digest
 # ---------------------------------------------------------------------------
+
 
 class TestVariantToken:
     def test_variant_token_distinct_and_stable(self, db, tmp_path):
@@ -205,10 +251,15 @@ class TestVariantToken:
 
         # finalized=True: a draft stat_ resolves PathOutput to None by design,
         # so paths are only observable in record mode.
-        kwargs = dict(
-            inputs={"df": Filtered,
-                    "filename": PathOutput(str(tmp_path / "r_{variant}.pdf"))},
-            outputs=[StatOut], finalized=True, subject=["S01"])
+        kwargs = {
+            "inputs": {
+                "df": Filtered,
+                "filename": PathOutput(str(tmp_path / "r_{variant}.pdf")),
+            },
+            "outputs": [StatOut],
+            "finalized": True,
+            "subject": ["S01"],
+        }
 
         for_each(stat_summary, **kwargs)
         first = sorted(seen)
@@ -228,10 +279,16 @@ class TestVariantToken:
             seen.append(str(filename).rsplit("/", 1)[-1])
             return {"n": len(df)}
 
-        for_each(stat_summary,
-                 {"df": RawSignal,
-                  "filename": PathOutput(str(tmp_path / "r_{variant}.pdf"))},
-                 [StatOut], finalized=True, subject=["S01"])
+        for_each(
+            stat_summary,
+            {
+                "df": RawSignal,
+                "filename": PathOutput(str(tmp_path / "r_{variant}.pdf")),
+            },
+            [StatOut],
+            finalized=True,
+            subject=["S01"],
+        )
         assert len(seen) == 1
         assert _re.fullmatch(r"r_[0-9a-f]{8}\.pdf", seen[0])
 
@@ -239,6 +296,7 @@ class TestVariantToken:
 # ---------------------------------------------------------------------------
 # 5. Collision guard
 # ---------------------------------------------------------------------------
+
 
 class TestCollisionGuard:
     def test_two_groups_one_path_errors_before_rendering(self, db, tmp_path):
@@ -251,26 +309,43 @@ class TestCollisionGuard:
             return {"n": len(df)}
 
         with pytest.raises(ValueError, match="low_hz"):
-            for_each(stat_summary,
-                     {"df": Filtered,
-                      "filename": PathOutput(str(tmp_path / "report_{subject}.pdf"))},
-                     [StatOut], finalized=True, subject=["S01"])
-        assert not (tmp_path / "report_S01.pdf").exists(), \
+            for_each(
+                stat_summary,
+                {
+                    "df": Filtered,
+                    "filename": PathOutput(str(tmp_path / "report_{subject}.pdf")),
+                },
+                [StatOut],
+                finalized=True,
+                subject=["S01"],
+            )
+        assert not (tmp_path / "report_S01.pdf").exists(), (
             "guard must fire before any file is written"
+        )
 
     def test_single_group_no_error(self, db, tmp_path):
         """Existing single-variant pipelines are unaffected."""
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         def stat_summary(df, filename):
             return {"n": len(df)}
 
-        for_each(stat_summary,
-                 {"df": Filtered,
-                  "filename": PathOutput(str(tmp_path / "report_{subject}.pdf"))},
-                 [StatOut], subject=["S01"])  # no raise
+        for_each(
+            stat_summary,
+            {
+                "df": Filtered,
+                "filename": PathOutput(str(tmp_path / "report_{subject}.pdf")),
+            },
+            [StatOut],
+            subject=["S01"],
+        )  # no raise
 
     def test_schema_key_omission_is_not_an_error(self, db, tmp_path):
         """Collisions across SCHEMA keys only (no variant difference) are the
@@ -282,16 +357,23 @@ class TestCollisionGuard:
             return _plot_fig(signal, filename)
 
         # {subject} only, iterating session too -> session collision, no variants.
-        for_each(plot_sig,
-                 {"signal": RawSignal,
-                  "filename": PathOutput(str(tmp_path / "{subject}.png"))},
-                 [PlotOut], subject=["S01"], session=["1", "2"])  # no raise
+        for_each(
+            plot_sig,
+            {
+                "signal": RawSignal,
+                "filename": PathOutput(str(tmp_path / "{subject}.png")),
+            },
+            [PlotOut],
+            subject=["S01"],
+            session=["1", "2"],
+        )  # no raise
         assert (tmp_path / "S01.png").exists()
 
 
 # ---------------------------------------------------------------------------
 # 6. Missing-key warning
 # ---------------------------------------------------------------------------
+
 
 class TestMissingPlaceholder:
     def test_unmatched_placeholder_warns_and_keeps_literal(self, db, tmp_path):
@@ -304,20 +386,28 @@ class TestMissingPlaceholder:
 
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            for_each(stat_summary,
-                     {"df": RawSignal,
-                      "filename": PathOutput(str(tmp_path / "r_{nope}.pdf"))},
-                     [StatOut], finalized=True, subject=["S01"])
+            for_each(
+                stat_summary,
+                {
+                    "df": RawSignal,
+                    "filename": PathOutput(str(tmp_path / "r_{nope}.pdf")),
+                },
+                [StatOut],
+                finalized=True,
+                subject=["S01"],
+            )
 
         assert seen == ["r_{nope}.pdf"], "literal placeholder text stays"
-        flagged = [w for w in caught
-                   if "did not match any branch_param" in str(w.message)]
+        flagged = [
+            w for w in caught if "did not match any branch_param" in str(w.message)
+        ]
         assert flagged
 
 
 # ---------------------------------------------------------------------------
 # 7. Hygiene: injected keys leak nowhere
 # ---------------------------------------------------------------------------
+
 
 class TestPlaceholderHygiene:
     def test_injected_keys_absent_from_results_and_records(self, db, tmp_path):
@@ -326,11 +416,14 @@ class TestPlaceholderHygiene:
         def stat_summary(df, filename):
             return {"n": len(df)}
 
-        result = for_each(stat_summary,
-                          {"df": Filtered,
-                           "filename": PathOutput(str(tmp_path / "r_{low_hz}.pdf"))},
-                          [StatOut], finalized=True, subject=["S01"],
-                          introspect=True)
+        result = for_each(
+            stat_summary,
+            {"df": Filtered, "filename": PathOutput(str(tmp_path / "r_{low_hz}.pdf"))},
+            [StatOut],
+            finalized=True,
+            subject=["S01"],
+            introspect=True,
+        )
 
         assert "low_hz" not in result.columns
         rec = StatOut.load(subject="S01", **branch_param("bandpass", low_hz=20))
@@ -345,6 +438,7 @@ class TestPlaceholderHygiene:
 # 8. Draft mode: placeholders + stamps per group
 # ---------------------------------------------------------------------------
 
+
 class TestDraftPlaceholders:
     def test_draft_plot_files_per_group_with_draft_stamps(self, db, tmp_path):
         _make_two_groups(db, sessions=("1",))
@@ -352,10 +446,16 @@ class TestDraftPlaceholders:
         def plot_sig(signal, filename):
             return _plot_fig(signal, filename)
 
-        for_each(plot_sig,
-                 {"signal": Filtered,
-                  "filename": PathOutput(str(tmp_path / "{subject}_{low_hz}.png"))},
-                 [PlotOut], subject=["S01"], session=["1"])  # draft
+        for_each(
+            plot_sig,
+            {
+                "signal": Filtered,
+                "filename": PathOutput(str(tmp_path / "{subject}_{low_hz}.png")),
+            },
+            [PlotOut],
+            subject=["S01"],
+            session=["1"],
+        )  # draft
 
         assert db.list_versions(PlotOut) == []
         for low_hz in [20, 30]:
@@ -368,6 +468,7 @@ class TestDraftPlaceholders:
 # 9. Sanitization
 # ---------------------------------------------------------------------------
 
+
 class TestSanitization:
     def test_path_separator_in_value_becomes_dash(self, db, tmp_path):
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
@@ -375,8 +476,13 @@ class TestSanitization:
         def tag(signal, label):
             return signal
 
-        for_each(tag, {"signal": RawSignal, "label": "a/b"}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            tag,
+            {"signal": RawSignal, "label": "a/b"},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         seen = []
 
@@ -384,8 +490,11 @@ class TestSanitization:
             seen.append(str(filename).rsplit("/", 1)[-1])
             return {"n": len(df)}
 
-        for_each(stat_summary,
-                 {"df": Filtered,
-                  "filename": PathOutput(str(tmp_path / "r_{label}.pdf"))},
-                 [StatOut], finalized=True, subject=["S01"])
+        for_each(
+            stat_summary,
+            {"df": Filtered, "filename": PathOutput(str(tmp_path / "r_{label}.pdf"))},
+            [StatOut],
+            finalized=True,
+            subject=["S01"],
+        )
         assert seen == ["r_a-b.pdf"]

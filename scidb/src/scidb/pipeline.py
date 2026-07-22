@@ -43,8 +43,9 @@ Usage::
 from __future__ import annotations
 
 import atexit
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from .log import Log
 
@@ -179,8 +180,7 @@ class Step:
 
     def __repr__(self) -> str:
         return (
-            f"<Step '{self.spec.name}' (deferred) in pipeline "
-            f"'{self.pipeline_name}'>"
+            f"<Step '{self.spec.name}' (deferred) in pipeline '{self.pipeline_name}'>"
         )
 
     def __getattr__(self, item):
@@ -213,6 +213,7 @@ def _rewrite_template(template, key_map: dict):
     for old, new in key_map.items():
         s = s.replace("{" + old + "}", "{" + new + "}")
     from pathlib import Path as _P
+
     return _P(s) if isinstance(template, _P) else s
 
 
@@ -241,10 +242,10 @@ def _rewrite_where(where: Any, key_map: dict, step_name: str) -> Any:
         return where
     if isinstance(where, SchemaKeyCompareFilter):
         return SchemaKeyCompareFilter(
-            key_map.get(where.key, where.key), where.op, where.value)
+            key_map.get(where.key, where.key), where.op, where.value
+        )
     if isinstance(where, SchemaKeyInFilter):
-        return SchemaKeyInFilter(
-            key_map.get(where.key, where.key), list(where.values))
+        return SchemaKeyInFilter(key_map.get(where.key, where.key), list(where.values))
     if isinstance(where, CompoundFilter):
         return CompoundFilter(
             _rewrite_where(where.left, key_map, step_name),
@@ -263,8 +264,10 @@ def _rewrite_where(where: Any, key_map: dict, step_name: str) -> Any:
 def _rewrite_input(val: Any, key_map: dict):
     """Rewrite one input spec's schema-key surface (non-mutating: wrappers
     are rebuilt, never modified in place)."""
-    from scifor import PathOutput
     from scifor.pathinput import PathInput
+
+    from scifor import PathOutput
+
     from .fixed import Fixed
 
     if isinstance(val, PathOutput):
@@ -283,16 +286,19 @@ def _rewrite_input(val: Any, key_map: dict):
     return val
 
 
-def _constant_input_names(spec: StepSpec) -> "set[str]":
+def _constant_input_names(spec: StepSpec) -> set[str]:
     """Names of this spec's scalar constant inputs (the params surface) —
     same classification as ForEachConfig._get_direct_constants."""
-    from .foreach import _is_loadable
-    from .colname import ColName
-    from scifor import PathOutput
     from scifor.pathinput import PathInput
 
+    from scifor import PathOutput
+
+    from .colname import ColName
+    from .foreach import _is_loadable
+
     return {
-        k for k, v in spec.inputs.items()
+        k
+        for k, v in spec.inputs.items()
         if not _is_loadable(v)
         and not isinstance(v, (ColName, PathOutput, PathInput))
         and not isinstance(v, type)
@@ -323,10 +329,10 @@ class PipelineBinding:
 
     def __init__(
         self,
-        pipeline: "Pipeline",
-        key_map: "dict[str, str] | None" = None,
-        params: "dict[str, Any] | None" = None,
-        iterate: "dict[str, Any] | None" = None,
+        pipeline: Pipeline,
+        key_map: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        iterate: dict[str, Any] | None = None,
     ):
         self.pipeline = pipeline
         self.key_map = dict(key_map or {})
@@ -337,7 +343,7 @@ class PipelineBinding:
         self._rewritten: dict[int, StepSpec] = {}
         # outer-signature -> composed binding (stable objects across closure
         # walks, so THEIR rewrite caches are stable too).
-        self._compose_cache: "dict[str, PipelineBinding]" = {}
+        self._compose_cache: dict[str, PipelineBinding] = {}
         if self.params:
             self._resolved_params = self._resolve_params()
 
@@ -364,7 +370,7 @@ class PipelineBinding:
 
     # -- params resolution (bind-time validation, E2) --------------------------
 
-    def _resolve_params(self) -> "dict[tuple[str, str], Any]":
+    def _resolve_params(self) -> dict[tuple[str, str], Any]:
         """Resolve params targets against the subtree's constant inputs.
 
         Returns {(fn_name, input_name): value}. Bare names must match
@@ -385,8 +391,7 @@ class PipelineBinding:
             if "." in target:
                 fn_name, input_name = target.rsplit(".", 1)
                 matches = [
-                    (f, c) for f, c in available
-                    if f == fn_name and c == input_name
+                    (f, c) for f, c in available if f == fn_name and c == input_name
                 ]
             else:
                 matches = [(f, c) for f, c in available if c == target]
@@ -410,7 +415,7 @@ class PipelineBinding:
 
     # -- composition ------------------------------------------------------------
 
-    def compose(self, outer: "PipelineBinding") -> "PipelineBinding":
+    def compose(self, outer: PipelineBinding) -> PipelineBinding:
         """The binding an OUTER edge implies for this inner edge's pipeline
         (outer ∘ inner): key_maps chain (inner then outer), outer params/
         iterate win on conflict, inner iterate keys pass through the outer
@@ -418,9 +423,7 @@ class PipelineBinding:
         cached = self._compose_cache.get(outer.signature())
         if cached is not None:
             return cached
-        composed_key_map = {
-            k: outer.key_map.get(v, v) for k, v in self.key_map.items()
-        }
+        composed_key_map = {k: outer.key_map.get(v, v) for k, v in self.key_map.items()}
         for k, v in outer.key_map.items():
             composed_key_map.setdefault(k, v)
         composed_iterate = _rename_keys(self.iterate, outer.key_map)
@@ -471,13 +474,16 @@ class PipelineBinding:
         if km:
             if new_options.get("where") is not None:
                 new_options["where"] = _rewrite_where(
-                    new_options["where"], km, spec.name)
+                    new_options["where"], km, spec.name
+                )
             if new_options.get("schema_filter") is not None:
                 new_options["schema_filter"] = _rename_keys(
-                    new_options["schema_filter"], km)
+                    new_options["schema_filter"], km
+                )
             if new_options.get("schema_level") is not None:
                 new_options["schema_level"] = [
-                    km.get(k, k) for k in new_options["schema_level"]]
+                    km.get(k, k) for k in new_options["schema_level"]
+                ]
             if new_options.get("share_limits") is not None:
                 new_options["share_limits"] = {
                     inp: [km.get(k, k) for k in keys]
@@ -506,11 +512,11 @@ class PipelineBinding:
 # Module-level session state (pattern-matched to the current-db global):
 # the activation stack ambient for_each registration targets, plus every
 # pipeline created this session for the never-run atexit check.
-_active_stack: "list[Pipeline]" = []
-_all_pipelines: "list[Pipeline]" = []
+_active_stack: list[Pipeline] = []
+_all_pipelines: list[Pipeline] = []
 
 
-def active_pipeline() -> "Pipeline | None":
+def active_pipeline() -> Pipeline | None:
     """The pipeline currently receiving deferred ``for_each`` registrations."""
     return _active_stack[-1] if _active_stack else None
 
@@ -521,7 +527,7 @@ def _reset_pipeline_state() -> None:
     _all_pipelines.clear()
 
 
-def _unrun_pipelines() -> "list[Pipeline]":
+def _unrun_pipelines() -> list[Pipeline]:
     """Pipelines with registered steps that were never run/planned/deactivated."""
     return [p for p in _all_pipelines if p.steps and not p._acknowledged]
 
@@ -558,7 +564,7 @@ class Pipeline:
         self,
         name: str,
         db: Any | None = None,
-        uses: "tuple[Pipeline, ...] | list[Pipeline]" = (),
+        uses: tuple[Pipeline, ...] | list[Pipeline] = (),
     ):
         self.name = name
         self.db = db
@@ -588,18 +594,17 @@ class Pipeline:
 
     def bind(
         self,
-        key_map: "dict[str, str] | None" = None,
-        params: "dict[str, Any] | None" = None,
-        iterate: "dict[str, Any] | None" = None,
-    ) -> "PipelineBinding":
+        key_map: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        iterate: dict[str, Any] | None = None,
+    ) -> PipelineBinding:
         """Adapt this pipeline for a use edge WITHOUT touching its source:
         ``uses=[loading.bind(key_map={"session": "subject"},
         params={"low_hz": 30})]``. See :class:`PipelineBinding`. Params
         targets are validated here, at bind time."""
-        return PipelineBinding(
-            self, key_map=key_map, params=params, iterate=iterate)
+        return PipelineBinding(self, key_map=key_map, params=params, iterate=iterate)
 
-    def use(self, other: "Pipeline | PipelineBinding") -> "Pipeline":
+    def use(self, other: Pipeline | PipelineBinding) -> Pipeline:
         """Declare ``other`` (a Pipeline or a Pipeline.bind(...) binding) as
         a dependency: its steps join this pipeline's graph (union — nothing
         is copied; bindings materialize adapted copies at composition), so
@@ -617,18 +622,12 @@ class Pipeline:
                 f"instances; got {type(other).__name__}"
             )
         target = binding.pipeline
-        if target is self or any(
-            p is self for p in target._uses_pipelines_closure()
-        ):
+        if target is self or any(p is self for p in target._uses_pipelines_closure()):
             raise PipelineCycleError(
                 f"pipeline '{self.name}' cannot use '{target.name}': "
                 f"dependency cycle between pipelines"
             )
-        if (
-            target.db is not None
-            and self.db is not None
-            and target.db is not self.db
-        ):
+        if target.db is not None and self.db is not None and target.db is not self.db:
             raise ValueError(
                 f"pipeline '{target.name}' is bound to a different database "
                 f"than '{self.name}' — cross-database composition is not "
@@ -651,13 +650,13 @@ class Pipeline:
             )
         return self
 
-    def _uses_pipelines_closure(self) -> "list[Pipeline]":
+    def _uses_pipelines_closure(self) -> list[Pipeline]:
         """Transitively used pipelines (bindings stripped), deduped by
         identity — for cycle checks and params resolution."""
         ordered: list[Pipeline] = []
         seen: set[int] = set()
 
-        def visit(p: "Pipeline") -> None:
+        def visit(p: Pipeline) -> None:
             for b in p.uses:
                 if id(b.pipeline) not in seen:
                     seen.add(id(b.pipeline))
@@ -667,7 +666,7 @@ class Pipeline:
         visit(self)
         return ordered
 
-    def _uses_closure(self) -> "list[tuple[Pipeline, PipelineBinding]]":
+    def _uses_closure(self) -> list[tuple[Pipeline, PipelineBinding]]:
         """Transitively used pipelines with their EFFECTIVE bindings
         (outer ∘ inner composition down each path), dependencies-first.
 
@@ -679,7 +678,7 @@ class Pipeline:
         ordered: list[tuple[Pipeline, PipelineBinding]] = []
         seen: set[tuple[int, str]] = set()
 
-        def visit(p: "Pipeline", outer: "PipelineBinding | None") -> None:
+        def visit(p: Pipeline, outer: PipelineBinding | None) -> None:
             for b in p.uses:
                 eff = b if outer is None else b.compose(outer)
                 key = (id(eff.pipeline), eff.signature())
@@ -691,7 +690,7 @@ class Pipeline:
         visit(self, None)
         return ordered
 
-    def _composed_steps(self) -> "list[tuple[Pipeline, StepSpec]]":
+    def _composed_steps(self) -> list[tuple[Pipeline, StepSpec]]:
         """The full graph's steps as (owner pipeline, spec) pairs: used
         pipelines' steps first (closure order, adapted through their
         effective bindings), then this pipeline's own (never adapted)."""
@@ -703,7 +702,7 @@ class Pipeline:
 
     # -- activation ---------------------------------------------------------
 
-    def activate(self) -> "Pipeline":
+    def activate(self) -> Pipeline:
         """Make this pipeline the ambient ``for_each`` registration target."""
         if active_pipeline() is not self:
             _active_stack.append(self)
@@ -755,13 +754,13 @@ class Pipeline:
     # -- graph ----------------------------------------------------------------
 
     @staticmethod
-    def _step_label(owner: "Pipeline", spec: StepSpec, via: "Pipeline") -> str:
+    def _step_label(owner: Pipeline, spec: StepSpec, via: Pipeline) -> str:
         """Display name for a step; owner-qualified when it lives in a used
         pipeline (``loading:bandpass``)."""
         return spec.name if owner is via else f"{owner.name}:{spec.name}"
 
     @staticmethod
-    def _deps_for(pairs: "list[tuple[Pipeline, StepSpec]]") -> dict[int, set[int]]:
+    def _deps_for(pairs: list[tuple[Pipeline, StepSpec]]) -> dict[int, set[int]]:
         """Pair index -> indices of prerequisite pairs (variable-type edges,
         crossing pipeline boundaries freely)."""
         producers: dict[type, set[int]] = {}
@@ -778,8 +777,8 @@ class Pipeline:
 
     def _topo_order(
         self,
-        pairs: "list[tuple[Pipeline, StepSpec]]",
-        subset: "set[int] | None" = None,
+        pairs: list[tuple[Pipeline, StepSpec]],
+        subset: set[int] | None = None,
     ) -> list[int]:
         """Kahn's algorithm over ``subset`` (default: all pairs).
 
@@ -801,7 +800,8 @@ class Pipeline:
             if not ready:
                 stuck = [
                     self._step_label(pairs[i][0], pairs[i][1], self)
-                    for i in indices if i not in done
+                    for i in indices
+                    if i not in done
                 ]
                 raise PipelineCycleError(
                     f"pipeline '{self.name}' has a dependency cycle among "
@@ -812,7 +812,7 @@ class Pipeline:
         return order
 
     def _resolve_target(
-        self, pairs: "list[tuple[Pipeline, StepSpec]]", target: Any
+        self, pairs: list[tuple[Pipeline, StepSpec]], target: Any
     ) -> set[int]:
         """Pair indices matching ``target`` (Step handle, callable, or name)
         anywhere in the composed graph — own steps or used pipelines'.
@@ -822,9 +822,9 @@ class Pipeline:
         """
         if isinstance(target, Step):
             matches = {
-                i for i, (_, s) in enumerate(pairs)
-                if s is target.spec
-                or getattr(s, "origin", None) is target.spec
+                i
+                for i, (_, s) in enumerate(pairs)
+                if s is target.spec or getattr(s, "origin", None) is target.spec
             }
         elif callable(target):
             matches = {i for i, (_, s) in enumerate(pairs) if s.fn is target}
@@ -845,7 +845,7 @@ class Pipeline:
         return matches
 
     def _ancestors(
-        self, pairs: "list[tuple[Pipeline, StepSpec]]", targets: set[int]
+        self, pairs: list[tuple[Pipeline, StepSpec]], targets: set[int]
     ) -> set[int]:
         deps = self._deps_for(pairs)
         seen: set[int] = set()
@@ -902,8 +902,7 @@ class Pipeline:
                 entry["combos"] = node.get("combos", [])
             except Exception as exc:  # staleness check must never block planning
                 Log.warn(
-                    f"pipeline_plan: state check failed for step "
-                    f"'{spec.name}': {exc}"
+                    f"pipeline_plan: state check failed for step '{spec.name}': {exc}"
                 )
                 entry["state"] = "unknown"
                 entry["combos"] = []
@@ -950,8 +949,7 @@ class Pipeline:
                 continue
             kind = _endpoint_kind(spec.name)
             if kind is not None:
-                out.append(
-                    {"step": spec.name, "pipeline": owner.name, "kind": kind})
+                out.append({"step": spec.name, "pipeline": owner.name, "kind": kind})
         return out
 
     def run_endpoints(
@@ -968,16 +966,18 @@ class Pipeline:
         run_all's own-steps rule); ``include_used=True`` widens to
         endpoints inside used pipelines.
         """
-        pairs, order, targets = self._select(
-            "endpoints", include_used=include_used)
+        pairs, order, targets = self._select("endpoints", include_used=include_used)
         if not order:
             self.deactivate()
             Log.warn(
                 f"pipeline_run_skipped: run_endpoints on '{self.name}': no "
                 f"endpoint (plot_/stat_) steps"
-                + ("" if include_used else
-                   " among own steps — pass include_used=True to run "
-                   "endpoints inside used pipelines")
+                + (
+                    ""
+                    if include_used
+                    else " among own steps — pass include_used=True to run "
+                    "endpoints inside used pipelines"
+                )
             )
             return []
         return self._run(
@@ -998,10 +998,13 @@ class Pipeline:
 
         pairs = self._composed_steps()
         targets = self._resolve_target(pairs, target)
-        non_endpoints = sorted({
-            pairs[i][1].name for i in targets
-            if _endpoint_kind(pairs[i][1].name) is None
-        })
+        non_endpoints = sorted(
+            {
+                pairs[i][1].name
+                for i in targets
+                if _endpoint_kind(pairs[i][1].name) is None
+            }
+        )
         if non_endpoints:
             raise ValueError(
                 f"show() is for endpoints (plot_/stat_ functions); "
@@ -1017,8 +1020,7 @@ class Pipeline:
             finalized_for=targets,
         )
         rendered: list = []
-        target_positions = {
-            pos for pos, i in enumerate(order) if i in targets}
+        target_positions = {pos for pos, i in enumerate(order) if i in targets}
         for pos in sorted(target_positions):
             result_tbl = results[pos]
             if result_tbl is None:
@@ -1059,7 +1061,7 @@ class Pipeline:
     def run_until(
         self,
         target: Any,
-        finalized: "bool | None" = None,
+        finalized: bool | None = None,
         skip_computed: bool = True,
     ) -> list:
         """Run ``target`` and its ancestors only — resolved over the
@@ -1077,7 +1079,7 @@ class Pipeline:
             finalized_for=targets,
         )
 
-    def _db_for(self, owner: "Pipeline", spec: StepSpec):
+    def _db_for(self, owner: Pipeline, spec: StepSpec):
         """Run-time db resolution: step option → owner pipeline → this
         pipeline (the C3 inheritance rule for db=None sub-pipelines)."""
         return spec.options.get("db") or owner.db or self.db
@@ -1087,7 +1089,7 @@ class Pipeline:
         mode: str,
         target: Any | None = None,
         include_used: bool = False,
-    ) -> "tuple[list, list[int], set[int]]":
+    ) -> tuple[list, list[int], set[int]]:
         """Shared step selection for run_*/execution_order: returns
         (pairs, topo order, target indices) for ``mode`` ∈
         {"all", "until", "endpoints"}."""
@@ -1098,7 +1100,8 @@ class Pipeline:
             targets = self._resolve_target(pairs, target)
         elif mode == "endpoints":
             targets = {
-                i for i, (owner, spec) in enumerate(pairs)
+                i
+                for i, (owner, spec) in enumerate(pairs)
                 if _endpoint_kind(spec.name) is not None
                 and (include_used or owner is self)
             }
@@ -1116,7 +1119,7 @@ class Pipeline:
         mode: str = "all",
         target: Any | None = None,
         include_used: bool = False,
-        finalized: "bool | None" = None,
+        finalized: bool | None = None,
         skip_computed: bool = True,
     ) -> list[dict]:
         """The run plan as plain-data descriptors WITHOUT executing —
@@ -1144,32 +1147,32 @@ class Pipeline:
             opts = dict(spec.options)
             eff_skip = (
                 (opts.get("skip_computed") or skip_computed)
-                if opts.get("track_lineage", True) else False
+                if opts.get("track_lineage", True)
+                else False
             )
-            descriptors.append({
-                "pipeline": owner.name,
-                "step": spec.name,
-                "step_index": next(
-                    idx for idx, s in enumerate(owner.steps)
-                    if s is origin
-                ),
-                "is_matlab": bool(opts.get("__matlab__", False)),
-                "apply_finalized": (
-                    finalized if (finalized is not None and i in targets)
-                    else None
-                ),
-                "skip_computed": eff_skip,
-                "metadata_iterables": dict(spec.metadata_iterables),
-                "constant_inputs": {
-                    k: spec.inputs[k]
-                    for k in _constant_input_names(spec)
-                },
-                "path_templates": {
-                    k: str(v.template)
-                    for k, v in spec.inputs.items()
-                    if isinstance(v, PathOutput)
-                },
-            })
+            descriptors.append(
+                {
+                    "pipeline": owner.name,
+                    "step": spec.name,
+                    "step_index": next(
+                        idx for idx, s in enumerate(owner.steps) if s is origin
+                    ),
+                    "is_matlab": bool(opts.get("__matlab__", False)),
+                    "apply_finalized": (
+                        finalized if (finalized is not None and i in targets) else None
+                    ),
+                    "skip_computed": eff_skip,
+                    "metadata_iterables": dict(spec.metadata_iterables),
+                    "constant_inputs": {
+                        k: spec.inputs[k] for k in _constant_input_names(spec)
+                    },
+                    "path_templates": {
+                        k: str(v.template)
+                        for k, v in spec.inputs.items()
+                        if isinstance(v, PathOutput)
+                    },
+                }
+            )
             owner._acknowledged = True
         Log.info(
             f"pipeline_execution_order: '{self.name}' mode={mode} -> "
@@ -1179,18 +1182,16 @@ class Pipeline:
 
     def _run(
         self,
-        pairs: "list[tuple[Pipeline, StepSpec]]",
+        pairs: list[tuple[Pipeline, StepSpec]],
         order: list[int],
         skip_computed: bool = True,
-        finalized: "bool | None" = None,
-        finalized_for: "set[int] | None" = None,
+        finalized: bool | None = None,
+        finalized_for: set[int] | None = None,
     ) -> list:
-        from .foreach import for_each as _for_each
 
-        matlab_steps = sorted({
-            pairs[i][1].name for i in order
-            if pairs[i][1].options.get("__matlab__")
-        })
+        matlab_steps = sorted(
+            {pairs[i][1].name for i in order if pairs[i][1].options.get("__matlab__")}
+        )
         if matlab_steps:
             raise RuntimeError(
                 f"pipeline '{self.name}' contains MATLAB-registered step(s) "
@@ -1214,8 +1215,9 @@ class Pipeline:
                 else None
             )
             results.append(
-                self._execute_step(pairs, i, skip_computed, apply_finalized,
-                                   report=report)
+                self._execute_step(
+                    pairs, i, skip_computed, apply_finalized, report=report
+                )
             )
         self.last_run_report = report
         failed_total = sum(e["failed"] for e in report)
@@ -1227,11 +1229,11 @@ class Pipeline:
 
     def _execute_step(
         self,
-        pairs: "list[tuple[Pipeline, StepSpec]]",
+        pairs: list[tuple[Pipeline, StepSpec]],
         i: int,
         skip_computed: bool = True,
-        finalized: "bool | None" = None,
-        report: "list[dict] | None" = None,
+        finalized: bool | None = None,
+        report: list[dict] | None = None,
     ):
         """Execute ONE composed step through eager for_each. Shared by the
         ``_run`` loop and the MATLAB bridge's mixed-pipeline driver (which
@@ -1261,12 +1263,12 @@ class Pipeline:
             report.append(entry)
             _caller_progress_fn = opts.get("_progress_fn")
 
-            def _collecting_progress_fn(info: dict, _entry=entry,
-                                        _next=_caller_progress_fn):
+            def _collecting_progress_fn(
+                info: dict, _entry=entry, _next=_caller_progress_fn
+            ):
                 if info.get("event") == "summary":
                     _entry["completed"] = info.get("completed", 0)
-                    _entry["failed"] = info.get(
-                        "failed", info.get("skipped", 0))
+                    _entry["failed"] = info.get("failed", info.get("skipped", 0))
                     _entry["total"] = info.get("total", 0)
                     _entry["cancelled"] = bool(info.get("cancelled"))
                 if _next is not None:

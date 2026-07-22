@@ -3,15 +3,16 @@ Tests for scistack_gui.registry — function and variable-class registry.
 """
 
 import types
-import pytest
 
-from scidb import BaseVariable
+import pytest
 from scistack_gui import registry
 
+from scidb import BaseVariable
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_module(**attrs) -> types.ModuleType:
     """Create a throwaway module with the given attributes.
@@ -48,6 +49,7 @@ class RegistryTestVar(BaseVariable):
 # register_module
 # ---------------------------------------------------------------------------
 
+
 class TestRegisterModule:
     def test_registers_top_level_callables(self):
         def my_fn(x):
@@ -75,8 +77,11 @@ class TestRegisterModule:
         assert "MyClass" not in registry._functions
 
     def test_multiple_functions(self):
-        def fn_a(x): return x
-        def fn_b(x): return x
+        def fn_a(x):
+            return x
+
+        def fn_b(x):
+            return x
 
         mod = _make_module(fn_a=fn_a, fn_b=fn_b)
         registry.register_module(mod)
@@ -84,8 +89,11 @@ class TestRegisterModule:
         assert "fn_b" in registry._functions
 
     def test_register_twice_overwrites(self):
-        def fn_v1(x): return 1
-        def fn_v2(x): return 2
+        def fn_v1(x):
+            return 1
+
+        def fn_v2(x):
+            return 2
 
         registry.register_module(_make_module(my_fn=fn_v1))
         registry.register_module(_make_module(my_fn=fn_v2))
@@ -96,7 +104,8 @@ class TestRegisterModule:
         # file: the name is bound in the module's namespace, but the
         # function was defined elsewhere, so it shouldn't be treated as a
         # discoverable pipeline step.
-        def helper(x): return x
+        def helper(x):
+            return x
 
         mod = _make_module_with_reexport(helper=helper)
         registry.register_module(mod)
@@ -110,7 +119,8 @@ class TestRegisterModule:
         from scidb import configure_database, for_each
 
         mod = _make_module_with_reexport(
-            for_each=for_each, configure_database=configure_database,
+            for_each=for_each,
+            configure_database=configure_database,
         )
         registry.register_module(mod)
         assert "for_each" not in registry._functions
@@ -121,7 +131,8 @@ class TestRegisterModule:
         # that also happens to import scidb helpers.
         from scidb import for_each
 
-        def compute_thing(x): return x
+        def compute_thing(x):
+            return x
 
         mod = _make_module_with_reexport(compute_thing=compute_thing, for_each=for_each)
         compute_thing.__module__ = mod.__name__  # simulate "defined in this file"
@@ -134,9 +145,12 @@ class TestRegisterModule:
 # get_function
 # ---------------------------------------------------------------------------
 
+
 class TestGetFunction:
     def test_returns_registered_function(self):
-        def compute(x): return x
+        def compute(x):
+            return x
+
         registry._functions["compute"] = compute
         assert registry.get_function("compute") is compute
 
@@ -153,6 +167,7 @@ class TestGetFunction:
 # ---------------------------------------------------------------------------
 # get_variable_class
 # ---------------------------------------------------------------------------
+
 
 class TestGetVariableClass:
     def test_returns_registered_variable_class(self):

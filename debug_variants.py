@@ -1,24 +1,37 @@
 """Debug script to understand the variant duplication issue."""
+
 import json
-import numpy as np
 import tempfile
 from pathlib import Path
+
+import numpy as np
 
 from scidb import BaseVariable, configure_database, for_each
 
 SCHEMA = ["subject", "session"]
 
-class RawSignal(BaseVariable): pass
-class Filtered(BaseVariable): pass
-class Spikes(BaseVariable): pass
+
+class RawSignal(BaseVariable):
+    pass
+
+
+class Filtered(BaseVariable):
+    pass
+
+
+class Spikes(BaseVariable):
+    pass
+
 
 def bandpass(signal, low_hz):
     return signal * low_hz
+
 
 def detect_spikes(signal, threshold):
     if isinstance(signal, np.ndarray):
         return (signal > threshold).astype(float)
     return float(signal > threshold)
+
 
 # Create temp database
 with tempfile.TemporaryDirectory() as tmpdir:
@@ -30,13 +43,23 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
     # Create filtered variants
     for low_hz in [20, 30]:
-        for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                 subject=["S01", "S02"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": low_hz},
+            [Filtered],
+            subject=["S01", "S02"],
+            session=["1"],
+        )
 
     # Create spikes - this is where duplicates appear
     print("\n=== Running detect_spikes with threshold=0.5 ===")
-    for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-             subject=["S01", "S02"], session=["1"])
+    for_each(
+        detect_spikes,
+        {"signal": Filtered, "threshold": 0.5},
+        [Spikes],
+        subject=["S01", "S02"],
+        session=["1"],
+    )
 
     # Check what was saved
     print("\n=== Inspecting Spikes records in database ===")
@@ -49,17 +72,19 @@ with tempfile.TemporaryDirectory() as tmpdir:
     rows = db._duck._fetchall(sql)
 
     print(f"Found {len(rows)} Spikes records")
-    for i, (rid, vname, vk_json, bp_json) in enumerate(rows):
+    for i, (rid, _vname, vk_json, bp_json) in enumerate(rows):
         vk = json.loads(vk_json)
         bp = json.loads(bp_json)
 
         # Strip __upstream for comparison
         vk_stripped = {k: v for k, v in vk.items() if k != "__upstream"}
 
-        print(f"\nRecord {i+1}: {rid[:12]}")
+        print(f"\nRecord {i + 1}: {rid[:12]}")
         print(f"  __upstream: {vk.get('__upstream', {})}")
         print(f"  branch_params: {bp}")
-        print(f"  version_keys (stripped): {json.dumps(vk_stripped, sort_keys=True, indent=2)}")
+        print(
+            f"  version_keys (stripped): {json.dumps(vk_stripped, sort_keys=True, indent=2)}"
+        )
 
     # Check list_pipeline_variants
     print("\n=== list_pipeline_variants output ===")

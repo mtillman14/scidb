@@ -26,7 +26,7 @@ class TestScalarTransparency:
         assert 20 / x == 2
         assert x // 3 == 3
         assert x % 3 == 1
-        assert x ** 2 == 100
+        assert x**2 == 100
         assert -x == -10
         assert abs(constant(-5)) == 5
 
@@ -169,6 +169,7 @@ class TestMetadataCapture:
 
     def test_source_line_captured(self):
         import inspect as _inspect
+
         expected_line = _inspect.currentframe().f_lineno + 1
         x = constant(1000, description="Hz")
         assert x.source_line == expected_line
@@ -340,7 +341,7 @@ class TestConstantToConstantArithmetic:
     def test_pow_two_constants(self):
         a = constant(2)
         b = constant(10)
-        assert a ** b == 1024
+        assert a**b == 1024
 
     def test_comparison_two_constants(self):
         a = constant(5)

@@ -12,7 +12,8 @@ import hashlib
 import inspect
 import logging
 import os
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from scicanonicalhash import canonical_hash
 
@@ -78,7 +79,9 @@ def _normalize_ast(tree: ast.AST) -> ast.AST:
     ``include_attributes=False``.
     """
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
             body = node.body
             if (
                 body
@@ -110,7 +113,10 @@ def _resolve_call_target(call: ast.Call, globals_ns: dict) -> Any:
 def _hash_source(fn: Any, seen: dict) -> str:
     """AST-based recursive hash of a callable's source plus its callees."""
     fn = _unwrap(fn)
-    key = (getattr(fn, "__module__", None), getattr(fn, "__qualname__", getattr(fn, "__name__", repr(fn))))
+    key = (
+        getattr(fn, "__module__", None),
+        getattr(fn, "__qualname__", getattr(fn, "__name__", repr(fn))),
+    )
     if key in seen:
         return seen[key]
     seen[key] = "<cycle>"
@@ -171,7 +177,9 @@ def _hash_bytecode_only(fn: Any) -> str:
         return hashlib.sha256(name.encode()).hexdigest()
 
 
-def compute_function_hash(fn: Callable, *, truncate: int = 16, recursive: bool = True) -> str:
+def compute_function_hash(
+    fn: Callable, *, truncate: int = 16, recursive: bool = True
+) -> str:
     """Compute a stable hash of a function.
 
     By default uses AST-based recursive hashing: the hash of a function

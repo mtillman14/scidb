@@ -100,7 +100,11 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         If the located pyproject.toml has no ``[tool.scistack]`` section or
         the section is invalid.
     """
-    logger.info("[config] Locating config file (project_path=%s, db_path=%s)", project_path, db_path)
+    logger.info(
+        "[config] Locating config file (project_path=%s, db_path=%s)",
+        project_path,
+        db_path,
+    )
     toml_path = _locate_pyproject(project_path, db_path)
     project_root = toml_path.parent
     logger.info("[config] Found config at %s", toml_path)
@@ -112,10 +116,14 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     logger.info("[config] Extracting [tool.scistack] section")
     section = _extract_scistack_section(data, toml_path.name)
     if section is None:
-        logger.info("[config] %s has no [tool.scistack] section; using defaults.", toml_path)
+        logger.info(
+            "[config] %s has no [tool.scistack] section; using defaults.", toml_path
+        )
         section = {}
     else:
-        logger.debug("[config] Found config section with keys: %s", list(section.keys()))
+        logger.debug(
+            "[config] Found config section with keys: %s", list(section.keys())
+        )
 
     # --- modules ---
     logger.info("[config] Processing modules list")
@@ -125,13 +133,20 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     logger.debug("[config] Found %d module entries in config", len(raw_modules))
     modules: list[Path] = []
     for entry_idx, entry in enumerate(raw_modules):
-        logger.debug("[config] Processing module entry %d/%d: %s", entry_idx + 1, len(raw_modules), entry)
+        logger.debug(
+            "[config] Processing module entry %d/%d: %s",
+            entry_idx + 1,
+            len(raw_modules),
+            entry,
+        )
         if any(c in entry for c in ("*", "?", "[")):
             # Glob pattern (e.g. "pipelines/*.py")
             logger.debug("[config] Entry is a glob pattern")
             matched = sorted(
-                Path(m) for m in _glob.glob(
-                    str(project_root / entry), recursive=True,
+                Path(m)
+                for m in _glob.glob(
+                    str(project_root / entry),
+                    recursive=True,
                 )
                 if m.endswith(".py")
             )
@@ -148,7 +163,8 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
                 found = sorted(p.rglob("*.py"))
                 if not found:
                     logger.warning(
-                        "[config] modules directory contains no .py files: %s", p,
+                        "[config] modules directory contains no .py files: %s",
+                        p,
                     )
                 else:
                     logger.debug("[config] Found %d .py files in directory", len(found))
@@ -156,7 +172,8 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
             else:
                 if not p.exists():
                     logger.warning(
-                        "[config] Module listed in [tool.scistack] not found: %s", p,
+                        "[config] Module listed in [tool.scistack] not found: %s",
+                        p,
                     )
                 else:
                     logger.debug("[config] Adding module file: %s", p)
@@ -191,7 +208,9 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     logger.info("[config] Processing MATLAB configuration")
     matlab_section = section.get("matlab", {})
     if matlab_section:
-        logger.debug("[config] Found MATLAB section with keys: %s", list(matlab_section.keys()))
+        logger.debug(
+            "[config] Found MATLAB section with keys: %s", list(matlab_section.keys())
+        )
     else:
         logger.debug("[config] No MATLAB section found")
 
@@ -216,9 +235,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     logger.info("[config] Deduplicating MATLAB functions vs variables")
     var_path_set = {p.resolve() for p in matlab_variables}
     original_fn_count = len(matlab_functions)
-    matlab_functions = [
-        p for p in matlab_functions if p.resolve() not in var_path_set
-    ]
+    matlab_functions = [p for p in matlab_functions if p.resolve() not in var_path_set]
     excluded = original_fn_count - len(matlab_functions)
     if excluded:
         logger.info(
@@ -254,14 +271,20 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     logger.info(
         "[config] Configuration loaded from %s: %d modules, %d packages, auto_discover=%s, "
         "%d MATLAB functions, %d MATLAB variables",
-        toml_path, len(modules), len(packages), auto_discover,
-        len(matlab_functions), len(matlab_variables),
+        toml_path,
+        len(modules),
+        len(packages),
+        auto_discover,
+        len(matlab_functions),
+        len(matlab_variables),
     )
     return config
 
 
 def _resolve_glob_paths(
-    project_root: Path, raw_entries: list, label: str,
+    project_root: Path,
+    raw_entries: list,
+    label: str,
 ) -> list[Path]:
     """Resolve a list of file paths / glob patterns relative to project_root.
 
@@ -273,13 +296,21 @@ def _resolve_glob_paths(
     logger.debug("[config] Resolving %d entries for %s", len(raw_entries), label)
     result: list[Path] = []
     for entry_idx, entry in enumerate(raw_entries):
-        logger.debug("[config] Processing %s entry %d/%d: %s", label, entry_idx + 1, len(raw_entries), entry)
+        logger.debug(
+            "[config] Processing %s entry %d/%d: %s",
+            label,
+            entry_idx + 1,
+            len(raw_entries),
+            entry,
+        )
         if any(c in entry for c in ("*", "?", "[")):
             # Glob pattern — expand and keep only .m files.
             logger.debug("[config] Entry is a glob pattern")
             matched = sorted(
-                Path(p) for p in _glob.glob(
-                    str(project_root / entry), recursive=True,
+                Path(p)
+                for p in _glob.glob(
+                    str(project_root / entry),
+                    recursive=True,
                 )
                 if p.endswith(".m")
             )
@@ -296,7 +327,9 @@ def _resolve_glob_paths(
                 found = sorted(p.rglob("*.m"))
                 if not found:
                     logger.warning(
-                        "[config] %s directory contains no .m files: %s", label, p,
+                        "[config] %s directory contains no .m files: %s",
+                        label,
+                        p,
                     )
                 else:
                     logger.debug("[config] Found %d .m files in directory", len(found))
@@ -320,7 +353,9 @@ def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
             logger.debug("[config] project_path is a file: %s", p)
             return p
         if p.is_dir():
-            logger.debug("[config] project_path is a directory, searching for config file")
+            logger.debug(
+                "[config] project_path is a directory, searching for config file"
+            )
             # Prefer pyproject.toml, fall back to scistack.toml
             for name in ("pyproject.toml", "scistack.toml"):
                 candidate = p / name
@@ -333,7 +368,9 @@ def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
         raise FileNotFoundError(f"Path does not exist: {p}")
 
     # Search upward from the database file's directory.
-    logger.debug("[config] No explicit project_path, searching upward from db_path: %s", db_path)
+    logger.debug(
+        "[config] No explicit project_path, searching upward from db_path: %s", db_path
+    )
     search_dir = _normalize(db_path).parent
     search_count = 0
     while True:
@@ -342,16 +379,23 @@ def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
         for name in ("pyproject.toml", "scistack.toml"):
             candidate = search_dir / name
             if candidate.exists():
-                logger.debug("[config] Found %s, checking for [tool.scistack] section", name)
+                logger.debug(
+                    "[config] Found %s, checking for [tool.scistack] section", name
+                )
                 try:
                     with open(candidate, "rb") as f:
                         data = tomllib.load(f)
                     section = _extract_scistack_section(data, name)
                     if section is not None:
-                        logger.debug("[config] %s contains [tool.scistack] section", name)
+                        logger.debug(
+                            "[config] %s contains [tool.scistack] section", name
+                        )
                         return candidate
                     else:
-                        logger.debug("[config] %s has no [tool.scistack] section, continuing search", name)
+                        logger.debug(
+                            "[config] %s has no [tool.scistack] section, continuing search",
+                            name,
+                        )
                 except Exception:
                     logger.debug("[config] Failed to parse %s, continuing search", name)
                     pass  # skip unparseable files

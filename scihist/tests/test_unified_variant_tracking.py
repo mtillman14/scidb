@@ -7,11 +7,9 @@ matching scidb.for_each structure, eliminating the dual variant tracking system.
 import numpy as np
 import pytest
 
+import scidb
 from scidb import BaseVariable, Fixed, scistack
 from scihist import for_each as scihist_for_each
-import scidb
-
-from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 
 def derived_bp(db, variable_name):
@@ -58,6 +56,7 @@ class TestVersionKeysCompleteness:
 
     def test_scihist_has_all_version_keys(self, db):
         """scihist outputs record function + inputs + constants in the graph."""
+
         @scistack
         def process(x, threshold):
             return x * threshold
@@ -90,6 +89,7 @@ class TestVersionKeysCompleteness:
 
     def test_scihist_has_populated_branch_params(self, db):
         """scihist outputs should have non-empty branch_params."""
+
         @scistack
         def scale(x, factor):
             return x * factor
@@ -118,6 +118,7 @@ class TestVersionKeysCompleteness:
 
     def test_multiple_constants_in_version_keys(self, db):
         """All constants should be recorded on the producing invocation."""
+
         @scistack
         def compute(x, alpha, beta, gamma):
             return x * alpha + beta * gamma
@@ -145,6 +146,7 @@ class TestBranchParamsAccumulation:
 
     def test_branch_params_accumulate_across_pipeline(self, db):
         """Downstream branch_params should include upstream constants."""
+
         @scistack
         def step1(x, param1):
             return x + param1
@@ -183,6 +185,7 @@ class TestBranchParamsAccumulation:
 
     def test_branch_params_multiple_inputs(self, db):
         """branch_params should merge from all upstream inputs."""
+
         @scistack
         def process_a(x, alpha):
             return x * alpha
@@ -240,6 +243,7 @@ class TestFixedInputTracking:
 
     def test_fixed_input_in_lineage(self, db):
         """Fixed inputs should appear in _lineage.inputs as variable entries (not constants)."""
+
         @scistack
         def process(ref, value):
             return ref + value
@@ -269,7 +273,7 @@ class TestFixedInputTracking:
 
         prov = db.get_provenance(ProcessedData, version=record_check[0])
         assert prov is not None, "No provenance recorded for ProcessedData"
-        inputs = prov["inputs"]        # variable inputs only
+        inputs = prov["inputs"]  # variable inputs only
         constants = prov["constants"]  # {param_name: value}
 
         # Fixed input 'ref' is a VARIABLE edge (pointing at the saved RawData),
@@ -284,10 +288,14 @@ class TestFixedInputTracking:
         )
 
         # value is a literal constant.
-        assert "value" in constants, f"Constant 'value' should be present, got {constants}"
+        assert "value" in constants, (
+            f"Constant 'value' should be present, got {constants}"
+        )
 
         # 'ref' must NOT appear among constants.
-        assert "ref" not in constants, f"'ref' should not be a constant, got {constants}"
+        assert "ref" not in constants, (
+            f"'ref' should not be a constant, got {constants}"
+        )
 
     def test_fixed_input_staleness_detection(self, db):
         """Changing a Fixed input should cause skip_computed to re-run."""
@@ -342,6 +350,7 @@ class TestVariantDiscovery:
 
     def test_multiple_constant_variants(self, db):
         """Different constant values should create distinct variants."""
+
         @scistack
         def scale(x, factor):
             return x * factor
@@ -375,6 +384,7 @@ class TestVariantDiscovery:
 
     def test_variant_query_consistency(self, db):
         """Variants are queryable via the bipartite graph (constant input edges)."""
+
         @scistack
         def compute(x, param):
             return x + param
@@ -413,6 +423,7 @@ class TestComparisonWithScidb:
 
     def test_metadata_structure_matches_scidb(self, db):
         """scihist outputs should have similar metadata to scidb outputs."""
+
         # Plain function for scidb
         def plain_process(x, threshold):
             return x * threshold
@@ -458,6 +469,7 @@ class TestComparisonWithScidb:
 
     def test_branch_params_structure_matches_scidb(self, db):
         """branch_params structure should match between scidb and scihist."""
+
         # Multi-stage pipeline
         def plain_step1(x, p1):
             return x + p1
@@ -477,12 +489,36 @@ class TestComparisonWithScidb:
         RawData.save(np.array([10]), subject=2, trial=1)
 
         # scidb pipeline
-        scidb.for_each(plain_step1, {"x": RawData, "p1": 5}, [IntermediateA], subject=[1], trial=[1])
-        scidb.for_each(plain_step2, {"y": IntermediateA, "p2": 2}, [ProcessedData], subject=[1], trial=[1])
+        scidb.for_each(
+            plain_step1,
+            {"x": RawData, "p1": 5},
+            [IntermediateA],
+            subject=[1],
+            trial=[1],
+        )
+        scidb.for_each(
+            plain_step2,
+            {"y": IntermediateA, "p2": 2},
+            [ProcessedData],
+            subject=[1],
+            trial=[1],
+        )
 
         # scihist pipeline
-        scihist_for_each(lineage_step1, {"x": RawData, "p1": 5}, [IntermediateB], subject=[2], trial=[1])
-        scihist_for_each(lineage_step2, {"y": IntermediateB, "p2": 2}, [FinalResult], subject=[2], trial=[1])
+        scihist_for_each(
+            lineage_step1,
+            {"x": RawData, "p1": 5},
+            [IntermediateB],
+            subject=[2],
+            trial=[1],
+        )
+        scihist_for_each(
+            lineage_step2,
+            {"y": IntermediateB, "p2": 2},
+            [FinalResult],
+            subject=[2],
+            trial=[1],
+        )
 
         # Get branch_params from final outputs (derived from the graph, §6)
         scidb_bp = derived_bp(db, "ProcessedData")
@@ -504,6 +540,7 @@ class TestMultipleOutputs:
 
     def test_multiple_outputs_all_have_metadata(self, db):
         """All outputs should have complete metadata."""
+
         @scistack
         def split_process(x, factor):
             return x * factor, x + factor
@@ -529,6 +566,7 @@ class TestMultipleOutputs:
 
     def test_multiple_outputs_same_branch_params(self, db):
         """All outputs from same call should have identical branch_params."""
+
         @scistack
         def dual_output(x, alpha, beta):
             return x * alpha, x + beta
@@ -605,6 +643,7 @@ class TestEdgeCases:
 
     def test_no_constants(self, db):
         """Function with only variable inputs should have empty __constants."""
+
         @scistack
         def identity(x):
             return x
@@ -625,6 +664,7 @@ class TestEdgeCases:
 
     def test_empty_branch_params_first_stage(self, db):
         """First pipeline stage should have only current function's params."""
+
         @scistack
         def first_stage(x, alpha):
             return x * alpha
@@ -648,6 +688,7 @@ class TestEdgeCases:
 
     def test_dry_run_no_save(self, db):
         """dry_run should not save any outputs."""
+
         @scistack
         def compute(x, value):
             return x + value
@@ -698,7 +739,8 @@ class TestEdgeCases:
         ).fetchone()[0]
         # where_clause survives only as a display column on _run.
         wcs = {
-            r[0] for r in db._duck.con.execute(
+            r[0]
+            for r in db._duck.con.execute(
                 "SELECT DISTINCT run.where_clause FROM _run run "
                 "JOIN _run_invocation ri ON ri.run_id = run.run_id "
                 "JOIN _invocation_output io ON io.invocation_id = ri.invocation_id "

@@ -61,7 +61,7 @@ class Merge:
         """Return a canonical string for use as a version key."""
         parts = []
         for spec in self.var_specs:
-            if hasattr(spec, 'to_key'):
+            if hasattr(spec, "to_key"):
                 parts.append(spec.to_key())
             elif isinstance(spec, type):
                 parts.append(spec.__name__)
@@ -82,7 +82,7 @@ class Merge:
                 if isinstance(inner, ColumnSelection):
                     inner_name = inner.__name__
                 else:
-                    inner_name = getattr(inner, '__name__', type(inner).__name__)
+                    inner_name = getattr(inner, "__name__", type(inner).__name__)
                 fixed_str = ", ".join(
                     f"{k}={v}" for k, v in spec.fixed_metadata.items()
                 )
@@ -90,5 +90,5 @@ class Merge:
             elif isinstance(spec, ColumnSelection):
                 parts.append(spec.__name__)
             else:
-                parts.append(getattr(spec, '__name__', type(spec).__name__))
+                parts.append(getattr(spec, "__name__", type(spec).__name__))
         return f"Merge({', '.join(parts)})"

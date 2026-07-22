@@ -21,7 +21,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
 from scistack_gui import startup
 from scistack_gui.startup import (
     StartupError,
@@ -80,7 +79,9 @@ def project_with_pyproject(tmp_path: Path) -> Path:
 class _FakeSyncResult:
     """Stand-in for :class:`scistack.uv_wrapper.SyncResult`."""
 
-    def __init__(self, ok: bool, returncode: int = 0, stderr: str = "", stdout: str = ""):
+    def __init__(
+        self, ok: bool, returncode: int = 0, stderr: str = "", stdout: str = ""
+    ):
         self.ok = ok
         self.returncode = returncode
         self.stderr = stderr
@@ -154,13 +155,9 @@ class TestFreshLockfile:
 # Stale lockfile path: sync is attempted
 # ---------------------------------------------------------------------------
 class TestStaleLockfileSync:
-    def test_successful_sync_is_silent(
-        self, project_with_pyproject: Path, monkeypatch
-    ):
+    def test_successful_sync_is_silent(self, project_with_pyproject: Path, monkeypatch):
         """Stale + sync succeeds → silent success, no errors recorded."""
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
         monkeypatch.setattr(
             "scistack.uv_wrapper.sync",
             lambda root, **kw: _FakeSyncResult(ok=True, stdout="Resolved 3 packages"),
@@ -174,9 +171,7 @@ class TestStaleLockfileSync:
         self, project_with_pyproject: Path, monkeypatch
     ):
         """Stale + sync fails → error recorded as blocking."""
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
         monkeypatch.setattr(
             "scistack.uv_wrapper.sync",
             lambda root, **kw: _FakeSyncResult(
@@ -207,9 +202,7 @@ class TestStaleLockfileSync:
         def fake_sync(root, **kw):
             raise UvNotFoundError("uv not on PATH")
 
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
         monkeypatch.setattr("scistack.uv_wrapper.sync", fake_sync)
 
         result = check_lockfile_staleness(project_with_pyproject)
@@ -223,12 +216,11 @@ class TestStaleLockfileSync:
         self, project_with_pyproject: Path, monkeypatch
     ):
         """Any other exception from sync should also surface as a blocking error."""
+
         def fake_sync(root, **kw):
             raise RuntimeError("something exploded")
 
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
         monkeypatch.setattr("scistack.uv_wrapper.sync", fake_sync)
 
         result = check_lockfile_staleness(project_with_pyproject)
@@ -368,6 +360,7 @@ class TestIsLockfileStaleException:
         self, project_with_pyproject: Path, monkeypatch
     ):
         """If is_lockfile_stale itself raises, check returns None gracefully."""
+
         def boom(root):
             raise OSError("permission denied")
 
@@ -382,13 +375,9 @@ class TestIsLockfileStaleException:
 # Multiple check calls (accumulation / replacement)
 # ---------------------------------------------------------------------------
 class TestMultipleChecks:
-    def test_repeated_failures_dedup(
-        self, project_with_pyproject: Path, monkeypatch
-    ):
+    def test_repeated_failures_dedup(self, project_with_pyproject: Path, monkeypatch):
         """Calling check twice with failures should replace, not append."""
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
 
         call_count = [0]
 
@@ -415,9 +404,7 @@ class TestMultipleChecks:
         """Different error kinds should accumulate, not replace each other."""
         from scistack.uv_wrapper import UvNotFoundError
 
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
 
         # First call: uv not found
         def uv_missing_sync(root, **kw):
@@ -442,9 +429,7 @@ class TestCheckMessages:
     def test_sync_failure_message_includes_exit_code(
         self, project_with_pyproject: Path, monkeypatch
     ):
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
         monkeypatch.setattr(
             "scistack.uv_wrapper.sync",
             lambda root, **kw: _FakeSyncResult(ok=False, returncode=42, stderr="boom"),
@@ -459,9 +444,7 @@ class TestCheckMessages:
     ):
         from scistack.uv_wrapper import UvNotFoundError
 
-        monkeypatch.setattr(
-            "scistack.uv_wrapper.is_lockfile_stale", lambda root: True
-        )
+        monkeypatch.setattr("scistack.uv_wrapper.is_lockfile_stale", lambda root: True)
         monkeypatch.setattr(
             "scistack.uv_wrapper.sync",
             lambda root, **kw: (_ for _ in ()).throw(UvNotFoundError("not found")),

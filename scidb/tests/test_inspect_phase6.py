@@ -9,11 +9,11 @@ import json
 
 import numpy as np
 import pytest
-
-from scidb import BaseVariable, configure_database, for_each
 from scidb.inspect import Inspector, render
 from scidb.inspect.cli import main
 from scidb.inspect.pick import PickAborted, drill_down, variant_label
+
+from scidb import BaseVariable, configure_database, for_each
 
 SCHEMA_KEYS = ["subject", "session"]
 
@@ -36,8 +36,13 @@ def build_p6_db(db_path):
     for subj in ("01", "02"):
         P6Raw.save(np.array([float(subj)]), subject=subj, session="1")
     for k in (1, 2):
-        for_each(gain6, {"signal": P6Raw, "k": k}, [P6Out],
-                 subject=["01", "02"], session=["1"])
+        for_each(
+            gain6,
+            {"signal": P6Raw, "k": k},
+            [P6Out],
+            subject=["01", "02"],
+            session=["1"],
+        )
     db.close()
 
 
@@ -105,7 +110,7 @@ class TestDrillDown:
         for ordering in (cands, list(reversed(cands))):
             choose = scripted(0)
             drill_down(list(ordering), SCHEMA_KEYS, choose)
-            (_, labels), = choose.asked
+            ((_, labels),) = choose.asked
             assert "gain6.k=1" in labels[0]
             assert "gain6.k=2" in labels[1]
 
@@ -127,6 +132,7 @@ class TestDrillDown:
 
         def aborting(title, labels):
             raise PickAborted()
+
         with pytest.raises(PickAborted):
             drill_down(cands, SCHEMA_KEYS, aborting)
 
@@ -152,8 +158,7 @@ class TestCli:
 
     def test_unambiguous_prints_only_the_rid(self, db_path, capsys):
         expected = self._rid_of(db_path, "subject=01", "k=1")
-        assert main(["--db", str(db_path), "pick", "P6Out",
-                     "subject=01", "k=1"]) == 0
+        assert main(["--db", str(db_path), "pick", "P6Out", "subject=01", "k=1"]) == 0
         out = capsys.readouterr().out
         assert out == f"{expected}\n"  # nothing else on stdout — composable
 
@@ -171,8 +176,9 @@ class TestCli:
         assert out.count("\n") >= 5  # header + rule + 4 candidates
 
     def test_json_mode(self, db_path, capsys):
-        assert main(["--db", str(db_path), "pick", "P6Out",
-                     "subject=01", "--json"]) == 0
+        assert (
+            main(["--db", str(db_path), "pick", "P6Out", "subject=01", "--json"]) == 0
+        )
         payload = json.loads(capsys.readouterr().out)
         assert len(payload) == 2
         assert {c["branch_params"]["gain6.k"] for c in payload} == {"1", "2"}
@@ -180,16 +186,16 @@ class TestCli:
     def test_interactive_flow(self, db_path, capsys, monkeypatch):
         answers = iter(["1", "2"])  # subject=01, then variant #2
         monkeypatch.setattr("builtins.input", lambda: next(answers))
-        assert main(["--db", str(db_path), "pick", "P6Out",
-                     "--interactive"]) == 0
+        assert main(["--db", str(db_path), "pick", "P6Out", "--interactive"]) == 0
         captured = capsys.readouterr()
         lines = captured.out.strip().splitlines()
         assert len(lines) == 1 and len(lines[0]) >= 8  # just the record_id
         assert "Select subject:" in captured.err
         assert "Select variant:" in captured.err
 
-    def test_interactive_without_type_offers_variables(self, db_path, capsys,
-                                                       monkeypatch):
+    def test_interactive_without_type_offers_variables(
+        self, db_path, capsys, monkeypatch
+    ):
         # Choose the P6Raw-ish entry then drill to one record. Variable menu
         # order comes from insp.variables() (alphabetical).
         answers = iter(["2", "1"])  # 2nd variable, then subject=01
@@ -201,18 +207,15 @@ class TestCli:
 
     def test_interactive_cancel(self, db_path, capsys, monkeypatch):
         monkeypatch.setattr("builtins.input", lambda: "q")
-        assert main(["--db", str(db_path), "pick", "P6Out",
-                     "--interactive"]) == 1
+        assert main(["--db", str(db_path), "pick", "P6Out", "--interactive"]) == 1
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "selection cancelled" in captured.err
 
-    def test_invalid_then_valid_choice_reprompts(self, db_path, capsys,
-                                                 monkeypatch):
+    def test_invalid_then_valid_choice_reprompts(self, db_path, capsys, monkeypatch):
         answers = iter(["zzz", "99", "1", "1"])
         monkeypatch.setattr("builtins.input", lambda: next(answers))
-        assert main(["--db", str(db_path), "pick", "P6Out",
-                     "--interactive"]) == 0
+        assert main(["--db", str(db_path), "pick", "P6Out", "--interactive"]) == 0
         assert "invalid choice" in capsys.readouterr().err
 
     def test_no_type_without_interactive_fails(self, db_path, capsys):

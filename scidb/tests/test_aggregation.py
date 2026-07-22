@@ -16,10 +16,9 @@ Covers:
 import numpy as np
 import pandas as pd
 import pytest
+
 import scifor as _scifor
-
 from scidb import BaseVariable, configure_database, for_each
-
 
 # ---------------------------------------------------------------------------
 # Schema and fixtures
@@ -41,6 +40,7 @@ def db(tmp_path):
 # ---------------------------------------------------------------------------
 # Variable types
 # ---------------------------------------------------------------------------
+
 
 class RawSignal(BaseVariable):
     pass
@@ -88,6 +88,7 @@ def weighted_sum(signal, weight):
 # 1. Full aggregation — no schema keys iterated
 # ---------------------------------------------------------------------------
 
+
 class TestFullAggregation:
     """for_each with no metadata_iterables aggregates all records into one call."""
 
@@ -97,8 +98,9 @@ class TestFullAggregation:
             for sess in ["1", "2"]:
                 RawSignal.save(1.0, subject=subj, session=sess)
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          save=False)
+        result = for_each(
+            aggregate_sum, {"signal": RawSignal}, [Aggregated], save=False
+        )
 
         assert result is not None
         assert len(result) == 1, "Expected exactly 1 iteration (full aggregation)"
@@ -119,8 +121,9 @@ class TestFullAggregation:
         """Edge case: 1 record with no iterated keys still works."""
         RawSignal.save(5.0, subject="S01", session="1")
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          save=False)
+        result = for_each(
+            aggregate_sum, {"signal": RawSignal}, [Aggregated], save=False
+        )
 
         assert result is not None
         assert len(result) == 1
@@ -132,8 +135,9 @@ class TestFullAggregation:
         RawSignal.save(2.0, subject="S01", session="2")
         RawSignal.save(3.0, subject="S02", session="1")
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          save=False)
+        result = for_each(
+            aggregate_sum, {"signal": RawSignal}, [Aggregated], save=False
+        )
 
         assert result is not None
         assert result["Aggregated"].iloc[0] == 6.0
@@ -142,6 +146,7 @@ class TestFullAggregation:
 # ---------------------------------------------------------------------------
 # 2. Partial aggregation — subset of schema keys iterated
 # ---------------------------------------------------------------------------
+
 
 class TestPartialAggregation:
     """for_each iterating over a subset of schema keys aggregates lower-level records."""
@@ -153,8 +158,13 @@ class TestPartialAggregation:
         RawSignal.save(3.0, subject="S02", session="1")
         RawSignal.save(4.0, subject="S02", session="2")
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          subject=["S01", "S02"], save=False)
+        result = for_each(
+            aggregate_sum,
+            {"signal": RawSignal},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=False,
+        )
 
         assert result is not None
         assert len(result) == 2, "Expected 2 iterations (one per subject)"
@@ -169,19 +179,27 @@ class TestPartialAggregation:
         RawSignal.save(3.0, subject="S01", session="3")
         RawSignal.save(10.0, subject="S02", session="1")
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          subject=["S01", "S02"], save=False)
+        result = for_each(
+            aggregate_sum,
+            {"signal": RawSignal},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=False,
+        )
 
         assert result is not None
         assert len(result) == 2
-        values = dict(zip(result["subject"].tolist(), result["Aggregated"].tolist()))
-        assert values["S01"] == 6.0   # 1+2+3
+        values = dict(
+            zip(result["subject"].tolist(), result["Aggregated"].tolist(), strict=False)
+        )
+        assert values["S01"] == 6.0  # 1+2+3
         assert values["S02"] == 10.0
 
 
 # ---------------------------------------------------------------------------
 # 3. Full iteration baseline — all schema keys iterated
 # ---------------------------------------------------------------------------
+
 
 class TestFullIterationBaseline:
     """for_each with all schema keys iterated behaves as before (no aggregation)."""
@@ -192,9 +210,14 @@ class TestFullIterationBaseline:
         RawSignal.save(2.0, subject="S01", session="2")
         RawSignal.save(3.0, subject="S02", session="1")
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          subject=["S01", "S02"], session=["1", "2"],
-                          save=False)
+        result = for_each(
+            aggregate_sum,
+            {"signal": RawSignal},
+            [Aggregated],
+            subject=["S01", "S02"],
+            session=["1", "2"],
+            save=False,
+        )
 
         assert result is not None
         assert len(result) == 3, "Expected 3 iterations (one per existing record)"
@@ -206,6 +229,7 @@ class TestFullIterationBaseline:
 # 4. Aggregation with constants
 # ---------------------------------------------------------------------------
 
+
 class TestAggregationWithConstants:
     """Aggregation mode works correctly when constants are passed."""
 
@@ -214,8 +238,9 @@ class TestAggregationWithConstants:
         RawSignal.save(1.0, subject="S01", session="1")
         RawSignal.save(2.0, subject="S02", session="1")
 
-        result = for_each(weighted_sum, {"signal": RawSignal, "weight": 10},
-                          [Aggregated], save=False)
+        result = for_each(
+            weighted_sum, {"signal": RawSignal, "weight": 10}, [Aggregated], save=False
+        )
 
         assert result is not None
         assert len(result) == 1
@@ -227,19 +252,27 @@ class TestAggregationWithConstants:
         RawSignal.save(2.0, subject="S01", session="2")
         RawSignal.save(3.0, subject="S02", session="1")
 
-        result = for_each(weighted_sum, {"signal": RawSignal, "weight": 2},
-                          [Aggregated], subject=["S01", "S02"], save=False)
+        result = for_each(
+            weighted_sum,
+            {"signal": RawSignal, "weight": 2},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=False,
+        )
 
         assert result is not None
         assert len(result) == 2
-        values = dict(zip(result["subject"].tolist(), result["Aggregated"].tolist()))
-        assert values["S01"] == 6.0   # (1+2) * 2
-        assert values["S02"] == 6.0   # 3 * 2
+        values = dict(
+            zip(result["subject"].tolist(), result["Aggregated"].tolist(), strict=False)
+        )
+        assert values["S01"] == 6.0  # (1+2) * 2
+        assert values["S02"] == 6.0  # 3 * 2
 
 
 # ---------------------------------------------------------------------------
 # 5. Aggregation with save
 # ---------------------------------------------------------------------------
+
 
 class TestAggregationSave:
     """Aggregation mode can save results (no branch_params from upstream)."""
@@ -251,8 +284,7 @@ class TestAggregationSave:
 
         # Full aggregation produces a result with no schema metadata.
         # save=True should not crash even though there are no schema keys.
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          save=True)
+        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated], save=True)
 
         assert result is not None
         assert len(result) == 1
@@ -262,6 +294,7 @@ class TestAggregationSave:
 # ---------------------------------------------------------------------------
 # 6. Aggregation drops all-null schema columns below the iterated level
 # ---------------------------------------------------------------------------
+
 
 class TestAggregationDropsEmptySchemaColumns:
     """When a variable is stored at a higher schema level than the dataset's
@@ -290,14 +323,19 @@ class TestAggregationDropsEmptySchemaColumns:
         RawSignal.save(2.0, subject="S01", session="2")
         RawSignal.save(3.0, subject="S02", session="1")
 
-        for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                 subject=["S01", "S02"], save=False, as_table=True)
+        for_each(
+            aggregate_sum,
+            {"signal": RawSignal},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=False,
+            as_table=True,
+        )
 
         # The function should have received a DataFrame whose columns do
         # NOT include the all-null 'cycle' key.
         assert _last_call["type"] == "dataframe", (
-            "expected DataFrame (multi-row aggregation), got "
-            f"{_last_call.get('type')}"
+            f"expected DataFrame (multi-row aggregation), got {_last_call.get('type')}"
         )
         assert "cycle" not in _last_call["columns"], (
             f"expected 'cycle' column dropped but found in {_last_call['columns']}"
@@ -308,8 +346,14 @@ class TestAggregationDropsEmptySchemaColumns:
         RawSignal.save(1.0, subject="S01", session="1", cycle="A")
         RawSignal.save(2.0, subject="S01", session="2", cycle="B")
 
-        for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                 subject=["S01"], save=False, as_table=True)
+        for_each(
+            aggregate_sum,
+            {"signal": RawSignal},
+            [Aggregated],
+            subject=["S01"],
+            save=False,
+            as_table=True,
+        )
 
         assert _last_call["type"] == "dataframe"
         assert "cycle" in _last_call["columns"], (

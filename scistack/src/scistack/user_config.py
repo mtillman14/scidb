@@ -121,7 +121,9 @@ def load_config(config_dir: Path | None = None) -> UserConfig:
         with open(cfg_path, "rb") as f:
             data = tomllib.load(f)
     except Exception:
-        logger.warning("Failed to parse %s — starting from empty config", cfg_path, exc_info=True)
+        logger.warning(
+            "Failed to parse %s — starting from empty config", cfg_path, exc_info=True
+        )
         data = {}
 
     taps_root = _taps_dir(config_dir)
@@ -205,7 +207,9 @@ def add_tap(
         )
     existing_names = {t.name for t in config.taps}
     if name in existing_names:
-        raise ValueError(f"Tap {name!r} already exists. Remove it first or use a different name.")
+        raise ValueError(
+            f"Tap {name!r} already exists. Remove it first or use a different name."
+        )
 
     taps_root = _taps_dir(config.config_dir)
     local_path = taps_root / name
@@ -250,7 +254,9 @@ def remove_tap(
 
     if delete_clone and match.local_path.exists():
         shutil.rmtree(match.local_path)
-        logger.info("Deleted local clone for tap %s at %s", match.name, match.local_path)
+        logger.info(
+            "Deleted local clone for tap %s at %s", match.name, match.local_path
+        )
 
 
 def list_taps(*, config_dir: Path | None = None) -> list[Tap]:
@@ -299,7 +305,11 @@ def _clone_tap(tap: Tap) -> bool:
         )
         logger.info("Cloned tap %s from %s to %s", tap.name, tap.url, tap.local_path)
         return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ) as e:
         logger.warning("Failed to clone tap %s from %s: %s", tap.name, tap.url, e)
         return False
 
@@ -317,6 +327,10 @@ def _pull_tap(tap: Tap) -> bool:
         )
         logger.info("Updated tap %s", tap.name)
         return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ) as e:
         logger.warning("Failed to pull tap %s: %s", tap.name, e)
         return False

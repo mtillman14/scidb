@@ -17,7 +17,6 @@ from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-
 from scidb.database import DatabaseManager
 from scidb.variable import BaseVariable
 from scilineage.lineage import LineageRecord
@@ -27,7 +26,6 @@ from ._types import (
     ErrorResponse,
     ExportToCsvRequest,
     ExportToCsvResponse,
-    FindByLineageRequest,
     HasLineageRequest,
     HasLineageResponse,
     HealthResponse,
@@ -44,8 +42,6 @@ from ._types import (
 )
 from .serialization import (
     decode_save_request,
-    encode_multi,
-    encode_response,
 )
 
 
@@ -107,6 +103,7 @@ def create_app(
             # Custom-serialized types: data is a DataFrame, stored as-is
             def _to_db(self):
                 import pandas as pd
+
                 if isinstance(self.data, pd.DataFrame):
                     return self.data.copy()
                 return super(type(self), self).to_db()
@@ -166,9 +163,7 @@ def create_app(
             index=index,
         )
 
-        return JSONResponse(
-            content=SaveResponse(record_id=record_id).model_dump()
-        )
+        return JSONResponse(content=SaveResponse(record_id=record_id).model_dump())
 
     @app.post("/api/v1/load")
     async def load(request: Request) -> Response:
@@ -190,8 +185,7 @@ def create_app(
             raise
 
         # Build response: envelope with data + JSON metadata header
-        import pandas as pd
-        from .serialization import serialize_data, encode_envelope
+        from .serialization import encode_envelope, serialize_data
 
         header, data_body = serialize_data(var.data)
         # Attach variable metadata to header
@@ -218,8 +212,9 @@ def create_app(
         results = list(db.load_all(cls, metadata))
 
         # Encode each variable as an envelope with metadata in the header
-        from .serialization import serialize_data, encode_envelope
         import struct
+
+        from .serialization import encode_envelope, serialize_data
 
         parts: list[bytes] = []
         for var in results:
@@ -281,7 +276,8 @@ def create_app(
             return Response(content=b"", status_code=204)
 
         import struct
-        from .serialization import serialize_data, encode_envelope
+
+        from .serialization import encode_envelope, serialize_data
 
         results_data: list[bytes] = []
         for record in records:

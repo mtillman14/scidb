@@ -28,7 +28,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from scicanonicalhash import canonical_hash
 
@@ -151,7 +152,11 @@ def compute_invocation_id(
     inv_id = _sha16(*parts)
     logger.debug(
         "compute_invocation_id(fn_hash=%s, as_table=%s, distribute=%s, %d bindings) = %s",
-        function_hash, sorted(as_table or []), bool(distribute), len(bindings), inv_id,
+        function_hash,
+        sorted(as_table or []),
+        bool(distribute),
+        len(bindings),
+        inv_id,
     )
     return inv_id
 
@@ -241,13 +246,26 @@ def insert_record_entity(
     """Insert one ``_record`` entity row (idempotent)."""
     duck._execute(
         _RECORD_INSERT,
-        [record_id, created_at, type_name, schema_id, content_hash, schema_version, excluded],
+        [
+            record_id,
+            created_at,
+            type_name,
+            schema_id,
+            content_hash,
+            schema_version,
+            excluded,
+        ],
     )
 
 
 _RECORD_COLUMNS = (
-    "record_id", "created_at", "type", "schema_id",
-    "content_hash", "schema_version", "excluded",
+    "record_id",
+    "created_at",
+    "type",
+    "schema_id",
+    "content_hash",
+    "schema_version",
+    "excluded",
 )
 
 
@@ -365,16 +383,21 @@ def ensure_provenance_tables(duck) -> None:
     # before it existed (additive migration over an in-progress beta DB).
     try:
         cols = {
-            r[0] for r in duck._fetchall(
+            r[0]
+            for r in duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = '_invocation_input'"
             )
         }
         if "selector" not in cols:
             duck._execute("ALTER TABLE _invocation_input ADD COLUMN selector VARCHAR")
-            logger.debug("ensure_provenance_tables: added selector column to _invocation_input")
+            logger.debug(
+                "ensure_provenance_tables: added selector column to _invocation_input"
+            )
     except Exception:
-        logger.debug("ensure_provenance_tables: column backfill check skipped", exc_info=True)
+        logger.debug(
+            "ensure_provenance_tables: column backfill check skipped", exc_info=True
+        )
 
     # Indexes for upward/downward traversal (the recursive CTEs in §6/§8 join
     # output_record_id → invocation_id → input_record_id repeatedly).

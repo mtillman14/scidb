@@ -13,12 +13,9 @@ Splits into two groups:
 from __future__ import annotations
 
 import shutil
-import subprocess
 import textwrap
-from pathlib import Path
 
 import pytest
-
 from scistack.uv_wrapper import (
     AddResult,
     LockedPackage,
@@ -34,7 +31,6 @@ from scistack.uv_wrapper import (
     remove,
     sync,
 )
-
 
 # ---------------------------------------------------------------------------
 # requires-uv marker + auto-skip
@@ -256,7 +252,9 @@ class TestReadLockfile:
         assert not by_name["numpy"].is_editable
         assert by_name["numpy"].registry_url == "https://pypi.org/simple"
 
-        assert by_name["mylab-preprocessing"].registry_url.startswith("https://github.com")
+        assert by_name["mylab-preprocessing"].registry_url.startswith(
+            "https://github.com"
+        )
         assert by_name["my_study"].is_editable
         assert by_name["dev"].is_virtual
 
@@ -348,6 +346,7 @@ class TestIsLockfileStale:
 
     def test_content_hash_match_not_stale(self, minimal_project):
         import time
+
         import tomllib
 
         # Build the relevant subset just like the checker does, hash it,
@@ -450,12 +449,16 @@ class TestLockedPackageProperties:
 
     def test_registry_url_none_when_registry_is_dict(self):
         """If source.registry is a dict instead of str, registry_url returns None."""
-        pkg = LockedPackage(name="foo", version="1.0", source={"registry": {"url": "https://pypi.org"}})
+        pkg = LockedPackage(
+            name="foo", version="1.0", source={"registry": {"url": "https://pypi.org"}}
+        )
         assert pkg.is_registry  # key exists in source
         assert pkg.registry_url is None  # but it's not a string
 
     def test_is_virtual_false_for_registry(self):
-        pkg = LockedPackage(name="foo", version="1.0", source={"registry": "https://pypi.org/simple"})
+        pkg = LockedPackage(
+            name="foo", version="1.0", source={"registry": "https://pypi.org/simple"}
+        )
         assert not pkg.is_virtual
         assert not pkg.is_editable
         assert pkg.is_registry
@@ -478,19 +481,39 @@ class TestLockedPackageProperties:
 # ---------------------------------------------------------------------------
 class TestCombinedOutput:
     def test_combined_output_empty_when_both_empty(self):
-        r = SyncResult(ok=True, returncode=0, stdout="", stderr="", command=("uv", "sync"))
+        r = SyncResult(
+            ok=True, returncode=0, stdout="", stderr="", command=("uv", "sync")
+        )
         assert r.combined_output == ""
 
     def test_combined_output_only_stdout(self):
-        r = SyncResult(ok=True, returncode=0, stdout="Resolved 3 packages", stderr="", command=("uv", "sync"))
+        r = SyncResult(
+            ok=True,
+            returncode=0,
+            stdout="Resolved 3 packages",
+            stderr="",
+            command=("uv", "sync"),
+        )
         assert r.combined_output == "Resolved 3 packages"
 
     def test_combined_output_only_stderr(self):
-        r = SyncResult(ok=False, returncode=1, stdout="", stderr="error: broken", command=("uv", "sync"))
+        r = SyncResult(
+            ok=False,
+            returncode=1,
+            stdout="",
+            stderr="error: broken",
+            command=("uv", "sync"),
+        )
         assert r.combined_output == "error: broken"
 
     def test_combined_output_both(self):
-        r = SyncResult(ok=False, returncode=1, stdout="partial", stderr="error", command=("uv", "sync"))
+        r = SyncResult(
+            ok=False,
+            returncode=1,
+            stdout="partial",
+            stderr="error",
+            command=("uv", "sync"),
+        )
         assert r.combined_output == "partial\nerror"
 
 

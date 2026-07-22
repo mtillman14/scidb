@@ -345,8 +345,8 @@ class TestRecursiveFunctionHash:
             runner = textwrap.dedent(
                 f"""
                 import sys, importlib.util
-                sys.path.insert(0, {repr(os.path.join(os.path.dirname(__file__), '..', 'src'))})
-                sys.path.insert(0, {repr(os.path.join(os.path.dirname(__file__), '..', '..', 'canonical-hash', 'src'))})
+                sys.path.insert(0, {repr(os.path.join(os.path.dirname(__file__), "..", "src"))})
+                sys.path.insert(0, {repr(os.path.join(os.path.dirname(__file__), "..", "..", "canonical-hash", "src"))})
                 from scilineage.hashing import compute_function_hash
                 spec = importlib.util.spec_from_file_location('m', {modpath!r})
                 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -356,7 +356,10 @@ class TestRecursiveFunctionHash:
             outs = []
             for _ in range(2):
                 result = subprocess.run(
-                    [sys.executable, "-c", runner], capture_output=True, text=True, check=True
+                    [sys.executable, "-c", runner],
+                    capture_output=True,
+                    text=True,
+                    check=True,
                 )
                 outs.append(result.stdout.strip())
             assert outs[0] == outs[1]
@@ -380,10 +383,14 @@ class TestRecursiveFunctionHash:
                 f.write(textwrap.dedent(source))
                 path = f.name
             try:
-                spec = importlib.util.spec_from_file_location("_scilineage_test_nr", path)
+                spec = importlib.util.spec_from_file_location(
+                    "_scilineage_test_nr", path
+                )
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)
-                return compute_function_hash(mod.target, truncate=64, recursive=recursive)
+                return compute_function_hash(
+                    mod.target, truncate=64, recursive=recursive
+                )
             finally:
                 os.unlink(path)
 

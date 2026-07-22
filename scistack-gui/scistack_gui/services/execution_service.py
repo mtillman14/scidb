@@ -36,7 +36,7 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     otherwise inferred from manual edges + pending constants. Returns []
     when nothing is derivable (no history AND no output wiring).
     """
-    from scistack_gui import pipeline_store, registry
+    from scistack_gui import pipeline_store
     from scistack_gui.api.pipeline import _fn_params_from_registry
     from scistack_gui.domain.edge_resolver import (
         infer_manual_fn_output_types,
@@ -45,8 +45,7 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     from scistack_gui.domain.graph_builder import fn_node_id
 
     all_variants = db.list_pipeline_variants()
-    fn_variants = [v for v in all_variants
-                   if v["function_name"] == function_name]
+    fn_variants = [v for v in all_variants if v["function_name"] == function_name]
 
     all_edges = pipeline_store.get_manual_edges(db)
     manual_nodes = pipeline_store.get_manual_nodes(db)
@@ -63,6 +62,7 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     # the canvas groups call sites since 2026-07-18) whose suffix is not any
     # call_id: adopt any edge endpoint whose parsed fn name matches.
     from scistack_gui.domain.graph_builder import parse_fn_node_id
+
     for edge in all_edges:
         for endpoint in (edge.get("source"), edge.get("target")):
             if endpoint and endpoint not in fn_node_ids:
@@ -71,12 +71,16 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
                     fn_node_ids.add(endpoint)
 
     manual_output_types = infer_manual_fn_output_types(
-        fn_node_ids, all_edges, manual_nodes, existing_node_labels={})
+        fn_node_ids, all_edges, manual_nodes, existing_node_labels={}
+    )
 
     if fn_variants and manual_output_types:
         # User rewired outputs: current wiring overrides stale DB history.
-        logger.info("[execution] '%s': overriding DB output types with "
-                    "manual wiring %s", function_name, manual_output_types)
+        logger.info(
+            "[execution] '%s': overriding DB output types with manual wiring %s",
+            function_name,
+            manual_output_types,
+        )
         overridden, seen_constants = [], set()
         for v in fn_variants:
             key = tuple(sorted(v["constants"].items()))
@@ -100,8 +104,11 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
         sig_params=sig_params,
     )
     if not resolved.output_types:
-        logger.warning("[execution] '%s': no DB history and no output "
-                       "wiring — no targets derivable", function_name)
+        logger.warning(
+            "[execution] '%s': no DB history and no output "
+            "wiring — no targets derivable",
+            function_name,
+        )
         return []
 
     inferred_constants: dict[str, list] = {}
@@ -117,30 +124,33 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
             if typed_vals:
                 inferred_constants[cname] = typed_vals
             else:
-                logger.warning("[execution] '%s': constant '%s' wired but "
-                               "has no pending values", function_name, cname)
+                logger.warning(
+                    "[execution] '%s': constant '%s' wired but has no pending values",
+                    function_name,
+                    cname,
+                )
 
     if inferred_constants:
         const_names = sorted(inferred_constants.keys())
         targets = []
         for combo in product(*(inferred_constants[c] for c in const_names)):
-            constants = dict(zip(const_names, combo))
+            constants = dict(zip(const_names, combo, strict=False))
             for out in resolved.output_types:
-                targets.append({
-                    "input_types": resolved.input_types,
-                    "output_type": out,
-                    "constants": constants,
-                })
+                targets.append(
+                    {
+                        "input_types": resolved.input_types,
+                        "output_type": out,
+                        "constants": constants,
+                    }
+                )
         return targets
     return [
-        {"input_types": resolved.input_types, "output_type": out,
-         "constants": {}}
+        {"input_types": resolved.input_types, "output_type": out, "constants": {}}
         for out in resolved.output_types
     ]
 
 
-def apply_pending_overrides(targets: list[dict],
-                            pending_constants: dict) -> list[dict]:
+def apply_pending_overrides(targets: list[dict], pending_constants: dict) -> list[dict]:
     """Staged pending values override DB history on every derived target
     that uses the constant — the SHARED seam for eager per-node runs and
     compiled pipeline runs, so both materialize staged values identically
@@ -167,9 +177,11 @@ def apply_pending_overrides(targets: list[dict],
                 constants[const_name] = typed
                 overridden.append(const_name)
         if overridden:
-            logger.info("[execution] pending override on %s target: %s",
-                        target.get("output_type"),
-                        {k: constants[k] for k in overridden})
+            logger.info(
+                "[execution] pending override on %s target: %s",
+                target.get("output_type"),
+                {k: constants[k] for k in overridden},
+            )
             out.append({**target, "constants": constants})
         else:
             out.append(target)
@@ -186,7 +198,8 @@ def _build_inputs(target: dict):
         if isinstance(type_names, list):
             if len(type_names) > 1:
                 inputs[param] = EachOf(
-                    *(registry.get_variable_class(t) for t in type_names))
+                    *(registry.get_variable_class(t) for t in type_names)
+                )
             elif type_names:
                 inputs[param] = registry.get_variable_class(type_names[0])
         else:
@@ -209,11 +222,13 @@ def _scope_function_labels(db, pipeline_id: str) -> list[str]:
 
     labels: list[str] = []
     for nid, meta in manual_nodes.items():
-        if meta.get("type") == "functionNode" and \
-                (meta.get("pipeline_id") or "main") == pipeline_id:
+        if (
+            meta.get("type") == "functionNode"
+            and (meta.get("pipeline_id") or "main") == pipeline_id
+        ):
             if meta["label"] not in labels:
                 labels.append(meta["label"])
-    for scope_id, positions in positions_by_scope.items():
+    for _scope_id, positions in positions_by_scope.items():
         for nid in positions:
             parsed = parse_fn_node_id(nid)
             if parsed is None or nid in manual_nodes:
@@ -239,8 +254,7 @@ def _scope_function_labels(db, pipeline_id: str) -> list[str]:
     return labels
 
 
-def build_backend_pipeline(db, pipeline_id: str,
-                           _built: "dict | None" = None):
+def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
     """Compile one GUI pipeline scope into an in-session scidb.Pipeline.
 
     Function nodes register their derived targets as deferred steps
@@ -249,8 +263,9 @@ def build_backend_pipeline(db, pipeline_id: str,
     children compile once per request (``_built`` memo), preserving the
     backend's diamond dedup by object identity.
     """
-    from scidb import for_each
     from scidb.pipeline import Pipeline
+
+    from scidb import for_each
     from scistack_gui import pipeline_store, registry
 
     if _built is None:
@@ -258,8 +273,7 @@ def build_backend_pipeline(db, pipeline_id: str,
     if pipeline_id in _built:
         return _built[pipeline_id]
 
-    names = {p["pipeline_id"]: p["name"]
-             for p in pipeline_store.list_pipelines(db)}
+    names = {p["pipeline_id"]: p["name"] for p in pipeline_store.list_pipelines(db)}
     pipe = Pipeline(names.get(pipeline_id, pipeline_id), db=db)
     _built[pipeline_id] = pipe
 
@@ -271,8 +285,7 @@ def build_backend_pipeline(db, pipeline_id: str,
     # every schema row into ONE call — functions written per-combo then
     # crash on multi-row tables (found via gui_test_data 2026-07-18).
     schema_iterables = {
-        key: db.distinct_schema_values(key)
-        for key in db.dataset_schema_keys
+        key: db.distinct_schema_values(key) for key in db.dataset_schema_keys
     }
 
     # Staged pending constants override DB history at compile time, so the
@@ -287,15 +300,21 @@ def build_backend_pipeline(db, pipeline_id: str,
         try:
             fn = registry.get_function(fn_label)
         except KeyError:
-            logger.warning("[execution] scope %s: function '%s' not in "
-                           "registry — skipped", pipeline_id, fn_label)
+            logger.warning(
+                "[execution] scope %s: function '%s' not in registry — skipped",
+                pipeline_id,
+                fn_label,
+            )
             continue
         targets = apply_pending_overrides(
-            derive_fn_targets(db, fn_label), pending_consts)
+            derive_fn_targets(db, fn_label), pending_consts
+        )
         seen_target_keys: set = set()
         for target in targets:
-            target_key = (tuple(sorted(target["constants"].items())),
-                          target["output_type"])
+            target_key = (
+                tuple(sorted(target["constants"].items())),
+                target["output_type"],
+            )
             if target_key in seen_target_keys:
                 continue
             seen_target_keys.add(target_key)
@@ -303,27 +322,36 @@ def build_backend_pipeline(db, pipeline_id: str,
                 inputs = _build_inputs(target)
                 output_cls = registry.get_variable_class(target["output_type"])
             except KeyError as exc:
-                logger.warning("[execution] scope %s: '%s' target skipped "
-                               "(%s)", pipeline_id, fn_label, exc)
+                logger.warning(
+                    "[execution] scope %s: '%s' target skipped (%s)",
+                    pipeline_id,
+                    fn_label,
+                    exc,
+                )
                 continue
-            for_each(fn, inputs, [output_cls], db=db, pipeline=pipe,
-                     **schema_iterables)
+            for_each(fn, inputs, [output_cls], db=db, pipeline=pipe, **schema_iterables)
 
     for use in pipeline_store.get_pipeline_uses(db, pipeline_id):
         child = build_backend_pipeline(db, use["child_pipeline_id"], _built)
         binding = use.get("binding") or {}
         if binding:
-            pipe.use(child.bind(
-                key_map=binding.get("key_map"),
-                params=binding.get("params"),
-                iterate=binding.get("iterate"),
-            ))
+            pipe.use(
+                child.bind(
+                    key_map=binding.get("key_map"),
+                    params=binding.get("params"),
+                    iterate=binding.get("iterate"),
+                )
+            )
         else:
             pipe.use(child)
 
-    logger.info("[execution] compiled scope %s -> pipeline '%s' "
-                "(%d own step(s), %d use(s))",
-                pipeline_id, pipe.name, len(pipe.steps), len(pipe.uses))
+    logger.info(
+        "[execution] compiled scope %s -> pipeline '%s' (%d own step(s), %d use(s))",
+        pipeline_id,
+        pipe.name,
+        len(pipe.steps),
+        len(pipe.uses),
+    )
     return pipe
 
 
@@ -358,9 +386,14 @@ def plan_pipeline(db, pipeline_id: str, target: str = "") -> list[dict]:
     ]
 
 
-def run_pipeline(db, pipeline_id: str, mode: str = "all",
-                 target: str = "", finalized: "bool | None" = None,
-                 skip_computed: bool = True) -> dict:
+def run_pipeline(
+    db,
+    pipeline_id: str,
+    mode: str = "all",
+    target: str = "",
+    finalized: bool | None = None,
+    skip_computed: bool = True,
+) -> dict:
     """Compile + execute through the backend verbs (synchronous — the run
     API wraps this in its background-thread/relay machinery).
 
@@ -377,12 +410,13 @@ def run_pipeline(db, pipeline_id: str, mode: str = "all",
         if mode == "all":
             pipe.run_all(skip_computed=skip_computed)
         elif mode == "until":
-            pipe.run_until(target, finalized=finalized,
-                           skip_computed=skip_computed)
+            pipe.run_until(target, finalized=finalized, skip_computed=skip_computed)
         elif mode == "endpoints":
-            pipe.run_endpoints(finalized=bool(finalized),
-                               skip_computed=skip_computed,
-                               include_used=True)
+            pipe.run_endpoints(
+                finalized=bool(finalized),
+                skip_computed=skip_computed,
+                include_used=True,
+            )
         elif mode == "show":
             rendered = pipe.show(target, skip_computed=skip_computed)
         else:
@@ -391,6 +425,10 @@ def run_pipeline(db, pipeline_id: str, mode: str = "all",
         _discard_compiled(built)
     # for_each never raises on iteration failures (continue-and-report),
     # so the caller decides success from the per-step report.
-    return {"ok": True, "pipeline": pipe.name, "mode": mode,
-            "report": pipe.last_run_report,
-            "rendered": rendered}
+    return {
+        "ok": True,
+        "pipeline": pipe.name,
+        "mode": mode,
+        "report": pipe.last_run_report,
+        "rendered": rendered,
+    }

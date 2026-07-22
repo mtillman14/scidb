@@ -15,15 +15,15 @@ the existing contrived tests:
 """
 
 import shutil
-import pytest
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
+from scihist.state import check_node_state
 
 from scidb import BaseVariable, scistack
 from scifor import PathInput
 from scihist import for_each
-from scihist.state import check_node_state
 
 DATA_DIR = Path(__file__).parent.parent.parent / "examples" / "aim2" / "data"
 SUBJECTS = ["01", "02", "03"]
@@ -34,14 +34,18 @@ TRIALS = ["01", "02", "03", "04", "05"]
 # Variable types — module-level for BaseVariable registry
 # ---------------------------------------------------------------------------
 
+
 class RwTime(BaseVariable):
     schema_version = 1
+
 
 class RwForceLeft(BaseVariable):
     schema_version = 1
 
+
 class RwForceRight(BaseVariable):
     schema_version = 1
+
 
 class RwPeakForce(BaseVariable):
     schema_version = 1
@@ -50,6 +54,7 @@ class RwPeakForce(BaseVariable):
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
+
 
 @scistack
 def load_time(filepath):
@@ -80,6 +85,7 @@ def compute_peak(force_left, force_right):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _seed_forces(db, subjects=SUBJECTS, trials=TRIALS):
     """Seed ForceLeft and ForceRight records from real CSV data."""
     for subj in subjects:
@@ -87,7 +93,9 @@ def _seed_forces(db, subjects=SUBJECTS, trials=TRIALS):
             path = DATA_DIR / f"sub{subj}" / f"trial{trial}.csv"
             df = pd.read_csv(path)
             RwForceLeft.save(df["force_left"].values, subject=subj, trial=trial, db=db)
-            RwForceRight.save(df["force_right"].values, subject=subj, trial=trial, db=db)
+            RwForceRight.save(
+                df["force_right"].values, subject=subj, trial=trial, db=db
+            )
 
 
 def _path_input():
@@ -100,6 +108,7 @@ def _path_input():
 # ---------------------------------------------------------------------------
 # Tests: PathInput + real CSV data, single output
 # ---------------------------------------------------------------------------
+
 
 class TestCsvLoadNodeState:
     """check_node_state with PathInput over real 3-subject × 5-trial CSV data."""
@@ -210,6 +219,7 @@ class TestCsvLoadNodeState:
 # Tests: multi-output (3 outputs, like load_csv.m)
 # ---------------------------------------------------------------------------
 
+
 class TestMultiOutputNodeState:
     """check_node_state with separate functions for each of load_csv.m's 3 outputs.
 
@@ -246,7 +256,9 @@ class TestMultiOutputNodeState:
         assert left_result["counts"]["up_to_date"] == 15
         assert right_result["counts"]["up_to_date"] == 15
 
-    def test_green_one_output_when_partial_failure_loader_cannot_detect(self, db, tmp_path):
+    def test_green_one_output_when_partial_failure_loader_cannot_detect(
+        self, db, tmp_path
+    ):
         """When one file is missing, the loader outputs still read green — a
         PathInput loader cannot detect the un-run combo (no DB input to
         enumerate), so partial completion is invisible to node state."""
@@ -290,6 +302,7 @@ class TestMultiOutputNodeState:
 # ---------------------------------------------------------------------------
 # Tests: downstream function after partial upstream run
 # ---------------------------------------------------------------------------
+
 
 class TestDownstreamStateAfterPartialUpstream:
     """check_node_state for a downstream function when upstream has missing combos.

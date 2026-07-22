@@ -20,9 +20,11 @@ def save(variable_class, data, db=None, **metadata) -> str | None:
     db_kwargs = {"db": db} if db is not None else {}
     rid = variable_class.save(data, **db_kwargs, **metadata)
     var_name = (
-        variable_class.__name__ if isinstance(variable_class, type)
+        variable_class.__name__
+        if isinstance(variable_class, type)
         else type(variable_class).__name__
     )
-    logger.debug("save(): variable=%s, record_id=%s",
-                 var_name, rid[:12] if rid else None)
+    logger.debug(
+        "save(): variable=%s, record_id=%s", var_name, rid[:12] if rid else None
+    )
     return rid

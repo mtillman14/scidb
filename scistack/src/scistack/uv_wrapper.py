@@ -34,9 +34,10 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -283,9 +284,7 @@ def read_lockfile(project_root: Path) -> list[LockedPackage]:
 
     raw_packages = data.get("package", [])
     if not isinstance(raw_packages, list):
-        raise ValueError(
-            f"{lock_path} has a 'package' field that is not a list"
-        )
+        raise ValueError(f"{lock_path} has a 'package' field that is not a list")
 
     packages: list[LockedPackage] = []
     for entry in raw_packages:

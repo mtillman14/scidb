@@ -4,11 +4,6 @@ Unit tests for scistack_gui.domain.run_state.
 All inputs are plain dicts — no DB or fixtures required.
 """
 
-import pytest
-
-from scistack_gui.domain.run_state import propagate_run_states
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -17,8 +12,9 @@ from scistack_gui.domain.run_state import propagate_run_states
 # below use a stable per-name dummy call_id so the test bodies stay
 # readable: K("f") yields ("f", "<16-hex>") and fn("f") yields the
 # matching "fn__f__<16-hex>" node ID.
-
 import hashlib
+
+from scistack_gui.domain.run_state import propagate_run_states
 
 
 def _cid(name: str) -> str:
@@ -41,6 +37,7 @@ def var(name: str) -> str:
 # ---------------------------------------------------------------------------
 # Single function, no upstream dependencies
 # ---------------------------------------------------------------------------
+
 
 class TestSingleFunction:
     def test_green_own_state_no_inputs(self):
@@ -92,6 +89,7 @@ class TestSingleFunction:
 # Two-function chain: A → Out → B → FinalOut
 # ---------------------------------------------------------------------------
 
+
 class TestChainedFunctions:
     def _chain(self, state_a, state_b):
         return propagate_run_states(
@@ -142,6 +140,7 @@ class TestChainedFunctions:
 # ---------------------------------------------------------------------------
 # Pending constants downgrade green → pending
 # ---------------------------------------------------------------------------
+
 
 class TestPendingConstants:
     def test_green_downgraded_when_pending_constant_exists(self):
@@ -212,6 +211,7 @@ class TestPendingConstants:
 # Multiple outputs per function
 # ---------------------------------------------------------------------------
 
+
 class TestMultipleOutputs:
     def test_all_outputs_get_same_state(self):
         result = propagate_run_states(
@@ -227,6 +227,7 @@ class TestMultipleOutputs:
 # ---------------------------------------------------------------------------
 # Multiple inputs — minimum state wins
 # ---------------------------------------------------------------------------
+
 
 class TestMultipleInputs:
     def test_worst_input_determines_function_state(self):
@@ -254,6 +255,7 @@ class TestMultipleInputs:
 # Cycle detection
 # ---------------------------------------------------------------------------
 
+
 class TestCycleDetection:
     def test_cycle_results_in_red(self):
         result = propagate_run_states(
@@ -268,6 +270,7 @@ class TestCycleDetection:
 # ---------------------------------------------------------------------------
 # Empty inputs
 # ---------------------------------------------------------------------------
+
 
 class TestEdgeCases:
     def test_empty_inputs(self):
@@ -307,6 +310,7 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 # Per-call-site behavior (new with call_id)
 # ---------------------------------------------------------------------------
+
 
 class TestPerCallSite:
     def test_two_call_sites_same_fn_get_independent_states(self):

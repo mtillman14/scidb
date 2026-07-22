@@ -9,17 +9,15 @@ from __future__ import annotations
 
 import sys
 import textwrap
-from pathlib import Path
 
 import pytest
-
 import scistack_gui.registry as _registry
 from scistack_gui.services.variable_service import create_variable
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _reset_registry_state():
     """Clear registry state between tests (complement to conftest autouse)."""
@@ -30,6 +28,7 @@ def _reset_registry_state():
 # ---------------------------------------------------------------------------
 # Validation — no file I/O needed
 # ---------------------------------------------------------------------------
+
 
 class TestCreateVariableValidation:
     def test_empty_name_rejected(self):
@@ -84,6 +83,7 @@ class TestCreateVariableValidation:
 # Python file writing
 # ---------------------------------------------------------------------------
 
+
 class TestCreateVariablePythonWrite:
     """Tests that require a real writable Python module file."""
 
@@ -102,12 +102,17 @@ class TestCreateVariablePythonWrite:
         _reset_registry_state()
         # Remove the module from sys.modules so next reload is clean.
         for key in list(sys.modules.keys()):
-            if "variables" in key and str(tmp_path) in getattr(
-                getattr(sys.modules[key], "__file__", ""), "__class__", type(None)
-            ).__name__ or (
-                hasattr(sys.modules.get(key), "__file__")
-                and sys.modules[key].__file__ is not None
-                and str(tmp_path) in sys.modules[key].__file__
+            if (
+                "variables" in key
+                and str(tmp_path)
+                in getattr(
+                    getattr(sys.modules[key], "__file__", ""), "__class__", type(None)
+                ).__name__
+                or (
+                    hasattr(sys.modules.get(key), "__file__")
+                    and sys.modules[key].__file__ is not None
+                    and str(tmp_path) in sys.modules[key].__file__
+                )
             ):
                 sys.modules.pop(key, None)
 
@@ -134,8 +139,9 @@ class TestCreateVariablePythonWrite:
         assert result["ok"] is True, result.get("error")
         content = setup_module_file.read_text()
         # The triple quotes inside the docstring should be escaped.
-        assert '"""' not in content.split('class QuoteVar')[1].split('pass')[0].replace(
-            '"""Contains', '').replace('"""', '')
+        assert '"""' not in content.split("class QuoteVar")[1].split("pass")[0].replace(
+            '"""Contains', ""
+        ).replace('"""', "")
 
     def test_returns_name_on_success(self, setup_module_file):
         result = create_variable("ReturnedVar")

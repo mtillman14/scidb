@@ -22,15 +22,16 @@ router = APIRouter()
 
 
 @router.get("/endpoints/{fn_name}/artifacts")
-def get_endpoint_artifacts(fn_name: str,
-                           db: DatabaseManager = Depends(get_db)) -> dict:
+def get_endpoint_artifacts(fn_name: str, db: DatabaseManager = Depends(get_db)) -> dict:
     from scistack_gui.services.endpoint_service import endpoint_artifacts
+
     return endpoint_artifacts(db, fn_name)
 
 
 @router.get("/artifacts/file")
 def get_artifact_file(path: str, db: DatabaseManager = Depends(get_db)):
     from scistack_gui.services.endpoint_service import artifact_file_path
+
     try:
         resolved = artifact_file_path(db, path)
     except ValueError as exc:
@@ -43,6 +44,7 @@ def get_artifact_file(path: str, db: DatabaseManager = Depends(get_db)):
 @router.post("/report")
 def post_report(db: DatabaseManager = Depends(get_db)) -> dict:
     from scistack_gui.services.endpoint_service import write_report
+
     try:
         return write_report(db)
     except Exception as exc:

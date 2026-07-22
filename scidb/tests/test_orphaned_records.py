@@ -16,7 +16,6 @@ Fix: use INNER JOIN instead of LEFT JOIN when assembling the spread DataFrame fr
 (meta_df, data_df), so orphaned records are excluded rather than NaN-filled.
 """
 
-import json
 import pytest
 
 from scidb import BaseVariable, configure_database
@@ -59,10 +58,15 @@ def _inject_orphan(db, type_name, subject, distribute=None):
     schema_id = duck._get_or_create_schema_id(schema_level, key_values)
 
     # Insert a phantom record (entity + save-event, no corresponding data row)
-    import hashlib, time
-    phantom_rid = "phantom" + hashlib.md5(
-        f"{type_name}{subject}{distribute}{time.time()}".encode()
-    ).hexdigest()[:10]
+    import hashlib
+    import time
+
+    phantom_rid = (
+        "phantom"
+        + hashlib.md5(
+            f"{type_name}{subject}{distribute}{time.time()}".encode()
+        ).hexdigest()[:10]
+    )
     duck.con.execute(
         "INSERT INTO _record "
         "(record_id, created_at, type, schema_id, content_hash, schema_version, excluded) "
@@ -90,8 +94,7 @@ class TestOrphanedRecordsExcluded:
         assert len(result) == 2, f"Expected 2 rows, got {len(result)}: {result}"
 
         # Data column must not contain NaN
-        assert result["Grouping"].notna().all(), \
-            f"NaN data values found:\n{result}"
+        assert result["Grouping"].notna().all(), f"NaN data values found:\n{result}"
 
     def test_distribute_column_dropped_when_only_orphan_has_it(self, db):
         """A schema key that is non-null only in an orphaned record must be treated as
@@ -106,13 +109,14 @@ class TestOrphanedRecordsExcluded:
 
         # distribute must be all-null in the 2 valid rows (none were saved with distribute)
         assert len(result) == 2
-        assert result["distribute"].isna().all(), \
+        assert result["distribute"].isna().all(), (
             f"distribute column has unexpected non-null values:\n{result['distribute']}"
+        )
 
     def test_valid_records_unaffected(self, db):
         """INNER JOIN must not drop valid records that have data."""
-        Grouping.save("SHAM",   subject=1, session="A")
-        Grouping.save("STIM",   subject=2, session="A")
+        Grouping.save("SHAM", subject=1, session="A")
+        Grouping.save("STIM", subject=2, session="A")
         Grouping.save("ONWARD", subject=3, session="A")
 
         result = db.load_all_as_df(Grouping, layout="spread", stringify_schema=True)

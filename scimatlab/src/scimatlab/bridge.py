@@ -105,6 +105,7 @@ def _reconstruct_input_for_keys(spec):
         return get_surrogate_class(spec["type_name"])
     if kind == "column_selection":
         from scidb.column_selection import ColumnSelection
+
         cols = spec["columns"]
         cols = list(cols) if cols is not None else None
         return ColumnSelection(
@@ -114,6 +115,7 @@ def _reconstruct_input_for_keys(spec):
         )
     if kind == "colname":
         from scidb.colname import ColName
+
         # Deferred ColName() -> no var_type; _convert_inputs turns it into a
         # scifor.ColName() marker. Static ColName(MyVar) carries type_name and
         # is resolved to a column-name string during prepare.
@@ -122,20 +124,24 @@ def _reconstruct_input_for_keys(spec):
         return ColName(get_surrogate_class(spec["type_name"]))
     if kind == "fixed":
         from scidb.fixed import Fixed
+
         inner = _reconstruct_input_for_keys(spec["inner"])
         fixed_meta = dict(spec.get("fixed_metadata", {}) or {})
         return Fixed(inner, **fixed_meta)
     if kind == "variant":
         from scidb.variant import Variant
+
         inner = _reconstruct_input_for_keys(spec["inner"])
         branch_params = dict(spec.get("branch_params", {}) or {})
         return Variant(inner, **branch_params)
     if kind == "merge":
         from scidb.merge import Merge
+
         subs = [_reconstruct_input_for_keys(s) for s in spec["specs"]]
         return Merge(*subs)
     if kind == "pathinput":
         from scifor.pathinput import PathInput
+
         root = spec.get("root_folder") or None
         if root == "":
             root = None
@@ -143,9 +149,11 @@ def _reconstruct_input_for_keys(spec):
         return PathInput(spec["template"], root_folder=root, regex=regex_flag)
     if kind == "path_output":
         from scifor import PathOutput
+
         return PathOutput(spec["template"])
     if kind == "across_variants":
         from scidb.across_variants import AcrossVariants
+
         inner = _reconstruct_input_for_keys(spec["inner"])
         return AcrossVariants(inner)
     return spec
@@ -299,8 +307,8 @@ def _strip_internal_columns(val, also_strip_record_id_branch_params=False):
     runs afterward.
     """
     import pandas as pd
-    from scifor.fixed import Fixed as _SciforFixed
     from scifor.column_selection import ColumnSelection as _SciforColSel
+    from scifor.fixed import Fixed as _SciforFixed
     from scifor.merge import Merge as _SciforMerge
 
     if isinstance(val, pd.DataFrame):
@@ -345,8 +353,8 @@ def _rename_rid_columns_in_value(val, rename_map):
       as join keys.
     """
     import pandas as pd
-    from scifor.fixed import Fixed as _SciforFixed
     from scifor.column_selection import ColumnSelection as _SciforColSel
+    from scifor.fixed import Fixed as _SciforFixed
     from scifor.merge import Merge as _SciforMerge
 
     if isinstance(val, pd.DataFrame):
@@ -361,9 +369,7 @@ def _rename_rid_columns_in_value(val, rename_map):
         val.data = _strip_internal_columns(val.data, True)
         return val
     if isinstance(val, _SciforMerge):
-        val.tables = tuple(
-            _strip_internal_columns(t, True) for t in val.tables
-        )
+        val.tables = tuple(_strip_internal_columns(t, True) for t in val.tables)
         return val
     return val
 
@@ -378,14 +384,18 @@ def _make_matlab_fn_sentinel(fn_name: str):
     If it ever IS called, that signals a programming error (likely the
     bridge state was reused after ``for_each_save`` freed it).
     """
+
     def _sentinel(**kwargs):
         raise RuntimeError(
             f"MATLAB for_each sentinel for '{fn_name}' was invoked from "
             f"Python. The MATLAB-driven path runs the loop in MATLAB; "
             f"Python should never call the sentinel directly."
         )
+
     _sentinel.__name__ = fn_name
-    _sentinel.__lineage_wrapper__ = True  # Skip Python's tuple-unpacking wrapper in scidb.for_each
+    _sentinel.__lineage_wrapper__ = (
+        True  # Skip Python's tuple-unpacking wrapper in scidb.for_each
+    )
     return _sentinel
 
 
@@ -535,8 +545,10 @@ def for_each_prepare(
     # save suppression (applied in for_each_save), and warnings. MATLAB does
     # the language-specific fn wrapping itself from the returned kind.
     from scidb.foreach import _endpoint_policy
-    endpoint_kind, endpoint_path_param, as_table_arg, save_suppressed = \
+
+    endpoint_kind, endpoint_path_param, as_table_arg, save_suppressed = (
         _endpoint_policy(str(fn_name), inputs, bool(finalized), as_table_arg)
+    )
 
     # Where: accept None or a Filter object. (Empty string sometimes
     # arrives from MATLAB when no filter was supplied; treat it as None.)
@@ -590,6 +602,7 @@ def for_each_prepare(
         if skip_db is None:
             try:
                 from scidb.database import get_database
+
                 skip_db = get_database()
             except Exception:
                 skip_db = None
@@ -600,8 +613,12 @@ def for_each_prepare(
             )
         else:
             pre_combo_hook = _build_skip_hook(
-                fn, outputs, skip_db, inputs,
-                as_table=as_table_arg, distribute=bool(distribute),
+                fn,
+                outputs,
+                skip_db,
+                inputs,
+                as_table=as_table_arg,
+                distribute=bool(distribute),
                 fn_hash=fn_hash,
             )
             Log.info(
@@ -641,8 +658,9 @@ def for_each_prepare(
     # set, so unwrap the sentinel back to the PathInput instance and let
     # MATLAB resolve it per-combo. Other per-combo loader kinds are not
     # yet supported on the MATLAB path; surface a clear error so the user knows.
-    from scifor.pathinput import PathInput as _SciforPathInput
     from scidb.fixed import Fixed as _ScidbFixed
+    from scifor.pathinput import PathInput as _SciforPathInput
+
     unsupported_per_combo = []
     for k, v in list(state.loaded_inputs.items()):
         if not isinstance(v, (PerComboLoader, PerComboLoaderMerge)):
@@ -655,8 +673,11 @@ def for_each_prepare(
             continue
         # scidb.Fixed wrapping a PathInput: build a scifor.Fixed(pathinput,
         # **meta) so MATLAB's resolve_data_spec sees the same kind it expects.
-        if isinstance(spec, _ScidbFixed) and isinstance(spec.var_type, _SciforPathInput):
+        if isinstance(spec, _ScidbFixed) and isinstance(
+            spec.var_type, _SciforPathInput
+        ):
             from scifor.fixed import Fixed as _SciforFixed
+
             state.loaded_inputs[k] = _SciforFixed(
                 spec.var_type, **dict(spec.fixed_metadata)
             )
@@ -713,6 +734,7 @@ def for_each_prepare(
     # cross instead, aligned with full_combos. ``{ColName}`` tokens are left
     # unresolved for MATLAB's for_columns loop (literal replace composes).
     from scifor import PathOutput as _SciforPathOutput
+
     resolved_path_outputs = {}
     for _name, _spec in inputs.items():
         if isinstance(_spec, _SciforPathOutput):
@@ -726,8 +748,7 @@ def for_each_prepare(
     # (paths are pre-resolved above) and dotted names are invalid fields.
     _path_extras = state.path_extra_keys or set()
     matlab_full_combos = [
-        {rid_rename_map.get(k, k): v for k, v in combo.items()
-         if k not in _path_extras}
+        {rid_rename_map.get(k, k): v for k, v in combo.items() if k not in _path_extras}
         for combo in state.full_combos
     ]
 
@@ -743,6 +764,7 @@ def for_each_prepare(
     # regardless of what we set here, so this is per-call only.
     if state.rid_keys_for_schema:
         import scifor as _scifor_local
+
         sanitized_schema = list(state.current_schema_keys) + [
             _sanitize_rid_key(k) for k in state.rid_keys_for_schema
         ]
@@ -769,6 +791,7 @@ def for_each_prepare(
     }
 
     from scidb.log import Log as _BridgeLog
+
     _BridgeLog.info(
         f"[bridge] for_each_prepare returning: full_combos={len(matlab_full_combos)}, "
         f"extended_metadata_iterables keys={list(matlab_meta_iters.keys())}, "
@@ -809,11 +832,11 @@ def for_each_describe_loaded_input(val):
     tables on the other side of the bridge crossing).
     """
     import pandas as pd
-    from scifor.fixed import Fixed as _SciforFixed
+    from scifor.colname import ColName as _SciforColName
     from scifor.column_selection import ColumnSelection as _SciforColSel
+    from scifor.fixed import Fixed as _SciforFixed
     from scifor.merge import Merge as _SciforMerge
     from scifor.pathinput import PathInput as _SciforPathInput
-    from scifor.colname import ColName as _SciforColName
 
     if isinstance(val, pd.DataFrame):
         return {"kind": "dataframe", "data": val}
@@ -853,6 +876,7 @@ def for_each_describe_loaded_input(val):
             "regex": bool(getattr(val, "regex", False)),
         }
     from scifor import PathOutput as _SciforPathOutput
+
     if isinstance(val, _SciforPathOutput):
         # PathOutput crosses as its template; the ACTUAL per-combo values
         # come from prepare's ``resolved_path_outputs`` (Python pre-resolves
@@ -863,7 +887,9 @@ def for_each_describe_loaded_input(val):
     return {"kind": "raw", "value": val}
 
 
-def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool = False):
+def for_each_save(
+    handle, result_dataframes, save: bool = True, introspect: bool = False
+):
     """Bridge entry: run scidb.for_each's save phase.
 
     Parameters
@@ -893,7 +919,6 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
         output columns. Same shape Python's ``scidb.for_each`` returns.
     """
     import pandas as pd
-
     from scidb.foreach import _for_each_save_resolved
 
     cached = _for_each_state_cache.pop(int(handle), None)
@@ -932,9 +957,11 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
 
     if reverse_map:
         dfs = [
-            df.rename(columns={
-                c: reverse_map[c] for c in df.columns if c in reverse_map
-            }) if isinstance(df, pd.DataFrame) else df
+            df.rename(
+                columns={c: reverse_map[c] for c in df.columns if c in reverse_map}
+            )
+            if isinstance(df, pd.DataFrame)
+            else df
             for df in dfs
         ]
 
@@ -955,6 +982,7 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
                 result_tbl = pd.concat([result_tbl, df], axis=1)
 
     from scidb.log import Log as _Log
+
     _Log.info(
         f"[bridge] for_each_save: handle={handle}, "
         f"result_tbl shape={result_tbl.shape}, "
@@ -974,7 +1002,9 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
 
     if introspect and result_tbl is not None and not result_tbl.empty:
         import json as _json
+
         from scidb.foreach import _apply_introspect
+
         cached_where = cached.get("where")
         result_tbl = _apply_introspect(result_tbl, state, cached_where)
         # Serialize dict-valued columns to JSON strings for MATLAB compatibility.
@@ -996,9 +1026,12 @@ def for_each_save(handle, result_dataframes, save: bool = True, introspect: bool
     return result_tbl
 
 
-def normalize_stat_result(json_str: str, report_path: str = "",
-                          finalized: bool = False,
-                          fn_name: str = "stat_fn") -> str:
+def normalize_stat_result(
+    json_str: str,
+    report_path: str = "",
+    finalized: bool = False,
+    fn_name: str = "stat_fn",
+) -> str:
     """Bridge entry: canonicalize a MATLAB stat_ result into the stored
     JSON payload — the exact bytes the Python stat_ wrapper would store for
     the same result (``scidb.foreach.normalize_stat_payload``).
@@ -1010,8 +1043,11 @@ def normalize_stat_result(json_str: str, report_path: str = "",
     ``report_path`` is "" for none (draft or no PathOutput).
     """
     from scidb.foreach import normalize_stat_payload
+
     return normalize_stat_payload(
-        str(json_str), str(report_path) or None, bool(finalized),
+        str(json_str),
+        str(report_path) or None,
+        bool(finalized),
         fn_name=str(fn_name),
     )
 
@@ -1026,6 +1062,7 @@ def pathinput_project_root() -> str:
     from MATLAB code.
     """
     from scifor.pathinput import _find_project_root
+
     return str(_find_project_root())
 
 
@@ -1070,10 +1107,10 @@ def discover_pathinput_combos(pi, user_metadata=None):
 
     if not combos:
         return {
-            'combos': [],
-            'original_count': 0,
-            'present_keys': [],
-            'values_by_key': {},
+            "combos": [],
+            "original_count": 0,
+            "present_keys": [],
+            "values_by_key": {},
         }
 
     present_keys = list(combos[0].keys())
@@ -1108,14 +1145,16 @@ def discover_pathinput_combos(pi, user_metadata=None):
         values_by_key[key] = list(seen.keys())
 
     return {
-        'combos': combos,
-        'original_count': original_count,
-        'present_keys': present_keys,
-        'values_by_key': values_by_key,
+        "combos": combos,
+        "original_count": original_count,
+        "present_keys": present_keys,
+        "values_by_key": values_by_key,
     }
 
 
-def compute_matlab_function_hash(source_text: str, name: str = '', unpack_output: bool = False) -> str:
+def compute_matlab_function_hash(
+    source_text: str, name: str = "", unpack_output: bool = False
+) -> str:
     """SHA-256 hash for a MATLAB function.
 
     Owned in Python so the format can be tweaked centrally (e.g. to strip
@@ -1142,7 +1181,7 @@ def compute_matlab_function_hash(source_text: str, name: str = '', unpack_output
     str
         64-character lowercase hex SHA-256 digest of ``source_text``.
     """
-    return sha256(source_text.encode('utf-8')).hexdigest()
+    return sha256(source_text.encode("utf-8")).hexdigest()
 
 
 def split_flat_to_lists(flat_array, lengths):
@@ -1182,7 +1221,7 @@ def split_flat_to_lists(flat_array, lengths):
     result = []
     pos = 0
     for length in lens:
-        result.append(flat[pos:pos + length].tolist())
+        result.append(flat[pos : pos + length].tolist())
         pos += length
     return result
 
@@ -1221,7 +1260,7 @@ def split_df_to_dataframes(df, row_counts):
     pos = 0
     for n in counts:
         n = int(n)
-        result.append(df.iloc[pos:pos + n].reset_index(drop=True))
+        result.append(df.iloc[pos : pos + n].reset_index(drop=True))
         pos += n
     return result
 
@@ -1269,12 +1308,12 @@ def flatten_sequences(py_list):
                 return None, None
             arr = np.asarray(elem)
             # Reject if not typed (object dtype = heterogeneous or non-numeric/bool)
-            if arr.dtype.kind == 'O':
+            if arr.dtype.kind == "O":
                 return None, None
             arrays.append(arr)
 
         # Record lengths and concatenate
-        lengths = np.array([len(arr) for arr in arrays], dtype='int64')
+        lengths = np.array([len(arr) for arr in arrays], dtype="int64")
         flat = np.concatenate(arrays)
 
         return flat, lengths
@@ -1316,6 +1355,7 @@ def convert_nested_dicts_arrays_to_lists(py_list):
         return None
 
     try:
+
         def convert_value(val):
             """Recursively convert a value, handling arbitrary nesting."""
             if isinstance(val, np.ndarray):
@@ -1401,6 +1441,7 @@ def register_matlab_variable(type_name: str, schema_version: int = 1):
 
     try:
         from scidb.database import get_database
+
         get_database().register(surrogate)
     except Exception:
         pass  # Database not yet configured; will register on configure_database
@@ -1408,8 +1449,15 @@ def register_matlab_variable(type_name: str, schema_version: int = 1):
     return surrogate
 
 
-def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
-                      common_metadata=None, db=None, row_heights=None):
+def save_batch_bridge(
+    type_name,
+    data_values,
+    metadata_keys,
+    metadata_columns,
+    common_metadata=None,
+    db=None,
+    row_heights=None,
+):
     """Bridge function for MATLAB save_from_table.
 
     Accepts columnar data (one list per column) from MATLAB and assembles
@@ -1443,11 +1491,12 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
         Record IDs for each saved row.
     """
     import time as _time
+
     import numpy as np
     import pandas as pd
+    from scidb.database import get_database
     from scidb.log import Log
     from scidb.variable import BaseVariable
-    from scidb.database import get_database
 
     cls = BaseVariable.get_subclass_by_name(type_name)
     if cls is None:
@@ -1464,7 +1513,7 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
 
     # Determine how to build data_list from data_values.
     t_split = 0.0
-    bulk_mode = 'list'
+    bulk_mode = "list"
 
     heights_arr = None
     if row_heights is not None and not isinstance(row_heights, type(None)):
@@ -1478,40 +1527,42 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
         offsets = np.concatenate([[0], np.cumsum(heights_arr)])
         _t = _time.perf_counter()
         data_list = [
-            data_values.iloc[int(offsets[i]):int(offsets[i + 1])].reset_index(drop=True)
+            data_values.iloc[int(offsets[i]) : int(offsets[i + 1])].reset_index(
+                drop=True
+            )
             for i in range(len(heights_arr))
         ]
         t_split = _time.perf_counter() - _t
-        bulk_mode = 'vertcat_df'
+        bulk_mode = "vertcat_df"
     elif heights_arr is not None and isinstance(data_values, np.ndarray):
         # Strategy A result: bulk ndarray → split into N row-slice views.
         offsets = np.concatenate([[0], np.cumsum(heights_arr)])
         _t = _time.perf_counter()
         data_list = [
-            data_values[int(offsets[i]):int(offsets[i + 1])]
+            data_values[int(offsets[i]) : int(offsets[i + 1])]
             for i in range(len(heights_arr))
         ]
         t_split = _time.perf_counter() - _t
-        bulk_mode = 'vertcat_arr'
-    elif hasattr(data_values, 'tolist'):
+        bulk_mode = "vertcat_arr"
+    elif hasattr(data_values, "tolist"):
         # Numpy array (isnumeric fast path or Strategy B flatten result).
         data_list = data_values.tolist()
-        bulk_mode = 'numpy_list'
+        bulk_mode = "numpy_list"
     else:
         # Plain Python list (Strategy B split_flat_to_lists, Strategy C, or
         # string/cellstr paths).
-        data_list = [v.item() if hasattr(v, 'item') else v for v in data_values]
+        data_list = [v.item() if hasattr(v, "item") else v for v in data_values]
 
     meta_lists = []
     for j in range(len(keys)):
         col = metadata_columns[j]
         if isinstance(col, str):
             # Joined string from MATLAB (record-separator delimited)
-            meta_lists.append(col.split('\x1e'))
-        elif hasattr(col, 'tolist'):
+            meta_lists.append(col.split("\x1e"))
+        elif hasattr(col, "tolist"):
             meta_lists.append(col.tolist())
         else:
-            meta_lists.append([v.item() if hasattr(v, 'item') else v for v in col])
+            meta_lists.append([v.item() if hasattr(v, "item") else v for v in col])
 
     n = len(data_list)
     data_items = []
@@ -1522,8 +1573,10 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
         data_items.append((data_list[i], meta))
 
     t_convert = _time.perf_counter()
-    Log.debug(f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
-              f"split={t_split:.3f}s, assembly={t_convert - t_start - t_split:.3f}s")
+    Log.debug(
+        f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
+        f"split={t_split:.3f}s, assembly={t_convert - t_start - t_split:.3f}s"
+    )
 
     # save_batch returns None in the slot of any record it skipped (schema-
     # incompatible). Emit an empty string for those so the newline-delimited
@@ -1531,8 +1584,10 @@ def save_batch_bridge(type_name, data_values, metadata_keys, metadata_columns,
     _rids = _db.save_batch(cls, data_items)
     result = "\n".join(r if isinstance(r, str) else "" for r in _rids)
 
-    Log.info(f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
-             f"split={t_split:.3f}s, total={_time.perf_counter() - t_start:.3f}s")
+    Log.info(
+        f"[timing] save_batch_bridge({type_name}): n={n}, mode={bulk_mode}, "
+        f"split={t_split:.3f}s, total={_time.perf_counter() - t_start:.3f}s"
+    )
     return result
 
 
@@ -1599,6 +1654,7 @@ def wrap_batch_bridge(py_vars_list):
         scalar_data    : numpy.ndarray (optional) — present when all data are scalars
     """
     import json
+
     import numpy as np
 
     py_vars = list(py_vars_list) if not isinstance(py_vars_list, list) else py_vars_list
@@ -1611,8 +1667,8 @@ def wrap_batch_bridge(py_vars_list):
     data = []
 
     for v in py_vars:
-        record_ids.append(v.record_id or '')
-        content_hashes.append(v.content_hash or '')
+        record_ids.append(v.record_id or "")
+        content_hashes.append(v.content_hash or "")
         meta = v.metadata
         meta_dicts.append(dict(meta) if meta is not None else {})
         branch_params_list.append(json.dumps(v.branch_params or {}))
@@ -1622,23 +1678,24 @@ def wrap_batch_bridge(py_vars_list):
     batch_id = _cache_batch(data, py_vars)
 
     result = {
-        'n': n,
-        'py_vars': py_vars,
-        'batch_id': batch_id,
-        'record_ids': '\n'.join(record_ids),
-        'content_hashes': '\n'.join(content_hashes),
-        'json_meta': json.dumps(meta_dicts),
-        'json_branch_params': '\n'.join(branch_params_list),
+        "n": n,
+        "py_vars": py_vars,
+        "batch_id": batch_id,
+        "record_ids": "\n".join(record_ids),
+        "content_hashes": "\n".join(content_hashes),
+        "json_meta": json.dumps(meta_dicts),
+        "json_branch_params": "\n".join(branch_params_list),
     }
 
     # Scalar fast path: pack all data into a single numpy array
     if n > 0 and all(isinstance(d, (int, float)) for d in data):
-        result['scalar_data'] = np.array(data, dtype=float)
+        result["scalar_data"] = np.array(data, dtype=float)
 
     # DataFrame fast path: concatenate same-schema DataFrames into one
     # so MATLAB converts a single large table instead of N small ones
-    if n > 0 and 'scalar_data' not in result:
+    if n > 0 and "scalar_data" not in result:
         import pandas as pd
+
         if all(isinstance(d, pd.DataFrame) for d in data):
             first_cols = list(data[0].columns)
             if all(list(d.columns) == first_cols for d in data):
@@ -1650,11 +1707,16 @@ def wrap_batch_bridge(py_vars_list):
                 # and send size/offset info separately. This avoids N boundary
                 # crossings in MATLAB (one per cell) by doing bulk transfer.
                 from scidb.log import Log
+
                 optimized_cols = []
                 flattened_data = {}
                 json_columns = []
-                object_cols = [col for col in concat_df.columns if concat_df[col].dtype == object]
-                Log.debug(f'wrap_batch_bridge: found {len(object_cols)} object-dtype columns to check')
+                object_cols = [
+                    col for col in concat_df.columns if concat_df[col].dtype == object
+                ]
+                Log.debug(
+                    f"wrap_batch_bridge: found {len(object_cols)} object-dtype columns to check"
+                )
 
                 for col_name in concat_df.columns:
                     col = concat_df[col_name]
@@ -1668,58 +1730,85 @@ def wrap_batch_bridge(py_vars_list):
 
                         if first_val is not None:
                             first_val_type = type(first_val).__name__
-                            Log.debug(f'wrap_batch_bridge: column "{col_name}" first value type: {first_val_type}')
+                            Log.debug(
+                                f'wrap_batch_bridge: column "{col_name}" first value type: {first_val_type}'
+                            )
 
                             if isinstance(first_val, dict):
                                 # JSON/dict columns - serialize to JSON strings for fast transfer
                                 # MATLAB will parse these back to structs automatically
-                                Log.debug(f'wrap_batch_bridge: column "{col_name}" contains dicts, serializing to JSON...')
+                                Log.debug(
+                                    f'wrap_batch_bridge: column "{col_name}" contains dicts, serializing to JSON...'
+                                )
                                 import json
-                                concat_df[col_name] = [json.dumps(val) if isinstance(val, dict) else val for val in col]
+
+                                concat_df[col_name] = [
+                                    json.dumps(val) if isinstance(val, dict) else val
+                                    for val in col
+                                ]
                                 json_columns.append(col_name)
-                                optimized_cols.append(col_name + ' (JSON)')
-                                Log.debug(f'wrap_batch_bridge: column "{col_name}" serialized to JSON strings')
+                                optimized_cols.append(col_name + " (JSON)")
+                                Log.debug(
+                                    f'wrap_batch_bridge: column "{col_name}" serialized to JSON strings'
+                                )
                             elif isinstance(first_val, np.ndarray):
                                 # Flatten array column: concatenate all arrays and store sizes
                                 # This allows MATLAB to convert the entire column in 2 operations
                                 # (one for flat data, one for sizes) instead of N operations
-                                Log.debug(f'wrap_batch_bridge: flattening column "{col_name}"...')
-                                arrays = [arr if isinstance(arr, np.ndarray) else np.array(arr) for arr in col]
+                                Log.debug(
+                                    f'wrap_batch_bridge: flattening column "{col_name}"...'
+                                )
+                                arrays = [
+                                    arr
+                                    if isinstance(arr, np.ndarray)
+                                    else np.array(arr)
+                                    for arr in col
+                                ]
 
                                 # Get array sizes and flatten
-                                sizes = np.array([len(arr) for arr in arrays], dtype=np.int32)
-                                flat_data = np.concatenate(arrays) if len(arrays) > 0 else np.array([])
+                                sizes = np.array(
+                                    [len(arr) for arr in arrays], dtype=np.int32
+                                )
+                                flat_data = (
+                                    np.concatenate(arrays)
+                                    if len(arrays) > 0
+                                    else np.array([])
+                                )
 
                                 # Store flattened representation
                                 flattened_data[col_name] = {
-                                    'flat': flat_data,
-                                    'sizes': sizes,
-                                    'dtype': str(first_val.dtype)
+                                    "flat": flat_data,
+                                    "sizes": sizes,
+                                    "dtype": str(first_val.dtype),
                                 }
 
                                 # Mark column for reconstruction in MATLAB
-                                concat_df[col_name] = ['__flattened__'] * len(col)
+                                concat_df[col_name] = ["__flattened__"] * len(col)
 
                                 optimized_cols.append(col_name)
-                                Log.debug(f'wrap_batch_bridge: column "{col_name}" flattened: '
-                                         f'{len(flat_data)} total elements in {len(sizes)} arrays')
+                                Log.debug(
+                                    f'wrap_batch_bridge: column "{col_name}" flattened: '
+                                    f"{len(flat_data)} total elements in {len(sizes)} arrays"
+                                )
 
                 if optimized_cols:
-                    Log.info(f'wrap_batch_bridge: optimized {len(optimized_cols)} array columns for MATLAB transfer: {optimized_cols[:5]}')
+                    Log.info(
+                        f"wrap_batch_bridge: optimized {len(optimized_cols)} array columns for MATLAB transfer: {optimized_cols[:5]}"
+                    )
                     if flattened_data:
-                        result['flattened_arrays'] = flattened_data
+                        result["flattened_arrays"] = flattened_data
                     if json_columns:
-                        result['json_columns'] = json_columns
+                        result["json_columns"] = json_columns
                 else:
-                    Log.debug('wrap_batch_bridge: no array columns found to optimize')
+                    Log.debug("wrap_batch_bridge: no array columns found to optimize")
 
-                result['concat_df'] = concat_df
-                result['concat_df_row_counts'] = np.array(row_counts, dtype=np.int64)
+                result["concat_df"] = concat_df
+                result["concat_df_row_counts"] = np.array(row_counts, dtype=np.int64)
 
     return result
 
 
-def load_and_extract(py_class, metadata_dict, version_id='latest', db=None, where=None):
+def load_and_extract(py_class, metadata_dict, version_id="latest", db=None, where=None):
     """Load all matching variables and extract fields in bulk.
 
     Combines load -> list -> wrap_batch_bridge in one Python call.
@@ -1759,7 +1848,9 @@ def load_and_extract(py_class, metadata_dict, version_id='latest', db=None, wher
     # expects ``scidb:NotFoundError``). Convert it back to the empty-result
     # sentinel so MATLAB's n==0 branch fires.
     try:
-        gen = _db.load(py_class, dict(metadata_dict), version_id=version_id, where=where)
+        gen = _db.load(
+            py_class, dict(metadata_dict), version_id=version_id, where=where
+        )
         py_vars = list(gen)  # materializes entirely in Python
     except NotFoundError:
         py_vars = []
@@ -1861,6 +1952,7 @@ def get_data_column_name(py_class, db=None):
         If the variable has 0 or 2+ data columns.
     """
     import json
+
     from scidb.database import get_database
 
     _db = db if db is not None and not isinstance(db, type(None)) else get_database()
@@ -1874,7 +1966,7 @@ def get_data_column_name(py_class, db=None):
 
     if row is None:
         # Variable not yet saved — fall back to view_name
-        if hasattr(py_class, 'view_name'):
+        if hasattr(py_class, "view_name"):
             return py_class.view_name()
         return var_name
 
@@ -1885,12 +1977,14 @@ def get_data_column_name(py_class, db=None):
         col_names = list(dtype_meta.get("columns", {}).keys())
         if col_names:
             return col_names[0]
-        if hasattr(py_class, 'view_name'):
+        if hasattr(py_class, "view_name"):
             return py_class.view_name()
         return var_name
 
     if mode == "dataframe":
-        df_columns = dtype_meta.get("df_columns", list(dtype_meta.get("columns", {}).keys()))
+        df_columns = dtype_meta.get(
+            "df_columns", list(dtype_meta.get("columns", {}).keys())
+        )
         data_cols = [c for c in df_columns if c not in schema_keys]
         if len(data_cols) == 1:
             return data_cols[0]
@@ -1912,7 +2006,7 @@ def get_data_column_name(py_class, db=None):
             f"ColName({var_name}): not supported for dict-type (multi_column) variables."
         )
 
-    if hasattr(py_class, 'view_name'):
+    if hasattr(py_class, "view_name"):
         return py_class.view_name()
     return var_name
 
@@ -1951,6 +2045,7 @@ def pipeline_create(name: str, db=None, activate: bool = True) -> int:
     if _db is None:
         try:
             from scidb import get_database
+
             _db = get_database()
         except Exception:
             _db = None
@@ -2003,16 +2098,16 @@ def pipeline_register_step(
         inputs=inputs,
         outputs=outputs,
         metadata_iterables=meta,
-        options=dict(
-            where=where,
-            distribute=bool(distribute),
-            as_table=as_table,
-            save=bool(save),
-            finalized=bool(finalized),
-            skip_computed=bool(skip_computed),
-            __matlab__=True,
-            __matlab_fn_hash__=fn_hash,
-        ),
+        options={
+            "where": where,
+            "distribute": bool(distribute),
+            "as_table": as_table,
+            "save": bool(save),
+            "finalized": bool(finalized),
+            "skip_computed": bool(skip_computed),
+            "__matlab__": True,
+            "__matlab_fn_hash__": fn_hash,
+        },
     )
     return len(pipe.steps) - 1
 
@@ -2033,7 +2128,9 @@ def pipeline_bind(handle: int, key_map=None, params=None, iterate=None) -> int:
     return _binding_id_counter
 
 
-def pipeline_use(parent_handle: int, child_handle: int = 0, binding_handle: int = 0) -> None:
+def pipeline_use(
+    parent_handle: int, child_handle: int = 0, binding_handle: int = 0
+) -> None:
     """Declare a dependency: pass child_handle for an identity edge, or
     binding_handle for a bound edge (exactly one must be nonzero)."""
     parent = _pipeline_cache[int(parent_handle)]
@@ -2084,7 +2181,11 @@ def pipeline_execution_order(
     global _pipeline_run_id_counter
 
     pipe = _pipeline_cache[int(handle)]
-    fin = None if finalized is None or isinstance(finalized, type(None)) else bool(finalized)
+    fin = (
+        None
+        if finalized is None or isinstance(finalized, type(None))
+        else bool(finalized)
+    )
     descriptors = pipe.execution_order(
         mode=mode,
         target=target_name or None,
@@ -2094,8 +2195,7 @@ def pipeline_execution_order(
     )
     # Re-derive the selection for the run cache (execution_order returns
     # plain data only; _execute_step needs the live pairs/order).
-    pairs, order, targets = pipe._select(
-        mode, target_name or None, bool(include_used))
+    pairs, order, targets = pipe._select(mode, target_name or None, bool(include_used))
     _pipeline_run_id_counter += 1
     _pipeline_run_cache[_pipeline_run_id_counter] = {
         "pipeline": pipe,
@@ -2109,7 +2209,8 @@ def pipeline_execution_order(
     # (MATLAB re-substitutes into its own stored inputs struct).
     for d in descriptors:
         d["constant_inputs"] = {
-            k: v for k, v in d["constant_inputs"].items()
+            k: v
+            for k, v in d["constant_inputs"].items()
             if isinstance(v, (int, float, str, bool, list))
         }
     return {"run_handle": _pipeline_run_id_counter, "steps": descriptors}
@@ -2128,7 +2229,8 @@ def pipeline_run_python_step(run_handle: int, position: int):
         else None
     )
     pipe._execute_step(
-        run["pairs"], i,
+        run["pairs"],
+        i,
         skip_computed=run["skip_computed"],
         finalized=fin,
     )

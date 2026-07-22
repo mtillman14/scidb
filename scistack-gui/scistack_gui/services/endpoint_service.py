@@ -34,10 +34,13 @@ def endpoint_artifacts(db, fn_name: str) -> dict:
         "stats": [asdict(s) for s in data.stats],
         "warnings": list(data.warnings),
     }
-    logger.info("[endpoint_service] artifacts for %s: %d figure(s), "
-                "%d stat(s), %d warning(s)", fn_name,
-                len(result["figures"]), len(result["stats"]),
-                len(result["warnings"]))
+    logger.info(
+        "[endpoint_service] artifacts for %s: %d figure(s), %d stat(s), %d warning(s)",
+        fn_name,
+        len(result["figures"]),
+        len(result["stats"]),
+        len(result["warnings"]),
+    )
     return result
 
 
@@ -48,8 +51,12 @@ def artifact_file_path(db, path: str) -> Path:
     project_dir = Path(str(db.dataset_db_path)).resolve().parent
     resolved = Path(path).resolve()
     if project_dir not in resolved.parents and resolved != project_dir:
-        logger.warning("[endpoint_service] refused artifact path outside "
-                       "project dir: %s (project=%s)", resolved, project_dir)
+        logger.warning(
+            "[endpoint_service] refused artifact path outside "
+            "project dir: %s (project=%s)",
+            resolved,
+            project_dir,
+        )
         raise ValueError(f"path is outside the project directory: {path}")
     if not resolved.is_file():
         raise FileNotFoundError(f"no such artifact file: {path}")

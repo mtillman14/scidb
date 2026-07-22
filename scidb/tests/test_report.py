@@ -12,12 +12,14 @@ import json as _json
 import re as _re
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-import scifor as _scifor
+from scidb.database import _local
 
+import scifor as _scifor
 from scidb import (
     BaseVariable,
     PathOutput,
@@ -25,8 +27,6 @@ from scidb import (
     for_each,
     stamp_artifact,
 )
-from scidb.database import _local
-
 
 SCHEMA = ["subject", "session"]
 
@@ -66,19 +66,30 @@ def seeded(tmp_path):
     for subj in ["S01", "S02"]:
         RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
     for low_hz in [20, 30]:
-        for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                 subject=["S01", "S02"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": low_hz},
+            [Filtered],
+            subject=["S01", "S02"],
+            session=["1"],
+        )
 
     def plot_sig(signal, filename):
         fig, ax = plt.subplots()
         ax.plot(np.asarray(signal).ravel())
         return fig
 
-    for_each(plot_sig,
-             {"signal": Filtered,
-              "filename": PathOutput(str(art / "{subject}_{low_hz}.png"))},
-             [PlotOut], finalized=True,
-             subject=["S01", "S02"], session=["1"])
+    for_each(
+        plot_sig,
+        {
+            "signal": Filtered,
+            "filename": PathOutput(str(art / "{subject}_{low_hz}.png")),
+        },
+        [PlotOut],
+        finalized=True,
+        subject=["S01", "S02"],
+        session=["1"],
+    )
 
     report_pdf = art / "stat_{low_hz}.pdf"
 
@@ -89,12 +100,18 @@ def seeded(tmp_path):
         # Cells are ARRAYS (the seed saves np.array([1.0, 2.0])): sum each
         # cell — float(cell) would raise and silently [skip] every combo.
         vals = [float(np.asarray(v).sum()) for v in df["Filtered"]]
-        return {"mean": sum(vals) / len(vals), "n": len(vals),
-                "assumptions": {"normality": "n/a"}}
+        return {
+            "mean": sum(vals) / len(vals),
+            "n": len(vals),
+            "assumptions": {"normality": "n/a"},
+        }
 
-    for_each(stat_mean,
-             {"df": Filtered, "filename": PathOutput(str(report_pdf))},
-             [StatOut], finalized=True)   # grand aggregation, per variant
+    for_each(
+        stat_mean,
+        {"df": Filtered, "filename": PathOutput(str(report_pdf))},
+        [StatOut],
+        finalized=True,
+    )  # grand aggregation, per variant
 
     # A DRAFT endpoint run: must never appear in the report.
     def stat_draft_only(df):
@@ -113,6 +130,7 @@ def seeded(tmp_path):
 # 1. Discovery
 # ---------------------------------------------------------------------------
 
+
 class TestDiscovery:
     def test_finds_exactly_the_endpoint_records(self, seeded):
         db, art = seeded
@@ -128,16 +146,16 @@ class TestDiscovery:
         assert len(data.stats) == 2
         assert all(s.result_parsed and "mean" in s.result for s in data.stats)
         # Processing outputs and drafts are absent.
-        vars_present = ({f.variable for f in data.figures}
-                        | {s.variable for s in data.stats})
+        vars_present = {f.variable for f in data.figures} | {
+            s.variable for s in data.stats
+        }
         assert "Filtered" not in vars_present
         assert "DraftOut" not in vars_present
 
     def test_variant_identity_present(self, seeded):
         db, _ = seeded
         data = db.inspect.report()
-        lows = sorted(s.branch_params.get("bandpass.low_hz")
-                      for s in data.stats)
+        lows = sorted(s.branch_params.get("bandpass.low_hz") for s in data.stats)
         assert lows == [20, 30]
 
     def test_fn_and_var_filters(self, seeded):
@@ -160,21 +178,24 @@ class TestDiscovery:
 # 2. Stamp verification + missing artifacts
 # ---------------------------------------------------------------------------
 
+
 class TestArtifactVerification:
     def test_stamps_verify_ok(self, seeded):
         db, _ = seeded
         data = db.inspect.report()
-        assert all(f.stamp_ok is True for f in data.figures), \
-            [(f.artifact_path, f.stamp_ok) for f in data.figures]
+        assert all(f.stamp_ok is True for f in data.figures), [
+            (f.artifact_path, f.stamp_ok) for f in data.figures
+        ]
 
     def test_overwritten_artifact_flags_stale(self, seeded):
         db, art = seeded
         victim = next(iter(sorted(art.glob("S01_*.png"))))
-        stamp_artifact(victim, {"scidb_stamp": 1, "record_id": "not-the-one",
-                                "function": "elsewhere"})
+        stamp_artifact(
+            victim,
+            {"scidb_stamp": 1, "record_id": "not-the-one", "function": "elsewhere"},
+        )
         data = db.inspect.report()
-        stale = [f for f in data.figures
-                 if f.artifact_path == str(victim)]
+        stale = [f for f in data.figures if f.artifact_path == str(victim)]
         assert stale and stale[0].stamp_ok is False
         assert any("STALE" in w for w in data.warnings)
 
@@ -195,6 +216,7 @@ class TestArtifactVerification:
 # ---------------------------------------------------------------------------
 # 3. write_report output
 # ---------------------------------------------------------------------------
+
 
 class TestWriteReport:
     def test_folder_contents(self, seeded, tmp_path):
@@ -220,6 +242,7 @@ class TestWriteReport:
 
     def test_stats_csv(self, seeded, tmp_path):
         import pandas as pd
+
         db, _ = seeded
         out = tmp_path / "out"
         db.inspect.write_report(out)
@@ -249,13 +272,14 @@ class TestWriteReport:
             fig.savefig(str(filename))
             plt.close(fig)
             vals = [float(np.asarray(v).sum()) for v in df["Filtered"]]
-            return {"mean": sum(vals) / len(vals), "n": len(vals),
-                    "version": 2}
+            return {"mean": sum(vals) / len(vals), "n": len(vals), "version": 2}
 
-        for_each(stat_mean,
-                 {"df": Filtered,
-                  "filename": PathOutput(str(art / "stat_{low_hz}.pdf"))},
-                 [StatOut], finalized=True)
+        for_each(
+            stat_mean,
+            {"df": Filtered, "filename": PathOutput(str(art / "stat_{low_hz}.pdf"))},
+            [StatOut],
+            finalized=True,
+        )
 
         latest = db.inspect.report(fn="stat_mean")
         everything = db.inspect.report(fn="stat_mean", all_versions=True)
@@ -266,12 +290,14 @@ class TestWriteReport:
 # 4. CLI
 # ---------------------------------------------------------------------------
 
+
 class TestReportCli:
     def test_report_json(self, seeded, capsys):
         from scidb.inspect.cli import main
+
         db, _ = seeded
         db_file = str(db.dataset_db_path)
-        db.close()   # CLI opens its own read-only connection
+        db.close()  # CLI opens its own read-only connection
         if hasattr(_local, "database"):
             delattr(_local, "database")
 
@@ -284,6 +310,7 @@ class TestReportCli:
 
     def test_report_writes_folder(self, seeded, tmp_path, capsys):
         from scidb.inspect.cli import main
+
         db, _ = seeded
         db_file = str(db.dataset_db_path)
         db.close()
@@ -298,14 +325,14 @@ class TestReportCli:
 
     def test_bad_fn_filter_is_clean(self, seeded, capsys):
         from scidb.inspect.cli import main
+
         db, _ = seeded
         db_file = str(db.dataset_db_path)
         db.close()
         if hasattr(_local, "database"):
             delattr(_local, "database")
 
-        rc = main(["--db", db_file, "report", "--fn", "plot_nonexistent",
-                   "--json"])
+        rc = main(["--db", db_file, "report", "--fn", "plot_nonexistent", "--json"])
         out = capsys.readouterr().out
         assert rc == 0
         payload = _json.loads(out)

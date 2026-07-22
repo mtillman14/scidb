@@ -5,33 +5,33 @@ Sets up a real DuckDB database populated with variable data and a for_each
 run so that the full API surface can be exercised end-to-end.
 """
 
-import json
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
 import scifor as _scifor
 
 # Make sure the local package is importable from an editable install.
-sys.path.insert(0, str(Path(__file__).parent))        # make conftest importable
+sys.path.insert(0, str(Path(__file__).parent))  # make conftest importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 _root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(_root / "scistack" / "src"))   # scistack package
-
-from fastapi.testclient import TestClient
-from scidb import BaseVariable, configure_database, for_each
-from scidb.database import _local
+sys.path.insert(0, str(_root / "scistack" / "src"))  # scistack package
 
 import scistack_gui.db as _gui_db
+from fastapi.testclient import TestClient
+from scidb.database import _local
 from scistack_gui import registry as _registry
 from scistack_gui.app import create_app
 
+from scidb import BaseVariable, configure_database, for_each
 
 # ---------------------------------------------------------------------------
 # Test variable classes — defined at module level so they are always present
 # in BaseVariable._all_subclasses when the test client is created.
 # ---------------------------------------------------------------------------
+
 
 class RawSignal(BaseVariable):
     pass
@@ -45,6 +45,7 @@ class FilteredSignal(BaseVariable):
 # Pipeline function used to populate test DB
 # ---------------------------------------------------------------------------
 
+
 def bandpass_filter(signal, low_hz):
     """Simple filter stub: scales signal by low_hz constant."""
     return np.asarray(signal, dtype=float) * float(low_hz)
@@ -53,6 +54,7 @@ def bandpass_filter(signal, low_hz):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def clear_db_state():
@@ -117,6 +119,7 @@ def populated_db(tmp_path):
 
     # Ensure pipeline structure tables exist (normally done by init_db).
     from scistack_gui import pipeline_store
+
     pipeline_store._ensure_tables(db)
 
     yield db
@@ -150,8 +153,8 @@ def bp_node_id(populated_db):
     inputs + outputs — constants excluded), so the node id suffix is the
     wiring_id, not any single call site's call_id."""
     from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
-    wid = wiring_id("bandpass_filter", {"signal": "RawSignal"},
-                    {"FilteredSignal"})
+
+    wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"})
     return fn_node_id("bandpass_filter", wid)
 
 
@@ -163,8 +166,11 @@ def find_fn_node_id_by_label(nodes, label: str) -> str:
     multiple matches would mean the test exercises multiple call sites
     and should target them explicitly.
     """
-    matches = [n["id"] for n in nodes
-               if n.get("type") == "functionNode" and n.get("data", {}).get("label") == label]
+    matches = [
+        n["id"]
+        for n in nodes
+        if n.get("type") == "functionNode" and n.get("data", {}).get("label") == label
+    ]
     assert len(matches) == 1, (
         f"expected exactly one function node with label {label!r}, got {matches}"
     )
@@ -184,8 +190,11 @@ def fn_min_state_across_call_sites(nodes, label: str) -> str | None:
       - The worst state (red < pending < green) across all matching nodes.
     """
     _ORDER = {"red": 0, "pending": 1, "green": 2}
-    states = [n["data"].get("run_state") for n in nodes
-              if n.get("type") == "functionNode" and n.get("data", {}).get("label") == label]
+    states = [
+        n["data"].get("run_state")
+        for n in nodes
+        if n.get("type") == "functionNode" and n.get("data", {}).get("label") == label
+    ]
     states = [s for s in states if s is not None]
     if not states:
         return None

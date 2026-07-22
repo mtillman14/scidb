@@ -1,22 +1,24 @@
 """Tests for scihist.state: check_combo_state and check_node_state."""
 
 import numpy as np
-import pytest
-
-from scidb import BaseVariable, for_each as scidb_for_each, scistack
-from scihist import for_each
 from scihist.state import check_combo_state, check_node_state
 
+from scidb import BaseVariable, scistack
+from scidb import for_each as scidb_for_each
+from scihist import for_each
 
 # ---------------------------------------------------------------------------
 # Variable types — defined at module level for BaseVariable registry
 # ---------------------------------------------------------------------------
 
+
 class RawState(BaseVariable):
     schema_version = 1
 
+
 class ProcessedState(BaseVariable):
     schema_version = 1
+
 
 class SecondaryState(BaseVariable):
     schema_version = 1
@@ -26,9 +28,11 @@ class SecondaryState(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
+
 @scistack
 def process_data(raw):
     return np.asarray(raw, dtype=float) * 2.0
+
 
 @scistack
 def second_step(processed):
@@ -38,6 +42,7 @@ def second_step(processed):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _seed_raw(db, subjects=(1, 2), trials=("A", "B")):
     for subj in subjects:
@@ -59,12 +64,15 @@ def _run_all(db, subjects=(1, 2), trials=("A", "B")):
 # check_combo_state
 # ---------------------------------------------------------------------------
 
+
 class TestCheckComboState:
     def test_missing_when_no_output(self, db):
         _seed_raw(db)
         state = check_combo_state(
-            process_data, [ProcessedState],
-            {"subject": 1, "trial": "A"}, db=db,
+            process_data,
+            [ProcessedState],
+            {"subject": 1, "trial": "A"},
+            db=db,
         )
         assert state == "missing"
 
@@ -72,8 +80,10 @@ class TestCheckComboState:
         _seed_raw(db)
         _run_all(db)
         state = check_combo_state(
-            process_data, [ProcessedState],
-            {"subject": 1, "trial": "A"}, db=db,
+            process_data,
+            [ProcessedState],
+            {"subject": 1, "trial": "A"},
+            db=db,
         )
         assert state == "up_to_date"
 
@@ -83,8 +93,10 @@ class TestCheckComboState:
         # Overwrite subject=1/trial=A raw input → should make output stale
         RawState.save(np.ones(5) * 99, subject=1, trial="A")
         state = check_combo_state(
-            process_data, [ProcessedState],
-            {"subject": 1, "trial": "A"}, db=db,
+            process_data,
+            [ProcessedState],
+            {"subject": 1, "trial": "A"},
+            db=db,
         )
         assert state == "stale"
 
@@ -104,8 +116,10 @@ class TestCheckComboState:
         process_data_v2.__name__ = "process_data"  # same name, different hash
 
         state = check_combo_state(
-            process_data_v2, [ProcessedState],
-            {"subject": 1, "trial": "A"}, db=db,
+            process_data_v2,
+            [ProcessedState],
+            {"subject": 1, "trial": "A"},
+            db=db,
         )
         assert state == "stale"
 
@@ -114,8 +128,10 @@ class TestCheckComboState:
         _run_all(db)
         # subject=99 was never seeded or run
         state = check_combo_state(
-            process_data, [ProcessedState],
-            {"subject": 99, "trial": "A"}, db=db,
+            process_data,
+            [ProcessedState],
+            {"subject": 99, "trial": "A"},
+            db=db,
         )
         assert state == "missing"
 
@@ -124,13 +140,16 @@ class TestCheckComboState:
 # check_node_state
 # ---------------------------------------------------------------------------
 
+
 class TestCheckNodeState:
     def test_red_when_never_run(self, db):
         _seed_raw(db)
         # for_each never called — no output records
         result = check_node_state(
-            process_data, [ProcessedState],
-            inputs={"raw": RawState}, db=db,
+            process_data,
+            [ProcessedState],
+            inputs={"raw": RawState},
+            db=db,
         )
         assert result["state"] == "red"
         assert result["counts"]["up_to_date"] == 0
@@ -233,8 +252,10 @@ class TestCheckNodeState:
 # Fallback path: scidb.for_each (no lineage, uses __fn_hash + timestamps)
 # ---------------------------------------------------------------------------
 
+
 class ScidbRaw(BaseVariable):
     schema_version = 1
+
 
 class ScidbProcessed(BaseVariable):
     schema_version = 1
@@ -263,8 +284,10 @@ class TestFnHashFallback:
             trial=["A"],
         )
         state = check_combo_state(
-            scidb_process, [ScidbProcessed],
-            {"subject": 1, "trial": "A"}, db=db,
+            scidb_process,
+            [ScidbProcessed],
+            {"subject": 1, "trial": "A"},
+            db=db,
         )
         assert state == "up_to_date"
 
@@ -280,8 +303,10 @@ class TestFnHashFallback:
         # Re-save raw input after output was produced → timestamp now newer
         ScidbRaw.save(np.ones(5) * 42, subject=1, trial="A")
         state = check_combo_state(
-            scidb_process, [ScidbProcessed],
-            {"subject": 1, "trial": "A"}, db=db,
+            scidb_process,
+            [ScidbProcessed],
+            {"subject": 1, "trial": "A"},
+            db=db,
         )
         assert state == "stale"
 
@@ -299,8 +324,10 @@ class TestFnHashFallback:
             return np.asarray(raw, dtype=float) * 99.0
 
         state = check_combo_state(
-            scidb_process_v2, [ScidbProcessed],
-            {"subject": 1, "trial": "A"}, db=db,
+            scidb_process_v2,
+            [ScidbProcessed],
+            {"subject": 1, "trial": "A"},
+            db=db,
         )
         assert state == "stale"
 
@@ -312,6 +339,7 @@ class TestFnHashFallback:
         through the branch_params_filter path (suffix matching), not the
         version_keys filter path (which would fail to find the record).
         """
+
         class ScidbRawConst(BaseVariable):
             schema_version = 1
 
@@ -332,7 +360,9 @@ class TestFnHashFallback:
             trial=["A"],
         )
 
-        result = check_node_state(scidb_process_with_scale, [ScidbProcessedConst], db=db)
+        result = check_node_state(
+            scidb_process_with_scale, [ScidbProcessedConst], db=db
+        )
         assert result["state"] == "green", (
             f"Expected green after full run with constants, got {result['state']}. "
             f"Counts: {result['counts']}"
@@ -345,8 +375,9 @@ def test_variable_input_classification(tmp_path):
     This verifies the fix for the input classification quirk where BaseVariable
     inputs were being classified as constants instead of variables.
     """
-    from scidb import configure_database, BaseVariable
     from scidb.database import get_database
+
+    from scidb import BaseVariable, configure_database
 
     # Setup database
     db_path = tmp_path / "test.duckdb"
@@ -382,12 +413,14 @@ def test_variable_input_classification(tmp_path):
     filt = Filtered.load(subject=1, session="A")
     prov = db.get_provenance(Filtered, version=filt.record_id)
     assert prov is not None, "No provenance recorded for Filtered"
-    inputs = prov["inputs"]        # variable inputs: {record_id, param_name, variable_type}
+    inputs = prov["inputs"]  # variable inputs: {record_id, param_name, variable_type}
     constants = prov["constants"]  # {param_name: value}
 
     # Variable input 'signal' classified correctly, pointing at the saved RawEMG.
     var_inputs = [i for i in inputs if i.get("param_name") == "signal"]
-    assert len(var_inputs) == 1, f"Expected 1 variable input named 'signal', got {len(var_inputs)}"
+    assert len(var_inputs) == 1, (
+        f"Expected 1 variable input named 'signal', got {len(var_inputs)}"
+    )
     assert var_inputs[0]["variable_type"] == "RawEMG", (
         f"Expected variable_type='RawEMG', got {var_inputs[0].get('variable_type')}"
     )
@@ -408,6 +441,7 @@ def test_variable_input_classification(tmp_path):
 # ---------------------------------------------------------------------------
 # check_multiple_nodes_state
 # ---------------------------------------------------------------------------
+
 
 class TestCheckMultipleNodesState:
     def test_multiple_nodes_basic(self, db):
@@ -440,7 +474,6 @@ class TestCheckMultipleNodesState:
     def test_multiple_nodes_with_call_id(self, db):
         """Test checking state with call_id specified."""
         from scihist.state import check_multiple_nodes_state
-        from scidb.foreach_config import call_id_from_version_keys
 
         _seed_raw(db)
         _run_all(db)
@@ -448,7 +481,9 @@ class TestCheckMultipleNodesState:
         # Get the call_id from the actual outputs
         # (In practice this would come from list_pipeline_variants)
         variants = db.list_pipeline_variants()
-        call_ids = {v["call_id"] for v in variants if v["function_name"] == "process_data"}
+        call_ids = {
+            v["call_id"] for v in variants if v["function_name"] == "process_data"
+        }
         call_id = list(call_ids)[0] if call_ids else None
 
         nodes = [
@@ -491,7 +526,11 @@ class TestCheckMultipleNodesState:
         fn_registry = {}  # Empty registry
 
         nodes = [
-            {"fn_name": "nonexistent_func", "call_id": "abc123", "outputs": [ProcessedState]},
+            {
+                "fn_name": "nonexistent_func",
+                "call_id": "abc123",
+                "outputs": [ProcessedState],
+            },
         ]
 
         result = check_multiple_nodes_state(nodes, fn_registry=fn_registry, db=db)
@@ -503,6 +542,7 @@ class TestCheckMultipleNodesState:
 # ---------------------------------------------------------------------------
 # Per-call-site scoping (call_id)
 # ---------------------------------------------------------------------------
+
 
 @scistack
 def scale_data(raw, factor):
@@ -518,6 +558,7 @@ class TestCallSiteScoping:
 
     def _call_id(self, constants):
         from scidb.foreach_config import ForEachConfig
+
         return ForEachConfig(
             scale_data, {"raw": RawState, "factor": constants}
         ).to_call_id()
@@ -525,16 +566,28 @@ class TestCallSiteScoping:
     def test_full_call_site_stays_green_beside_partial_sibling(self, db):
         _seed_raw(db)
         # Call site A (factor=2): fully run.
-        for_each(scale_data, inputs={"raw": RawState, "factor": 2},
-                 outputs=[ProcessedState], subject=[1, 2], trial=["A", "B"])
+        for_each(
+            scale_data,
+            inputs={"raw": RawState, "factor": 2},
+            outputs=[ProcessedState],
+            subject=[1, 2],
+            trial=["A", "B"],
+        )
         # Call site B (factor=5): subject=1 only (partial).
-        for_each(scale_data, inputs={"raw": RawState, "factor": 5},
-                 outputs=[ProcessedState], subject=[1], trial=["A", "B"])
+        for_each(
+            scale_data,
+            inputs={"raw": RawState, "factor": 5},
+            outputs=[ProcessedState],
+            subject=[1],
+            trial=["A", "B"],
+        )
 
-        result_a = check_node_state(scale_data, [ProcessedState], db=db,
-                                    call_id=self._call_id(2))
-        result_b = check_node_state(scale_data, [ProcessedState], db=db,
-                                    call_id=self._call_id(5))
+        result_a = check_node_state(
+            scale_data, [ProcessedState], db=db, call_id=self._call_id(2)
+        )
+        result_b = check_node_state(
+            scale_data, [ProcessedState], db=db, call_id=self._call_id(5)
+        )
         result_union = check_node_state(scale_data, [ProcessedState], db=db)
 
         assert result_a["state"] == "green", "fully-run call site must stay green"
@@ -546,10 +599,16 @@ class TestCallSiteScoping:
 
     def test_unknown_call_id_reads_red(self, db):
         _seed_raw(db)
-        for_each(scale_data, inputs={"raw": RawState, "factor": 2},
-                 outputs=[ProcessedState], subject=[1, 2], trial=["A", "B"])
+        for_each(
+            scale_data,
+            inputs={"raw": RawState, "factor": 2},
+            outputs=[ProcessedState],
+            subject=[1, 2],
+            trial=["A", "B"],
+        )
 
-        result = check_node_state(scale_data, [ProcessedState], db=db,
-                                  call_id="0000000000000000")
+        result = check_node_state(
+            scale_data, [ProcessedState], db=db, call_id="0000000000000000"
+        )
 
         assert result["state"] == "red"  # no matching config -> no expected work

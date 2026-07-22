@@ -64,8 +64,10 @@ def push_message(msg: dict) -> None:
     instead of the WebSocket path.
     """
     from scistack_gui.notify import _enabled as _jsonrpc_mode
+
     if _jsonrpc_mode:
         from scistack_gui.notify import push_message as _jsonrpc_push
+
         _jsonrpc_push(dict(msg))  # copy to avoid mutating caller's dict
         return
     if _loop is None:
@@ -74,7 +76,8 @@ def push_message(msg: dict) -> None:
         logger.warning(
             "[ws] DROPPED %s message (run_id=%s): no event loop captured — "
             "no WebSocket client has connected yet",
-            msg.get("type"), msg.get("run_id"),
+            msg.get("type"),
+            msg.get("run_id"),
         )
         return
     _loop.call_soon_threadsafe(_fanout_nowait, dict(msg))
@@ -85,21 +88,24 @@ def _fanout_nowait(msg: dict) -> None:
     if not _clients:
         logger.warning(
             "[ws] DROPPED %s message (run_id=%s): no clients connected",
-            msg.get("type"), msg.get("run_id"),
+            msg.get("type"),
+            msg.get("run_id"),
         )
         return
     for outbox in _clients.values():
         outbox.put_nowait(msg)
     _log_for(msg)(
         "[ws] fanned out %s (run_id=%s) to %d client outbox(es)",
-        msg.get("type"), msg.get("run_id"), len(_clients),
+        msg.get("type"),
+        msg.get("run_id"),
+        len(_clients),
     )
 
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global _loop
-    _loop = asyncio.get_running_loop()   # capture from async context
+    _loop = asyncio.get_running_loop()  # capture from async context
     await websocket.accept()
     outbox: asyncio.Queue = asyncio.Queue()
     _clients[websocket] = outbox
@@ -129,12 +135,14 @@ async def _pump_outbox(websocket: WebSocket, outbox: asyncio.Queue):
             await websocket.send_json(msg)
             _log_for(msg)(
                 "[ws] delivered %s (run_id=%s)",
-                msg.get("type"), msg.get("run_id"),
+                msg.get("type"),
+                msg.get("run_id"),
             )
         except Exception as exc:
             logger.warning(
-                "[ws] send failed for %s message (%s); stopping pump for "
-                "this client", msg.get("type"), exc,
+                "[ws] send failed for %s message (%s); stopping pump for this client",
+                msg.get("type"),
+                exc,
             )
             break
 
@@ -145,8 +153,10 @@ async def broadcast(msg: dict) -> None:
     In JSON-RPC server mode (VS Code extension), delegates to notify.py.
     """
     from scistack_gui.notify import _enabled as _jsonrpc_mode
+
     if _jsonrpc_mode:
         from scistack_gui.notify import push_message as _jsonrpc_push
+
         _jsonrpc_push(dict(msg))
         return
     delivered = 0
@@ -155,7 +165,12 @@ async def broadcast(msg: dict) -> None:
             await client.send_json(msg)
             delivered += 1
         except Exception as exc:
-            logger.warning("[ws] broadcast send failed for %s: %s",
-                           msg.get("type"), exc)
-    logger.info("[ws] broadcast %s to %d/%d client(s)",
-                msg.get("type"), delivered, len(_clients))
+            logger.warning(
+                "[ws] broadcast send failed for %s: %s", msg.get("type"), exc
+            )
+    logger.info(
+        "[ws] broadcast %s to %d/%d client(s)",
+        msg.get("type"),
+        delivered,
+        len(_clients),
+    )

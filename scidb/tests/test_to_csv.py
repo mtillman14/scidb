@@ -8,11 +8,10 @@ the variable class. Scalar-only — vectors and tables raise ValueError.
 import numpy as np
 import pandas as pd
 import pytest
-
-from scidb import BaseVariable, Merge, for_each
+from conftest import ArrayValue, CustomDataFrameValue, ScalarValue
 from scidb.exceptions import NotFoundError
 
-from conftest import ScalarValue, ArrayValue, CustomDataFrameValue
+from scidb import BaseVariable, Merge, for_each
 
 
 def _read(path):
@@ -20,6 +19,7 @@ def _read(path):
 
 
 # --- Happy path -----------------------------------------------------------
+
 
 def test_trial_level_scalar_export(db, tmp_path):
     """Trial-level scalar -> one row per subject/trial, both schema columns."""
@@ -82,10 +82,11 @@ def test_where_filter_restricts_rows(db, tmp_path):
 
     df = _read(out)
     assert len(df) == 2
-    assert set(zip(df.subject, df.trial)) == {(1, 1), (2, 1)}
+    assert set(zip(df.subject, df.trial, strict=False)) == {(1, 1), (2, 1)}
 
 
 # --- Validation errors ----------------------------------------------------
+
 
 def test_filename_must_end_with_csv(db, tmp_path):
     ScalarValue.save(1.0, subject=1, trial=1)
@@ -101,8 +102,9 @@ def test_vector_variable_raises(db, tmp_path):
 
 def test_multirow_table_variable_raises(db, tmp_path):
     # A multi-row table per schema_id cannot fit one CSV row.
-    CustomDataFrameValue.save(pd.DataFrame({"a": [1, 2], "b": [3, 4]}),
-                              subject=1, trial=1)
+    CustomDataFrameValue.save(
+        pd.DataFrame({"a": [1, 2], "b": [3, 4]}), subject=1, trial=1
+    )
     with pytest.raises(ValueError, match="one row per schema_id|Multi-row"):
         CustomDataFrameValue.to_csv(str(tmp_path / "tbl.csv"))
 
@@ -126,6 +128,7 @@ def test_extra_variable_arg_points_to_merge(db, tmp_path):
 
 # --- Variant (branch-param) support --------------------------------------
 
+
 class _RawScalar(BaseVariable):
     schema_version = 1
 
@@ -143,8 +146,13 @@ def test_branch_param_selects_variant(db, tmp_path):
     """Non-schema kwargs are forwarded to load() as Variant/branch-param filters."""
     _RawScalar.save(2.0, subject=1, trial=1)
     for low_hz in (20, 50):
-        for_each(_scale_by, {"signal": _RawScalar, "low_hz": low_hz},
-                 [_ScaledScalar], subject=[1], trial=[1])
+        for_each(
+            _scale_by,
+            {"signal": _RawScalar, "low_hz": low_hz},
+            [_ScaledScalar],
+            subject=[1],
+            trial=[1],
+        )
 
     out = tmp_path / "variant.csv"
     _ScaledScalar.to_csv(str(out), low_hz=20)
@@ -156,12 +164,15 @@ def test_branch_param_selects_variant(db, tmp_path):
 
 # --- Multi-column (single-row table) support -----------------------------
 
+
 def test_single_row_table_exports_multiple_columns(db, tmp_path):
     """One row per schema_id may have multiple columns (a single-row table)."""
-    CustomDataFrameValue.save(pd.DataFrame({"speed": [1.2], "cadence": [110]}),
-                              subject=1, trial=1)
-    CustomDataFrameValue.save(pd.DataFrame({"speed": [1.5], "cadence": [120]}),
-                              subject=1, trial=2)
+    CustomDataFrameValue.save(
+        pd.DataFrame({"speed": [1.2], "cadence": [110]}), subject=1, trial=1
+    )
+    CustomDataFrameValue.save(
+        pd.DataFrame({"speed": [1.5], "cadence": [120]}), subject=1, trial=2
+    )
 
     out = tmp_path / "table.csv"
     CustomDataFrameValue.to_csv(str(out))
@@ -176,8 +187,9 @@ def test_single_row_table_exports_multiple_columns(db, tmp_path):
 
 def test_column_selection_exports_selected_columns(db, tmp_path):
     """MyVar["col"].to_csv() exports only the selected column(s)."""
-    CustomDataFrameValue.save(pd.DataFrame({"speed": [1.2], "cadence": [110]}),
-                              subject=1, trial=1)
+    CustomDataFrameValue.save(
+        pd.DataFrame({"speed": [1.2], "cadence": [110]}), subject=1, trial=1
+    )
 
     out = tmp_path / "speed.csv"
     CustomDataFrameValue["speed"].to_csv(str(out))
@@ -189,6 +201,7 @@ def test_column_selection_exports_selected_columns(db, tmp_path):
 
 
 # --- Merge support --------------------------------------------------------
+
 
 class _Speed(BaseVariable):
     schema_version = 1
@@ -232,7 +245,7 @@ def test_merge_with_where_filter(db, tmp_path):
 
 def test_merge_broadcasts_coarser_level(db, tmp_path):
     """A subject-level constituent broadcasts across a trial-level one."""
-    ScalarValue.save(99.0, subject=1)            # subject-level covariate
+    ScalarValue.save(99.0, subject=1)  # subject-level covariate
     _Speed.save(1.2, subject=1, trial=1)
     _Speed.save(1.5, subject=1, trial=2)
 

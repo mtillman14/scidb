@@ -11,30 +11,33 @@ are returned from load(), covering:
 - Error cases (unknown key)
 """
 
-import pytest
-
 import sys
 from pathlib import Path
+
+import pytest
+
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root / "src"))
 
-from scidb import BaseVariable, configure_database, schema_key
 from scidb.exceptions import NotFoundError
-from scidb.filters import SchemaKeyCompareFilter, SchemaKeyInFilter
 
+from scidb import BaseVariable, configure_database, schema_key
 
 # ===========================================================================
 # Variable classes
 # ===========================================================================
 
+
 class Measurement(BaseVariable):
     """Scalar measurement used across all schema key filter tests."""
+
     schema_version = 1
 
 
 # ===========================================================================
 # Fixtures
 # ===========================================================================
+
 
 @pytest.fixture
 def session_db(tmp_path):
@@ -71,8 +74,8 @@ def numeric_db(tmp_path):
 # isin — string schema key
 # ===========================================================================
 
-class TestSchemaKeyIsin:
 
+class TestSchemaKeyIsin:
     def test_isin_two_of_three_sessions(self, session_db):
         results = Measurement.load(where=schema_key("session").isin(["BL", "POST"]))
         assert len(results) == 4  # subjects 1+2, sessions BL+POST
@@ -108,8 +111,8 @@ class TestSchemaKeyIsin:
 # isin — numeric schema key
 # ===========================================================================
 
-class TestSchemaKeyIsinNumeric:
 
+class TestSchemaKeyIsinNumeric:
     def test_isin_numeric_subjects(self, numeric_db):
         results = Measurement.load(where=schema_key("subject").isin([1, 2]))
         assert len(results) == 2
@@ -117,7 +120,7 @@ class TestSchemaKeyIsinNumeric:
     def test_isin_numeric_single(self, numeric_db):
         result = Measurement.load(where=schema_key("subject").isin([3]))
         # Single result may come back as a single BaseVariable, not a list
-        if hasattr(result, '__len__'):
+        if hasattr(result, "__len__"):
             assert len(result) == 1
         else:
             assert result.metadata["subject"] in ("3", 3)
@@ -132,8 +135,8 @@ class TestSchemaKeyIsinNumeric:
 # Equality and inequality — string key
 # ===========================================================================
 
-class TestSchemaKeyEquality:
 
+class TestSchemaKeyEquality:
     def test_eq_string_key(self, session_db):
         results = Measurement.load(where=schema_key("session") == "BL")
         assert len(results) == 2
@@ -146,7 +149,7 @@ class TestSchemaKeyEquality:
     def test_eq_numeric_key(self, numeric_db):
         result = Measurement.load(where=schema_key("subject") == 3)
         # Single record
-        if hasattr(result, '__len__'):
+        if hasattr(result, "__len__"):
             assert len(result) == 1
         else:
             assert result.metadata["subject"] in ("3", 3)
@@ -156,8 +159,8 @@ class TestSchemaKeyEquality:
 # Ordering operators — numeric key stored as VARCHAR
 # ===========================================================================
 
-class TestSchemaKeyOrdering:
 
+class TestSchemaKeyOrdering:
     def test_gt(self, numeric_db):
         results = Measurement.load(where=schema_key("subject") > 3)
         assert len(results) == 2  # subjects 4, 5
@@ -187,7 +190,9 @@ class TestSchemaKeyOrdering:
             for i in [1, 2, 9, 10, 11]:
                 Measurement.save(float(i), subject=i)
             results = Measurement.load(where=schema_key("subject") > 9)
-            assert len(results) == 2  # subjects 10, 11 — would be 0 with lexicographic sort
+            assert (
+                len(results) == 2
+            )  # subjects 10, 11 — would be 0 with lexicographic sort
         finally:
             db.close()
 
@@ -196,8 +201,8 @@ class TestSchemaKeyOrdering:
 # Compound combinations
 # ===========================================================================
 
-class TestSchemaKeyCompound:
 
+class TestSchemaKeyCompound:
     def test_and_two_schema_key_filters(self, numeric_db):
         f = (schema_key("subject") >= 2) & (schema_key("subject") <= 4)
         results = Measurement.load(where=f)
@@ -218,13 +223,16 @@ class TestSchemaKeyCompound:
 # SchemaKey filter propagation into Merge inputs in for_each
 # ===========================================================================
 
+
 class AuxMeasurement(BaseVariable):
     """Second variable type for Merge tests (distinct from Measurement)."""
+
     schema_version = 1
 
 
 class SubjectLabel(BaseVariable):
     """Subject-level variable (saved without session) for cross-level Merge tests."""
+
     schema_version = 1
 
 
@@ -254,8 +262,9 @@ class TestSchemaKeyFilterWithMerge:
 
     def test_isin_filters_merge_input_rows(self, merge_session_db):
         """Merge loaded with schema_key("session").isin([...]) must exclude non-listed sessions."""
-        from scidb import for_each
         from scidb.foreach import Merge
+
+        from scidb import for_each
 
         captured = []
 
@@ -281,8 +290,9 @@ class TestSchemaKeyFilterWithMerge:
 
     def test_compare_filter_filters_merge_input_rows(self, merge_session_db):
         """Merge loaded with schema_key("subject") == 1 must contain only subject=1 rows."""
-        from scidb import for_each
         from scidb.foreach import Merge
+
+        from scidb import for_each
 
         captured = []
 
@@ -302,13 +312,14 @@ class TestSchemaKeyFilterWithMerge:
         assert captured, "function was never called"
         for tbl in captured:
             if "subject" in tbl.columns:
-                bad = set(str(v) for v in tbl["subject"].unique()) - {"1"}
+                bad = {str(v) for v in tbl["subject"].unique()} - {"1"}
                 assert not bad, f"unexpected subjects in Merge output: {bad}"
 
 
 # ===========================================================================
 # Cross-level Merge: subject-level variable + session-level filter
 # ===========================================================================
+
 
 @pytest.fixture
 def cross_level_db(tmp_path):
@@ -336,11 +347,13 @@ def cross_level_db(tmp_path):
 
 class SessionValue(BaseVariable):
     """Session-level variable for finer-filter-on-coarser-constituent tests."""
+
     schema_version = 1
 
 
 class SessionSide(BaseVariable):
     """Session-level filter variable — same level as SessionValue, finer than SubjectLabel."""
+
     schema_version = 1
 
 
@@ -384,8 +397,9 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
     """
 
     def test_isin_does_not_empty_subject_level_constituent(self, cross_level_db):
-        from scidb import for_each
         from scidb.foreach import Merge
+
+        from scidb import for_each
 
         captured = []
 
@@ -402,15 +416,18 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
             save=False,
         )
 
-        assert captured, "function was never called — subject-level constituent was incorrectly emptied"
+        assert captured, (
+            "function was never called — subject-level constituent was incorrectly emptied"
+        )
         for tbl in captured:
             if "session" in tbl.columns:
                 bad = set(tbl["session"].unique()) - {"BL"}
                 assert not bad, f"unexpected sessions after filter: {bad}"
 
     def test_compare_does_not_empty_subject_level_constituent(self, cross_level_db):
-        from scidb import for_each
         from scidb.foreach import Merge
+
+        from scidb import for_each
 
         captured = []
 
@@ -433,7 +450,9 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
                 bad = set(tbl["session"].unique()) - {"POST"}
                 assert not bad, f"unexpected sessions after filter: {bad}"
 
-    def test_finer_variable_filter_skipped_for_coarser_constituent(self, cross_level_db_with_session_filter):
+    def test_finer_variable_filter_skipped_for_coarser_constituent(
+        self, cross_level_db_with_session_filter
+    ):
         """Regression: a session-level VariableFilter must not error when applied to
         a subject-level Merge constituent (SubjectLabel).
 
@@ -442,8 +461,9 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
         still filtering SessionValue (session-level, same as filter) to BL only.
         The function must be called and receive merged rows for BL sessions.
         """
-        from scidb import for_each
         from scidb.foreach import Merge
+
+        from scidb import for_each
 
         captured = []
 
@@ -461,13 +481,17 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
             save=False,
         )
 
-        assert captured, "function was never called — session-level filter incorrectly rejected subject-level constituent"
+        assert captured, (
+            "function was never called — session-level filter incorrectly rejected subject-level constituent"
+        )
         for tbl in captured:
             if "session" in tbl.columns:
                 bad = set(tbl["session"].unique()) - {"BL"}
                 assert not bad, f"unexpected sessions after filter: {bad}"
 
-    def test_finer_variable_filter_skipped_in_direct_load(self, cross_level_db_with_session_filter):
+    def test_finer_variable_filter_skipped_in_direct_load(
+        self, cross_level_db_with_session_filter
+    ):
         """Regression: a session-level VariableFilter must not raise when used in a
         direct load() call against a subject-level variable.
 
@@ -489,8 +513,8 @@ class TestCrossLevelMergeWithSchemaKeyFilter:
 # Error handling
 # ===========================================================================
 
-class TestSchemaKeyFilterErrors:
 
+class TestSchemaKeyFilterErrors:
     def test_unknown_key_raises(self, session_db):
         with pytest.raises(ValueError, match="Unknown schema key"):
             Measurement.load(where=schema_key("nonexistent") == "BL")
@@ -504,13 +528,16 @@ class TestSchemaKeyFilterErrors:
 # SchemaKey combined with variable-level filter on for_each-computed output
 # ===========================================================================
 
+
 class ComputedOutput(BaseVariable):
     """Output variable computed via for_each with a variable-level where= filter."""
+
     schema_version = 1
 
 
 class FilterVar(BaseVariable):
     """Fine-grained filter variable (session-level) used as where= in for_each."""
+
     schema_version = 1
 
 
@@ -573,7 +600,7 @@ class TestSchemaKeyWithForEachWhereFilter:
         results = ComputedOutput.load(
             where=schema_key("session").isin(["BL"]) & (FilterVar == "U")
         )
-        if not hasattr(results, '__len__'):
+        if not hasattr(results, "__len__"):
             results = [results]
         assert len(results) == 2  # subject=1,BL and subject=2,BL
         sessions = {r.metadata["session"] for r in results}
@@ -585,7 +612,7 @@ class TestSchemaKeyWithForEachWhereFilter:
             where=(schema_key("session") == "MID") & (FilterVar == "U")
         )
         # Single result may come back as a single BaseVariable, not a list
-        if hasattr(result, '__len__'):
+        if hasattr(result, "__len__"):
             assert len(result) == 1
             assert result[0].metadata["session"] == "MID"
         else:
@@ -594,14 +621,14 @@ class TestSchemaKeyWithForEachWhereFilter:
     def test_variable_filter_alone_still_works(self, foreach_where_db):
         """Baseline: variable-only filter (no SchemaKey) still returns all matching records."""
         results = ComputedOutput.load(where=FilterVar == "U")
-        if not hasattr(results, '__len__'):
+        if not hasattr(results, "__len__"):
             results = [results]
         assert len(results) == 3  # BL×2 + MID×1
 
     def test_schema_key_only_still_works(self, foreach_where_db):
         """Baseline: SchemaKey-only filter still returns records regardless of __where."""
         results = ComputedOutput.load(where=schema_key("session").isin(["BL"]))
-        if not hasattr(results, '__len__'):
+        if not hasattr(results, "__len__"):
             results = [results]
         assert len(results) == 2
 
@@ -617,7 +644,7 @@ class TestSchemaKeyWithForEachWhereFilter:
         results = ComputedOutput.load(
             where=(FilterVar == "U") & schema_key("session").isin(["BL"])
         )
-        if not hasattr(results, '__len__'):
+        if not hasattr(results, "__len__"):
             results = [results]
         assert len(results) == 2
         sessions = {r.metadata["session"] for r in results}
@@ -628,15 +655,18 @@ class TestSchemaKeyWithForEachWhereFilter:
 # SchemaKey on a Merge input (the for_each Merge-constituent load path)
 # ===========================================================================
 
+
 class ComputedOutput2(BaseVariable):
     """Second for_each-computed constituent (has a stored __where), so that BOTH
     Merge constituents leak via Strategy 1 if the restriction is dropped — the
     inner join cannot mask the bug the way a raw-saved constituent would."""
+
     schema_version = 1
 
 
 class CollectOut(BaseVariable):
     """Output for the end-to-end Merge + as_table regression test."""
+
     schema_version = 1
 
 
@@ -661,8 +691,10 @@ class TestSchemaKeyOnMergeConstituent:
 
         db = foreach_where_db
         # Resolve ComputedOutput's schema_ids restricted to session=BL.
-        bl_ids = schema_key("session").isin(["BL"]).resolve(
-            db, ComputedOutput, ComputedOutput.table_name()
+        bl_ids = (
+            schema_key("session")
+            .isin(["BL"])
+            .resolve(db, ComputedOutput, ComputedOutput.table_name())
         )
         pf = _PreresolvedFilter(bl_ids, variable_filter=(FilterVar == "U"))
 
@@ -688,7 +720,7 @@ class TestSchemaKeyOnMergeConstituent:
         dropped, both leak session=MID and the inner join cannot remove it — the
         table would wrongly contain MID.
         """
-        from scidb import for_each, Merge
+        from scidb import Merge, for_each
 
         # Second computed constituent computed under the same where= as ComputedOutput.
         def compute2(filterVar):

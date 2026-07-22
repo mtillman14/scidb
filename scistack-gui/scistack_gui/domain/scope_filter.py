@@ -26,8 +26,7 @@ logger = logging.getLogger(__name__)
 ROOT = "main"
 
 
-def node_scope(node_id: str, manual_nodes: dict,
-               positions_by_scope: dict) -> str:
+def node_scope(node_id: str, manual_nodes: dict, positions_by_scope: dict) -> str:
     """The pipeline scope a node belongs to (see module docstring)."""
     meta = manual_nodes.get(node_id)
     if meta is not None:
@@ -38,9 +37,13 @@ def node_scope(node_id: str, manual_nodes: dict,
     return ROOT
 
 
-def filter_graph_to_scope(nodes: list[dict], edges: list[dict],
-                          scope_id: str, manual_nodes: dict,
-                          positions_by_scope: dict) -> tuple[list, list]:
+def filter_graph_to_scope(
+    nodes: list[dict],
+    edges: list[dict],
+    scope_id: str,
+    manual_nodes: dict,
+    positions_by_scope: dict,
+) -> tuple[list, list]:
     """Restrict a fully-built graph to one scope.
 
     Nodes keep membership per :func:`node_scope`; an edge survives when
@@ -50,17 +53,23 @@ def filter_graph_to_scope(nodes: list[dict], edges: list[dict],
     to root and stays on the root canvas exactly as it did pre-scoping.
     """
     kept_nodes = [
-        n for n in nodes
+        n
+        for n in nodes
         if node_scope(n["id"], manual_nodes, positions_by_scope) == scope_id
     ]
     kept_edges = [
-        e for e in edges
+        e
+        for e in edges
         if node_scope(e["source"], manual_nodes, positions_by_scope) == scope_id
         and node_scope(e["target"], manual_nodes, positions_by_scope) == scope_id
     ]
     logger.debug(
         "[scope_filter] scope %s: kept %d/%d node(s), %d/%d edge(s)",
-        scope_id, len(kept_nodes), len(nodes), len(kept_edges), len(edges),
+        scope_id,
+        len(kept_nodes),
+        len(nodes),
+        len(kept_edges),
+        len(edges),
     )
     return kept_nodes, kept_edges
 
@@ -71,14 +80,18 @@ def _var_label(node_id: str, manual_nodes: dict) -> str | None:
     if meta is not None:
         return meta["label"] if meta.get("type") == "variableNode" else None
     if node_id.startswith("var__"):
-        return node_id[len("var__"):]
+        return node_id[len("var__") :]
     return None
 
 
-def document_interface(scope_id: str, manual_nodes: dict, edges: list[dict],
-                       uses_by_parent: dict,
-                       positions_by_scope: dict | None = None,
-                       _visiting: frozenset = frozenset()) -> dict:
+def document_interface(
+    scope_id: str,
+    manual_nodes: dict,
+    edges: list[dict],
+    uses_by_parent: dict,
+    positions_by_scope: dict | None = None,
+    _visiting: frozenset = frozenset(),
+) -> dict:
     """A scope's ports from the DOCUMENT graph: ``{"inputs": [...],
     "outputs": [...]}`` as sorted variable-type labels.
 
@@ -95,7 +108,8 @@ def document_interface(scope_id: str, manual_nodes: dict, edges: list[dict],
     # Scope membership: manual nodes by pipeline_id, DB-derived nodes by
     # where their position lives (same rule as node_scope).
     scope_nodes = {
-        nid for nid, meta in manual_nodes.items()
+        nid
+        for nid, meta in manual_nodes.items()
         if (meta.get("pipeline_id") or ROOT) == scope_id
     }
     scope_nodes |= set(positions_by_scope.get(scope_id, {})) - set(manual_nodes)
@@ -114,8 +128,12 @@ def document_interface(scope_id: str, manual_nodes: dict, edges: list[dict],
 
     for use in uses_by_parent.get(scope_id, []):
         child_iface = document_interface(
-            use["child_pipeline_id"], manual_nodes, edges, uses_by_parent,
-            positions_by_scope, _visiting | {scope_id},
+            use["child_pipeline_id"],
+            manual_nodes,
+            edges,
+            uses_by_parent,
+            positions_by_scope,
+            _visiting | {scope_id},
         )
         consumed.update(child_iface["inputs"])
         produced.update(child_iface["outputs"])

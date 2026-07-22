@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import sys
 import textwrap
-from pathlib import Path
 
 import pytest
-
 from scistack_gui.api import project as _project_mod
 
 
@@ -20,9 +18,8 @@ def project_client(populated_db, tmp_path):
     scistack_gui.db._db_path. Here we add the rest of the project
     structure so the discovery scanner has something to find.
     """
-    from scistack_gui import registry as _registry
-    from scistack_gui.app import create_app
     from fastapi.testclient import TestClient
+    from scistack_gui.app import create_app
 
     project_name = "test_project"
 

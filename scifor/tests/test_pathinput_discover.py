@@ -1,11 +1,8 @@
 """Tests for PathInput.discover() — filesystem-driven metadata discovery."""
 
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
-
 from scifor.pathinput import PathInput
 
 
@@ -29,7 +26,9 @@ def tmp_tree(tmp_path):
     for subject in ["1", "2"]:
         sessions = ["A", "B"] if subject == "1" else ["A"]
         for session in sessions:
-            speeds = ["fast", "slow"] if (subject == "1" and session == "A") else ["fast"]
+            speeds = (
+                ["fast", "slow"] if (subject == "1" and session == "A") else ["fast"]
+            )
             for speed in speeds:
                 d = tmp_path / subject / "XSENS" / session
                 d.mkdir(parents=True, exist_ok=True)
@@ -172,7 +171,9 @@ class TestDiscover:
         xs = {c["x"] for c in combos}
         assert xs == {"A", "B"}
 
-    def test_no_root_folder_uses_pyproject_root_for_discover(self, tmp_path, monkeypatch):
+    def test_no_root_folder_uses_pyproject_root_for_discover(
+        self, tmp_path, monkeypatch
+    ):
         """discover() with no root_folder roots at the pyproject.toml ancestor."""
         (tmp_path / "pyproject.toml").touch()
         sub = tmp_path / "subdir"
@@ -187,7 +188,9 @@ class TestDiscover:
         xs = {c["x"] for c in combos}
         assert xs == {"A", "B"}
 
-    def test_no_root_folder_uses_scistack_toml_root_for_discover(self, tmp_path, monkeypatch):
+    def test_no_root_folder_uses_scistack_toml_root_for_discover(
+        self, tmp_path, monkeypatch
+    ):
         """discover() finds the root via scistack.toml when pyproject.toml is absent."""
         (tmp_path / "scistack.toml").touch()
         sub = tmp_path / "subdir"
@@ -255,7 +258,9 @@ class TestApplyDiscovery:
     def test_log_callback_invoked(self, tmp_tree):
         pi = self._pi(tmp_tree)
         msgs = []
-        pi.apply_discovery({"subject": [], "session": [], "speed": []}, set(), log=msgs.append)
+        pi.apply_discovery(
+            {"subject": [], "session": [], "speed": []}, set(), log=msgs.append
+        )
         assert any("matching_files=4" in m for m in msgs)
         assert any("disk combos" in m for m in msgs)
 
@@ -328,7 +333,7 @@ class TestDiscoverAbsoluteTemplates:
         (d / "6MWT-001.mat").touch()
         (d / "6MWT-004.mat").touch()
         (d / "6MWT-001.adicht").touch()  # different extension: no match
-        (d / "Bike-1.mat").touch()       # different stem: no match
+        (d / "Bike-1.mat").touch()  # different stem: no match
 
         pi = PathInput(f"{tmp_path}/EMG/6MWT-{{pass}}.mat")
         combos = pi.discover()

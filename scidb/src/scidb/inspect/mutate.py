@@ -50,10 +50,10 @@ class MutationResult:
     """Uniform result shape for every write operation (current and future),
     so the CLI/JSON rendering never needs per-operation code."""
 
-    operation: str            # e.g. "exclude_schema"
-    target: dict              # what it applied to (schema keys, record_id, …)
+    operation: str  # e.g. "exclude_schema"
+    target: dict  # what it applied to (schema keys, record_id, …)
     reason: str
-    detail: str = ""          # optional human-readable outcome note
+    detail: str = ""  # optional human-readable outcome note
     extra: dict = field(default_factory=dict)  # operation-specific payload
 
 
@@ -93,12 +93,12 @@ def _mutation(method):
 class Mutator:
     """Write-side facade over a DatabaseManager (see module docstring)."""
 
-    def __init__(self, db: "DatabaseManager", _owns_db: bool = False):
+    def __init__(self, db: DatabaseManager, _owns_db: bool = False):
         self._db = db
         self._owns_db = _owns_db
 
     @classmethod
-    def open(cls, db_path: str | Path) -> "Mutator":
+    def open(cls, db_path: str | Path) -> Mutator:
         """Open an existing database read-write for one mutation session.
 
         Discovers the schema keys from the database itself (like
@@ -140,8 +140,7 @@ class Mutator:
             operation="exclude_schema",
             target=dict(schema_keys),
             reason=reason,
-            detail="excluded from all analyses (for_each skips it; "
-                   "history preserved)",
+            detail="excluded from all analyses (for_each skips it; history preserved)",
         )
 
     @_mutation

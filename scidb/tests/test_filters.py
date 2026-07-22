@@ -1,52 +1,54 @@
 """Unit tests for the Filter class hierarchy (no database required)."""
 
-import pytest
-
-from conftest import DEFAULT_TEST_SCHEMA_KEYS
-
 # Import from the package
 import sys
 from pathlib import Path
+
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root / "src"))
 
-from scidb import BaseVariable
 from scidb.filters import (
-    VariableFilter,
     ColumnFilter,
     CompoundFilter,
-    NotFilter,
     InFilter,
+    NotFilter,
     RawFilter,
-    raw_sql,
     SchemaKey,
     SchemaKeyCompareFilter,
     SchemaKeyInFilter,
+    VariableFilter,
+    raw_sql,
     schema_key,
 )
 
+from scidb import BaseVariable
 
 # --- Test Variable Classes ---
 # These are used for filter expression tests only (no DB interaction needed)
 
+
 class Side(BaseVariable):
     """Test variable: gait side (L/R)."""
+
     schema_version = 1
 
 
 class Speed(BaseVariable):
     """Test variable: walking speed (float)."""
+
     schema_version = 1
 
 
 class MyVar(BaseVariable):
     """Test variable with tabular data."""
+
     schema_version = 1
 
 
 # ===========================================================================
 # Filter object construction tests
 # ===========================================================================
+
 
 class TestVariableFilterConstruction:
     """Tests that metaclass comparison operators produce VariableFilter objects."""
@@ -115,6 +117,7 @@ class TestMetaclassPreservation:
     def test_class_instance_creation_unaffected(self):
         """Creating instances of variable classes still works."""
         import numpy as np
+
         v = Side(np.array([1.0, 2.0]))
         assert v.data is not None
 
@@ -122,6 +125,7 @@ class TestMetaclassPreservation:
 # ===========================================================================
 # Compound filter tests
 # ===========================================================================
+
 
 class TestCompoundFilter:
     """Tests for AND/OR compound filters."""
@@ -162,6 +166,7 @@ class TestCompoundFilter:
 # ===========================================================================
 # ColumnSelection filter tests
 # ===========================================================================
+
 
 class TestColumnSelectionFilter:
     """Tests that MyVar["col"] == value produces ColumnFilter."""
@@ -223,6 +228,7 @@ class TestColumnSelectionFilter:
 # InFilter tests
 # ===========================================================================
 
+
 class TestInFilter:
     """Tests for InFilter construction."""
 
@@ -241,13 +247,14 @@ class TestInFilter:
 # RawFilter / raw_sql tests
 # ===========================================================================
 
+
 class TestRawFilter:
     """Tests for raw SQL escape hatch."""
 
     def test_raw_sql_returns_raw_filter(self):
-        f = raw_sql('"Side" = \'L\'')
+        f = raw_sql("\"Side\" = 'L'")
         assert isinstance(f, RawFilter)
-        assert f.sql == '"Side" = \'L\''
+        assert f.sql == "\"Side\" = 'L'"
 
     def test_raw_filter_repr(self):
         f = raw_sql("x > 1")
@@ -263,6 +270,7 @@ class TestRawFilter:
 # ===========================================================================
 # SchemaKey filter construction tests (no DB required)
 # ===========================================================================
+
 
 class TestSchemaKeyConstruction:
     """Tests that SchemaKey builder operators produce the correct Filter objects."""

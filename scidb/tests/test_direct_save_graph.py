@@ -9,11 +9,10 @@ written too, until P2). See
 """
 
 import numpy as np
-import pytest
+from scidb.provenance import SAVE_FUNCTION_NAME
 
 from scidb import BaseVariable
 from scidb import provenance_query as pq
-from scidb.provenance import SAVE_FUNCTION_NAME
 
 
 class DsgRaw(BaseVariable):
@@ -31,7 +30,9 @@ class TestDirectSaveKwargAnchoring:
         rid = DsgRaw.save(np.array([1.0, 2.0]), subject=1, trial="A", run="x", db=db)
 
         inv = _producing(db, rid)
-        assert inv is not None, "kwarg save should have a synthetic producing invocation"
+        assert inv is not None, (
+            "kwarg save should have a synthetic producing invocation"
+        )
         inv_id, fn_name, _fn_hash = inv
         assert fn_name == SAVE_FUNCTION_NAME
 
@@ -53,8 +54,12 @@ class TestDirectSaveKwargAnchoring:
         ix, iy = _producing(db, rid_x), _producing(db, rid_y)
         assert ix is not None and iy is not None
         assert ix[0] != iy[0], "different kwargs → different synthetic invocation_id"
-        assert pq.derived_branch_params(db._duck, rid_x) == {f"{SAVE_FUNCTION_NAME}.run": "x"}
-        assert pq.derived_branch_params(db._duck, rid_y) == {f"{SAVE_FUNCTION_NAME}.run": "y"}
+        assert pq.derived_branch_params(db._duck, rid_x) == {
+            f"{SAVE_FUNCTION_NAME}.run": "x"
+        }
+        assert pq.derived_branch_params(db._duck, rid_y) == {
+            f"{SAVE_FUNCTION_NAME}.run": "y"
+        }
 
     def test_resave_same_kwarg_is_idempotent_on_invocation(self, db):
         """Re-saving the SAME content+kwargs reproduces the same record_id and

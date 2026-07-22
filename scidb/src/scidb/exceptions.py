@@ -79,5 +79,3 @@ class DatabaseLockedError(SciStackError):
     """
 
     pass
-
-

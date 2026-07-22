@@ -12,9 +12,9 @@ Also pins the level policy contracts that Stage 3 established:
 """
 
 import numpy as np
+from scidb.log import Log as shim_log
 
 import scidb
-from scidb.log import Log as shim_log
 from scistacklog import Log as real_log
 
 
@@ -38,10 +38,13 @@ def test_configure_database_writes_run_context_header(db, tmp_path):
 
 
 def test_timing_summary_in_file_at_default_level(db, tmp_path):
-    db.save_batch(_ShimVar, [
-        (np.array([1.0, 2.0]), {"subject": "S01", "trial": "1"}),
-        (np.array([3.0, 4.0]), {"subject": "S01", "trial": "2"}),
-    ])
+    db.save_batch(
+        _ShimVar,
+        [
+            (np.array([1.0, 2.0]), {"subject": "S01", "trial": "1"}),
+            (np.array([3.0, 4.0]), {"subject": "S01", "trial": "2"}),
+        ],
+    )
     log_text = (tmp_path / "scidb.log").read_text(encoding="utf-8")
     assert "[timing] save_batch(_ShimVar):" in log_text
     # Per-phase timing table is DEBUG-only (and phase names carry no

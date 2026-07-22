@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from scistack.user_config import (
     Tap,
     UserConfig,
@@ -45,7 +44,9 @@ def fake_git(monkeypatch):
         def _run(self, cmd, **kwargs):
             self.calls.append({"cmd": tuple(cmd), "kwargs": kwargs})
             if self.fail_next:
-                raise subprocess.CalledProcessError(1, cmd, output="", stderr="fake error")
+                raise subprocess.CalledProcessError(
+                    1, cmd, output="", stderr="fake error"
+                )
             # For git clone, create the target directory so exists_locally works.
             if len(cmd) >= 2 and cmd[1] == "clone":
                 # Last arg is the target path.
@@ -72,7 +73,7 @@ class TestLoadConfig:
 
     def test_roundtrip_with_taps(self, config_dir):
         (config_dir / "config.toml").write_text(
-            '# config\n\n'
+            "# config\n\n"
             '[[tap]]\nname = "mylab"\nurl = "https://github.com/mylab/index.git"\n\n'
             '[[tap]]\nname = "shared"\nurl = "https://github.com/shared/index.git"\n'
         )
@@ -153,7 +154,7 @@ class TestAddTap:
 
     def test_add_tap_clone_failure_still_saves(self, config_dir, fake_git):
         fake_git.fail_next = True
-        tap = add_tap(
+        add_tap(
             "https://example.com/a.git",
             name="fails",
             config_dir=config_dir,
@@ -206,7 +207,12 @@ class TestRefreshTap:
         assert fake_git.calls[-1]["cmd"][:2] == ("git", "pull")
 
     def test_refresh_clones_if_not_cloned(self, config_dir, fake_git):
-        add_tap("https://example.com/a.git", name="mylab", config_dir=config_dir, clone=False)
+        add_tap(
+            "https://example.com/a.git",
+            name="mylab",
+            config_dir=config_dir,
+            clone=False,
+        )
         ok = refresh_tap("mylab", config_dir=config_dir)
         assert ok
         assert fake_git.calls[-1]["cmd"][1] == "clone"
@@ -243,7 +249,10 @@ class TestListTaps:
 # ---------------------------------------------------------------------------
 class TestInferTapName:
     def test_github_url(self):
-        assert _infer_tap_name("https://github.com/mylab/scistack-index.git") == "scistack-index"
+        assert (
+            _infer_tap_name("https://github.com/mylab/scistack-index.git")
+            == "scistack-index"
+        )
 
     def test_trailing_slash(self):
         assert _infer_tap_name("https://github.com/mylab/index/") == "index"
@@ -352,7 +361,9 @@ class TestAddRemoveCycles:
         add_tap("https://example.com/a.git", name="cycling", config_dir=config_dir)
         remove_tap("cycling", config_dir=config_dir)
         # Re-adding with same name should work
-        tap = add_tap("https://example.com/b.git", name="cycling", config_dir=config_dir)
+        tap = add_tap(
+            "https://example.com/b.git", name="cycling", config_dir=config_dir
+        )
         assert tap.name == "cycling"
         assert tap.url == "https://example.com/b.git"
         taps = list_taps(config_dir=config_dir)
@@ -360,7 +371,9 @@ class TestAddRemoveCycles:
 
     def test_add_multiple_remove_all(self, config_dir, fake_git):
         for i in range(5):
-            add_tap(f"https://example.com/{i}.git", name=f"tap{i}", config_dir=config_dir)
+            add_tap(
+                f"https://example.com/{i}.git", name=f"tap{i}", config_dir=config_dir
+            )
         assert len(list_taps(config_dir=config_dir)) == 5
 
         for i in range(5):

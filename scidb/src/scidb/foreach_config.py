@@ -2,7 +2,8 @@
 
 import hashlib
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from scilineage.hashing import compute_function_hash
 
@@ -113,12 +114,15 @@ class ForEachConfig:
             # where can be a string or a Filter object
             # For RawFilter created from string, preserve original string format
             from .filters import RawFilter
+
             if isinstance(self.where, str):
                 keys["__where"] = self.where
-            elif isinstance(self.where, RawFilter) and hasattr(self.where, '_original_str'):
+            elif isinstance(self.where, RawFilter) and hasattr(
+                self.where, "_original_str"
+            ):
                 # Preserve original string for string-based filters
                 keys["__where"] = self.where._original_str
-            elif hasattr(self.where, 'to_key'):
+            elif hasattr(self.where, "to_key"):
                 keys["__where"] = self.where.to_key()
             else:
                 keys["__where"] = str(self.where)
@@ -158,11 +162,14 @@ class ForEachConfig:
         marker object would also break version-key hashing (they are not
         JSON-serializable).
         """
-        from .foreach import _is_loadable
-        from .colname import ColName
         from scifor import PathOutput
+
+        from .colname import ColName
+        from .foreach import _is_loadable
+
         return {
-            k: v for k, v in self.inputs.items()
+            k: v
+            for k, v in self.inputs.items()
             if not _is_loadable(v) and not isinstance(v, (ColName, PathOutput))
         }
 

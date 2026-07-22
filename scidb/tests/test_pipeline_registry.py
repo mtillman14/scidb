@@ -31,7 +31,6 @@ NOT_STORED = (NotFoundError, NotRegisteredError)
 from scidb.database import _local
 from scidb.pipeline import _reset_pipeline_state, _unrun_pipelines
 
-
 SCHEMA = ["subject", "trial"]
 SUBJECTS = ["1", "2"]
 TRIALS = ["1", "2"]
@@ -79,6 +78,7 @@ def _seed(db):
 # test can reset them; the functions themselves must be module-level and
 # NAMED (stable identity for fn hashing / endpoint detection).
 
+
 def halve(signal):
     halve.calls += 1
     return np.asarray(signal, dtype=float).ravel() / 2.0
@@ -104,12 +104,20 @@ def _reset_counters():
 def _register_chain(db):
     """Register the 3-step graph DELIBERATELY out of dependency order:
     consumer first, producer second, plus one unrelated branch."""
-    for_each(mean_of, {"filtered": Filtered}, [Speed],
-             subject=SUBJECTS, trial=TRIALS, db=db)
-    for_each(halve, {"signal": RawSignal}, [Filtered],
-             subject=SUBJECTS, trial=TRIALS, db=db)
-    for_each(negate, {"unrelated": Unrelated}, [UnrelatedOut],
-             subject=SUBJECTS, trial=TRIALS, db=db)
+    for_each(
+        mean_of, {"filtered": Filtered}, [Speed], subject=SUBJECTS, trial=TRIALS, db=db
+    )
+    for_each(
+        halve, {"signal": RawSignal}, [Filtered], subject=SUBJECTS, trial=TRIALS, db=db
+    )
+    for_each(
+        negate,
+        {"unrelated": Unrelated},
+        [UnrelatedOut],
+        subject=SUBJECTS,
+        trial=TRIALS,
+        db=db,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,8 +131,14 @@ class TestRegistration:
         pipe = db.pipeline("gait")
         assert active_pipeline() is pipe
 
-        handle = for_each(halve, {"signal": RawSignal}, [Filtered],
-                          subject=SUBJECTS, trial=TRIALS, db=db)
+        handle = for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         assert isinstance(handle, Step)
         assert halve.calls == 0  # nothing executed
@@ -136,9 +150,15 @@ class TestRegistration:
         _seed(db)
         db.pipeline("gait")
 
-        result = for_each(halve, {"signal": RawSignal}, [Filtered],
-                          subject=SUBJECTS, trial=TRIALS, db=db,
-                          pipeline=None)
+        result = for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=None,
+        )
 
         assert not isinstance(result, Step)
         assert halve.calls == len(SUBJECTS) * len(TRIALS)
@@ -148,8 +168,15 @@ class TestRegistration:
         ambient = db.pipeline("ambient")
         other = Pipeline("other", db=db)  # created, NOT activated
 
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=other)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=other,
+        )
 
         assert len(other.steps) == 1
         assert len(ambient.steps) == 0
@@ -157,21 +184,39 @@ class TestRegistration:
 
     def test_no_active_pipeline_is_eager_unchanged(self, db):
         _seed(db)
-        result = for_each(halve, {"signal": RawSignal}, [Filtered],
-                          subject=SUBJECTS, trial=TRIALS, db=db)
+        result = for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         assert not isinstance(result, Step)
         assert halve.calls == len(SUBJECTS) * len(TRIALS)
 
     def test_invalid_pipeline_kwarg_raises(self, db):
         with pytest.raises(TypeError, match="pipeline="):
-            for_each(halve, {"signal": RawSignal}, [Filtered],
-                     subject=SUBJECTS, trial=TRIALS, db=db,
-                     pipeline="not-a-pipeline")
+            for_each(
+                halve,
+                {"signal": RawSignal},
+                [Filtered],
+                subject=SUBJECTS,
+                trial=TRIALS,
+                db=db,
+                pipeline="not-a-pipeline",
+            )
 
     def test_step_handle_fails_fast_on_data_use(self, db):
         db.pipeline("gait")
-        handle = for_each(halve, {"signal": RawSignal}, [Filtered],
-                          subject=SUBJECTS, trial=TRIALS, db=db)
+        handle = for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         with pytest.raises(AttributeError, match="deferred pipeline step"):
             handle.head()
@@ -198,8 +243,9 @@ class TestExecution:
         # mean_of consumed real Filtered data → the chain ran in order.
         rec = Speed.load(subject="1", trial="1")
         value = rec.data if hasattr(rec, "data") else rec
-        assert float(np.asarray(value).ravel()[0]) \
-            == pytest.approx(2.0)  # mean([1,2,3])
+        assert float(np.asarray(value).ravel()[0]) == pytest.approx(
+            2.0
+        )  # mean([1,2,3])
 
     def test_run_until_runs_only_ancestors_and_target(self, db):
         _seed(db)
@@ -208,9 +254,9 @@ class TestExecution:
 
         pipe.run_until(mean_of)
 
-        assert halve.calls == 4      # ancestor ran
-        assert mean_of.calls == 4    # target ran
-        assert negate.calls == 0     # unrelated branch untouched
+        assert halve.calls == 4  # ancestor ran
+        assert mean_of.calls == 4  # target ran
+        assert negate.calls == 0  # unrelated branch untouched
         with pytest.raises(NOT_STORED):
             UnrelatedOut.load(subject="1", trial="1")
 
@@ -231,35 +277,66 @@ class TestExecution:
         skip_computed=True must skip every combo (zero fn calls)."""
         _seed(db)
         pipe = db.pipeline("gait")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         pipe.run_all()
         assert halve.calls == 4
 
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db,
-                 pipeline=None, skip_computed=True)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=None,
+            skip_computed=True,
+        )
 
         assert halve.calls == 4  # all combos skipped → identical identity
 
     def test_run_deactivates_pipeline(self, db):
         _seed(db)
         pipe = db.pipeline("gait")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         pipe.run_all()
 
         assert active_pipeline() is None
         # Post-run for_each calls are eager again.
-        result = for_each(halve, {"signal": RawSignal}, [Filtered],
-                          subject=SUBJECTS, trial=TRIALS, db=db,
-                          skip_computed=True)
+        result = for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            skip_computed=True,
+        )
         assert not isinstance(result, Step)
 
     def test_run_until_unknown_target_raises(self, db):
         pipe = db.pipeline("gait")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         with pytest.raises(ValueError, match="no step matching"):
             pipe.run_until(mean_of)
 
@@ -269,8 +346,14 @@ class TestExecution:
         def refine(filtered):
             return filtered
 
-        for_each(refine, {"filtered": Filtered}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            refine,
+            {"filtered": Filtered},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         with pytest.raises(PipelineCycleError, match="cycle"):
             pipe.run_all()
 
@@ -285,12 +368,33 @@ class TestExecution:
         def halve_b(signal):
             return signal
 
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=pipe)
-        for_each(halve_a, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=pipe)
-        for_each(halve_b, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=pipe)
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=pipe,
+        )
+        for_each(
+            halve_a,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=pipe,
+        )
+        for_each(
+            halve_b,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=pipe,
+        )
 
         pairs = pipe._composed_steps()
         order = pipe._topo_order(pairs)
@@ -317,10 +421,22 @@ class TestLastRunReport:
         2026-07-18)."""
         _seed(db)
         pipe = db.pipeline("gait")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
-        for_each(exploder, {"signal": RawSignal}, [UnrelatedOut],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
+        for_each(
+            exploder,
+            {"signal": RawSignal},
+            [UnrelatedOut],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         pipe.run_all()
 
@@ -337,8 +453,14 @@ class TestLastRunReport:
         must never inflate the report's failed count."""
         _seed(db)
         pipe = db.pipeline("gait")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         pipe.run_all()
         assert pipe.last_run_report[0]["failed"] == 0
         assert pipe.last_run_report[0]["completed"] == 4
@@ -392,28 +514,52 @@ class TestPlan:
 class TestNeverRunWarning:
     def test_unrun_pipeline_is_flagged(self, db):
         pipe = db.pipeline("forgotten")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         assert pipe in _unrun_pipelines()
 
     def test_run_plan_or_deactivate_acknowledges(self, db):
         _seed(db)
         ran = db.pipeline("ran")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         ran.run_all()
         assert ran not in _unrun_pipelines()
 
         planned = db.pipeline("planned")
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         planned.plan()
         assert planned not in _unrun_pipelines()
 
         escaped = db.pipeline("escaped")
-        for_each(negate, {"unrelated": Unrelated}, [UnrelatedOut],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            negate,
+            {"unrelated": Unrelated},
+            [UnrelatedOut],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         escaped.deactivate()
         assert escaped not in _unrun_pipelines()
 
@@ -433,6 +579,7 @@ class TestEndpointFinalized:
         matplotlib = pytest.importorskip("matplotlib")
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
         from scidb import PathOutput
 
         class GaitFigure(BaseVariable):
@@ -447,13 +594,25 @@ class TestEndpointFinalized:
         plots = tmp_path / "figs"
         plots.mkdir()
         pipe = db.pipeline("report")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
-        for_each(plot_filtered,
-                 {"filtered": Filtered,
-                  "filename": PathOutput(str(plots / "{subject}_{trial}.png"))},
-                 [GaitFigure],
-                 subject=SUBJECTS, trial=TRIALS, db=db)  # registered as DRAFT
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
+        for_each(
+            plot_filtered,
+            {
+                "filtered": Filtered,
+                "filename": PathOutput(str(plots / "{subject}_{trial}.png")),
+            },
+            [GaitFigure],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )  # registered as DRAFT
 
         pipe.run_until("plot_filtered", finalized=True)
 
@@ -481,16 +640,36 @@ class TestComposition:
         """A 'loading' pipeline with one useful producer (halve -> Filtered)
         and one step unrelated to the analyses (negate -> UnrelatedOut)."""
         loading = Pipeline("loading", db=db)
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=loading)
-        for_each(negate, {"unrelated": Unrelated}, [UnrelatedOut],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=loading)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=loading,
+        )
+        for_each(
+            negate,
+            {"unrelated": Unrelated},
+            [UnrelatedOut],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=loading,
+        )
         return loading
 
     def _analysis_using(self, db, loading):
         analysis = db.pipeline("analysis", uses=[loading])
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         return analysis
 
     def test_run_until_resolves_producer_in_used_pipeline(self, db):
@@ -499,9 +678,9 @@ class TestComposition:
 
         analysis.run_until(mean_of)
 
-        assert halve.calls == 4      # producer inside `loading` ran first
+        assert halve.calls == 4  # producer inside `loading` ran first
         assert mean_of.calls == 4
-        assert negate.calls == 0     # unrelated used-pipeline step untouched
+        assert negate.calls == 0  # unrelated used-pipeline step untouched
         rec = Speed.load(subject="1", trial="1")
         value = rec.data if hasattr(rec, "data") else rec
         assert float(np.asarray(value).ravel()[0]) == pytest.approx(2.0)
@@ -512,9 +691,9 @@ class TestComposition:
 
         analysis.run_all()
 
-        assert halve.calls == 4      # ancestor of an own step
-        assert mean_of.calls == 4    # own step
-        assert negate.calls == 0     # in `loading` but not an ancestor
+        assert halve.calls == 4  # ancestor of an own step
+        assert mean_of.calls == 4  # own step
+        assert negate.calls == 0  # in `loading` but not an ancestor
 
     def test_run_all_with_no_own_steps_runs_nothing(self, db):
         loading = self._loading(db)
@@ -537,8 +716,15 @@ class TestComposition:
 
     def test_diamond_dedupes_shared_pipeline(self, db):
         base = Pipeline("base", db=db)
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=base)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=base,
+        )
         left = Pipeline("left", db=db, uses=[base])
         right = Pipeline("right", db=db, uses=[base])
         top = Pipeline("top", db=db, uses=[left, right])
@@ -566,11 +752,23 @@ class TestComposition:
         time (step option -> owner db -> running pipeline's db)."""
         _seed(db)
         loading = Pipeline("loading")  # no db bound anywhere
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, pipeline=loading)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            pipeline=loading,
+        )
         analysis = db.pipeline("analysis", uses=[loading])
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         analysis.run_until(mean_of)
 
@@ -581,19 +779,32 @@ class TestComposition:
         _seed(db)
         loading = self._loading(db)
         spare = Pipeline("spare", db=db)  # used, but nothing consumes it
-        for_each(double_unrelated, {"unrelated": Unrelated}, [UnrelatedOut],
-                 subject=SUBJECTS, trial=TRIALS, db=db, pipeline=spare)
+        for_each(
+            double_unrelated,
+            {"unrelated": Unrelated},
+            [UnrelatedOut],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+            pipeline=spare,
+        )
 
         analysis = db.pipeline("analysis", uses=[loading, spare])
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         assert loading in _unrun_pipelines()
         assert spare in _unrun_pipelines()
 
         analysis.run_until(mean_of)
 
         assert loading not in _unrun_pipelines()  # its step executed
-        assert spare in _unrun_pipelines()        # used but never executed
+        assert spare in _unrun_pipelines()  # used but never executed
 
     def test_plan_carries_owner_names(self, db):
         _seed(db)
@@ -650,8 +861,14 @@ class TestBinding:
     def _scaling(self, db=None):
         """A pipeline with a constant input (factor=2) — the params surface."""
         scaling = Pipeline("scaling", db=db)
-        for_each(scale_by, {"signal": RawSignal, "factor": 2}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, pipeline=scaling)
+        for_each(
+            scale_by,
+            {"signal": RawSignal, "factor": 2},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            pipeline=scaling,
+        )
         return scaling
 
     # -- params ---------------------------------------------------------------
@@ -660,8 +877,14 @@ class TestBinding:
         _seed(db)
         scaling = self._scaling()
         analysis = db.pipeline("analysis", uses=[scaling.bind(params={"factor": 3})])
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         analysis.run_until(mean_of)
 
@@ -706,10 +929,14 @@ class TestBinding:
         scaling_specs = [s for (o, s) in pairs if o is scaling]
         assert len(scaling_specs) == 1  # equal signatures -> one computation
 
-        differing = Pipeline("top2", db=db, uses=[
-            Pipeline("l2", db=db, uses=[scaling.bind(params={"factor": 3})]),
-            Pipeline("r2", db=db, uses=[scaling.bind(params={"factor": 5})]),
-        ])
+        differing = Pipeline(
+            "top2",
+            db=db,
+            uses=[
+                Pipeline("l2", db=db, uses=[scaling.bind(params={"factor": 3})]),
+                Pipeline("r2", db=db, uses=[scaling.bind(params={"factor": 5})]),
+            ],
+        )
         pairs2 = differing._composed_steps()
         assert len([s for (o, s) in pairs2 if o is scaling]) == 2  # two variants
 
@@ -723,11 +950,24 @@ class TestBinding:
             return signal
 
         both = Pipeline("both", db=db)
-        for_each(scale_by, {"signal": RawSignal, "factor": 2}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, pipeline=both)
-        for_each(scale_other, {"signal": RawSignal, "factor": 4}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, pipeline=both)
+        for_each(
+            scale_by,
+            {"signal": RawSignal, "factor": 2},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            pipeline=both,
+        )
+        for_each(
+            scale_other,
+            {"signal": RawSignal, "factor": 4},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            pipeline=both,
+        )
         from scidb import AmbiguousParamError
+
         with pytest.raises(AmbiguousParamError, match="disambiguate"):
             both.bind(params={"factor": 9})
         # Namespaced targeting resolves it.
@@ -741,14 +981,26 @@ class TestBinding:
         [subject, trial] schema via key_map, saving under PROJECT keys."""
         _seed(db)
         foreign = Pipeline("foreign")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 session=SUBJECTS, trial=TRIALS,  # foreign vocabulary
-                 pipeline=foreign)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            session=SUBJECTS,
+            trial=TRIALS,  # foreign vocabulary
+            pipeline=foreign,
+        )
 
         analysis = db.pipeline(
-            "analysis", uses=[foreign.bind(key_map={"session": "subject"})])
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+            "analysis", uses=[foreign.bind(key_map={"session": "subject"})]
+        )
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         analysis.run_until(mean_of)
 
@@ -758,15 +1010,19 @@ class TestBinding:
     def test_key_map_rewrites_pathoutput_template(self, db):
         foreign = Pipeline("foreign")
         from scidb import PathOutput
-        for_each(halve,
-                 {"signal": RawSignal,
-                  "out": PathOutput("figs/{session}_{trial}.png")},
-                 [Filtered], session=SUBJECTS, trial=TRIALS,
-                 pipeline=foreign)
+
+        for_each(
+            halve,
+            {"signal": RawSignal, "out": PathOutput("figs/{session}_{trial}.png")},
+            [Filtered],
+            session=SUBJECTS,
+            trial=TRIALS,
+            pipeline=foreign,
+        )
 
         analysis = Pipeline(
-            "analysis", db=db,
-            uses=[foreign.bind(key_map={"session": "subject"})])
+            "analysis", db=db, uses=[foreign.bind(key_map={"session": "subject"})]
+        )
         pairs = analysis._composed_steps()
         (spec,) = [s for (o, s) in pairs if o is foreign]
 
@@ -776,19 +1032,23 @@ class TestBinding:
         assert list(foreign.steps[0].metadata_iterables) == ["session", "trial"]
 
     def test_key_map_rewrites_fixed_and_structured_where(self, db):
-        from scidb import Fixed
         from scidb.filters import schema_key
 
+        from scidb import Fixed
+
         foreign = Pipeline("foreign")
-        for_each(mean_of,
-                 {"filtered": Fixed(Filtered, session="1")},
-                 [Speed], session=SUBJECTS,
-                 where=schema_key("session") == "1",
-                 pipeline=foreign)
+        for_each(
+            mean_of,
+            {"filtered": Fixed(Filtered, session="1")},
+            [Speed],
+            session=SUBJECTS,
+            where=schema_key("session") == "1",
+            pipeline=foreign,
+        )
 
         analysis = Pipeline(
-            "analysis", db=db,
-            uses=[foreign.bind(key_map={"session": "subject"})])
+            "analysis", db=db, uses=[foreign.bind(key_map={"session": "subject"})]
+        )
         (spec,) = [s for (o, s) in analysis._composed_steps() if o is foreign]
 
         assert spec.inputs["filtered"].fixed_metadata == {"subject": "1"}
@@ -796,12 +1056,17 @@ class TestBinding:
 
     def test_key_map_raw_sql_where_warns_not_errors(self, db):
         foreign = Pipeline("foreign")
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 session=SUBJECTS, where="session == '1'",
-                 pipeline=foreign)
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            session=SUBJECTS,
+            where="session == '1'",
+            pipeline=foreign,
+        )
         analysis = Pipeline(
-            "analysis", db=db,
-            uses=[foreign.bind(key_map={"session": "subject"})])
+            "analysis", db=db, uses=[foreign.bind(key_map={"session": "subject"})]
+        )
 
         (spec,) = [s for (o, s) in analysis._composed_steps() if o is foreign]
         # Raw filter passes through unchanged (warned, not raised).
@@ -812,17 +1077,32 @@ class TestBinding:
         with composed key_maps."""
         _seed(db)
         base = Pipeline("base")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 session=["9"], trial=TRIALS,  # wrong hardcoded list
-                 pipeline=base)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            session=["9"],
+            trial=TRIALS,  # wrong hardcoded list
+            pipeline=base,
+        )
         mid = Pipeline("mid", uses=[base])  # identity edge
 
-        analysis = db.pipeline("analysis", uses=[
-            mid.bind(key_map={"session": "subject"},
-                     iterate={"subject": SUBJECTS}),  # post-map key
-        ])
-        for_each(mean_of, {"filtered": Filtered}, [Speed],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
+        analysis = db.pipeline(
+            "analysis",
+            uses=[
+                mid.bind(
+                    key_map={"session": "subject"}, iterate={"subject": SUBJECTS}
+                ),  # post-map key
+            ],
+        )
+        for_each(
+            mean_of,
+            {"filtered": Filtered},
+            [Speed],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
 
         analysis.run_until(mean_of)
 
@@ -840,6 +1120,7 @@ class TestEndpointVerbs:
         matplotlib = pytest.importorskip("matplotlib")
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
         from scidb import PathOutput
 
         class VerbFigure(BaseVariable):
@@ -853,12 +1134,25 @@ class TestEndpointVerbs:
         plots = tmp_path / "verb_figs"
         plots.mkdir(exist_ok=True)
         pipe = db.pipeline("report")
-        for_each(halve, {"signal": RawSignal}, [Filtered],
-                 subject=SUBJECTS, trial=TRIALS, db=db)
-        for_each(plot_filtered,
-                 {"filtered": Filtered,
-                  "filename": PathOutput(str(plots / "{subject}_{trial}.png"))},
-                 [VerbFigure], subject=SUBJECTS, trial=TRIALS, db=db)
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
+        for_each(
+            plot_filtered,
+            {
+                "filtered": Filtered,
+                "filename": PathOutput(str(plots / "{subject}_{trial}.png")),
+            },
+            [VerbFigure],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
         return pipe, plots, VerbFigure
 
     def test_endpoints_lists_only_endpoint_steps(self, db, tmp_path):
@@ -881,7 +1175,7 @@ class TestEndpointVerbs:
         assert len(paths) == 4
         for p in paths:
             assert str(plots) in str(p)
-        assert (plots / "1_1.png").exists()   # rendered to look at
+        assert (plots / "1_1.png").exists()  # rendered to look at
         with pytest.raises(NOT_STORED):
             VerbFigure.load(subject="1", trial="1")  # draft: no record
         assert halve.calls == 4  # ancestry pulled
@@ -908,7 +1202,7 @@ class TestEndpointVerbs:
         sub.deactivate()
         parent = db.pipeline("parent", uses=[sub])
 
-        assert parent.run_endpoints() == []          # own endpoints: none
+        assert parent.run_endpoints() == []  # own endpoints: none
         assert not (plots / "1_1.png").exists()
 
         parent.run_endpoints(include_used=True, finalized=True)

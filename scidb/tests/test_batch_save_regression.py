@@ -8,13 +8,13 @@ accidentally revert to sequential row-by-row saving.
 
 import hashlib
 import logging
+
 import numpy as np
 import pandas as pd
 import pytest
+
 import scifor as _scifor
-
 from scidb import BaseVariable, configure_database, for_each
-
 
 SCHEMA = ["subject", "trial"]
 
@@ -64,7 +64,8 @@ class TestBatchSaveRegression:
 
         # Verify batch save was used by checking logs
         batch_save_logs = [
-            record.message for record in caplog.records
+            record.message
+            for record in caplog.records
             if "[batch_save]" in record.message
         ]
 
@@ -121,7 +122,8 @@ class TestBatchSaveRegression:
 
         # Verify batch save was used
         batch_save_logs = [
-            record.message for record in caplog.records
+            record.message
+            for record in caplog.records
             if "[batch_save]" in record.message
         ]
 
@@ -158,7 +160,7 @@ class TestBatchSaveRegression:
 
         # Verify all records have correct branch_params
         all_records = db.list_versions(Output)
-        assert len(all_records) == 2, f"Expected 2 records (2 subjects × 1 trial)"
+        assert len(all_records) == 2, "Expected 2 records (2 subjects × 1 trial)"
 
         for record in all_records:
             bp = record.get("branch_params", {})
@@ -226,7 +228,8 @@ class TestBatchSaveRegression:
 
         # Should still see batch_save logs even for 1 record
         batch_save_logs = [
-            record.message for record in caplog.records
+            record.message
+            for record in caplog.records
             if "[batch_save]" in record.message
         ]
         assert len(batch_save_logs) > 0, "Batch save should be used even for 1 record"
@@ -264,8 +267,11 @@ class TestBulkInsertProvenance:
         for subj in ["S01", "S02", "S03"]:
             Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
         for_each(
-            process, {"data": Input}, [Output],
-            subject=["S01", "S02", "S03"], trial=["1"],
+            process,
+            {"data": Input},
+            [Output],
+            subject=["S01", "S02", "S03"],
+            trial=["1"],
         )
 
         # _record (entities) is the table whose per-row insert was the 497s
@@ -305,8 +311,11 @@ class TestBulkInsertProvenance:
         for subj in ["S01", "S02", "S03"]:
             Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
         for_each(
-            process, {"data": Input}, [Output],
-            subject=["S01", "S02", "S03"], trial=["1"],
+            process,
+            {"data": Input},
+            [Output],
+            subject=["S01", "S02", "S03"],
+            trial=["1"],
         )
 
         all_executemany = offenders + direct
@@ -319,7 +328,7 @@ class TestBulkInsertProvenance:
         for subj in ["S01", "S02", "S03"]:
             Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
 
-        kwargs = dict(subject=["S01", "S02", "S03"], trial=["1"])
+        kwargs = {"subject": ["S01", "S02", "S03"], "trial": ["1"]}
         for_each(process, {"data": Input}, [Output], **kwargs)
         first = len(db.list_versions(Output))
         # Re-run the identical computation — same content hashes → no new rows.
@@ -340,8 +349,11 @@ class TestBulkInsertProvenance:
             Input.save(np.array([1.0, 2.0]), subject=subj, trial="1")
 
         for_each(
-            process, {"data": Input}, [Output],
-            subject=subjects, trial=["1"],
+            process,
+            {"data": Input},
+            [Output],
+            subject=subjects,
+            trial=["1"],
         )
 
         all_records = db.list_versions(Output)
@@ -381,11 +393,10 @@ class TestBatchSavePerformance:
 
         # Extract timing from logs
         timing_logs = [
-            record.message for record in caplog.records
-            if "records/s" in record.message
+            record.message for record in caplog.records if "records/s" in record.message
         ]
 
-        print(f"\n=== Batch Save Performance ===")
+        print("\n=== Batch Save Performance ===")
         print(f"Saved 10 records in {elapsed_time:.3f}s")
         if timing_logs:
             print(f"Batch save throughput: {timing_logs[-1]}")

@@ -36,7 +36,6 @@ import json
 import re
 import zlib
 from pathlib import Path
-from typing import Any
 
 from .log import Log
 
@@ -52,13 +51,14 @@ _SIDECAR_SUFFIX = ".provenance.json"
 # PNG
 # ---------------------------------------------------------------------------
 
+
 def _png_chunks(data: bytes):
     """Yield (offset, length, type, data_bytes) for each chunk."""
     pos = len(_PNG_SIG)
     while pos + 8 <= len(data):
-        length = int.from_bytes(data[pos:pos + 4], "big")
-        ctype = data[pos + 4:pos + 8]
-        yield pos, length, ctype, data[pos + 8:pos + 8 + length]
+        length = int.from_bytes(data[pos : pos + 4], "big")
+        ctype = data[pos + 4 : pos + 8]
+        yield pos, length, ctype, data[pos + 8 : pos + 8 + length]
         pos += 12 + length
 
 
@@ -66,7 +66,7 @@ def _strip_png_stamp(data: bytes) -> bytes:
     """Remove any existing scidb tEXt chunk (idempotent re-stamping)."""
     for pos, length, ctype, cdata in _png_chunks(data):
         if ctype == b"tEXt" and cdata.startswith(_PNG_KEYWORD + b"\x00"):
-            return data[:pos] + data[pos + 12 + length:]
+            return data[:pos] + data[pos + 12 + length :]
     return data
 
 
@@ -79,7 +79,8 @@ def _stamp_png(data: bytes, payload: bytes) -> "bytes | None":
     chunk_data = _PNG_KEYWORD + b"\x00" + payload
     chunk = (
         len(chunk_data).to_bytes(4, "big")
-        + b"tEXt" + chunk_data
+        + b"tEXt"
+        + chunk_data
         + zlib.crc32(b"tEXt" + chunk_data).to_bytes(4, "big")
     )
     return data[:insert_at] + chunk + data[insert_at:]
@@ -90,13 +91,14 @@ def _read_png(data: bytes) -> "str | None":
         return None
     for _pos, _length, ctype, cdata in _png_chunks(data):
         if ctype == b"tEXt" and cdata.startswith(_PNG_KEYWORD + b"\x00"):
-            return cdata[len(_PNG_KEYWORD) + 1:].decode("latin-1")
+            return cdata[len(_PNG_KEYWORD) + 1 :].decode("latin-1")
     return None
 
 
 # ---------------------------------------------------------------------------
 # SVG
 # ---------------------------------------------------------------------------
+
 
 def _xml_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -116,7 +118,7 @@ def _stamp_svg(data: bytes, payload: bytes) -> "bytes | None":
     if start != -1:
         end = text.find("</metadata>", start)
         if end != -1:
-            text = text[:start] + text[end + len("</metadata>"):]
+            text = text[:start] + text[end + len("</metadata>") :]
     svg_open = text.find("<svg")
     if svg_open == -1:
         return None
@@ -124,7 +126,7 @@ def _stamp_svg(data: bytes, payload: bytes) -> "bytes | None":
     if tag_end == -1 or text[tag_end - 1] == "/":  # self-closing root: no content
         return None
     element = _SVG_MARKER + _xml_escape(payload.decode("ascii")) + "</metadata>"
-    return (text[:tag_end + 1] + element + text[tag_end + 1:]).encode("utf-8")
+    return (text[: tag_end + 1] + element + text[tag_end + 1 :]).encode("utf-8")
 
 
 def _read_svg(data: bytes) -> "str | None":
@@ -146,13 +148,14 @@ def _read_svg(data: bytes) -> "str | None":
 # PDF (incremental update; classic-xref producers)
 # ---------------------------------------------------------------------------
 
+
 def _stamp_pdf(data: bytes, payload: bytes) -> "bytes | None":
     if not data.startswith(b"%PDF"):
         return None
     sx = data.rfind(b"startxref")
     if sx == -1:
         return None
-    m = re.match(rb"\s*(\d+)", data[sx + len(b"startxref"):])
+    m = re.match(rb"\s*(\d+)", data[sx + len(b"startxref") :])
     if m is None:
         return None
     prev_xref = int(m.group(1))
@@ -171,11 +174,19 @@ def _stamp_pdf(data: bytes, payload: bytes) -> "bytes | None":
     out = data if data.endswith(b"\n") else data + b"\n"
     obj_offset = len(out)
     out += b"%d 0 obj\n<< %s <%s> >>\nendobj\n" % (
-        new_obj, _PDF_KEY, payload.hex().encode("ascii"))
+        new_obj,
+        _PDF_KEY,
+        payload.hex().encode("ascii"),
+    )
     xref_offset = len(out)
     out += b"xref\n%d 1\n%010d 00000 n \n" % (new_obj, obj_offset)
     trailer = b"trailer\n<< /Size %d /Root %s %s R /Prev %d /ScidbProv %d 0 R >>\n" % (
-        new_obj + 1, root_m.group(1), root_m.group(2), prev_xref, new_obj)
+        new_obj + 1,
+        root_m.group(1),
+        root_m.group(2),
+        prev_xref,
+        new_obj,
+    )
     out += trailer
     out += b"startxref\n%d\n%%%%EOF\n" % xref_offset
     return out
@@ -230,8 +241,10 @@ def stamp_artifact(path: "str | Path", blob: dict) -> bool:
             new = stamper(data, payload)
             if new is not None:
                 p.write_bytes(new)
-                Log.info(f"[artifact-stamp] {p.name}: embedded provenance "
-                         f"({suffix}, {len(payload)} bytes)")
+                Log.info(
+                    f"[artifact-stamp] {p.name}: embedded provenance "
+                    f"({suffix}, {len(payload)} bytes)"
+                )
                 return True
             reason = f"{suffix} structure not recognized (e.g. xref-stream PDF)"
         except Exception as exc:  # never fail the pipeline over a stamp
@@ -239,11 +252,15 @@ def stamp_artifact(path: "str | Path", blob: dict) -> bool:
 
     try:
         _sidecar_path(p).write_text(payload.decode("ascii"))
-        Log.warn(f"[artifact-stamp] {p.name}: could not embed ({reason}) — "
-                 f"wrote sidecar {_sidecar_path(p).name}")
+        Log.warn(
+            f"[artifact-stamp] {p.name}: could not embed ({reason}) — "
+            f"wrote sidecar {_sidecar_path(p).name}"
+        )
     except Exception as exc:
-        Log.warn(f"[artifact-stamp] {p.name}: could not embed ({reason}) and "
-                 f"sidecar write failed ({type(exc).__name__}: {exc})")
+        Log.warn(
+            f"[artifact-stamp] {p.name}: could not embed ({reason}) and "
+            f"sidecar write failed ({type(exc).__name__}: {exc})"
+        )
     return False
 
 
@@ -253,7 +270,7 @@ def read_artifact_stamp(path: "str | Path") -> "dict | None":
     Returns the parsed dict, or None when no stamp is found.
     """
     p = Path(path)
-    raw: "str | None" = None
+    raw: str | None = None
     if p.is_file():
         reader = _READERS.get(p.suffix.lower())
         try:

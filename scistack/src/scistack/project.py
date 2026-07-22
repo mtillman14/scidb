@@ -32,7 +32,7 @@ import logging
 import re
 from pathlib import Path
 
-from scistack.uv_wrapper import UvNotFoundError, sync
+from scistack.uv_wrapper import sync
 
 logger = logging.getLogger(__name__)
 
@@ -192,9 +192,7 @@ def scaffold_project(
     src_pkg.mkdir(parents=True)
 
     # --- Files ---
-    (project_root / "pyproject.toml").write_text(
-        _PYPROJECT_TEMPLATE.format(name=name)
-    )
+    (project_root / "pyproject.toml").write_text(_PYPROJECT_TEMPLATE.format(name=name))
     (project_root / ".gitignore").write_text(_GITIGNORE_TEMPLATE)
     (project_root / "README.md").write_text(
         _README_TEMPLATE.format(name=name, schema_keys=schema_keys)
@@ -228,8 +226,9 @@ def scaffold_project(
 
 def _create_database(project_root: Path, name: str, schema_keys: list[str]) -> None:
     """Create and configure the project's DuckDB file."""
-    from scidb import configure_database
     from scidb.database import _local
+
+    from scidb import configure_database
 
     db_path = project_root / f"{name}.duckdb"
     db = configure_database(db_path, schema_keys)

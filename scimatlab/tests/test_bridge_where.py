@@ -16,15 +16,14 @@ sys.path.insert(0, str(_root / "sciduckdb" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "scimatlab" / "src"))
 
-import numpy as np
 import pytest
-
-from scimatlab.bridge import load_and_extract, register_matlab_variable
 from scidb.database import configure_database
 from scidb.filters import (
-    VariableFilter, RawFilter, CompoundFilter, raw_sql,
-    SchemaKeyCompareFilter, SchemaKeyInFilter, schema_key,
+    VariableFilter,
+    raw_sql,
+    schema_key,
 )
+from scimatlab.bridge import load_and_extract, register_matlab_variable
 
 
 class TestLoadAndExtractWhere:
@@ -76,6 +75,7 @@ class TestLoadAndExtractWhere:
 
             # Verify it's the correct record (subject=1, StepLength=0.65)
             import json
+
             meta_arr = json.loads(str(result["json_meta"]))
             assert len(meta_arr) == 1
             assert int(meta_arr[0]["subject"]) == 1
@@ -105,6 +105,7 @@ class TestLoadAndExtractWhere:
             assert int(result["n"]) == 1
 
             import json
+
             meta_arr = json.loads(str(result["json_meta"]))
             assert int(meta_arr[0]["subject"]) == 2
         finally:
@@ -164,6 +165,7 @@ class TestLoadAndExtractWhere:
             assert int(result["n"]) == 1
 
             import json
+
             meta_arr = json.loads(str(result["json_meta"]))
             assert int(meta_arr[0]["subject"]) == 1
         finally:
@@ -217,6 +219,7 @@ class TestLoadAndExtractWhere:
             assert int(result["n"]) == 1
 
             import json
+
             meta_arr = json.loads(str(result["json_meta"]))
             assert str(meta_arr[0]["session"]) == "A"
         finally:
@@ -282,6 +285,7 @@ class TestSchemaKeyFilterBridge:
             assert int(result["n"]) == 1
 
             import json
+
             meta_arr = json.loads(str(result["json_meta"]))
             assert meta_arr[0]["session"] == "BL"
         finally:
@@ -300,7 +304,9 @@ class TestSchemaKeyFilterBridge:
 
             filt = schema_key("subject") > 9
             result = load_and_extract(Meas, {}, version_id="latest", db=db, where=filt)
-            assert int(result["n"]) == 2  # subjects 10, 11 (would be 0 lexicographically)
+            assert (
+                int(result["n"]) == 2
+            )  # subjects 10, 11 (would be 0 lexicographically)
         finally:
             db.close()
 

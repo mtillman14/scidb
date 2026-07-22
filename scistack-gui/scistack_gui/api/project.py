@@ -113,8 +113,7 @@ def get_project_libraries() -> dict:
     non_empty = _last_result.non_empty_libraries()
     return {
         "libraries": {
-            name: _serialise_package_result(pkg)
-            for name, pkg in non_empty.items()
+            name: _serialise_package_result(pkg) for name, pkg in non_empty.items()
         },
         "total_libraries": len(_last_result.libraries),
         "shown_libraries": len(non_empty),

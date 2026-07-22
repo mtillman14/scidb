@@ -10,8 +10,8 @@ Usage from MATLAB (via py. interface):
 
 from .bridge import (
     MatlabLineageFcn,
-    register_matlab_variable,
     get_surrogate_class,
+    register_matlab_variable,
 )
 
 __all__ = [

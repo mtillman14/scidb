@@ -1,16 +1,17 @@
 """Tests for Merge input wrapper."""
 
-import pytest
 import numpy as np
 import pandas as pd
+import pytest
 
-from scidb import for_each, Fixed, ColumnSelection, Merge
-
+from scidb import ColumnSelection, Fixed, Merge, for_each
 
 # --- Mock variable classes ---
 
+
 class MockDataFrameVar:
     """Mock variable that returns DataFrame data."""
+
     saved_data = []
     _data = None
     _metadata = None
@@ -125,16 +126,23 @@ class MockOutput(MockDataFrameVar):
 @pytest.fixture(autouse=True)
 def reset_mocks():
     """Reset all mock state before each test."""
-    for cls in [GaitData, ForceData, PareticSide, StepLength,
-                StepWidth, CadenceRate, MockOutput]:
+    for cls in [
+        GaitData,
+        ForceData,
+        PareticSide,
+        StepLength,
+        StepWidth,
+        CadenceRate,
+        MockOutput,
+    ]:
         cls.reset()
     yield
 
 
 # === Test Merge class construction ===
 
-class TestMergeClass:
 
+class TestMergeClass:
     def test_init_with_two_var_types(self):
         m = Merge(GaitData, ForceData)
         assert len(m.var_specs) == 2
@@ -174,8 +182,8 @@ class TestMergeClass:
 
 # === Test Merge in for_each ===
 
-class TestMergeInForEach:
 
+class TestMergeInForEach:
     def test_merge_two_dataframes(self):
         """Two DataFrame variables merge all columns into one DataFrame."""
         GaitData._data = pd.DataFrame({"side": ["L", "R"], "angle": [10.0, 20.0]})
@@ -202,7 +210,9 @@ class TestMergeInForEach:
 
     def test_merge_dataframe_and_array(self):
         """DataFrame + 1D array of same length: array becomes a column."""
-        GaitData._data = pd.DataFrame({"side": ["L", "R", "L"], "force": [1.0, 2.0, 3.0]})
+        GaitData._data = pd.DataFrame(
+            {"side": ["L", "R", "L"], "force": [1.0, 2.0, 3.0]}
+        )
         PareticSide._data = np.array(["paretic", "nonparetic", "paretic"])
 
         received = []
@@ -269,7 +279,9 @@ class TestMergeInForEach:
         df = received[0]
         assert isinstance(df, pd.DataFrame)
         assert list(df.columns) == ["StepLength", "StepWidth"]
-        np.testing.assert_array_almost_equal(df["StepLength"].values, [0.65, 0.72, 0.68])
+        np.testing.assert_array_almost_equal(
+            df["StepLength"].values, [0.65, 0.72, 0.68]
+        )
 
     def test_merge_two_scalars(self):
         """Two scalars produce a single-row, two-column DataFrame."""
@@ -345,13 +357,13 @@ class TestMergeInForEach:
         class TrackingA:
             @classmethod
             def load(cls, **meta):
-                inst = type('obj', (), {'data': np.array([meta['subject'] * 1.0])})()
+                inst = type("obj", (), {"data": np.array([meta["subject"] * 1.0])})()
                 return inst
 
         class TrackingB:
             @classmethod
             def load(cls, **meta):
-                inst = type('obj', (), {'data': np.array([meta['subject'] * 2.0])})()
+                inst = type("obj", (), {"data": np.array([meta["subject"] * 2.0])})()
                 return inst
 
         received = []
@@ -423,8 +435,8 @@ class TestMergeInForEach:
 
 # === Test Merge composability ===
 
-class TestMergeComposability:
 
+class TestMergeComposability:
     def test_merge_with_fixed(self):
         """Fixed override within Merge."""
         loaded_meta = []
@@ -433,13 +445,13 @@ class TestMergeComposability:
             @classmethod
             def load(cls, **meta):
                 loaded_meta.append(("VarA", meta))
-                return type('obj', (), {'data': np.array([1.0])})()
+                return type("obj", (), {"data": np.array([1.0])})()
 
         class VarB:
             @classmethod
             def load(cls, **meta):
                 loaded_meta.append(("VarB", meta))
-                return type('obj', (), {'data': np.array([2.0])})()
+                return type("obj", (), {"data": np.array([2.0])})()
 
         def process(data):
             return "result"
@@ -458,11 +470,13 @@ class TestMergeComposability:
 
     def test_merge_with_column_selection(self):
         """ColumnSelection within Merge extracts specific columns."""
-        GaitData._data = pd.DataFrame({
-            "side": ["L", "R"],
-            "force": [1.0, 2.0],
-            "angle": [10.0, 20.0],
-        })
+        GaitData._data = pd.DataFrame(
+            {
+                "side": ["L", "R"],
+                "force": [1.0, 2.0],
+                "angle": [10.0, 20.0],
+            }
+        )
         PareticSide._data = np.array(["paretic", "nonparetic"])
 
         received = []
@@ -493,13 +507,19 @@ class TestMergeComposability:
             @classmethod
             def load(cls, **meta):
                 loaded_meta.append(meta)
-                return type('obj', (), {
-                    'data': pd.DataFrame({
-                        "side": ["L", "R"],
-                        "force": [1.0, 2.0],
-                        "angle": [10.0, 20.0],
-                    })
-                })()
+                return type(
+                    "obj",
+                    (),
+                    {
+                        "data": pd.DataFrame(
+                            {
+                                "side": ["L", "R"],
+                                "force": [1.0, 2.0],
+                                "angle": [10.0, 20.0],
+                            }
+                        )
+                    },
+                )()
 
         PareticSide._data = np.array(["paretic", "nonparetic"])
 
@@ -530,8 +550,8 @@ class TestMergeComposability:
 
 # === Test Merge errors ===
 
-class TestMergeErrors:
 
+class TestMergeErrors:
     def test_constituent_load_fails(self, caplog):
         """When a constituent fails to load, iteration is skipped.
 
@@ -569,8 +589,8 @@ class TestMergeErrors:
             def load(cls, **meta):
                 # Return a list (multiple matches)
                 return [
-                    type('obj', (), {'data': np.array([1.0])})(),
-                    type('obj', (), {'data': np.array([2.0])})(),
+                    type("obj", (), {"data": np.array([1.0])})(),
+                    type("obj", (), {"data": np.array([2.0])})(),
                 ]
 
         def process(data):
@@ -634,8 +654,8 @@ class TestMergeErrors:
 
 # === Test dry run ===
 
-class TestMergeDryRun:
 
+class TestMergeDryRun:
     def test_dry_run_shows_merge(self, capsys):
         """Dry run output shows merge constituents."""
         for_each(
@@ -682,8 +702,8 @@ class TestMergeDryRun:
 
 # === Edge cases ===
 
-class TestMergeEdgeCases:
 
+class TestMergeEdgeCases:
     def test_scalar_broadcast(self):
         """Scalar is broadcast to match multi-row DataFrame."""
         GaitData._data = pd.DataFrame({"val": [1.0, 2.0, 3.0]})

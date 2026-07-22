@@ -11,15 +11,12 @@ Covers:
 - load() can disambiguate variants created by EachOf
 """
 
-import json
 import numpy as np
 import pandas as pd
 import pytest
+
 import scifor as _scifor
-
-from scidb import BaseVariable, configure_database, for_each, EachOf
-from scidb.exceptions import AmbiguousVersionError
-
+from scidb import BaseVariable, EachOf, configure_database, for_each
 
 # ---------------------------------------------------------------------------
 # Schema and fixtures
@@ -42,15 +39,27 @@ def db(tmp_path):
 # Variable types
 # ---------------------------------------------------------------------------
 
-class MetricA(BaseVariable): pass
-class MetricB(BaseVariable): pass
-class AnalysisResult(BaseVariable): pass
-class FilteredResult(BaseVariable): pass
+
+class MetricA(BaseVariable):
+    pass
+
+
+class MetricB(BaseVariable):
+    pass
+
+
+class AnalysisResult(BaseVariable):
+    pass
+
+
+class FilteredResult(BaseVariable):
+    pass
 
 
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
+
 
 def analyze(data, alpha=0.05):
     """Simple analysis function."""
@@ -72,6 +81,7 @@ def simple_transform(data):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _seed_data(db):
     """Seed MetricA and MetricB for two subjects."""
     MetricA.save(np.array([1.0, 2.0, 3.0]), db=db, subject="1", session="A")
@@ -83,6 +93,7 @@ def _seed_data(db):
 # ---------------------------------------------------------------------------
 # Tests: EachOf class basics
 # ---------------------------------------------------------------------------
+
 
 class TestEachOfClass:
     def test_single_value(self):
@@ -112,6 +123,7 @@ class TestEachOfClass:
 # Tests: EachOf with constants
 # ---------------------------------------------------------------------------
 
+
 class TestEachOfConstants:
     def test_single_constant_same_as_direct(self, db):
         """EachOf(0.05) should produce the same number of results as 0.05 directly."""
@@ -122,7 +134,8 @@ class TestEachOfConstants:
             inputs={"data": MetricA, "alpha": EachOf(0.05)},
             outputs=[AnalysisResult],
             db=db,
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects, 1 alpha = 2 rows (same as passing 0.05 directly)
@@ -137,7 +150,8 @@ class TestEachOfConstants:
             inputs={"data": MetricA, "alpha": EachOf(0.05, 0.01)},
             outputs=[AnalysisResult],
             db=db,
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects × 2 alpha values = 4 rows
@@ -152,6 +166,7 @@ class TestEachOfConstants:
 # Tests: EachOf with variable types
 # ---------------------------------------------------------------------------
 
+
 class TestEachOfVariableTypes:
     def test_single_type_same_as_direct(self, db):
         """EachOf(MetricA) should behave identically to passing MetricA directly."""
@@ -162,7 +177,8 @@ class TestEachOfVariableTypes:
             inputs={"data": EachOf(MetricA)},
             outputs=[AnalysisResult],
             db=db,
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects = 2 rows
@@ -177,7 +193,8 @@ class TestEachOfVariableTypes:
             inputs={"data": EachOf(MetricA, MetricB)},
             outputs=[AnalysisResult],
             db=db,
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects × 2 types = 4 rows
@@ -192,7 +209,8 @@ class TestEachOfVariableTypes:
             inputs={"data": EachOf(MetricA, MetricB)},
             outputs=[AnalysisResult],
             db=db,
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # Check that we have records with different __inputs
@@ -213,15 +231,20 @@ class TestEachOfVariableTypes:
 # Tests: EachOf with where= filters
 # ---------------------------------------------------------------------------
 
+
 class TestEachOfWhere:
     def _seed_with_sides(self, db):
         """Seed data with a 'side' column for where= filtering."""
-        class SideLabel(BaseVariable): pass
+
+        class SideLabel(BaseVariable):
+            pass
 
         # Subject 1, session A: two steps, one left, one right
         SideLabel.save(
             pd.DataFrame({"side": ["L", "R"], "value": [1.0, 2.0]}),
-            db=db, subject="1", session="A",
+            db=db,
+            subject="1",
+            session="A",
         )
         MetricA.save(np.array([10.0]), db=db, subject="1", session="A")
         return SideLabel
@@ -236,7 +259,8 @@ class TestEachOfWhere:
             outputs=[AnalysisResult],
             db=db,
             where=EachOf(None),
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # Should behave same as where=None
@@ -248,6 +272,7 @@ class TestEachOfWhere:
 
         # Use a raw_sql filter that matches all (just to test the machinery)
         from scidb.filters import raw_sql
+
         all_filter = raw_sql("1=1")
 
         result = for_each(
@@ -256,7 +281,8 @@ class TestEachOfWhere:
             outputs=[AnalysisResult],
             db=db,
             where=EachOf(None, all_filter),
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects × 2 where variants = 4 rows
@@ -266,6 +292,7 @@ class TestEachOfWhere:
 # ---------------------------------------------------------------------------
 # Tests: Combined EachOf (cartesian product)
 # ---------------------------------------------------------------------------
+
 
 class TestEachOfCombined:
     def test_types_and_constants(self, db):
@@ -280,7 +307,8 @@ class TestEachOfCombined:
             },
             outputs=[AnalysisResult],
             db=db,
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects × 2 types × 2 alphas = 8 rows
@@ -291,6 +319,7 @@ class TestEachOfCombined:
         _seed_data(db)
 
         from scidb.filters import raw_sql
+
         all_filter = raw_sql("1=1")
 
         result = for_each(
@@ -299,7 +328,8 @@ class TestEachOfCombined:
             outputs=[AnalysisResult],
             db=db,
             where=EachOf(None, all_filter),
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects × 2 types × 2 where = 8 rows
@@ -310,6 +340,7 @@ class TestEachOfCombined:
         _seed_data(db)
 
         from scidb.filters import raw_sql
+
         all_filter = raw_sql("1=1")
 
         result = for_each(
@@ -321,7 +352,8 @@ class TestEachOfCombined:
             outputs=[AnalysisResult],
             db=db,
             where=EachOf(None, all_filter),
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         # 2 subjects × 2 types × 2 alphas × 2 where = 16 rows
@@ -331,6 +363,7 @@ class TestEachOfCombined:
 # ---------------------------------------------------------------------------
 # Tests: dry_run mode with EachOf
 # ---------------------------------------------------------------------------
+
 
 class TestEachOfDryRun:
     def test_dry_run_returns_none(self, db):
@@ -343,7 +376,8 @@ class TestEachOfDryRun:
             outputs=[AnalysisResult],
             db=db,
             dry_run=True,
-            subject=[], session=[],
+            subject=[],
+            session=[],
         )
 
         assert result is None

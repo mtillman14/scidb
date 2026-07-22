@@ -5,33 +5,32 @@ Uses FastAPI's TestClient (backed by a real populated DuckDB) to exercise
 every route defined in the application.
 """
 
-import json
-import time
-import pytest
 import threading
-import numpy as np
+import time
 
-from scidb import configure_database, for_each, BaseVariable
-from scidb.database import _local
+import numpy as np
+import pytest
 import scistack_gui.db as _gui_db
-from scistack_gui import layout as layout_store
-from scistack_gui import registry as _registry
-from collections import defaultdict
 
 # Import test variable classes and pipeline function from conftest so we share
 # the same class objects (avoids duplicate BaseVariable subclass registrations).
 from conftest import (
-    RawSignal,
     FilteredSignal,
+    RawSignal,
     bandpass_filter,
     find_fn_node_id_by_label,
     fn_min_state_across_call_sites,
 )
+from scidb.database import _local
+from scistack_gui import layout as layout_store
+from scistack_gui import registry as _registry
 
+from scidb import BaseVariable, configure_database, for_each
 
 # ---------------------------------------------------------------------------
 # /api/info
 # ---------------------------------------------------------------------------
+
 
 class TestInfo:
     def test_returns_db_name(self, client):
@@ -44,6 +43,7 @@ class TestInfo:
 # /api/schema
 # ---------------------------------------------------------------------------
 
+
 class TestSchema:
     def test_returns_schema_keys(self, client):
         r = client.get("/api/schema")
@@ -54,13 +54,14 @@ class TestSchema:
     def test_returns_distinct_values(self, client):
         r = client.get("/api/schema")
         values = r.json()["values"]
-        assert set(str(v) for v in values["subject"]) == {"1", "2"}
-        assert set(str(v) for v in values["session"]) == {"pre", "post"}
+        assert {str(v) for v in values["subject"]} == {"1", "2"}
+        assert {str(v) for v in values["session"]} == {"pre", "post"}
 
 
 # ---------------------------------------------------------------------------
 # /api/registry
 # ---------------------------------------------------------------------------
+
 
 class TestRegistry:
     def test_returns_functions(self, client):
@@ -85,6 +86,7 @@ class TestRegistry:
 # ---------------------------------------------------------------------------
 # /api/pipeline
 # ---------------------------------------------------------------------------
+
 
 class TestPipeline:
     def test_returns_200(self, client):
@@ -131,7 +133,8 @@ class TestPipeline:
     def test_edges_connect_raw_to_function(self, client, bp_node_id):
         edges = client.get("/api/pipeline").json()["edges"]
         matches = [
-            e for e in edges
+            e
+            for e in edges
             if e["source"] == "var__RawSignal" and e["target"] == bp_node_id
         ]
         assert len(matches) >= 1
@@ -139,7 +142,8 @@ class TestPipeline:
     def test_edges_connect_function_to_filtered(self, client, bp_node_id):
         edges = client.get("/api/pipeline").json()["edges"]
         matches = [
-            e for e in edges
+            e
+            for e in edges
             if e["source"] == bp_node_id and e["target"] == "var__FilteredSignal"
         ]
         assert len(matches) >= 1
@@ -147,29 +151,37 @@ class TestPipeline:
     def test_constant_edge_connects_to_function(self, client, bp_node_id):
         edges = client.get("/api/pipeline").json()["edges"]
         matches = [
-            e for e in edges
+            e
+            for e in edges
             if e["source"] == "const__low_hz" and e["target"] == bp_node_id
         ]
         assert len(matches) >= 1
 
     def test_manual_node_appears_in_pipeline(self, client):
         # Add a manual node via the layout API
-        client.put("/api/layout/manual__extra_var", json={
-            "x": 50.0, "y": 100.0,
-            "node_type": "variableNode",
-            "label": "ExtraVar",
-        })
+        client.put(
+            "/api/layout/manual__extra_var",
+            json={
+                "x": 50.0,
+                "y": 100.0,
+                "node_type": "variableNode",
+                "label": "ExtraVar",
+            },
+        )
         nodes = client.get("/api/pipeline").json()["nodes"]
         node_ids = {n["id"] for n in nodes}
         assert "manual__extra_var" in node_ids
 
     def test_manual_edge_appears_in_pipeline(self, client):
-        client.put("/api/edges/manual_e1", json={
-            "source": "var__RawSignal",
-            "target": "fn__bandpass_filter",
-            "source_handle": None,
-            "target_handle": None,
-        })
+        client.put(
+            "/api/edges/manual_e1",
+            json={
+                "source": "var__RawSignal",
+                "target": "fn__bandpass_filter",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        )
         edges = client.get("/api/pipeline").json()["edges"]
         edge_ids = {e["id"] for e in edges}
         assert "manual_e1" in edge_ids
@@ -192,15 +204,22 @@ class TestPipeline:
         m_file = tmp_path / f"{fn_name}.m"
         m_file.write_text("function y = my_matlab_fn(x)\ny=x;\nend\n")
         matlab_registry._matlab_functions[fn_name] = MatlabFunctionInfo(
-            name=fn_name, file_path=m_file, params=["x"], source_hash="0" * 64,
+            name=fn_name,
+            file_path=m_file,
+            params=["x"],
+            source_hash="0" * 64,
         )
         try:
             # Drop a manual function node on the canvas.
-            client.put(f"/api/layout/manual__{fn_name}", json={
-                "x": 0.0, "y": 0.0,
-                "node_type": "functionNode",
-                "label": fn_name,
-            })
+            client.put(
+                f"/api/layout/manual__{fn_name}",
+                json={
+                    "x": 0.0,
+                    "y": 0.0,
+                    "node_type": "functionNode",
+                    "label": fn_name,
+                },
+            )
             nodes = client.get("/api/pipeline").json()["nodes"]
             matches = [n for n in nodes if n["data"]["label"] == fn_name]
             assert len(matches) == 1
@@ -212,6 +231,7 @@ class TestPipeline:
 # ---------------------------------------------------------------------------
 # /api/layout
 # ---------------------------------------------------------------------------
+
 
 class TestLayoutEndpoints:
     def test_get_layout_returns_dict(self, client):
@@ -229,11 +249,15 @@ class TestLayoutEndpoints:
         assert layout["positions"]["fn__bandpass_filter"] == {"x": 100.0, "y": 200.0}
 
     def test_put_layout_with_node_type_creates_manual_node(self, client):
-        client.put("/api/layout/manual__foo", json={
-            "x": 10.0, "y": 20.0,
-            "node_type": "functionNode",
-            "label": "my_fn",
-        })
+        client.put(
+            "/api/layout/manual__foo",
+            json={
+                "x": 10.0,
+                "y": 20.0,
+                "node_type": "functionNode",
+                "label": "my_fn",
+            },
+        )
         layout = client.get("/api/layout").json()
         assert "manual__foo" in layout["manual_nodes"]
         assert layout["manual_nodes"]["manual__foo"]["label"] == "my_fn"
@@ -256,6 +280,7 @@ class TestLayoutEndpoints:
 # ---------------------------------------------------------------------------
 # /api/constants
 # ---------------------------------------------------------------------------
+
 
 class TestConstantsEndpoints:
     def test_get_constants_initially_empty(self, client):
@@ -294,14 +319,18 @@ class TestConstantsEndpoints:
 # /api/edges
 # ---------------------------------------------------------------------------
 
+
 class TestEdgesEndpoints:
     def test_put_edge_saves_it(self, client):
-        r = client.put("/api/edges/e_test_1", json={
-            "source": "var__RawSignal",
-            "target": "fn__bandpass_filter",
-            "source_handle": None,
-            "target_handle": "in__signal",
-        })
+        r = client.put(
+            "/api/edges/e_test_1",
+            json={
+                "source": "var__RawSignal",
+                "target": "fn__bandpass_filter",
+                "source_handle": None,
+                "target_handle": "in__signal",
+            },
+        )
         assert r.status_code == 200
         assert r.json() == {"ok": True}
 
@@ -310,24 +339,39 @@ class TestEdgesEndpoints:
         assert any(e["id"] == "e_test_1" for e in edges)
 
     def test_put_edge_upserts(self, client):
-        client.put("/api/edges/e_test_2", json={
-            "source": "A", "target": "B",
-            "source_handle": None, "target_handle": None,
-        })
-        client.put("/api/edges/e_test_2", json={
-            "source": "A", "target": "C",
-            "source_handle": None, "target_handle": None,
-        })
+        client.put(
+            "/api/edges/e_test_2",
+            json={
+                "source": "A",
+                "target": "B",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        )
+        client.put(
+            "/api/edges/e_test_2",
+            json={
+                "source": "A",
+                "target": "C",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        )
         layout = client.get("/api/layout").json()
         matching = [e for e in layout["manual_edges"] if e["id"] == "e_test_2"]
         assert len(matching) == 1
         assert matching[0]["target"] == "C"
 
     def test_delete_edge_removes_it(self, client):
-        client.put("/api/edges/e_del", json={
-            "source": "X", "target": "Y",
-            "source_handle": None, "target_handle": None,
-        })
+        client.put(
+            "/api/edges/e_del",
+            json={
+                "source": "X",
+                "target": "Y",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        )
         r = client.delete("/api/edges/e_del")
         assert r.status_code == 200
         layout = client.get("/api/layout").json()
@@ -341,6 +385,7 @@ class TestEdgesEndpoints:
 # ---------------------------------------------------------------------------
 # /api/variables
 # ---------------------------------------------------------------------------
+
 
 class TestVariableRecordsEndpoint:
     def test_returns_schema_keys(self, client):
@@ -397,6 +442,7 @@ class TestVariableRecordsEndpoint:
 # Wiring mutations broadcast dag_updated
 # ---------------------------------------------------------------------------
 
+
 class TestWiringMutationBroadcasts:
     """Node/edge create+delete must broadcast dag_updated so the canvas
     refetches and a freshly placed node gets its real DB-checked state —
@@ -408,44 +454,62 @@ class TestWiringMutationBroadcasts:
     @pytest.fixture
     def captured(self, monkeypatch):
         from scistack_gui.api import ws as ws_mod
+
         messages: list[dict] = []
-        monkeypatch.setattr(ws_mod, "push_message",
-                            lambda msg: messages.append(msg))
+        monkeypatch.setattr(ws_mod, "push_message", lambda msg: messages.append(msg))
         return messages
 
     def _dag_updates(self, messages):
         return [m for m in messages if m.get("type") == "dag_updated"]
 
     def test_node_creation_broadcasts(self, client, captured):
-        client.put("/api/layout/manual__bcast_test", json={
-            "x": 1.0, "y": 2.0,
-            "node_type": "variableNode", "label": "BcastVar",
-        })
+        client.put(
+            "/api/layout/manual__bcast_test",
+            json={
+                "x": 1.0,
+                "y": 2.0,
+                "node_type": "variableNode",
+                "label": "BcastVar",
+            },
+        )
         assert len(self._dag_updates(captured)) == 1
 
     def test_position_only_write_does_not_broadcast(self, client, captured):
-        client.put("/api/layout/manual__bcast_test2", json={
-            "x": 1.0, "y": 2.0,
-            "node_type": "variableNode", "label": "BcastVar2",
-        })
+        client.put(
+            "/api/layout/manual__bcast_test2",
+            json={
+                "x": 1.0,
+                "y": 2.0,
+                "node_type": "variableNode",
+                "label": "BcastVar2",
+            },
+        )
         captured.clear()
-        client.put("/api/layout/manual__bcast_test2",
-                   json={"x": 50.0, "y": 60.0})
+        client.put("/api/layout/manual__bcast_test2", json={"x": 50.0, "y": 60.0})
         assert self._dag_updates(captured) == []
 
     def test_node_delete_broadcasts(self, client, captured):
-        client.put("/api/layout/manual__bcast_test3", json={
-            "x": 0.0, "y": 0.0,
-            "node_type": "variableNode", "label": "BcastVar3",
-        })
+        client.put(
+            "/api/layout/manual__bcast_test3",
+            json={
+                "x": 0.0,
+                "y": 0.0,
+                "node_type": "variableNode",
+                "label": "BcastVar3",
+            },
+        )
         captured.clear()
         client.delete("/api/layout/manual__bcast_test3")
         assert len(self._dag_updates(captured)) == 1
 
     def test_edge_create_and_delete_broadcast(self, client, captured):
-        client.put("/api/edges/manual__bcast_e1", json={
-            "source": "var__RawSignal", "target": "var__FilteredSignal",
-        })
+        client.put(
+            "/api/edges/manual__bcast_e1",
+            json={
+                "source": "var__RawSignal",
+                "target": "var__FilteredSignal",
+            },
+        )
         assert len(self._dag_updates(captured)) == 1
         captured.clear()
         client.delete("/api/edges/manual__bcast_e1")
@@ -455,6 +519,7 @@ class TestWiringMutationBroadcasts:
 # ---------------------------------------------------------------------------
 # /api/run
 # ---------------------------------------------------------------------------
+
 
 def _wait_for_threads(prefix: str, timeout: float = 2.0) -> None:
     """Wait for any background run threads to finish before DB teardown."""
@@ -469,10 +534,13 @@ def _wait_for_threads(prefix: str, timeout: float = 2.0) -> None:
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 class TestRunEndpoint:
     def test_returns_run_id(self, client):
-        r = client.post("/api/run", json={
-            "function_name": "bandpass_filter",
-            "variants": [],
-        })
+        r = client.post(
+            "/api/run",
+            json={
+                "function_name": "bandpass_filter",
+                "variants": [],
+            },
+        )
         assert r.status_code == 200
         data = r.json()
         assert "run_id" in data
@@ -480,11 +548,14 @@ class TestRunEndpoint:
         _wait_for_threads("Thread-")
 
     def test_accepts_caller_supplied_run_id(self, client):
-        r = client.post("/api/run", json={
-            "function_name": "bandpass_filter",
-            "variants": [],
-            "run_id": "my_run_42",
-        })
+        r = client.post(
+            "/api/run",
+            json={
+                "function_name": "bandpass_filter",
+                "variants": [],
+                "run_id": "my_run_42",
+            },
+        )
         assert r.status_code == 200
         assert r.json()["run_id"] == "my_run_42"
         _wait_for_threads("Thread-")
@@ -494,10 +565,13 @@ class TestRunEndpoint:
         The HTTP layer returns immediately; the error is surfaced via WebSocket.
         So even for an unknown function, the POST itself should succeed.
         """
-        r = client.post("/api/run", json={
-            "function_name": "no_such_function",
-            "variants": [],
-        })
+        r = client.post(
+            "/api/run",
+            json={
+                "function_name": "no_such_function",
+                "variants": [],
+            },
+        )
         assert r.status_code == 200
         assert "run_id" in r.json()
         _wait_for_threads("Thread-")
@@ -505,6 +579,7 @@ class TestRunEndpoint:
     def test_cancel_run_unknown_id_returns_error(self, client):
         """cancel_run on a run_id that isn't active should return ok=False."""
         from scistack_gui.api.run import cancel_run
+
         result = cancel_run("does_not_exist_xyz")
         assert result["ok"] is False
         assert "unknown run_id" in result["error"]
@@ -512,6 +587,7 @@ class TestRunEndpoint:
     def test_force_cancel_run_unknown_id_returns_error(self, client):
         """force_cancel_run on an unknown run_id should also error gracefully."""
         from scistack_gui.api.run import force_cancel_run
+
         result = force_cancel_run("not_a_real_run_id")
         assert result["ok"] is False
         assert "unknown run_id" in result["error"]
@@ -531,8 +607,7 @@ class TestRunEndpoint:
         emitted: list[dict] = []
 
         # Capture push_message calls into a list rather than going to WS.
-        monkeypatch.setattr(run_api, "push_message",
-                            lambda msg: emitted.append(msg))
+        monkeypatch.setattr(run_api, "push_message", lambda msg: emitted.append(msg))
 
         cancel_event = threading.Event()
         worker_done = threading.Event()
@@ -550,14 +625,16 @@ class TestRunEndpoint:
                 deadline = time.monotonic() + 2.0
                 while time.monotonic() < deadline:
                     if cancel_event.is_set():
-                        run_api.push_message({
-                            "type": "run_done",
-                            "run_id": run_id,
-                            "success": True,
-                            "duration_ms": 0,
-                            "cancelled": True,
-                            "force_cancelled": False,
-                        })
+                        run_api.push_message(
+                            {
+                                "type": "run_done",
+                                "run_id": run_id,
+                                "success": True,
+                                "duration_ms": 0,
+                                "cancelled": True,
+                                "force_cancelled": False,
+                            }
+                        )
                         return
                     time.sleep(0.02)
             finally:
@@ -565,8 +642,7 @@ class TestRunEndpoint:
                     run_api._active_runs.pop(run_id, None)
                 worker_done.set()
 
-        t = threading.Thread(target=synthetic_worker, name="SynthRun-1",
-                             daemon=True)
+        t = threading.Thread(target=synthetic_worker, name="SynthRun-1", daemon=True)
         t.start()
 
         # Give the worker a moment to register itself.
@@ -640,6 +716,7 @@ class TestRunEndpoint:
 # Run state: pipeline node run_state integration tests
 # ---------------------------------------------------------------------------
 
+
 # Extra variable class and function for the two-step chain tests
 class ProcessedSignal(BaseVariable):
     pass
@@ -684,6 +761,7 @@ class TestRunStateRed:
 
         from fastapi.testclient import TestClient
         from scistack_gui.app import create_app
+
         with TestClient(create_app()) as c:
             yield c
 
@@ -731,6 +809,7 @@ class TestRunStatePartialIsRed:
 
         from fastapi.testclient import TestClient
         from scistack_gui.app import create_app
+
         with TestClient(create_app()) as c:
             yield c
 
@@ -793,6 +872,7 @@ class TestRunStatePropagation:
 
         from fastapi.testclient import TestClient
         from scistack_gui.app import create_app
+
         with TestClient(create_app()) as c:
             yield c
 
@@ -821,6 +901,7 @@ class TestRunStatePropagation:
 # ---------------------------------------------------------------------------
 # Pending constant lifecycle: green → staged value → pending → run → green
 # ---------------------------------------------------------------------------
+
 
 class TestPendingConstantLifecycle:
     """End-to-end: user drags a new constant value in the GUI, the consumer
@@ -876,7 +957,9 @@ class TestPendingConstantLifecycle:
 
         assert self._fn_state(client) == "green"
 
-    def test_running_pipeline_with_new_value_auto_cleans_pending(self, client, populated_db):
+    def test_running_pipeline_with_new_value_auto_cleans_pending(
+        self, client, populated_db
+    ):
         """Running for_each with the pending scale produces matching records;
         on the next /api/pipeline call, auto_clean_pending_constants removes
         the pending row and the node returns to green."""
@@ -927,7 +1010,9 @@ class TestPendingConstantRecovery:
             delattr(_local, "database")
         _gui_db._db = None
 
-        db = configure_database(tmp_path / "partial_recover.duckdb", ["subject", "session"])
+        db = configure_database(
+            tmp_path / "partial_recover.duckdb", ["subject", "session"]
+        )
         for subj in [1, 2]:
             for sess in ["pre", "post"]:
                 RawSignal.save(np.random.randn(10), subject=subj, session=sess)
@@ -946,6 +1031,7 @@ class TestPendingConstantRecovery:
 
         from fastapi.testclient import TestClient
         from scistack_gui.app import create_app
+
         with TestClient(create_app()) as c:
             yield c
 
@@ -969,6 +1055,7 @@ class TestPendingConstantRecovery:
 
         from fastapi.testclient import TestClient
         from scistack_gui.app import create_app
+
         with TestClient(create_app()) as c:
             yield c
 
@@ -988,13 +1075,15 @@ class TestPendingConstantRecovery:
             bandpass_filter,
             inputs={"signal": RawSignal, "low_hz": 20},
             outputs=[FilteredSignal],
-            subject=[2], session=["pre", "post"],   # remaining subjects
+            subject=[2],
+            session=["pre", "post"],  # remaining subjects
         )
         for_each(
             bandpass_filter,
             inputs={"signal": RawSignal, "low_hz": 42},
             outputs=[FilteredSignal],
-            subject=[1, 2], session=["pre", "post"],
+            subject=[1, 2],
+            session=["pre", "post"],
         )
 
         # Auto-clean removes pending; all variants fully populated → green.
@@ -1022,7 +1111,8 @@ class TestPendingConstantRecovery:
             bandpass_filter,
             inputs={"signal": RawSignal, "low_hz": 42},
             outputs=[FilteredSignal],
-            subject=[1, 2], session=["pre", "post"],
+            subject=[1, 2],
+            session=["pre", "post"],
         )
 
         assert self._fn_state(client_never_run) == "green"

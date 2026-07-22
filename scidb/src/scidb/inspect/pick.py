@@ -13,7 +13,7 @@ behind a ``scidb[tui]`` extra) would replace only the chooser, not this flow.
 
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
 
 from .api import PickCandidate
 

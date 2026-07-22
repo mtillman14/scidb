@@ -10,11 +10,11 @@ import json
 
 import numpy as np
 import pytest
-
-from scidb import BaseVariable, DatabaseLockedError, configure_database, for_each
 from scidb.inspect import Inspector, Mutator, render
 from scidb.inspect.cli import main
 from scidb.inspect.mutate import lock_errors_mapped
+
+from scidb import BaseVariable, DatabaseLockedError, configure_database, for_each
 
 SCHEMA_KEYS = ["subject", "session"]
 
@@ -36,8 +36,7 @@ def build_p5_db(db_path):
     # Zero-padded subject on purpose — verbatim round-trip is part of the contract.
     P5Raw.save(np.array([1.0]), subject="01", session="1")
     P5Raw.save(np.array([2.0]), subject="02", session="1")
-    for_each(double5, {"signal": P5Raw}, [P5Out],
-             subject=["01", "02"], session=["1"])
+    for_each(double5, {"signal": P5Raw}, [P5Out], subject=["01", "02"], session=["1"])
     db.close()
 
 
@@ -124,10 +123,11 @@ class TestLockContention:
         def locked_open(cls_db_path):
             raise DatabaseLockedError(
                 f"{cls_db_path} is locked by another session (a running GUI "
-                f"or MATLAB session, or another process). Close it and retry.")
+                f"or MATLAB session, or another process). Close it and retry."
+            )
+
         monkeypatch.setattr("scidb.inspect.cli.Mutator.open", locked_open)
-        rc = main(["--db", str(db_path), "exclude", "subject=01",
-                   "--reason", "r"])
+        rc = main(["--db", str(db_path), "exclude", "subject=01", "--reason", "r"])
         assert rc == 1
         err = capsys.readouterr().err
         assert "locked by another session" in err
@@ -138,6 +138,7 @@ class TestLockContention:
 
         def locked_keys(path):
             raise RuntimeError(msg)
+
         monkeypatch.setattr("sciduckdb.schema_keys_from_db", locked_keys)
         with pytest.raises(DatabaseLockedError):
             Inspector.open(db_path)
@@ -145,8 +146,20 @@ class TestLockContention:
 
 class TestCli:
     def test_exclude_list_include_cycle(self, db_path, capsys):
-        assert main(["--db", str(db_path), "exclude", "subject=01",
-                     "session=1", "--reason", "sensor slipped"]) == 0
+        assert (
+            main(
+                [
+                    "--db",
+                    str(db_path),
+                    "exclude",
+                    "subject=01",
+                    "session=1",
+                    "--reason",
+                    "sensor slipped",
+                ]
+            )
+            == 0
+        )
         out = capsys.readouterr().out
         assert "exclude_schema" in out and "sensor slipped" in out
 
@@ -154,15 +167,39 @@ class TestCli:
         out = capsys.readouterr().out
         assert "01" in out and "sensor slipped" in out
 
-        assert main(["--db", str(db_path), "include", "subject=01",
-                     "session=1", "--reason", "re-reviewed"]) == 0
+        assert (
+            main(
+                [
+                    "--db",
+                    str(db_path),
+                    "include",
+                    "subject=01",
+                    "session=1",
+                    "--reason",
+                    "re-reviewed",
+                ]
+            )
+            == 0
+        )
         capsys.readouterr()
         assert main(["--db", str(db_path), "exclusions"]) == 0
         assert "(no schema exclusions)" in capsys.readouterr().out
 
     def test_exclusions_json(self, db_path, capsys):
-        assert main(["--db", str(db_path), "exclude", "subject=02",
-                     "--reason", "withdrew", "--json"]) == 0
+        assert (
+            main(
+                [
+                    "--db",
+                    str(db_path),
+                    "exclude",
+                    "subject=02",
+                    "--reason",
+                    "withdrew",
+                    "--json",
+                ]
+            )
+            == 0
+        )
         payload = json.loads(capsys.readouterr().out)
         assert payload["operation"] == "exclude_schema"
         assert payload["target"] == {"subject": "02"}
@@ -178,11 +215,13 @@ class TestCli:
         assert "--reason" in capsys.readouterr().err
 
     def test_double_exclude_fails_cleanly(self, db_path, capsys):
-        assert main(["--db", str(db_path), "exclude", "subject=01",
-                     "--reason", "a"]) == 0
+        assert (
+            main(["--db", str(db_path), "exclude", "subject=01", "--reason", "a"]) == 0
+        )
         capsys.readouterr()
-        assert main(["--db", str(db_path), "exclude", "subject=01",
-                     "--reason", "b"]) == 1
+        assert (
+            main(["--db", str(db_path), "exclude", "subject=01", "--reason", "b"]) == 1
+        )
         assert "already excluded" in capsys.readouterr().err
 
     def test_exclusion_flips_pathinput_state(self, tmp_path, capsys):
@@ -206,10 +245,17 @@ class TestCli:
             d.mkdir(parents=True)
             (d / "ses1.txt").write_text("1.0")
         db = configure_database(db_file, SCHEMA_KEYS)
-        for_each(import5,
-                 {"filepath": PathInput("sub{subject}/ses{session}.txt",
-                                        root_folder=str(data))},
-                 [P5Loaded], subject=["01", "02"], session=["1"])
+        for_each(
+            import5,
+            {
+                "filepath": PathInput(
+                    "sub{subject}/ses{session}.txt", root_folder=str(data)
+                )
+            },
+            [P5Loaded],
+            subject=["01", "02"],
+            session=["1"],
+        )
         db.close()
 
         # A third file appears, never imported → discovery check goes red.
@@ -219,8 +265,19 @@ class TestCli:
             (st,) = insp.pathinput_state("import5")
             assert st.state == "red"
 
-        assert main(["--db", str(db_file), "exclude", "subject=03",
-                     "--reason", "corrupt acquisition"]) == 0
+        assert (
+            main(
+                [
+                    "--db",
+                    str(db_file),
+                    "exclude",
+                    "subject=03",
+                    "--reason",
+                    "corrupt acquisition",
+                ]
+            )
+            == 0
+        )
         capsys.readouterr()
         with Inspector.open(db_file) as insp:
             (st,) = insp.pathinput_state("import5")

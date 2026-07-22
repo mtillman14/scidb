@@ -36,7 +36,10 @@ _TABLE = "__scidb_schema_overrides"
 # Public API
 # ---------------------------------------------------------------------------
 
-def exclude_schema(reason: str, db: "DatabaseManager | None" = None, **schema_keys) -> None:
+
+def exclude_schema(
+    reason: str, db: DatabaseManager | None = None, **schema_keys
+) -> None:
     """Mark a schema-key combination as permanently excluded from analyses.
 
     The record is stored in the database and consulted by ``for_each`` before
@@ -69,7 +72,9 @@ def exclude_schema(reason: str, db: "DatabaseManager | None" = None, **schema_ke
     _insert_row(db, schema_keys, status=False, reason=reason)
 
 
-def include_schema(reason: str, db: "DatabaseManager | None" = None, **schema_keys) -> None:
+def include_schema(
+    reason: str, db: DatabaseManager | None = None, **schema_keys
+) -> None:
     """Re-include a previously excluded schema-key combination.
 
     The record is stored in the database (the original exclusion row is NOT
@@ -96,14 +101,12 @@ def include_schema(reason: str, db: "DatabaseManager | None" = None, **schema_ke
             "Call exclude_schema() first."
         )
     if status is True:
-        raise ValueError(
-            f"Schema combination {schema_keys!r} is already included."
-        )
+        raise ValueError(f"Schema combination {schema_keys!r} is already included.")
 
     _insert_row(db, schema_keys, status=True, reason=reason)
 
 
-def list_exclusions(db: "DatabaseManager | None" = None):
+def list_exclusions(db: DatabaseManager | None = None):
     """Return a DataFrame of currently-excluded schema combinations.
 
     Shows the latest row per exact keyset where the effective status is
@@ -143,7 +146,8 @@ def list_exclusions(db: "DatabaseManager | None" = None):
 # Internal helpers (used by for_each and the public API)
 # ---------------------------------------------------------------------------
 
-def get_schema_overrides_hash(db: "DatabaseManager") -> str:
+
+def get_schema_overrides_hash(db: DatabaseManager) -> str:
     """Return a 16-hex-char SHA-256 hash of the full ``__scidb_schema_overrides`` table.
 
     Hashes ALL rows (both directions of state change) so that any edit —
@@ -178,7 +182,7 @@ def get_schema_overrides_hash(db: "DatabaseManager") -> str:
 def filter_excluded_combos(
     combos: list[dict],
     schema_keys_order: list[str],
-    db: "DatabaseManager",
+    db: DatabaseManager,
 ) -> list[dict]:
     """Remove excluded combos from the list.
 
@@ -248,9 +252,8 @@ def filter_excluded_combos(
             if not all(combo_str.get(k) == v for k, v in key_values.items()):
                 continue
             # This row matches the combo; check if it beats the current best
-            if (
-                specificity > best_specificity
-                or (specificity == best_specificity and changed_at > best_changed_at)
+            if specificity > best_specificity or (
+                specificity == best_specificity and changed_at > best_changed_at
             ):
                 best_specificity = specificity
                 best_changed_at = changed_at
@@ -263,6 +266,7 @@ def filter_excluded_combos(
     removed = len(combos) - len(result)
     if removed > 0:
         from .log import Log
+
         Log.info(
             f"[scidb] schema exclusions: removed {removed} excluded combo(s) "
             f"(from {len(combos)} to {len(result)})"
@@ -272,20 +276,20 @@ def filter_excluded_combos(
 
 
 def exclude_schema_dict(
-    schema_keys: dict, reason: str, db: "DatabaseManager | None" = None
+    schema_keys: dict, reason: str, db: DatabaseManager | None = None
 ) -> None:
     """Dict-accepting entry point for MATLAB callers (wraps ``exclude_schema``)."""
     exclude_schema(reason=reason, db=db, **schema_keys)
 
 
 def include_schema_dict(
-    schema_keys: dict, reason: str, db: "DatabaseManager | None" = None
+    schema_keys: dict, reason: str, db: DatabaseManager | None = None
 ) -> None:
     """Dict-accepting entry point for MATLAB callers (wraps ``include_schema``)."""
     include_schema(reason=reason, db=db, **schema_keys)
 
 
-def ensure_overrides_table(db: "DatabaseManager") -> None:
+def ensure_overrides_table(db: DatabaseManager) -> None:
     """Create ``__scidb_schema_overrides`` if it doesn't exist (idempotent)."""
     schema_cols = ",\n            ".join(
         f'"{k}" VARCHAR' for k in db.dataset_schema_keys
@@ -305,14 +309,16 @@ def ensure_overrides_table(db: "DatabaseManager") -> None:
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _get_db(db: "DatabaseManager | None") -> "DatabaseManager":
+
+def _get_db(db: DatabaseManager | None) -> DatabaseManager:
     if db is not None:
         return db
     from .database import get_database
+
     return get_database()
 
 
-def _overrides_backend(db: "DatabaseManager"):
+def _overrides_backend(db: DatabaseManager):
     """Return the DuckDB backend if this db can store schema overrides, else None.
 
     Schema exclusions live in the DuckDB table ``__scidb_schema_overrides``,
@@ -325,6 +331,7 @@ def _overrides_backend(db: "DatabaseManager"):
     duck = getattr(db, "_duck", None)
     if duck is None:
         from .log import Log
+
         Log.debug(
             f"[scidb] schema overrides unavailable: {type(db).__name__} has no "
             f"_duck backend; treating as no exclusions"
@@ -332,7 +339,7 @@ def _overrides_backend(db: "DatabaseManager"):
     return duck
 
 
-def _validate_keys(db: "DatabaseManager", keys: dict) -> None:
+def _validate_keys(db: DatabaseManager, keys: dict) -> None:
     unknown = set(keys) - set(db.dataset_schema_keys)
     if unknown:
         raise ValueError(
@@ -341,7 +348,7 @@ def _validate_keys(db: "DatabaseManager", keys: dict) -> None:
         )
 
 
-def _current_status(db: "DatabaseManager", keyset: dict) -> bool | None:
+def _current_status(db: DatabaseManager, keyset: dict) -> bool | None:
     """Return the effective status of the exact keyset, or None if no row exists.
 
     Matches rows where the specified keys have the given values AND all
@@ -375,12 +382,13 @@ def _current_status(db: "DatabaseManager", keyset: dict) -> bool | None:
 
 
 def _insert_row(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     schema_keys: dict,
     status: bool,
     reason: str,
 ) -> None:
     from .database import get_user_id
+
     all_keys = db.dataset_schema_keys
     col_names = list(all_keys) + ["status", "reason", "changed_at", "changed_by"]
     values: list = []

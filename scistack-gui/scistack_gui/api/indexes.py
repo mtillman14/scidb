@@ -71,12 +71,14 @@ def _read_tap_packages(tap_local_path: Path, query: str | None = None) -> list[d
             description = entry.get("description", "")
             if query.lower() not in description.lower():
                 continue
-        results.append({
-            "name": name,
-            "description": entry.get("description", ""),
-            "versions": entry.get("versions", []),
-            "index_url": entry.get("index_url", ""),
-        })
+        results.append(
+            {
+                "name": name,
+                "description": entry.get("description", ""),
+                "versions": entry.get("versions", []),
+                "index_url": entry.get("index_url", ""),
+            }
+        )
     return results
 
 
@@ -87,6 +89,7 @@ def _read_tap_packages(tap_local_path: Path, query: str | None = None) -> list[d
 def list_indexes() -> dict:
     """List the user's tapped package indexes."""
     from scistack.user_config import list_taps
+
     taps = list_taps()
     return {
         "indexes": [
@@ -137,6 +140,7 @@ def add_library(body: dict) -> dict:
     if result.ok:
         # Trigger a re-scan so the sidebar picks up new exports.
         from scistack_gui.api.project import _run_scan
+
         _run_scan()
         return {"ok": True, "package": package, "version": version}
     else:
@@ -153,6 +157,7 @@ def remove_library(name: str) -> dict:
 
     if result.ok:
         from scistack_gui.api.project import _run_scan
+
         _run_scan()
         return {"ok": True, "package": name}
     else:

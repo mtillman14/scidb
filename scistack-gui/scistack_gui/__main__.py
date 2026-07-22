@@ -34,17 +34,19 @@ def main():
         help="Port to serve on (default: 8765)",
     )
     parser.add_argument(
-        "--module", "-m",
+        "--module",
+        "-m",
         type=Path,
         default=None,
         help="Path to your pipeline .py file (single-file mode).",
     )
     parser.add_argument(
-        "--project", "-p",
+        "--project",
+        "-p",
         type=Path,
         default=None,
         help="Path to pyproject.toml or directory containing one "
-             "(project mode — reads [tool.scistack] config).",
+        "(project mode — reads [tool.scistack] config).",
     )
     parser.add_argument(
         "--no-browser",
@@ -69,6 +71,7 @@ def main():
 
     if args.project:
         from scistack_gui.config import load_config
+
         try:
             config = load_config(args.project, db_path)
             result = registry.load_from_config(config)
@@ -79,6 +82,7 @@ def main():
             # Load MATLAB registry if MATLAB config is present.
             if config.matlab_functions or config.matlab_variables:
                 from scistack_gui import matlab_registry
+
                 matlab_result = matlab_registry.load_from_config(config)
                 print(
                     f"MATLAB: {len(matlab_result['matlab_functions'])} functions, "
@@ -96,6 +100,7 @@ def main():
             print(f"Error: module not found: {module_path}", file=sys.stderr)
             sys.exit(1)
         import importlib.util
+
         spec = importlib.util.spec_from_file_location("user_pipeline", module_path)
         user_mod = importlib.util.module_from_spec(spec)
         try:
@@ -110,6 +115,7 @@ def main():
     # Import here so that the module-level singleton is set before the app
     # imports its routers.
     from scistack_gui.db import init_db
+
     try:
         db = init_db(db_path)
         print(f"Opened database: {db_path}")
@@ -121,6 +127,7 @@ def main():
     # Bridge Python logging → scidb.log so that scihist/scistack_gui logger
     # calls appear in the unified log file.
     from scidb.log import Log
+
     Log.bridge_python_logging()
 
     # Phase 8: Stale lockfile detection on project open.
@@ -129,6 +136,7 @@ def main():
     # stored in scistack_gui.startup and surfaced to the browser via the
     # /api/info endpoint that the React app polls on mount.
     from scistack_gui import startup as _startup
+
     _startup.check_lockfile_staleness(db_path.parent)
     for err in _startup.get_startup_errors():
         print(f"Startup warning [{err.kind}]: {err.message}", file=sys.stderr)
@@ -141,6 +149,7 @@ def main():
     if not args.no_browser:
         # Open after a short delay to let uvicorn bind the port
         import threading
+
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
     uvicorn.run(

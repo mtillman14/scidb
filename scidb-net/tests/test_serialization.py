@@ -1,11 +1,9 @@
 """Round-trip unit tests for the serialization layer."""
 
-import json
-
 import numpy as np
 import pandas as pd
 import pytest
-
+from scidbnet.exceptions import SerializationError
 from scidbnet.serialization import (
     decode_envelope,
     decode_multi,
@@ -18,12 +16,11 @@ from scidbnet.serialization import (
     encode_save_request,
     serialize_data,
 )
-from scidbnet.exceptions import SerializationError
-
 
 # ---------------------------------------------------------------------------
 # serialize_data / deserialize_data round-trips
 # ---------------------------------------------------------------------------
+
 
 class TestSerializeRoundTrip:
     def test_none(self):
@@ -117,6 +114,7 @@ class TestSerializeRoundTrip:
 # Envelope encoding
 # ---------------------------------------------------------------------------
 
+
 class TestEnvelope:
     def test_round_trip(self):
         header = {"format": "json_scalar", "python_type": "int"}
@@ -138,6 +136,7 @@ class TestEnvelope:
 # ---------------------------------------------------------------------------
 # Full encode_response / decode_response
 # ---------------------------------------------------------------------------
+
 
 class TestResponseCodec:
     def test_int_round_trip(self):
@@ -161,6 +160,7 @@ class TestResponseCodec:
 # Multi-value encoding
 # ---------------------------------------------------------------------------
 
+
 class TestMultiCodec:
     def test_round_trip(self):
         items = [42, np.array([1.0, 2.0]), "hello"]
@@ -183,6 +183,7 @@ class TestMultiCodec:
 # ---------------------------------------------------------------------------
 # Save request encoding
 # ---------------------------------------------------------------------------
+
 
 class TestSaveRequestCodec:
     def test_round_trip_with_array(self):

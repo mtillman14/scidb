@@ -36,10 +36,11 @@ import logging
 import pkgutil
 import sys
 import traceback
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Iterable
+from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -148,7 +149,11 @@ def discover_module(module: ModuleType) -> ModuleExports:
             continue
 
         # --- BaseVariable subclasses ---
-        if isinstance(obj, type) and obj is not BaseVariable and issubclass(obj, BaseVariable):
+        if (
+            isinstance(obj, type)
+            and obj is not BaseVariable
+            and issubclass(obj, BaseVariable)
+        ):
             if getattr(obj, "__module__", None) == module_name:
                 exports.variables.append(obj)
             continue
@@ -185,7 +190,9 @@ def scan_package(package_name: str) -> PackageResult:
     try:
         pkg = importlib.import_module(package_name)
     except Exception:
-        logger.debug("Failed to import top-level package %s", package_name, exc_info=True)
+        logger.debug(
+            "Failed to import top-level package %s", package_name, exc_info=True
+        )
         result.errors.append(
             ModuleError(module_name=package_name, traceback=traceback.format_exc())
         )
@@ -317,7 +324,7 @@ class _PathInsert:
     directory: str
     _inserted: bool = False
 
-    def __enter__(self) -> "_PathInsert":
+    def __enter__(self) -> _PathInsert:
         if self.directory not in sys.path:
             sys.path.insert(0, self.directory)
             self._inserted = True
@@ -436,8 +443,7 @@ def _purge_module(package_name: str) -> None:
     """
     prefix = package_name + "."
     to_drop = [
-        name for name in sys.modules
-        if name == package_name or name.startswith(prefix)
+        name for name in sys.modules if name == package_name or name.startswith(prefix)
     ]
     for name in to_drop:
         sys.modules.pop(name, None)

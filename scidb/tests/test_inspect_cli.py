@@ -9,14 +9,12 @@ import json
 from pathlib import Path
 
 import pytest
-
 from scidb.inspect.cli import (
     CLIError,
     add_db_subparser,
     main,
     resolve_db_path,
 )
-
 from test_inspect_api import build_populated_db
 
 
@@ -54,7 +52,8 @@ class TestCommands:
 
     def test_vars_detail_json(self, db_path, capsys):
         payload = run_json(
-            capsys, ["--db", str(db_path), "vars", "InspFiltered", "--json"])
+            capsys, ["--db", str(db_path), "vars", "InspFiltered", "--json"]
+        )
         assert payload["record_count"] == 4
         assert payload["data_columns"]
 
@@ -82,8 +81,15 @@ class TestCommands:
     def test_show_versions_json(self, db_path, capsys):
         payload = run_json(
             capsys,
-            ["--db", str(db_path), "show", "InspRaw", "subject=S01",
-             "--versions", "--json"],
+            [
+                "--db",
+                str(db_path),
+                "show",
+                "InspRaw",
+                "subject=S01",
+                "--versions",
+                "--json",
+            ],
         )
         assert len(payload) == 2  # re-save trail
 

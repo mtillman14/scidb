@@ -11,15 +11,14 @@ Layout positions are per-scope in the JSON file.
 import json
 
 import pytest
-
 from scistack_gui import layout as layout_store
 from scistack_gui import pipeline_store as ps
 from scistack_gui.db import get_db
 
-
 # ---------------------------------------------------------------------------
 # Pipeline scopes (CRUD + root guarantees)
 # ---------------------------------------------------------------------------
+
 
 class TestPipelineScopes:
     def test_root_always_exists(self, layout_path):
@@ -76,6 +75,7 @@ class TestPipelineScopes:
 # Scoped nodes
 # ---------------------------------------------------------------------------
 
+
 class TestScopedNodes:
     def test_default_scope_is_root(self, layout_path):
         db = get_db()
@@ -97,6 +97,7 @@ class TestScopedNodes:
 # Pipeline uses (pipeline-as-node)
 # ---------------------------------------------------------------------------
 
+
 class TestPipelineUses:
     def test_use_creates_row_and_canvas_node(self, layout_path):
         db = get_db()
@@ -104,8 +105,12 @@ class TestPipelineUses:
         use_id = ps.add_pipeline_use(db, "main", child)
 
         (use,) = ps.get_pipeline_uses(db, "main")
-        assert use == {"use_id": use_id, "parent_pipeline_id": "main",
-                       "child_pipeline_id": child, "binding": {}}
+        assert use == {
+            "use_id": use_id,
+            "parent_pipeline_id": "main",
+            "child_pipeline_id": child,
+            "binding": {},
+        }
         node = ps.get_manual_nodes(db, "main")[use_id]
         assert node["type"] == "pipelineNode"
         assert node["label"] == "loading"  # child's name
@@ -113,10 +118,8 @@ class TestPipelineUses:
     def test_same_child_twice_is_two_nodes(self, layout_path):
         db = get_db()
         child = ps.create_pipeline(db, "loading")
-        u1 = ps.add_pipeline_use(db, "main", child,
-                                 binding={"params": {"low_hz": 20}})
-        u2 = ps.add_pipeline_use(db, "main", child,
-                                 binding={"params": {"low_hz": 30}})
+        u1 = ps.add_pipeline_use(db, "main", child, binding={"params": {"low_hz": 20}})
+        u2 = ps.add_pipeline_use(db, "main", child, binding={"params": {"low_hz": 30}})
 
         assert u1 != u2
         uses = {u["use_id"]: u for u in ps.get_pipeline_uses(db, "main")}
@@ -135,9 +138,9 @@ class TestPipelineUses:
         ps.add_pipeline_use(db, b, c)
 
         with pytest.raises(ValueError, match="cycle"):
-            ps.add_pipeline_use(db, c, a)   # transitive: a -> b -> c -> a
+            ps.add_pipeline_use(db, c, a)  # transitive: a -> b -> c -> a
         with pytest.raises(ValueError, match="cycle"):
-            ps.add_pipeline_use(db, a, a)   # self
+            ps.add_pipeline_use(db, a, a)  # self
 
     def test_unknown_pipeline_rejected(self, layout_path):
         db = get_db()
@@ -183,11 +186,12 @@ class TestPipelineUses:
 # Scoped layout positions
 # ---------------------------------------------------------------------------
 
+
 class TestScopedPositions:
     def test_positions_are_per_scope(self, layout_path):
         db = get_db()
         pid = ps.create_pipeline(db, "loading")
-        layout_store.write_node_position("n1", 1.0, 2.0)               # root
+        layout_store.write_node_position("n1", 1.0, 2.0)  # root
         layout_store.write_node_position("n2", 3.0, 4.0, pipeline_id=pid)
 
         root = layout_store.read_layout()
@@ -198,10 +202,14 @@ class TestScopedPositions:
 
     def test_flat_positions_migrate_to_root_scope(self, layout_path):
         # A pre-scoping layout file: flat node_id -> {x, y} positions.
-        layout_path.write_text(json.dumps({
-            "positions": {"var__RawSignal": {"x": 10.0, "y": 20.0}},
-            "pipeline_db_migrated": True,
-        }))
+        layout_path.write_text(
+            json.dumps(
+                {
+                    "positions": {"var__RawSignal": {"x": 10.0, "y": 20.0}},
+                    "pipeline_db_migrated": True,
+                }
+            )
+        )
 
         result = layout_store.read_layout()
 
@@ -216,8 +224,9 @@ class TestScopedPositions:
     def test_scoped_manual_node_write_and_read(self, layout_path):
         db = get_db()
         pid = ps.create_pipeline(db, "loading")
-        layout_store.write_manual_node("m1", 5.0, 6.0, "functionNode",
-                                       "fn_a", pipeline_id=pid)
+        layout_store.write_manual_node(
+            "m1", 5.0, 6.0, "functionNode", "fn_a", pipeline_id=pid
+        )
 
         sub = layout_store.read_layout(pipeline_id=pid)
         assert sub["positions"]["m1"] == {"x": 5.0, "y": 6.0}
@@ -228,8 +237,9 @@ class TestScopedPositions:
     def test_delete_node_clears_position_in_any_scope(self, layout_path):
         db = get_db()
         pid = ps.create_pipeline(db, "loading")
-        layout_store.write_manual_node("m1", 5.0, 6.0, "functionNode",
-                                       "fn_a", pipeline_id=pid)
+        layout_store.write_manual_node(
+            "m1", 5.0, 6.0, "functionNode", "fn_a", pipeline_id=pid
+        )
 
         layout_store.delete_node("m1")
 
@@ -240,6 +250,7 @@ class TestScopedPositions:
 # ---------------------------------------------------------------------------
 # Checkpoint 2: scope services + API (scoped graph, scope CRUD endpoints)
 # ---------------------------------------------------------------------------
+
 
 class TestScopeApi:
     def test_list_and_create_pipelines(self, client):
@@ -263,19 +274,24 @@ class TestScopeApi:
         assert r.status_code == 400
 
     def test_use_flow_and_pipeline_node_on_parent_canvas(self, client):
-        pid = client.post("/api/pipelines",
-                          json={"name": "loading"}).json()["pipeline_id"]
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
 
-        r = client.post(f"/api/pipelines/main/uses",
-                        json={"child_pipeline_id": pid,
-                              "binding": {"params": {"low_hz": 30}},
-                              "x": 10.0, "y": 20.0})
+        r = client.post(
+            "/api/pipelines/main/uses",
+            json={
+                "child_pipeline_id": pid,
+                "binding": {"params": {"low_hz": 30}},
+                "x": 10.0,
+                "y": 20.0,
+            },
+        )
         assert r.status_code == 200
         use_id = r.json()["use_id"]
 
         graph = client.get("/api/pipeline").json()
-        pipeline_nodes = [n for n in graph["nodes"]
-                          if n["type"] == "pipelineNode"]
+        pipeline_nodes = [n for n in graph["nodes"] if n["type"] == "pipelineNode"]
         assert [n["id"] for n in pipeline_nodes] == [use_id]
         data = pipeline_nodes[0]["data"]
         assert data["label"] == "loading"
@@ -295,16 +311,19 @@ class TestScopeApi:
         assert "cycle" in r.json()["detail"]
 
         use_id = client.get("/api/pipelines").json()["uses"][0]["use_id"]
-        r = client.put(f"/api/pipeline-uses/{use_id}/binding",
-                       json={"binding": {"bogus": 1}})
+        r = client.put(
+            f"/api/pipeline-uses/{use_id}/binding", json={"binding": {"bogus": 1}}
+        )
         assert r.status_code == 400
 
     def test_remove_use_clears_node_and_position(self, client):
-        pid = client.post("/api/pipelines",
-                          json={"name": "loading"}).json()["pipeline_id"]
-        use_id = client.post(f"/api/pipelines/main/uses",
-                             json={"child_pipeline_id": pid,
-                                   "x": 5.0, "y": 5.0}).json()["use_id"]
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        use_id = client.post(
+            "/api/pipelines/main/uses",
+            json={"child_pipeline_id": pid, "x": 5.0, "y": 5.0},
+        ).json()["use_id"]
 
         assert client.delete(f"/api/pipeline-uses/{use_id}").status_code == 200
 
@@ -317,17 +336,27 @@ class TestScopedGraph:
     def test_root_graph_excludes_sub_scope_manual_nodes(self, client):
         # Label with NO DB-derived counterpart, so the node stays manual
         # (a label matching one DB node would GRADUATE — separate test).
-        pid = client.post("/api/pipelines",
-                          json={"name": "loading"}).json()["pipeline_id"]
-        client.put("/api/layout/sub_fn_node",
-                   json={"x": 0, "y": 0, "node_type": "functionNode",
-                         "label": "my_custom_fn", "pipeline_id": pid})
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        client.put(
+            "/api/layout/sub_fn_node",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "functionNode",
+                "label": "my_custom_fn",
+                "pipeline_id": pid,
+            },
+        )
 
-        root_ids = {n["id"] for n in
-                    client.get("/api/pipeline").json()["nodes"]}
-        sub_ids = {n["id"] for n in
-                   client.get("/api/pipeline",
-                              params={"pipeline_id": pid}).json()["nodes"]}
+        root_ids = {n["id"] for n in client.get("/api/pipeline").json()["nodes"]}
+        sub_ids = {
+            n["id"]
+            for n in client.get("/api/pipeline", params={"pipeline_id": pid}).json()[
+                "nodes"
+            ]
+        }
 
         assert "sub_fn_node" not in root_ids
         assert "sub_fn_node" in sub_ids
@@ -340,39 +369,55 @@ class TestScopedGraph:
         GRADUATES into it — and because the position transfer is
         scope-aware, the canonical node inherits the sub-scope membership
         (it moves off the root canvas onto the sub canvas)."""
-        pid = client.post("/api/pipelines",
-                          json={"name": "loading"}).json()["pipeline_id"]
-        client.put("/api/layout/sub_fn_node",
-                   json={"x": 0, "y": 0, "node_type": "functionNode",
-                         "label": "bandpass_filter", "pipeline_id": pid})
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        client.put(
+            "/api/layout/sub_fn_node",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "functionNode",
+                "label": "bandpass_filter",
+                "pipeline_id": pid,
+            },
+        )
 
-        root_ids = {n["id"] for n in
-                    client.get("/api/pipeline").json()["nodes"]}
-        sub_ids = {n["id"] for n in
-                   client.get("/api/pipeline",
-                              params={"pipeline_id": pid}).json()["nodes"]}
+        root_ids = {n["id"] for n in client.get("/api/pipeline").json()["nodes"]}
+        sub_ids = {
+            n["id"]
+            for n in client.get("/api/pipeline", params={"pipeline_id": pid}).json()[
+                "nodes"
+            ]
+        }
 
-        canonical = {i for i in (root_ids | sub_ids)
-                     if i.startswith("fn__bandpass_filter__")}
+        canonical = {
+            i for i in (root_ids | sub_ids) if i.startswith("fn__bandpass_filter__")
+        }
         assert len(canonical) == 1
-        assert canonical <= sub_ids, \
+        assert canonical <= sub_ids, (
             "graduated node must live on the sub canvas (position scope)"
+        )
         assert not (canonical & root_ids)
         assert "sub_fn_node" not in (root_ids | sub_ids)  # replaced
 
     def test_position_moves_db_derived_node_between_scopes(self, client):
         """Dragging a DB-derived node onto a sub-canvas (position write in
         that scope) IS the membership record."""
-        pid = client.post("/api/pipelines",
-                          json={"name": "loading"}).json()["pipeline_id"]
-        client.put("/api/layout/var__RawSignal",
-                   json={"x": 1.0, "y": 2.0, "pipeline_id": pid})
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        client.put(
+            "/api/layout/var__RawSignal", json={"x": 1.0, "y": 2.0, "pipeline_id": pid}
+        )
 
-        root_ids = {n["id"] for n in
-                    client.get("/api/pipeline").json()["nodes"]}
-        sub_ids = {n["id"] for n in
-                   client.get("/api/pipeline",
-                              params={"pipeline_id": pid}).json()["nodes"]}
+        root_ids = {n["id"] for n in client.get("/api/pipeline").json()["nodes"]}
+        sub_ids = {
+            n["id"]
+            for n in client.get("/api/pipeline", params={"pipeline_id": pid}).json()[
+                "nodes"
+            ]
+        }
 
         assert "var__RawSignal" not in root_ids
         assert "var__RawSignal" in sub_ids
@@ -380,12 +425,12 @@ class TestScopedGraph:
     def test_edges_filtered_by_scope_membership(self, client):
         """The seeded bandpass edges stay on root; a sub-scope canvas sees
         none of them."""
-        pid = client.post("/api/pipelines",
-                          json={"name": "empty"}).json()["pipeline_id"]
+        pid = client.post("/api/pipelines", json={"name": "empty"}).json()[
+            "pipeline_id"
+        ]
 
         root = client.get("/api/pipeline").json()
-        sub = client.get("/api/pipeline",
-                         params={"pipeline_id": pid}).json()
+        sub = client.get("/api/pipeline", params={"pipeline_id": pid}).json()
 
         assert len(root["edges"]) > 0
         assert sub["edges"] == []
@@ -396,29 +441,50 @@ class TestDocumentInterface:
     def test_interface_from_manual_document(self, client):
         """var -> fn -> var wired inside a sub-scope: consumed-not-produced
         in, produced out."""
-        pid = client.post("/api/pipelines",
-                          json={"name": "loading"}).json()["pipeline_id"]
-        client.put("/api/layout/mv_in",
-                   json={"x": 0, "y": 0, "node_type": "variableNode",
-                         "label": "RawSignal", "pipeline_id": pid})
-        client.put("/api/layout/mf_proc",
-                   json={"x": 0, "y": 0, "node_type": "functionNode",
-                         "label": "bandpass_filter", "pipeline_id": pid})
-        client.put("/api/layout/mv_out",
-                   json={"x": 0, "y": 0, "node_type": "variableNode",
-                         "label": "FilteredSignal", "pipeline_id": pid})
-        client.put("/api/edges/e_in", json={"source": "mv_in",
-                                            "target": "mf_proc"})
-        client.put("/api/edges/e_out", json={"source": "mf_proc",
-                                             "target": "mv_out"})
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        client.put(
+            "/api/layout/mv_in",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "variableNode",
+                "label": "RawSignal",
+                "pipeline_id": pid,
+            },
+        )
+        client.put(
+            "/api/layout/mf_proc",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "functionNode",
+                "label": "bandpass_filter",
+                "pipeline_id": pid,
+            },
+        )
+        client.put(
+            "/api/layout/mv_out",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "variableNode",
+                "label": "FilteredSignal",
+                "pipeline_id": pid,
+            },
+        )
+        client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_proc"})
+        client.put("/api/edges/e_out", json={"source": "mf_proc", "target": "mv_out"})
 
         iface = client.get(f"/api/pipelines/{pid}/interface").json()
 
         assert iface == {"inputs": ["RawSignal"], "outputs": ["FilteredSignal"]}
 
         # The pipeline node on the root canvas carries the same ports.
-        use_id = client.post("/api/pipelines/main/uses",
-                             json={"child_pipeline_id": pid}).json()["use_id"]
+        use_id = client.post(
+            "/api/pipelines/main/uses", json={"child_pipeline_id": pid}
+        ).json()["use_id"]
         graph = client.get("/api/pipeline").json()
         node = next(n for n in graph["nodes"] if n["id"] == use_id)
         assert node["data"]["inputs"] == ["RawSignal"]
@@ -428,6 +494,7 @@ class TestDocumentInterface:
 # ---------------------------------------------------------------------------
 # Checkpoint 3: execution rearchitecture (G2 — document -> backend pipelines)
 # ---------------------------------------------------------------------------
+
 
 class TestExecutionCompiler:
     def test_derive_fn_targets_from_db_history(self, client):
@@ -449,7 +516,8 @@ class TestExecutionCompiler:
     def test_compile_root_scope(self, client):
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import (
-            _discard_compiled, build_backend_pipeline,
+            _discard_compiled,
+            build_backend_pipeline,
         )
 
         built: dict = {}
@@ -475,16 +543,14 @@ class TestExecutionCompiler:
     def test_composed_plan_crosses_scopes(self, client):
         """Move the bandpass call site into a sub scope, use it from main:
         main's plan resolves the step inside the used pipeline."""
-        pid = client.post("/api/pipelines",
-                          json={"name": "loading"}).json()["pipeline_id"]
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
         # Membership = where the position is saved (drag onto sub canvas).
         graph = client.get("/api/pipeline").json()
-        fn_id = next(n["id"] for n in graph["nodes"]
-                     if n["type"] == "functionNode")
-        client.put(f"/api/layout/{fn_id}",
-                   json={"x": 0, "y": 0, "pipeline_id": pid})
-        client.post("/api/pipelines/main/uses",
-                    json={"child_pipeline_id": pid})
+        fn_id = next(n["id"] for n in graph["nodes"] if n["type"] == "functionNode")
+        client.put(f"/api/layout/{fn_id}", json={"x": 0, "y": 0, "pipeline_id": pid})
+        client.post("/api/pipelines/main/uses", json={"child_pipeline_id": pid})
 
         entries = client.get("/api/pipelines/main/plan").json()
 
@@ -499,20 +565,16 @@ class TestExecutionCompiler:
         from scistack_gui.services.execution_service import run_pipeline
 
         db = get_db()
-        n_inv_before = db._duck._fetchall(
-            "SELECT COUNT(*) FROM _invocation")[0][0]
+        n_inv_before = db._duck._fetchall("SELECT COUNT(*) FROM _invocation")[0][0]
 
-        result = run_pipeline(db, "main", mode="until",
-                              target="bandpass_filter")
+        result = run_pipeline(db, "main", mode="until", target="bandpass_filter")
 
         assert result["ok"] is True
-        n_inv_after = db._duck._fetchall(
-            "SELECT COUNT(*) FROM _invocation")[0][0]
+        n_inv_after = db._duck._fetchall("SELECT COUNT(*) FROM _invocation")[0][0]
         assert n_inv_after == n_inv_before  # all combos skipped
 
     def test_run_endpoint_validation(self, client):
-        r = client.post("/api/pipelines/main/run",
-                        json={"mode": "until", "target": ""})
+        r = client.post("/api/pipelines/main/run", json={"mode": "until", "target": ""})
         assert r.status_code == 400
         r = client.post("/api/pipelines/main/run", json={"mode": "bogus"})
         assert r.status_code == 400
@@ -534,7 +596,8 @@ class TestExecutionCompiler:
         schema_level) so binding `iterate` overrides compose per key."""
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import (
-            _discard_compiled, build_backend_pipeline,
+            _discard_compiled,
+            build_backend_pipeline,
         )
 
         built: dict = {}
@@ -553,7 +616,8 @@ class TestExecutionCompiler:
         eager run thread, via the shared apply_pending_overrides helper."""
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import (
-            _discard_compiled, build_backend_pipeline,
+            _discard_compiled,
+            build_backend_pipeline,
         )
 
         client.put("/api/constants/low_hz/pending/42")
@@ -589,8 +653,7 @@ class TestExecutionCompiler:
 
         client.put("/api/constants/low_hz/pending/42")
 
-        result = run_pipeline(get_db(), "main", mode="until",
-                              target="bandpass_filter")
+        result = run_pipeline(get_db(), "main", mode="until", target="bandpass_filter")
 
         entry = result["report"][0]
         assert entry["failed"] == 0
@@ -607,13 +670,15 @@ class TestExecutionCompiler:
         # Next graph build: pending auto-cleans, node green with both
         # variant chips.
         nodes = client.get("/api/pipeline").json()["nodes"]
-        assert "42" not in layout_store.get_pending_constants().get(
-            "low_hz", set())
-        node = next(n for n in nodes if n.get("type") == "functionNode"
-                    and n["data"]["label"] == "bandpass_filter")
+        assert "42" not in layout_store.get_pending_constants().get("low_hz", set())
+        node = next(
+            n
+            for n in nodes
+            if n.get("type") == "functionNode"
+            and n["data"]["label"] == "bandpass_filter"
+        )
         assert node["data"]["run_state"] == "green"
-        chip_values = {v["constants"].get("low_hz")
-                       for v in node["data"]["variants"]}
+        chip_values = {v["constants"].get("low_hz") for v in node["data"]["variants"]}
         assert chip_values == {20, 42}
 
     def test_run_pipeline_returns_step_report(self, client):
@@ -623,8 +688,7 @@ class TestExecutionCompiler:
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import run_pipeline
 
-        result = run_pipeline(get_db(), "main", mode="until",
-                              target="bandpass_filter")
+        result = run_pipeline(get_db(), "main", mode="until", target="bandpass_filter")
 
         assert [e["step"] for e in result["report"]] == ["bandpass_filter"]
         entry = result["report"][0]

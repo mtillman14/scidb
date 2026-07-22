@@ -25,6 +25,7 @@ def _sort_inferred_by_params_order(
 
     Inferred types that cannot be matched to any param name are appended at the end.
     """
+
     def normalize(s: str) -> str:
         return s.lower().replace("_", "")
 
@@ -57,12 +58,12 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     Returns:
         {"command": str} with the MATLAB command string.
     """
+    from scistack_gui import layout as layout_store
+    from scistack_gui import matlab_registry
     from scistack_gui.api.matlab_command import generate_matlab_command as _fmt
     from scistack_gui.db import get_db_path
-    from scistack_gui import matlab_registry
-    from scistack_gui import layout as layout_store
-    from scistack_gui.domain.graph_builder import parse_path_input
     from scistack_gui.domain.edge_resolver import infer_manual_fn_output_types
+    from scistack_gui.domain.graph_builder import parse_path_input
 
     db_path = str(get_db_path())
 
@@ -73,10 +74,13 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
 
     # Prepend the scimatlab MATLAB package directory.
     from scistack_gui.server import _find_scimatlab_matlab_dir
+
     scimatlab_dir = _find_scimatlab_matlab_dir()
     if scimatlab_dir:
         addpath_dirs = [scimatlab_dir] + addpath_dirs
-        logger.info("generate_matlab_command: prepended scimatlab dir: %s", scimatlab_dir)
+        logger.info(
+            "generate_matlab_command: prepended scimatlab dir: %s", scimatlab_dir
+        )
     else:
         logger.warning(
             "generate_matlab_command: scimatlab MATLAB directory not found; "
@@ -109,8 +113,12 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         tgt_fn_name = tgt_parts[1]
         if tgt_fn_name != function_name:
             continue
-        pi_name = src.split("__")[1] if len(src.split("__")) >= 2 else src[len("pathInput__"):]
-        param_name = th[len("in__"):]
+        pi_name = (
+            src.split("__")[1]
+            if len(src.split("__")) >= 2
+            else src[len("pathInput__") :]
+        )
+        param_name = th[len("in__") :]
         if pi_name in saved_pis:
             path_input_params[param_name] = {
                 "template": saved_pis[pi_name].get("template", ""),
@@ -140,11 +148,17 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         manual_nodes = layout_store.get_manual_nodes()
         fn_node_ids = {f"fn__{function_name}"}
         for nid, meta in manual_nodes.items():
-            if meta.get("type") == "functionNode" and meta.get("label") == function_name:
+            if (
+                meta.get("type") == "functionNode"
+                and meta.get("label") == function_name
+            ):
                 fn_node_ids.add(nid)
         inferred = infer_manual_fn_output_types(
-            fn_node_ids, layout_store.read_manual_edges(),
-            manual_nodes, existing_node_labels={})
+            fn_node_ids,
+            layout_store.read_manual_edges(),
+            manual_nodes,
+            existing_node_labels={},
+        )
         if inferred:
             # Re-order inferred class names to match the function parameter order
             # from params.output_types (which has the correct signature order but
@@ -155,7 +169,8 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
             logger.info(
                 "generate_matlab_command: inferred output_types=%s from manual edges "
                 "(overrides params output_types=%s)",
-                inferred, output_types,
+                inferred,
+                output_types,
             )
             output_types = inferred
         elif not output_types:
@@ -170,13 +185,20 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     # CWD-relative paths would be wrong without it).
     project_root: str | None = None
     from scistack_gui import registry as _reg
+
     if _reg._config is not None:
         project_root = str(_reg._config.project_root)
 
-    logger.info("generate_matlab_command: fn=%s, total_variants=%d, fn_variants=%d, "
-                "path_input_params=%d, output_types=%s, project_root=%s",
-                function_name, len(all_variants), len(fn_variants),
-                len(path_input_params), output_types, project_root)
+    logger.info(
+        "generate_matlab_command: fn=%s, total_variants=%d, fn_variants=%d, "
+        "path_input_params=%d, output_types=%s, project_root=%s",
+        function_name,
+        len(all_variants),
+        len(fn_variants),
+        len(path_input_params),
+        output_types,
+        project_root,
+    )
 
     cmd = _fmt(
         function_name=function_name,
@@ -191,5 +213,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         output_types=output_types if output_types else None,
         project_root=project_root,
     )
-    logger.info("generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd))
+    logger.info(
+        "generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd)
+    )
     return {"command": cmd}

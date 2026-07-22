@@ -46,12 +46,17 @@ from .provenance import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "GraphRecord", "record_run", "compute_input_selectors",
-    "record_direct_save", "invocation_id_for_meta",
+    "GraphRecord",
+    "record_run",
+    "compute_input_selectors",
+    "record_direct_save",
+    "invocation_id_for_meta",
 ]
 
 
-def record_direct_save(duck, output_record_id: str, kwargs: dict, created_at: str) -> None:
+def record_direct_save(
+    duck, output_record_id: str, kwargs: dict, created_at: str
+) -> None:
     """Anchor a direct ``.save(..., kw=v)`` call's non-schema kwargs in the graph
     as a *synthetic save invocation* (see ``provenance.SAVE_FUNCTION_NAME``).
 
@@ -67,7 +72,6 @@ def record_direct_save(duck, output_record_id: str, kwargs: dict, created_at: st
     from .provenance import (
         CONSTANT_TYPE,
         SAVE_FUNCTION_NAME,
-        compute_constant_record_id,
         compute_save_invocation_id,
     )
 
@@ -90,8 +94,15 @@ def record_direct_save(duck, output_record_id: str, kwargs: dict, created_at: st
     con = duck.con
     duck._bulk_insert(
         "_record",
-        ("record_id", "created_at", "type", "schema_id",
-         "content_hash", "schema_version", "excluded"),
+        (
+            "record_id",
+            "created_at",
+            "type",
+            "schema_id",
+            "content_hash",
+            "schema_version",
+            "excluded",
+        ),
         entity_rows,
         conflict_cols=["record_id"],
     )
@@ -120,7 +131,9 @@ def record_direct_save(duck, output_record_id: str, kwargs: dict, created_at: st
     )
     logger.debug(
         "record_direct_save: %s → save_inv %s with %d kwarg constant(s)",
-        output_record_id, save_inv_id, len(kwargs),
+        output_record_id,
+        save_inv_id,
+        len(kwargs),
     )
 
 
@@ -141,7 +154,9 @@ def compute_input_selectors(inputs: dict) -> dict:
         cs = None
         if isinstance(spec, ColumnSelection):
             cs = spec
-        elif isinstance(spec, Fixed) and isinstance(getattr(spec, "var_type", None), ColumnSelection):
+        elif isinstance(spec, Fixed) and isinstance(
+            getattr(spec, "var_type", None), ColumnSelection
+        ):
             cs = spec.var_type
         if cs is not None and getattr(cs, "columns", None):
             out[param] = json.dumps({"columns": list(cs.columns)}, sort_keys=True)
@@ -204,7 +219,7 @@ def _variable_bindings(meta: dict) -> list[tuple[str, str, str | None]]:
     for key, rid in upstream.items():
         if rid is None:
             continue
-        param = key[len("__rid_"):] if key.startswith("__rid_") else key
+        param = key[len("__rid_") :] if key.startswith("__rid_") else key
         out.append((param, str(rid), None))
     return out
 
@@ -252,20 +267,21 @@ def invocation_id_for_meta(meta: dict) -> str:
     the generates_file lineage-only save to key its ``generated:{invocation_id}``
     record.
     """
-    from .provenance import compute_constant_record_id, compute_invocation_id
+    from .provenance import compute_invocation_id
 
     var_b = _variable_bindings(meta)
     const_b = _constant_bindings(meta)
-    loadable_params = (
-        list(_parse_json_dict(meta.get("__inputs")).keys())
-        or [p for p, _r, _s in var_b]
-    )
+    loadable_params = list(_parse_json_dict(meta.get("__inputs")).keys()) or [
+        p for p, _r, _s in var_b
+    ]
     as_table = _normalize_as_table(meta, loadable_params)
     distribute = bool(meta.get("__distribute", False))
     bindings: list[tuple[str, str, str | None]] = list(var_b)
     for param, value in const_b.items():
         bindings.append((param, compute_constant_record_id(value), None))
-    return compute_invocation_id(meta.get("__fn_hash") or "", as_table, distribute, bindings)
+    return compute_invocation_id(
+        meta.get("__fn_hash") or "", as_table, distribute, bindings
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +307,12 @@ def _fetch_record_meta(duck, rids: list[str]) -> dict[str, dict]:
         uniq,
     )
     return {
-        r[0]: {"content_hash": r[1], "schema_id": r[2], "schema_version": r[3], "timestamp": r[4]}
+        r[0]: {
+            "content_hash": r[1],
+            "schema_id": r[2],
+            "schema_version": r[3],
+            "timestamp": r[4],
+        }
         for r in rows
     }
 
@@ -333,18 +354,20 @@ def record_run(
     _t_assemble = time.perf_counter()
 
     # Accumulators (deduped by key so we can ON CONFLICT DO NOTHING cheaply).
-    entity_rows: dict[str, tuple] = {}        # record_id -> _record row
-    constant_rows: dict[str, tuple] = {}      # record_id -> _constant row
-    invocation_rows: dict[str, tuple] = {}    # invocation_id -> _invocation row
-    input_edges: dict[tuple[str, str, str], str | None] = {}   # (inv,param,rid) -> selector
+    entity_rows: dict[str, tuple] = {}  # record_id -> _record row
+    constant_rows: dict[str, tuple] = {}  # record_id -> _constant row
+    invocation_rows: dict[str, tuple] = {}  # invocation_id -> _invocation row
+    input_edges: dict[
+        tuple[str, str, str], str | None
+    ] = {}  # (inv,param,rid) -> selector
     # ``output_edges`` is the WORKING slot map used for collision-free assignment
     # (seeded below with already-COMMITTED edges so a cross-run save appends fresh
     # slots instead of colliding). ``run_output_edges`` is the subset actually
     # produced by THIS run — only those are inserted, so committed edges are never
     # rewritten (immutable: we append, never overwrite or exclude).
-    output_edges: dict[tuple[str, int], str] = {}     # (inv_id, output_num) -> rid
+    output_edges: dict[tuple[str, int], str] = {}  # (inv_id, output_num) -> rid
     run_output_edges: dict[tuple[str, int], str] = {}
-    seeded_invs: set[str] = set()              # inv_ids whose committed edges are loaded
+    seeded_invs: set[str] = set()  # inv_ids whose committed edges are loaded
     run_inv_ids: set[str] = set()
 
     # Invocation-level memo. The whole assembly above (binding set, constant
@@ -358,8 +381,8 @@ def record_run(
     # the same invocation_id, so the memo only ever collapses true duplicates.
     inv_cache: dict = {}
     # Per-invocation output-slot allocation state (see the output-edge block).
-    inv_cursor: dict = {}                      # inv_id -> next slot to try
-    rid_slot: dict = {}                        # (inv_id, record_id) -> assigned slot
+    inv_cursor: dict = {}  # inv_id -> next slot to try
+    rid_slot: dict = {}  # (inv_id, record_id) -> assigned slot
 
     for g in graph_records:
         meta = g.meta
@@ -383,12 +406,11 @@ def record_run(
             fn_name = meta.get("__fn") or function_name or "unknown"
             fn_hash = meta.get("__fn_hash") or ""
 
-            var_b = _variable_bindings(meta)   # list of (param, rid, selector)
+            var_b = _variable_bindings(meta)  # list of (param, rid, selector)
             const_b = _constant_bindings(meta)
-            loadable_params = (
-                list(_parse_json_dict(meta.get("__inputs")).keys())
-                or [p for p, _r, _s in var_b]
-            )
+            loadable_params = list(_parse_json_dict(meta.get("__inputs")).keys()) or [
+                p for p, _r, _s in var_b
+            ]
             as_table = _normalize_as_table(meta, loadable_params)
             distribute = bool(meta.get("__distribute", False))
 
@@ -403,8 +425,15 @@ def record_run(
                 ch = canonical_hash(value)
                 crid = constant_record_id_from_hash(ch)
                 bindings.append((param, crid, None))
-                constant_rows[crid] = (crid, constant_value_repr(value), constant_value_type(value), ch)
-                entity_rows.setdefault(crid, (crid, created_at, CONSTANT_TYPE, None, ch, None, False))
+                constant_rows[crid] = (
+                    crid,
+                    constant_value_repr(value),
+                    constant_value_type(value),
+                    ch,
+                )
+                entity_rows.setdefault(
+                    crid, (crid, created_at, CONSTANT_TYPE, None, ch, None, False)
+                )
 
             # Identity. ``bindings`` (var inputs + constant rids), ``as_table`` and
             # ``distribute`` here are assembled identically to invocation_id_for_meta,
@@ -418,7 +447,11 @@ def record_run(
             # Store NULL (not []) for "no aggregation" — avoids empty-list bind
             # ambiguity on the VARCHAR[] column; identity hashing treats them alike.
             invocation_rows[inv_id] = (
-                inv_id, fn_name, fn_hash, as_table or None, distribute,
+                inv_id,
+                fn_name,
+                fn_hash,
+                as_table or None,
+                distribute,
             )
             for param, rid, selector in bindings:
                 input_edges[(inv_id, param, rid)] = selector
@@ -430,7 +463,9 @@ def record_run(
                 prid = compute_pathinput_record_id(spec)
                 ch = canonical_hash(spec)
                 constant_rows[prid] = (prid, spec, "PathInput", ch)
-                entity_rows.setdefault(prid, (prid, created_at, PATHINPUT_TYPE, None, ch, None, False))
+                entity_rows.setdefault(
+                    prid, (prid, created_at, PATHINPUT_TYPE, None, ch, None, False)
+                )
                 input_edges[(inv_id, param, prid)] = None
 
             inv_cache[cache_key] = inv_id
@@ -474,16 +509,18 @@ def record_run(
         # so uniqueness/idempotency are preserved while the common path stays flat.
         existing = rid_slot.get((inv_id, g.record_id))
         if existing is not None:
-            okey = (inv_id, existing)          # idempotent re-save keeps its slot
+            okey = (inv_id, existing)  # idempotent re-save keeps its slot
         else:
             n = max(g.output_num, inv_cursor.get(inv_id, 0))
-            while (inv_id, n) in output_edges and output_edges[(inv_id, n)] != g.record_id:
+            while (inv_id, n) in output_edges and output_edges[
+                (inv_id, n)
+            ] != g.record_id:
                 n += 1
             okey = (inv_id, n)
             inv_cursor[inv_id] = n + 1
             rid_slot[(inv_id, g.record_id)] = n
         output_edges[okey] = g.record_id
-        run_output_edges[okey] = g.record_id   # only this run's edges are inserted
+        run_output_edges[okey] = g.record_id  # only this run's edges are inserted
         run_inv_ids.add(inv_id)
 
         # Output entity row (pull content_hash/schema_id from _record + latest save ts).
@@ -494,7 +531,9 @@ def record_run(
             g.type_name,
             cm.get("schema_id"),
             cm.get("content_hash"),
-            cm.get("schema_version") if cm.get("schema_version") is not None else g.schema_version,
+            cm.get("schema_version")
+            if cm.get("schema_version") is not None
+            else g.schema_version,
             False,
         )
 
@@ -503,14 +542,27 @@ def record_run(
     run_id = generate_run_id()
     logger.debug(
         "record_run: run_id=%s fn=%s records=%d invocations=%d constants=%d edges_in=%d",
-        run_id, function_name, len(graph_records), len(invocation_rows),
-        len(constant_rows), len(input_edges),
+        run_id,
+        function_name,
+        len(graph_records),
+        len(invocation_rows),
+        len(constant_rows),
+        len(input_edges),
     )
     _t_commit = time.perf_counter()
     _commit_graph(
-        duck, run_id, created_at, user_id, function_name, where_clause,
-        entity_rows, constant_rows, invocation_rows, input_edges,
-        run_output_edges, run_inv_ids,
+        duck,
+        run_id,
+        created_at,
+        user_id,
+        function_name,
+        where_clause,
+        entity_rows,
+        constant_rows,
+        invocation_rows,
+        input_edges,
+        run_output_edges,
+        run_inv_ids,
         timings=timings,
     )
     timings["3_commit"] = time.perf_counter() - _t_commit
@@ -527,9 +579,19 @@ def record_run(
 
 
 def _commit_graph(
-    duck, run_id, created_at, user_id, function_name, where_clause,
-    entity_rows, constant_rows, invocation_rows, input_edges,
-    run_output_edges, run_inv_ids, timings: dict | None = None,
+    duck,
+    run_id,
+    created_at,
+    user_id,
+    function_name,
+    where_clause,
+    entity_rows,
+    constant_rows,
+    invocation_rows,
+    input_edges,
+    run_output_edges,
+    run_inv_ids,
+    timings: dict | None = None,
 ) -> None:
     """Transactionally insert the assembled graph rows + the append-only run.
 
@@ -538,6 +600,7 @@ def _commit_graph(
     ``timings`` (optional) receives per-table elapsed times for diagnostics.
     """
     import time as _time
+
     timings = timings if timings is not None else {}
 
     def _timed(label, fn):
@@ -550,31 +613,59 @@ def _commit_graph(
         # Bulk vectorized inserts (see SciDuck._bulk_insert): per-row executemany
         # against these PK/composite-PK tables scaled to ~hundreds of seconds for
         # a for_each over thousands of records.
-        _timed("3a_record", lambda: duck._bulk_insert(
-            "_record",
-            ("record_id", "created_at", "type", "schema_id",
-             "content_hash", "schema_version", "excluded"),
-            entity_rows.values(),
-            conflict_cols=["record_id"],
-        ))
-        _timed("3b_constant", lambda: duck._bulk_insert(
-            "_constant",
-            ("record_id", "value_repr", "value_type", "content_hash"),
-            constant_rows.values(),
-            conflict_cols=["record_id"],
-        ))
-        _timed("3c_invocation", lambda: duck._bulk_insert(
-            "_invocation",
-            ("invocation_id", "function_name", "function_hash", "as_table", "distribute"),
-            invocation_rows.values(),
-            conflict_cols=["invocation_id"],
-        ))
-        _timed("3d_invocation_input", lambda: duck._bulk_insert(
-            "_invocation_input",
-            ("invocation_id", "param_name", "input_record_id", "selector"),
-            [(inv, param, rid, sel) for (inv, param, rid), sel in input_edges.items()],
-            conflict_cols=["invocation_id", "param_name", "input_record_id"],
-        ))
+        _timed(
+            "3a_record",
+            lambda: duck._bulk_insert(
+                "_record",
+                (
+                    "record_id",
+                    "created_at",
+                    "type",
+                    "schema_id",
+                    "content_hash",
+                    "schema_version",
+                    "excluded",
+                ),
+                entity_rows.values(),
+                conflict_cols=["record_id"],
+            ),
+        )
+        _timed(
+            "3b_constant",
+            lambda: duck._bulk_insert(
+                "_constant",
+                ("record_id", "value_repr", "value_type", "content_hash"),
+                constant_rows.values(),
+                conflict_cols=["record_id"],
+            ),
+        )
+        _timed(
+            "3c_invocation",
+            lambda: duck._bulk_insert(
+                "_invocation",
+                (
+                    "invocation_id",
+                    "function_name",
+                    "function_hash",
+                    "as_table",
+                    "distribute",
+                ),
+                invocation_rows.values(),
+                conflict_cols=["invocation_id"],
+            ),
+        )
+        _timed(
+            "3d_invocation_input",
+            lambda: duck._bulk_insert(
+                "_invocation_input",
+                ("invocation_id", "param_name", "input_record_id", "selector"),
+                [
+                    (inv, param, rid, sel)
+                    for (inv, param, rid), sel in input_edges.items()
+                ],
+                conflict_cols=["invocation_id", "param_name", "input_record_id"],
+            ),
+        )
         # Invariant check (Fix B): with cross-run slot seeding, a NEW output record
         # is always assigned a FREE output_num, so an incoming edge must never
         # collide with a committed slot pointing at a DIFFERENT record_id. The only
@@ -584,6 +675,7 @@ def _commit_graph(
         # would be orphaned — so warn loudly rather than dropping silently.
         if run_output_edges and run_inv_ids:
             from .log import Log
+
             _inv_list = list(run_inv_ids)
             _ph = ", ".join(["?"] * len(_inv_list))
             _existing = {
@@ -612,23 +704,29 @@ def _commit_graph(
                     f"indicates a regression. Examples: {_samp}"
                 )
 
-        _timed("3e_invocation_output", lambda: duck._bulk_insert(
-            "_invocation_output",
-            ("invocation_id", "output_num", "output_record_id"),
-            [(inv, onum, rid) for (inv, onum), rid in run_output_edges.items()],
-            conflict_cols=["invocation_id", "output_num"],
-        ))
+        _timed(
+            "3e_invocation_output",
+            lambda: duck._bulk_insert(
+                "_invocation_output",
+                ("invocation_id", "output_num", "output_record_id"),
+                [(inv, onum, rid) for (inv, onum), rid in run_output_edges.items()],
+                conflict_cols=["invocation_id", "output_num"],
+            ),
+        )
         duck.con.execute(
             "INSERT INTO _run (run_id, timestamp, user_id, function_name, where_clause) "
             "VALUES (?, ?, ?, ?, ?)",
             [run_id, created_at, user_id, function_name, where_clause],
         )
-        _timed("3f_run_invocation", lambda: duck._bulk_insert(
-            "_run_invocation",
-            ("run_id", "invocation_id"),
-            [(run_id, inv) for inv in run_inv_ids],
-            conflict_cols=["run_id", "invocation_id"],
-        ))
+        _timed(
+            "3f_run_invocation",
+            lambda: duck._bulk_insert(
+                "_run_invocation",
+                ("run_id", "invocation_id"),
+                [(run_id, inv) for inv in run_inv_ids],
+                conflict_cols=["run_id", "invocation_id"],
+            ),
+        )
         _timed("3g_commit", lambda: duck._commit())
     except Exception:
         logger.exception("graph commit failed; rolling back for run_id=%s", run_id)

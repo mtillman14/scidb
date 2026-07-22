@@ -22,6 +22,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from scidb.inspect import Inspector, render
+from scidb.inspect.cli import _coerce_non_schema, main
 
 from scidb import (
     AmbiguousVersionError,
@@ -31,8 +33,6 @@ from scidb import (
     for_each,
     scistack,
 )
-from scidb.inspect import Inspector, render
-from scidb.inspect.cli import _coerce_non_schema, main
 
 SCHEMA_KEYS = ["subject", "session"]
 
@@ -88,21 +88,36 @@ def build_p3_db(db_path, data_root, red: bool = False):
     P3Raw.save(np.array([1.0, 2.0]), subject="S01", session="1")
     P3Raw.save(np.array([3.0, 4.0]), subject="S02", session="1")
     subjects = ["S01", "S02"]
-    for_each(bandpass3, {"signal": P3Raw, "low_hz": 20}, [P3Filt],
-             subject=subjects, session=["1"])
-    for_each(feature3, {"x": P3Filt, "win": 3}, [P3Feat],
-             subject=subjects, session=["1"])
-    for_each(gain3, {"signal": P3Raw, "k": 1}, [P3Gain],
-             subject=subjects, session=["1"])
-    for_each(gain3, {"signal": P3Raw, "k": 2}, [P3Gain],
-             subject=subjects, session=["1"])
+    for_each(
+        bandpass3,
+        {"signal": P3Raw, "low_hz": 20},
+        [P3Filt],
+        subject=subjects,
+        session=["1"],
+    )
+    for_each(
+        feature3, {"x": P3Filt, "win": 3}, [P3Feat], subject=subjects, session=["1"]
+    )
+    for_each(
+        gain3, {"signal": P3Raw, "k": 1}, [P3Gain], subject=subjects, session=["1"]
+    )
+    for_each(
+        gain3, {"signal": P3Raw, "k": 2}, [P3Gain], subject=subjects, session=["1"]
+    )
 
     _write_file(data_root, "S01", "1", 1.5)
     _write_file(data_root, "S02", "1", 2.5)
-    for_each(import3,
-             {"filepath": PathInput("sub{subject}/ses{session}.txt",
-                                    root_folder=str(data_root))},
-             [P3Loaded], subject=subjects, session=["1"])
+    for_each(
+        import3,
+        {
+            "filepath": PathInput(
+                "sub{subject}/ses{session}.txt", root_folder=str(data_root)
+            )
+        },
+        [P3Loaded],
+        subject=subjects,
+        session=["1"],
+    )
 
     if red:
         P3Raw.save(np.array([9.0]), subject="S03", session="1")
@@ -216,7 +231,11 @@ class TestNodeState:
     def test_all_green(self, insp):
         states = insp.node_state()
         assert {s.function_name for s in states} == {
-            "bandpass3", "feature3", "gain3", "import3"}
+            "bandpass3",
+            "feature3",
+            "gain3",
+            "import3",
+        }
         assert all(s.state == "green" for s in states)
         assert all(s.state_basis == "stored_hash" for s in states)
 
@@ -266,15 +285,17 @@ class TestPathInputState:
 
 class TestCoercion:
     def test_schema_keys_stay_verbatim_strings(self):
-        out = _coerce_non_schema({"subject": "01", "session": "1"},
-                                 ["subject", "session"])
+        out = _coerce_non_schema(
+            {"subject": "01", "session": "1"}, ["subject", "session"]
+        )
         assert out == {"subject": "01", "session": "1"}
         assert all(isinstance(v, str) for v in out.values())
 
     def test_non_schema_values_are_literal_evaled(self):
         out = _coerce_non_schema(
             {"low_hz": "20", "ratio": "0.5", "window": "hann", "ks": "[1, 2]"},
-            ["subject"])
+            ["subject"],
+        )
         assert out == {"low_hz": 20, "ratio": 0.5, "window": "hann", "ks": [1, 2]}
 
 
@@ -288,13 +309,16 @@ class TestRenderers:
 
     def test_trace_render_ascii(self, insp):
         from scidb.inspect.render import ASCII_STYLE
-        text = render.render_trace(insp.trace("P3Feat", subject="S01"),
-                                   style=ASCII_STYLE)
+
+        text = render.render_trace(
+            insp.trace("P3Feat", subject="S01"), style=ASCII_STYLE
+        )
         text.encode("ascii")
 
     def test_trace_render_with_audit(self, insp):
         text = render.render_trace(
-            insp.trace("P3Feat", subject="S01", include_audit=True))
+            insp.trace("P3Feat", subject="S01", include_audit=True)
+        )
         assert "runs that produced this record:" in text
 
     def test_node_states_render(self, red_insp):
@@ -309,29 +333,50 @@ class TestRenderers:
 
 class TestCli:
     def test_trace_human(self, green_env, capsys):
-        assert main(["--db", str(green_env[0]), "trace", "P3Feat",
-                     "subject=S01"]) == 0
+        assert main(["--db", str(green_env[0]), "trace", "P3Feat", "subject=S01"]) == 0
         assert "feature3" in capsys.readouterr().out
 
     def test_trace_json(self, green_env, capsys):
-        assert main(["--db", str(green_env[0]), "trace", "P3Feat",
-                     "subject=S01", "--json"]) == 0
+        assert (
+            main(
+                ["--db", str(green_env[0]), "trace", "P3Feat", "subject=S01", "--json"]
+            )
+            == 0
+        )
         payload = json.loads(capsys.readouterr().out)
         assert len(payload["nodes"]) == 3
 
     def test_trace_branch_param_string_is_coerced(self, green_env, capsys):
         # "k=2" arrives as a string; coercion makes it match the stored int 2.
-        assert main(["--db", str(green_env[0]), "trace", "P3Gain",
-                     "subject=S01", "k=2", "--json"]) == 0
+        assert (
+            main(
+                [
+                    "--db",
+                    str(green_env[0]),
+                    "trace",
+                    "P3Gain",
+                    "subject=S01",
+                    "k=2",
+                    "--json",
+                ]
+            )
+            == 0
+        )
         payload = json.loads(capsys.readouterr().out)
         assert payload["nodes"][0]["constants"] == {"k": "2"}
 
     def test_trace_by_record_id_and_audit(self, green_env, capsys):
-        assert main(["--db", str(green_env[0]), "trace", "P3Feat",
-                     "subject=S01", "--json"]) == 0
+        assert (
+            main(
+                ["--db", str(green_env[0]), "trace", "P3Feat", "subject=S01", "--json"]
+            )
+            == 0
+        )
         rid = json.loads(capsys.readouterr().out)["root_record_id"]
-        assert main(["--db", str(green_env[0]), "trace",
-                     "--record-id", rid, "--audit"]) == 0
+        assert (
+            main(["--db", str(green_env[0]), "trace", "--record-id", rid, "--audit"])
+            == 0
+        )
         assert "runs that produced this record:" in capsys.readouterr().out
 
     def test_trace_without_args_fails(self, green_env, capsys):
@@ -341,8 +386,7 @@ class TestCli:
     def test_runs(self, green_env, capsys):
         assert main(["--db", str(green_env[0]), "runs", "--json"]) == 0
         assert len(json.loads(capsys.readouterr().out)) == 5
-        assert main(["--db", str(green_env[0]), "runs",
-                     "--fn", "gain3", "--json"]) == 0
+        assert main(["--db", str(green_env[0]), "runs", "--fn", "gain3", "--json"]) == 0
         assert len(json.loads(capsys.readouterr().out)) == 2
 
     def test_state_json(self, green_env, capsys):
@@ -356,8 +400,7 @@ class TestCli:
         assert "red" in out and "subject=S03" in out
 
     def test_state_pathinput(self, green_env, capsys):
-        assert main(["--db", str(green_env[0]), "state", "import3",
-                     "--pathinput"]) == 0
+        assert main(["--db", str(green_env[0]), "state", "import3", "--pathinput"]) == 0
         assert "green" in capsys.readouterr().out
 
     def test_state_pathinput_requires_fn(self, green_env, capsys):
@@ -365,6 +408,7 @@ class TestCli:
         assert "requires a function name" in capsys.readouterr().err
 
     def test_state_grid_without_pathinput_fails(self, green_env, capsys):
-        assert main(["--db", str(green_env[0]), "state", "bandpass3",
-                     "subject=S01"]) == 1
+        assert (
+            main(["--db", str(green_env[0]), "state", "bandpass3", "subject=S01"]) == 1
+        )
         assert "--pathinput" in capsys.readouterr().err

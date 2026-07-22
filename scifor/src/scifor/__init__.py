@@ -22,15 +22,16 @@ Example:
     )
 """
 
-from .schema import set_schema, get_schema
-from .foreach import for_each, ColumnFunctionError, ForColumnsError
-from .fixed import Fixed
-from .merge import Merge
-from .column_selection import ColumnSelection
 from .colname import ColName
+from .column_selection import ColumnSelection
+from .filters import Col, ColFilter, CompoundFilter, NotFilter
+from .fixed import Fixed
+from .foreach import ColumnFunctionError, ForColumnsError, for_each
+from .merge import Merge
 from .pathinput import PathInput
 from .pathoutput import PathOutput
-from .filters import Col, ColFilter, CompoundFilter, NotFilter
+from .schema import get_schema, set_schema
+
 __version__ = "0.1.0"
 
 __all__ = [

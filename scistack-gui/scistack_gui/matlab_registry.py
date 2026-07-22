@@ -45,6 +45,7 @@ _config: SciStackConfig | None = None
 # Loading
 # ---------------------------------------------------------------------------
 
+
 def load_from_config(config: SciStackConfig) -> dict:
     """Scan configured MATLAB paths, parse .m files, populate registries.
 
@@ -62,25 +63,47 @@ def load_from_config(config: SciStackConfig) -> dict:
     _matlab_variables.clear()
 
     # --- Function files ---
-    logger.info("[matlab_registry] Parsing %d MATLAB function files", len(config.matlab_functions))
+    logger.info(
+        "[matlab_registry] Parsing %d MATLAB function files",
+        len(config.matlab_functions),
+    )
     for idx, path in enumerate(config.matlab_functions):
-        logger.debug("[matlab_registry] Parsing function file %d/%d: %s", idx + 1, len(config.matlab_functions), path)
+        logger.debug(
+            "[matlab_registry] Parsing function file %d/%d: %s",
+            idx + 1,
+            len(config.matlab_functions),
+            path,
+        )
         info = parse_matlab_function(path)
         if info is not None:
             if info.name in _matlab_functions:
                 logger.warning(
                     "[matlab_registry] MATLAB function '%s' from %s shadows previous definition from %s",
-                    info.name, path, _matlab_functions[info.name].file_path,
+                    info.name,
+                    path,
+                    _matlab_functions[info.name].file_path,
                 )
             _matlab_functions[info.name] = info
-            logger.info("[matlab_registry] Registered MATLAB function: %s (%s)", info.name, path)
+            logger.info(
+                "[matlab_registry] Registered MATLAB function: %s (%s)", info.name, path
+            )
         else:
-            logger.warning("[matlab_registry] Could not parse MATLAB function from %s", path)
+            logger.warning(
+                "[matlab_registry] Could not parse MATLAB function from %s", path
+            )
 
     # --- Variable classdef files ---
-    logger.info("[matlab_registry] Parsing %d MATLAB variable files", len(config.matlab_variables))
+    logger.info(
+        "[matlab_registry] Parsing %d MATLAB variable files",
+        len(config.matlab_variables),
+    )
     for idx, path in enumerate(config.matlab_variables):
-        logger.debug("[matlab_registry] Parsing variable file %d/%d: %s", idx + 1, len(config.matlab_variables), path)
+        logger.debug(
+            "[matlab_registry] Parsing variable file %d/%d: %s",
+            idx + 1,
+            len(config.matlab_variables),
+            path,
+        )
         var_name = parse_matlab_variable(path)
         if var_name is not None:
             # Store the path as-is (already absolute & normalized by
@@ -89,20 +112,35 @@ def load_from_config(config: SciStackConfig) -> dict:
             _matlab_variables[var_name] = path
             # Create a Python surrogate so BaseVariable._all_subclasses
             # contains this type and the DAG builder can reference it.
-            logger.debug("[matlab_registry] Creating Python surrogate for MATLAB variable: %s", var_name)
+            logger.debug(
+                "[matlab_registry] Creating Python surrogate for MATLAB variable: %s",
+                var_name,
+            )
             try:
                 from scimatlab.bridge import register_matlab_variable
+
                 register_matlab_variable(var_name)
-                logger.info("[matlab_registry] Registered MATLAB variable: %s (%s)", var_name, path)
+                logger.info(
+                    "[matlab_registry] Registered MATLAB variable: %s (%s)",
+                    var_name,
+                    path,
+                )
             except Exception:
                 logger.exception(
-                    "[matlab_registry] Failed to create surrogate for MATLAB variable '%s'", var_name
+                    "[matlab_registry] Failed to create surrogate for MATLAB variable '%s'",
+                    var_name,
                 )
         else:
-            logger.warning("[matlab_registry] Could not parse MATLAB variable classdef from %s", path)
+            logger.warning(
+                "[matlab_registry] Could not parse MATLAB variable classdef from %s",
+                path,
+            )
 
-    logger.info("[matlab_registry] MATLAB registry loading complete - %d functions, %d variables",
-                len(_matlab_functions), len(_matlab_variables))
+    logger.info(
+        "[matlab_registry] MATLAB registry loading complete - %d functions, %d variables",
+        len(_matlab_functions),
+        len(_matlab_variables),
+    )
     return {
         "matlab_functions": sorted(_matlab_functions.keys()),
         "matlab_variables": sorted(_matlab_variables.keys()),
@@ -121,6 +159,7 @@ def refresh_all() -> dict:
 # ---------------------------------------------------------------------------
 # Lookup API
 # ---------------------------------------------------------------------------
+
 
 def get_matlab_function(name: str) -> MatlabFunctionInfo:
     """Return info for a registered MATLAB function, or raise KeyError."""
@@ -149,9 +188,7 @@ def get_mismatched_function_names() -> list[str]:
     """Return sorted list of MATLAB function names where the function name
     does not match the stem of its .m file (a MATLAB requirement)."""
     mismatched = [
-        name
-        for name, info in _matlab_functions.items()
-        if info.file_path.stem != name
+        name for name, info in _matlab_functions.items() if info.file_path.stem != name
     ]
     return sorted(mismatched)
 

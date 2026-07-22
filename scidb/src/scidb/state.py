@@ -27,7 +27,6 @@ Typical usage::
         print(combo["schema_combo"], combo["state"])
 """
 
-import json
 import logging
 from typing import Literal
 
@@ -68,6 +67,7 @@ def check_combo_state(
     """
     if db is None:
         from scidb.database import get_database
+
         db = get_database()
 
     combo_str = _combo_str(schema_combo, branch_params)
@@ -78,9 +78,13 @@ def check_combo_state(
     # which would fail because version_keys stores un-namespaced param names.
     output_record_id = None
     for OutputCls in outputs:
-        rid = db.find_record_id(OutputCls, schema_combo, branch_params_filter=branch_params or None)
+        rid = db.find_record_id(
+            OutputCls, schema_combo, branch_params_filter=branch_params or None
+        )
         if rid is None:
-            logger.debug("missing: %s — no output record for %s", combo_str, OutputCls.__name__)
+            logger.debug(
+                "missing: %s — no output record for %s", combo_str, OutputCls.__name__
+            )
             return "missing"
         output_record_id = rid
 
@@ -88,6 +92,7 @@ def check_combo_state(
     # for_each). A record with no producing invocation is raw/manual — there is
     # no function or input to be stale against, so it is up_to_date.
     from . import provenance_query
+
     sig = provenance_query.stored_invocation_signature(db._duck, output_record_id)
     if sig is None:
         logger.debug("up_to_date: %s — raw record (no producing invocation)", combo_str)
@@ -95,8 +100,9 @@ def check_combo_state(
     return _check_via_graph(fn, db, output_record_id, sig, combo_str)
 
 
-def _check_via_graph(fn, db, output_record_id: str, sig: dict,
-                     combo_str: str) -> ComboState:
+def _check_via_graph(
+    fn, db, output_record_id: str, sig: dict, combo_str: str
+) -> ComboState:
     """Staleness check over the bipartite provenance graph.
 
     ``sig`` is the producing invocation's signature
@@ -130,12 +136,17 @@ def _check_via_graph(fn, db, output_record_id: str, sig: dict,
         if trusts_hash:
             logger.debug(
                 "stale: %s — function hash changed: stored=%s current=%s",
-                combo_str, stored_hash[:12], current_hash[:12],
+                combo_str,
+                stored_hash[:12],
+                current_hash[:12],
             )
             return "stale"
         logger.debug(
             "function hash differs for %s (non-Python fn): stored=%s current=%s "
-            "— not treated as stale", combo_str, stored_hash[:12], current_hash[:12],
+            "— not treated as stale",
+            combo_str,
+            stored_hash[:12],
+            current_hash[:12],
         )
 
     # Deep walk: is ANY ancestor record_id superseded?
@@ -146,9 +157,9 @@ def _check_via_graph(fn, db, output_record_id: str, sig: dict,
     return "up_to_date"
 
 
-def _has_superseded_ancestor(db, record_id: str, combo_str: str,
-                              visited: set | None = None,
-                              max_depth: int = 50) -> bool:
+def _has_superseded_ancestor(
+    db, record_id: str, combo_str: str, visited: set | None = None, max_depth: int = 50
+) -> bool:
     """BFS across the bipartite provenance graph from ``record_id`` backwards.
 
     Returns True as soon as an ancestor record is found whose latest
@@ -184,8 +195,11 @@ def _has_superseded_ancestor(db, record_id: str, combo_str: str,
             if current_latest != used_rid:
                 logger.debug(
                     "stale: %s — upstream %s at depth %d superseded (was %s, now %s)",
-                    combo_str, inp.get("variable_type", "unknown"), depth + 1,
-                    used_rid, current_latest,
+                    combo_str,
+                    inp.get("variable_type", "unknown"),
+                    depth + 1,
+                    used_rid,
+                    current_latest,
                 )
                 return True
             # Also catch direct .save() updates at the same (variable_name,
@@ -195,8 +209,11 @@ def _has_superseded_ancestor(db, record_id: str, combo_str: str,
                 logger.debug(
                     "stale: %s — upstream %s at depth %d superseded by different "
                     "variant (was %s, now %s)",
-                    combo_str, inp.get("variable_type", "unknown"), depth + 1,
-                    used_rid, latest_any,
+                    combo_str,
+                    inp.get("variable_type", "unknown"),
+                    depth + 1,
+                    used_rid,
+                    latest_any,
                 )
                 return True
             queue.append((used_rid, depth + 1))
@@ -242,6 +259,7 @@ def check_multiple_nodes_state(
     """
     if db is None:
         from scidb.database import get_database
+
         db = get_database()
 
     result: dict[str, dict] = {}
@@ -252,11 +270,15 @@ def check_multiple_nodes_state(
         if fn is None:
             fn_name = node.get("fn_name")
             if fn_name is None:
-                logger.warning("check_multiple_nodes_state: node missing both 'fn' and 'fn_name', skipping")
+                logger.warning(
+                    "check_multiple_nodes_state: node missing both 'fn' and 'fn_name', skipping"
+                )
                 continue
             if fn_registry is None:
-                logger.warning("check_multiple_nodes_state: fn_name=%r but no fn_registry provided, skipping",
-                               fn_name)
+                logger.warning(
+                    "check_multiple_nodes_state: fn_name=%r but no fn_registry provided, skipping",
+                    fn_name,
+                )
                 continue
             fn = fn_registry.get(fn_name)
             if fn is None:
@@ -290,12 +312,15 @@ def check_multiple_nodes_state(
             node_id = f"fn__{fn_name}__{call_id or ''}"
             result[node_id] = {
                 "state": state_result["state"],
-                "counts": state_result.get("counts", {"up_to_date": 0, "stale": 0, "missing": 0}),
+                "counts": state_result.get(
+                    "counts", {"up_to_date": 0, "stale": 0, "missing": 0}
+                ),
             }
         except Exception:
             logger.exception(
                 "check_multiple_nodes_state: check_node_state failed for %s call_id=%s — marking as red",
-                fn_name, call_id,
+                fn_name,
+                call_id,
             )
             node_id = f"fn__{fn_name}__{call_id or ''}"
             result[node_id] = {
@@ -305,7 +330,8 @@ def check_multiple_nodes_state(
 
     logger.debug(
         "check_multiple_nodes_state: checked %d nodes, %d results",
-        len(nodes), len(result),
+        len(nodes),
+        len(result),
     )
 
     return result
@@ -364,6 +390,7 @@ def check_node_state(
     """
     if db is None:
         from scidb.database import get_database
+
         db = get_database()
 
     fn_name = getattr(fn, "__name__", None) or type(fn).__name__
@@ -383,27 +410,37 @@ def check_node_state(
     # — invocation_id alone is config-specific, but the EXPECTED-set union
     # across configs is not: without the scope, one call site's partial run
     # reddens every other call site of the same function.
-    from . import provenance_query
     from scidb.foreach_config import _compute_fn_hash
+
+    from . import provenance_query
 
     fn_hash = _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
     expected = provenance_query.expected_invocations_for_function(
-        db, fn_name, fn_hash, inputs_fallback=inputs, call_id=call_id,
+        db,
+        fn_name,
+        fn_hash,
+        inputs_fallback=inputs,
+        call_id=call_id,
     )
     present = provenance_query.present_invocation_schema_pairs(
-        db._duck, {inv_id for inv_id, _sid in expected},
+        db._duck,
+        {inv_id for inv_id, _sid in expected},
     )
 
     counts: dict[str, int] = {"up_to_date": 0, "stale": 0, "missing": 0}
     combo_results: list[dict] = []
     for inv_id, schema_id in expected:
-        state: ComboState = "up_to_date" if (inv_id, schema_id) in present else "missing"
+        state: ComboState = (
+            "up_to_date" if (inv_id, schema_id) in present else "missing"
+        )
         counts[state] += 1
-        combo_results.append({
-            "schema_combo": _schema_id_to_combo(db, schema_id),
-            "branch_params": {},
-            "state": state,
-        })
+        combo_results.append(
+            {
+                "schema_combo": _schema_id_to_combo(db, schema_id),
+                "branch_params": {},
+                "state": state,
+            }
+        )
 
     # --- Aggregate to node state (binary: green | red) ---
     # green iff the node has expected work AND all of it is present; red otherwise
@@ -416,7 +453,10 @@ def check_node_state(
 
     logger.debug(
         "node %s: %s (up_to_date=%d, missing=%d)",
-        fn_name, overall, counts["up_to_date"], counts["missing"],
+        fn_name,
+        overall,
+        counts["up_to_date"],
+        counts["missing"],
     )
 
     return {
@@ -477,12 +517,14 @@ def check_pathinput_node_state(
 
     if db is None:
         from scidb.database import get_database
+
         db = get_database()
     from scidb.database import _schema_str
     from scidb.exclusions import filter_excluded_combos
+
+    from . import provenance_query
     from .foreach import _find_pathinput
     from .provenance import compute_constant_record_id
-    from . import provenance_query
 
     fn_name = getattr(fn, "__name__", None) or type(fn).__name__
     schema_keys = list(db.dataset_schema_keys)
@@ -519,7 +561,7 @@ def check_pathinput_node_state(
         # No PathInput (pure constant inputs over a grid): there is no filesystem
         # to intersect with, so the declared grid itself is the should-run set.
         for prod in itertools.product(*[iteration[k] for k in grid_keys]):
-            _add(dict(zip(grid_keys, prod)))
+            _add(dict(zip(grid_keys, prod, strict=False)))
 
     should = filter_excluded_combos(should, schema_keys, db)
 
@@ -527,7 +569,9 @@ def check_pathinput_node_state(
     cfg = provenance_query.config_from_inputs(inputs)
     const_rids = {p: compute_constant_record_id(v) for p, v in cfg["constants"].items()}
     realized_sids = provenance_query.realized_inputless_schema_ids(
-        db._duck, fn_name, const_rids,
+        db._duck,
+        fn_name,
+        const_rids,
     )
     realized = [_norm(_schema_id_to_combo(db, sid)) for sid in realized_sids]
 
@@ -542,10 +586,16 @@ def check_pathinput_node_state(
         counts[st] += 1
         combo_results.append({"schema_combo": c, "branch_params": {}, "state": st})
 
-    overall: NodeState = "green" if (combo_results and counts["missing"] == 0) else "red"
+    overall: NodeState = (
+        "green" if (combo_results and counts["missing"] == 0) else "red"
+    )
     logger.debug(
         "pathinput node %s: %s (should=%d, up_to_date=%d, missing=%d)",
-        fn_name, overall, len(should), counts["up_to_date"], counts["missing"],
+        fn_name,
+        overall,
+        len(should),
+        counts["up_to_date"],
+        counts["missing"],
     )
     return {"state": overall, "combos": combo_results, "counts": counts}
 
@@ -553,6 +603,7 @@ def check_pathinput_node_state(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _combo_str(schema_combo: dict, branch_params: dict | None = None) -> str:
     parts = [f"{k}={v}" for k, v in sorted(schema_combo.items())]
@@ -575,7 +626,7 @@ def _schema_id_to_combo(db, schema_id) -> dict:
     if not rows:
         return {}
 
-    return {k: v for k, v in zip(schema_keys, rows[0]) if v is not None}
+    return {k: v for k, v in zip(schema_keys, rows[0], strict=False) if v is not None}
 
 
 def _get_latest_record_at_location(db, record_id: str) -> str | None:
@@ -588,8 +639,7 @@ def _get_latest_record_at_location(db, record_id: str) -> str | None:
     to ``get_latest_record_id_for_variant``.
     """
     rows = db._duck._fetchall(
-        "SELECT type, schema_id FROM _record "
-        "WHERE record_id = ? LIMIT 1",
+        "SELECT type, schema_id FROM _record WHERE record_id = ? LIMIT 1",
         [record_id],
     )
     if not rows:

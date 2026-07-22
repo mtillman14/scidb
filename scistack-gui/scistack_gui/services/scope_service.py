@@ -54,18 +54,22 @@ def delete_pipeline(pipeline_id: str) -> dict:
     return {"ok": True}
 
 
-def add_pipeline_use(parent_pipeline_id: str, child_pipeline_id: str,
-                     binding: dict | None = None,
-                     x: float = 0.0, y: float = 0.0) -> dict:
+def add_pipeline_use(
+    parent_pipeline_id: str,
+    child_pipeline_id: str,
+    binding: dict | None = None,
+    x: float = 0.0,
+    y: float = 0.0,
+) -> dict:
     """Place a pipeline node on a parent canvas (use row + node + position)."""
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store as ps
     from scistack_gui.db import get_db
 
     use_id = ps.add_pipeline_use(
-        get_db(), parent_pipeline_id, child_pipeline_id, binding)
-    layout_store.write_node_position(use_id, x, y,
-                                     pipeline_id=parent_pipeline_id)
+        get_db(), parent_pipeline_id, child_pipeline_id, binding
+    )
+    layout_store.write_node_position(use_id, x, y, pipeline_id=parent_pipeline_id)
     return {"ok": True, "use_id": use_id}
 
 
@@ -101,8 +105,9 @@ def pipeline_interface(pipeline_id: str) -> dict:
     for use in ps.get_pipeline_uses(db):
         uses_by_parent.setdefault(use["parent_pipeline_id"], []).append(use)
     positions_by_scope = layout_store.read_positions_by_scope()
-    return document_interface(pipeline_id, manual_nodes, edges,
-                              uses_by_parent, positions_by_scope)
+    return document_interface(
+        pipeline_id, manual_nodes, edges, uses_by_parent, positions_by_scope
+    )
 
 
 def build_pipeline_nodes(db, scope_id: str) -> list[dict]:
@@ -127,20 +132,24 @@ def build_pipeline_nodes(db, scope_id: str) -> list[dict]:
     nodes = []
     for use in uses_by_parent[scope_id]:
         child_id = use["child_pipeline_id"]
-        iface = document_interface(child_id, manual_nodes, edges,
-                                   uses_by_parent, positions_by_scope)
-        nodes.append({
-            "id": use["use_id"],
-            "type": "pipelineNode",
-            "position": {"x": 0, "y": 0},
-            "data": {
-                "label": names.get(child_id, child_id),
-                "child_pipeline_id": child_id,
-                "binding": use["binding"],
-                "inputs": iface["inputs"],
-                "outputs": iface["outputs"],
-            },
-        })
-    logger.info("[scope_service] built %d pipelineNode(s) for scope %s",
-                len(nodes), scope_id)
+        iface = document_interface(
+            child_id, manual_nodes, edges, uses_by_parent, positions_by_scope
+        )
+        nodes.append(
+            {
+                "id": use["use_id"],
+                "type": "pipelineNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": names.get(child_id, child_id),
+                    "child_pipeline_id": child_id,
+                    "binding": use["binding"],
+                    "inputs": iface["inputs"],
+                    "outputs": iface["outputs"],
+                },
+            }
+        )
+    logger.info(
+        "[scope_service] built %d pipelineNode(s) for scope %s", len(nodes), scope_id
+    )
     return nodes

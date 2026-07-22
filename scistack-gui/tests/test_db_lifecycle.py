@@ -3,6 +3,7 @@ Tests for the DuckDB connection lifecycle — verifies that the Python
 process releases the file lock between requests so MATLAB can access
 the same database.
 """
+
 import duckdb
 import pytest
 
@@ -38,8 +39,12 @@ class TestAcquireReleaseCycle:
     """Verify that acquire/release correctly opens and closes the connection."""
 
     def test_release_closes_when_refcount_zero(self, db_path):
-        from scistack_gui.db import init_db, acquire_db_connection, release_db_connection
         import scistack_gui.db as db_mod
+        from scistack_gui.db import (
+            acquire_db_connection,
+            init_db,
+            release_db_connection,
+        )
 
         init_db(db_path)
         assert db_mod._db_open is True
@@ -59,8 +64,12 @@ class TestAcquireReleaseCycle:
         assert db_mod._db_refcount == 0
 
     def test_nested_acquire_keeps_open(self, db_path):
-        from scistack_gui.db import init_db, acquire_db_connection, release_db_connection
         import scistack_gui.db as db_mod
+        from scistack_gui.db import (
+            acquire_db_connection,
+            init_db,
+            release_db_connection,
+        )
 
         init_db(db_path)
         db_mod._db._duck.close()
@@ -80,7 +89,11 @@ class TestAcquireReleaseCycle:
 
     def test_second_process_can_open_after_release(self, db_path):
         """After Python releases the lock, another connection can open the file."""
-        from scistack_gui.db import init_db, acquire_db_connection, release_db_connection
+        from scistack_gui.db import (
+            acquire_db_connection,
+            init_db,
+            release_db_connection,
+        )
 
         init_db(db_path)
         acquire_db_connection()
@@ -94,8 +107,12 @@ class TestAcquireReleaseCycle:
 
     def test_reacquire_after_external_close(self, db_path):
         """Python can reacquire the connection after MATLAB releases it."""
-        from scistack_gui.db import init_db, acquire_db_connection, release_db_connection
         import scistack_gui.db as db_mod
+        from scistack_gui.db import (
+            acquire_db_connection,
+            init_db,
+            release_db_connection,
+        )
 
         db = init_db(db_path)
         acquire_db_connection()
@@ -129,8 +146,12 @@ class TestAcquireRaisesDoesNotLeakRefcount:
     """
 
     def test_reopen_failure_does_not_increment_refcount(self, db_path):
-        from scistack_gui.db import init_db, acquire_db_connection, release_db_connection
         import scistack_gui.db as db_mod
+        from scistack_gui.db import (
+            acquire_db_connection,
+            init_db,
+            release_db_connection,
+        )
 
         init_db(db_path)
         db_mod._db._duck.close()
@@ -192,12 +213,14 @@ class TestMatlabCommandIncludesCleanup:
             function_name="my_func",
             db_path="/data/test.duckdb",
             schema_keys=["subject"],
-            variants=[{
-                "input_types": {"x": "RawData"},
-                "output_type": "ProcessedData",
-                "constants": {},
-                "record_count": 1,
-            }],
+            variants=[
+                {
+                    "input_types": {"x": "RawData"},
+                    "output_type": "ProcessedData",
+                    "constants": {},
+                    "record_count": 1,
+                }
+            ],
         )
         assert cmd.count("scidb.close_database(db)") == 2
         assert "catch scistack_err__" in cmd

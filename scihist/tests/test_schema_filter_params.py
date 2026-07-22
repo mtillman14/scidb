@@ -2,11 +2,10 @@
 
 import numpy as np
 import pytest
-import scifor as _scifor
 
+import scifor as _scifor
 from scidb import BaseVariable, configure_database, scistack
 from scihist import for_each
-
 
 SCHEMA = ["subject", "session", "trial"]
 
@@ -24,6 +23,7 @@ def db(tmp_path):
 # Variable types
 # ---------------------------------------------------------------------------
 
+
 class RawData(BaseVariable):
     pass
 
@@ -36,6 +36,7 @@ class ProcessedData(BaseVariable):
 # Pipeline functions
 # ---------------------------------------------------------------------------
 
+
 @scistack
 def process(raw_data, threshold):
     return raw_data * threshold
@@ -45,23 +46,21 @@ def process(raw_data, threshold):
 # Helper functions
 # ---------------------------------------------------------------------------
 
+
 def _seed_raw(db, subjects=(1, 2, 3), sessions=("A", "B"), trials=(1, 2)):
     """Seed database with raw data."""
     for subj in subjects:
         for sess in sessions:
             for trial in trials:
                 RawData.save(
-                    np.random.randn(10),
-                    db=db,
-                    subject=subj,
-                    session=sess,
-                    trial=trial
+                    np.random.randn(10), db=db, subject=subj, session=sess, trial=trial
                 )
 
 
 # ---------------------------------------------------------------------------
 # schema_filter tests
 # ---------------------------------------------------------------------------
+
 
 class TestSchemaFilter:
     def test_schema_filter_basic(self, db):
@@ -150,6 +149,7 @@ class TestSchemaFilter:
 # schema_level tests
 # ---------------------------------------------------------------------------
 
+
 class TestSchemaLevel:
     def test_schema_level_subset(self, db):
         """schema_level iterates only over specified keys."""
@@ -168,7 +168,7 @@ class TestSchemaLevel:
         assert len(result) == 4
 
         # All combinations of subject and session should be present (schema values are strings)
-        combos = set(zip(result["subject"], result["session"]))
+        combos = set(zip(result["subject"], result["session"], strict=False))
         expected = {("1", "A"), ("1", "B"), ("2", "A"), ("2", "B")}
         assert combos == expected
 
@@ -192,6 +192,7 @@ class TestSchemaLevel:
 # ---------------------------------------------------------------------------
 # Combined schema_filter and schema_level tests
 # ---------------------------------------------------------------------------
+
 
 class TestSchemaFilterAndLevel:
     def test_filter_and_level_together(self, db):
@@ -235,6 +236,7 @@ class TestSchemaFilterAndLevel:
 # ---------------------------------------------------------------------------
 # Backward compatibility tests
 # ---------------------------------------------------------------------------
+
 
 class TestBackwardCompatibility:
     def test_metadata_iterables_still_works(self, db):
@@ -291,13 +293,15 @@ class TestBackwardCompatibility:
 # Error handling tests
 # ---------------------------------------------------------------------------
 
+
 class TestErrorHandling:
     def test_schema_filter_requires_db(self):
         """schema_filter requires database connection."""
         # Create a scenario without db parameter and no global db
         from scidb.database import _local
-        if hasattr(_local, 'db'):
-            delattr(_local, 'db')
+
+        if hasattr(_local, "db"):
+            delattr(_local, "db")
 
         # Now try to use schema_filter without a database
         with pytest.raises(ValueError, match="require a database connection"):
@@ -333,15 +337,13 @@ class TestErrorHandling:
 # Integration tests
 # ---------------------------------------------------------------------------
 
+
 class TestIntegration:
     def test_real_world_selective_processing(self, db):
         """Real-world scenario: process only specific subjects."""
         # Seed with 5 subjects, 2 sessions, 3 trials
         _seed_raw(
-            db,
-            subjects=(1, 2, 3, 4, 5),
-            sessions=("pre", "post"),
-            trials=(1, 2, 3)
+            db, subjects=(1, 2, 3, 4, 5), sessions=("pre", "post"), trials=(1, 2, 3)
         )
 
         # Process only subjects 1, 3, 5 for session "post"
@@ -367,14 +369,12 @@ class TestIntegration:
         for subj in [1, 3, 5]:
             for trial in [1, 2, 3]:
                 data = ProcessedData.load(
-                    db=db,
-                    subject=subj,
-                    session="post",
-                    trial=trial
+                    db=db, subject=subj, session="post", trial=trial
                 )
                 assert data is not None
                 # Verify data has correct shape (numpy array)
                 import numpy as np
+
                 assert isinstance(data.data, np.ndarray)
                 assert len(data.data) == 10  # Same length as input
 

@@ -11,8 +11,9 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from scidb import BaseVariable
 from scidb.database import DatabaseManager
+
+from scidb import BaseVariable
 from scistack_gui import registry
 from scistack_gui.api import ws
 from scistack_gui.db import get_db
@@ -70,8 +71,9 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
     # Validate the name against the _variables registry table — unknown
     # variables return the empty shape (and the {name}_data interpolation
     # below only ever receives a known-registered name).
-    known = {row[0] for row in db._duck._fetchall(
-        "SELECT variable_name FROM _variables")}
+    known = {
+        row[0] for row in db._duck._fetchall("SELECT variable_name FROM _variables")
+    }
     if variable_name not in known:
         logger.info("get_variable_records: unknown variable %r", variable_name)
         return {"schema_keys": schema_keys, "records": [], "variants": []}
@@ -90,25 +92,29 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
     try:
         rows = db._duck._fetchall(query)
     except Exception as exc:
-        logger.warning("get_variable_records(%s) query failed: %s",
-                       variable_name, exc)
+        logger.warning("get_variable_records(%s) query failed: %s", variable_name, exc)
         raise HTTPException(status_code=404, detail=str(exc))
 
     record_ids = [row[0] for row in rows]
     from scidb.provenance_query import branch_params_batch
+
     bp_by_record = branch_params_batch(db._duck, record_ids)
 
     records = []
     for row in rows:
         record_id = row[0]
-        schema_vals = dict(zip(schema_keys, row[1:]))
+        schema_vals = dict(zip(schema_keys, row[1:], strict=False))
         bp = bp_by_record.get(record_id, {})
-        records.append({
-            **{k: str(schema_vals[k]) if schema_vals[k] is not None else None
-               for k in schema_keys},
-            "branch_params": bp,
-            "variant_label": _format_variant_label(bp),
-        })
+        records.append(
+            {
+                **{
+                    k: str(schema_vals[k]) if schema_vals[k] is not None else None
+                    for k in schema_keys
+                },
+                "branch_params": bp,
+                "variant_label": _format_variant_label(bp),
+            }
+        )
 
     # Build variant summary: group by branch_params JSON (canonical sort).
     variant_map: dict[str, dict] = {}
@@ -133,6 +139,7 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
 
 # ---- Create new variable type -------------------------------------------------
 
+
 class CreateVariableRequest(BaseModel):
     name: str
     docstring: str | None = None
@@ -152,10 +159,16 @@ async def create_variable(req: CreateVariableRequest) -> dict:
         return {"ok": False, "error": f"'{name}' is not a valid Python class name."}
 
     if name.startswith("_"):
-        return {"ok": False, "error": "Variable names must not start with an underscore."}
+        return {
+            "ok": False,
+            "error": "Variable names must not start with an underscore.",
+        }
 
     if not name[0].isupper():
-        return {"ok": False, "error": "Variable names should start with an uppercase letter."}
+        return {
+            "ok": False,
+            "error": "Variable names should start with an uppercase letter.",
+        }
 
     if name in BaseVariable._all_subclasses:
         return {"ok": False, "error": f"A variable named '{name}' already exists."}
@@ -170,8 +183,14 @@ async def create_variable(req: CreateVariableRequest) -> dict:
     if target_file is None:
         # No Python target — fall back to MATLAB if configured.
         from scistack_gui import matlab_registry
-        if matlab_registry.has_matlab_config() and matlab_registry._config is not None and matlab_registry._config.matlab_variable_dir is not None:
+
+        if (
+            matlab_registry.has_matlab_config()
+            and matlab_registry._config is not None
+            and matlab_registry._config.matlab_variable_dir is not None
+        ):
             from scistack_gui.services.variable_service import _create_matlab_variable
+
             result = _create_matlab_variable(name, req.docstring)
             if result.get("ok"):
                 await ws.broadcast({"type": "dag_updated"})
@@ -179,7 +198,7 @@ async def create_variable(req: CreateVariableRequest) -> dict:
         return {
             "ok": False,
             "error": "No module file was loaded at startup (--module not passed). "
-                     "Cannot append a new class.",
+            "Cannot append a new class.",
         }
 
     # --- Build the class definition ---

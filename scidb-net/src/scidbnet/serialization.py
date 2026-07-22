@@ -28,10 +28,10 @@ import pyarrow.ipc as ipc
 
 from .exceptions import SerializationError
 
-
 # ---------------------------------------------------------------------------
 # Core serialization: Python object <-> (header_dict, body_bytes)
 # ---------------------------------------------------------------------------
+
 
 def serialize_data(data: Any) -> tuple[dict, bytes]:
     """Serialize a Python object to (header_dict, body_bytes).
@@ -122,6 +122,7 @@ def deserialize_data(header: dict, body: bytes) -> Any:
 # Envelope encoding: header + body -> single bytes blob
 # ---------------------------------------------------------------------------
 
+
 def encode_envelope(header: dict, body: bytes) -> bytes:
     """Encode (header, body) into a single envelope bytes blob.
 
@@ -147,6 +148,7 @@ def decode_envelope(data: bytes) -> tuple[dict, bytes]:
 # Convenience: serialize/deserialize full envelope in one call
 # ---------------------------------------------------------------------------
 
+
 def encode_response(data: Any) -> bytes:
     """Serialize a Python object into a complete envelope."""
     header, body = serialize_data(data)
@@ -162,6 +164,7 @@ def decode_response(data: bytes) -> Any:
 # ---------------------------------------------------------------------------
 # Multi-value encoding (for load_all, find_by_lineage)
 # ---------------------------------------------------------------------------
+
 
 def encode_multi(items: list[Any]) -> bytes:
     """Encode a list of objects into a packed multi-value blob.
@@ -196,6 +199,7 @@ def decode_multi(data: bytes) -> list[Any]:
 # ---------------------------------------------------------------------------
 # Save request encoding (metadata + data envelope)
 # ---------------------------------------------------------------------------
+
 
 def encode_save_request(meta: dict, data: Any) -> bytes:
     """Encode a save request: JSON metadata + data envelope.

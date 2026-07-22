@@ -11,14 +11,14 @@ group share one axis range.
 """
 
 import matplotlib
+
 matplotlib.use("Agg")  # headless backend for tests
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-
-from scidb import BaseVariable, configure_database, for_each, PathOutput
 from scidb.database import _local
 
+from scidb import BaseVariable, PathOutput, configure_database, for_each
 
 SCHEMA = ["subject", "trial"]
 
@@ -39,6 +39,7 @@ class RawSignal(BaseVariable):
 
 class PlotFigure(BaseVariable):
     """Stores the saved plot's file path (a string)."""
+
     schema_version = 1
 
 
@@ -92,6 +93,7 @@ def test_plot_saves_files_and_registers_paths(db, tmp_path):
 
     # (c) The recorded figure carries its embedded provenance stamp (D4).
     from scidb import read_artifact_stamp
+
     blob = read_artifact_stamp(path)
     assert blob is not None and blob["record_id"] == rec.record_id
 
@@ -164,8 +166,8 @@ def test_share_limits_per_subject(db, tmp_path):
     assert len(s1) == 1 and len(s2) == 1
     lim1 = s1.pop()
     lim2 = s2.pop()
-    assert lim1 == (0.0, 3.0)       # subject 1 spans 0..3 across trials
-    assert lim2 == (0.0, 110.0)     # subject 2 spans 0..110 across trials
+    assert lim1 == (0.0, 3.0)  # subject 1 spans 0..3 across trials
+    assert lim2 == (0.0, 110.0)  # subject 2 spans 0..110 across trials
     assert lim1 != lim2
 
 
@@ -182,18 +184,18 @@ def test_second_run_skips_rerender(db, tmp_path):
         ax.plot(np.asarray(signal).ravel())
         return fig
 
-    kwargs = dict(
-        inputs={
+    kwargs = {
+        "inputs": {
             "signal": RawSignal,
             "filename": PathOutput(str(plots_dir / "{subject}_{trial}.png")),
         },
-        outputs=[PlotFigure],
-        finalized=True,
-        skip_computed=True,
-        subject=["1", "2"],
-        trial=["1", "2", "3"],
-        db=db,
-    )
+        "outputs": [PlotFigure],
+        "finalized": True,
+        "skip_computed": True,
+        "subject": ["1", "2"],
+        "trial": ["1", "2", "3"],
+        "db": db,
+    }
 
     for_each(plot_timeseries, **kwargs)
     assert calls["n"] == 6

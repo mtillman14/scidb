@@ -7,21 +7,19 @@ get_schema, get_variables_list, and get_registry.
 
 from __future__ import annotations
 
-import pytest
-
 import scistack_gui.registry as _registry
 from scistack_gui.services.pipeline_service import (
     get_function_params,
     get_function_source,
+    get_registry,
     get_schema,
     get_variables_list,
-    get_registry,
 )
-
 
 # ---------------------------------------------------------------------------
 # get_function_source
 # ---------------------------------------------------------------------------
+
 
 class TestGetFunctionSource:
     def test_registered_python_function_returns_file_and_line(self, populated_db):
@@ -29,6 +27,7 @@ class TestGetFunctionSource:
         # but populated_db doesn't register it — use a direct registration.
         def my_fn(x):
             pass
+
         _registry._functions["my_fn"] = my_fn
         result = get_function_source("my_fn")
         assert result["ok"] is True
@@ -58,10 +57,12 @@ class TestGetFunctionSource:
 # get_function_params
 # ---------------------------------------------------------------------------
 
+
 class TestGetFunctionParams:
     def test_returns_param_names_for_registered_function(self, populated_db):
         def my_fn(signal, low_hz):
             pass
+
         _registry._functions["my_fn"] = my_fn
         params = get_function_params("my_fn")
         assert "signal" in params
@@ -70,6 +71,7 @@ class TestGetFunctionParams:
     def test_private_params_excluded(self, populated_db):
         def my_fn(signal, _internal):
             pass
+
         _registry._functions["my_fn"] = my_fn
         params = get_function_params("my_fn")
         assert "_internal" not in params
@@ -83,6 +85,7 @@ class TestGetFunctionParams:
 # ---------------------------------------------------------------------------
 # get_schema
 # ---------------------------------------------------------------------------
+
 
 class TestGetSchema:
     def test_returns_keys_and_values(self, populated_db):
@@ -102,6 +105,7 @@ class TestGetSchema:
 # get_variables_list
 # ---------------------------------------------------------------------------
 
+
 class TestGetVariablesList:
     def test_returns_registered_variable_names(self, populated_db):
         result = get_variables_list()
@@ -118,6 +122,7 @@ class TestGetVariablesList:
 # ---------------------------------------------------------------------------
 # get_registry
 # ---------------------------------------------------------------------------
+
 
 class TestGetRegistry:
     def test_returns_functions_variables_matlab(self, populated_db):

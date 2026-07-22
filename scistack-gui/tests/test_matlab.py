@@ -5,9 +5,6 @@ Tests for MATLAB support: parser, registry, and command generation.
 import textwrap
 from pathlib import Path
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # matlab_parser tests
 # ---------------------------------------------------------------------------
@@ -18,12 +15,14 @@ class TestParseMatlabFunction:
         from scistack_gui.matlab_parser import parse_matlab_function
 
         f = tmp_path / "bandpass_filter.m"
-        f.write_text(textwrap.dedent("""\
+        f.write_text(
+            textwrap.dedent("""\
             function [filtered] = bandpass_filter(signal, low_hz, high_hz)
             % BANDPASS_FILTER  Apply a bandpass filter.
                 filtered = signal * low_hz;
             end
-        """))
+        """)
+        )
 
         info = parse_matlab_function(f)
         assert info is not None
@@ -113,11 +112,13 @@ class TestParseMatlabVariable:
         from scistack_gui.matlab_parser import parse_matlab_variable
 
         f = tmp_path / "RawSignal.m"
-        f.write_text(textwrap.dedent("""\
+        f.write_text(
+            textwrap.dedent("""\
             classdef RawSignal < scidb.BaseVariable
                 % Raw EMG signal data
             end
-        """))
+        """)
+        )
 
         name = parse_matlab_variable(f)
         assert name == "RawSignal"
@@ -422,41 +423,57 @@ class TestGenerateMatlabCommand:
 class TestFormatPathInput:
     def test_explicit_root_folder_used_as_is(self):
         from scistack_gui.api.matlab_command import _format_path_input
+
         pi = {"template": "{subject}/data.mat", "root_folder": "/my/data"}
         result = _format_path_input(pi)
-        assert result == 'scifor.PathInput("{subject}/data.mat", root_folder="/my/data")'
+        assert (
+            result == 'scifor.PathInput("{subject}/data.mat", root_folder="/my/data")'
+        )
 
     def test_no_root_folder_no_project_root(self):
         from scistack_gui.api.matlab_command import _format_path_input
+
         pi = {"template": "{subject}/data.mat", "root_folder": None}
         result = _format_path_input(pi)
         assert result == 'scifor.PathInput("{subject}/data.mat")'
 
     def test_relative_template_uses_project_root_when_no_root_folder(self):
         from scistack_gui.api.matlab_command import _format_path_input
+
         pi = {"template": "{subject}/data.mat", "root_folder": None}
         result = _format_path_input(pi, project_root="/projects/myexp")
-        assert result == 'scifor.PathInput("{subject}/data.mat", root_folder="/projects/myexp")'
+        assert (
+            result
+            == 'scifor.PathInput("{subject}/data.mat", root_folder="/projects/myexp")'
+        )
 
     def test_explicit_root_folder_takes_priority_over_project_root(self):
         from scistack_gui.api.matlab_command import _format_path_input
+
         pi = {"template": "{subject}/data.mat", "root_folder": "/explicit/root"}
         result = _format_path_input(pi, project_root="/projects/myexp")
-        assert result == 'scifor.PathInput("{subject}/data.mat", root_folder="/explicit/root")'
+        assert (
+            result
+            == 'scifor.PathInput("{subject}/data.mat", root_folder="/explicit/root")'
+        )
 
     def test_absolute_template_ignores_project_root(self):
         from scistack_gui.api.matlab_command import _format_path_input
+
         pi = {"template": "/absolute/path/{subject}.mat", "root_folder": None}
         result = _format_path_input(pi, project_root="/projects/myexp")
         assert result == 'scifor.PathInput("/absolute/path/{subject}.mat")'
 
     def test_generate_matlab_command_injects_project_root_for_path_inputs(self):
         from scistack_gui.api.matlab_command import generate_matlab_command
+
         cmd = generate_matlab_command(
             function_name="load_file",
             db_path="/data/exp.duckdb",
             schema_keys=["subject"],
-            path_inputs={"filepath": {"template": "{subject}/data.mat", "root_folder": None}},
+            path_inputs={
+                "filepath": {"template": "{subject}/data.mat", "root_folder": None}
+            },
             project_root="/projects/myexp",
         )
         assert 'root_folder="/projects/myexp"' in cmd
@@ -472,7 +489,8 @@ class TestConfigMatlabParsing:
         from scistack_gui.config import load_config
 
         # Create a pyproject.toml with MATLAB section.
-        (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""\
+        (tmp_path / "pyproject.toml").write_text(
+            textwrap.dedent("""\
             [tool.scistack]
             modules = []
 
@@ -480,7 +498,8 @@ class TestConfigMatlabParsing:
             functions = ["matlab/bandpass_filter.m"]
             variables = ["matlab/types/*.m"]
             variable_dir = "matlab/types"
-        """))
+        """)
+        )
 
         # Create the referenced files.
         (tmp_path / "matlab").mkdir()
@@ -514,16 +533,16 @@ class TestConfigMatlabParsing:
         from scistack_gui.config import load_config
 
         # Create a scistack.toml (standalone, no pyproject.toml).
-        (tmp_path / "scistack.toml").write_text(textwrap.dedent("""\
+        (tmp_path / "scistack.toml").write_text(
+            textwrap.dedent("""\
             modules = []
 
             [matlab]
             functions = ["process.m"]
-        """))
-
-        (tmp_path / "process.m").write_text(
-            "function y = process(x)\ny = x;\nend\n"
+        """)
         )
+
+        (tmp_path / "process.m").write_text("function y = process(x)\ny = x;\nend\n")
 
         db_path = tmp_path / "test.duckdb"
         db_path.touch()
@@ -534,10 +553,12 @@ class TestConfigMatlabParsing:
     def test_no_matlab_section(self, tmp_path):
         from scistack_gui.config import load_config
 
-        (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""\
+        (tmp_path / "pyproject.toml").write_text(
+            textwrap.dedent("""\
             [tool.scistack]
             modules = []
-        """))
+        """)
+        )
 
         db_path = tmp_path / "test.duckdb"
         db_path.touch()
@@ -629,7 +650,9 @@ class TestGenerateMatlabCommandOutputTypes:
 
 class TestSortInferredByParamsOrder:
     def test_reorders_to_match_params(self):
-        from scistack_gui.services.matlab_command_service import _sort_inferred_by_params_order
+        from scistack_gui.services.matlab_command_service import (
+            _sort_inferred_by_params_order,
+        )
 
         inferred = ["Force_Right", "Force_Left", "Time"]
         params = ["time", "force_left", "force_right"]
@@ -637,7 +660,9 @@ class TestSortInferredByParamsOrder:
         assert result == ["Time", "Force_Left", "Force_Right"]
 
     def test_passthrough_when_already_ordered(self):
-        from scistack_gui.services.matlab_command_service import _sort_inferred_by_params_order
+        from scistack_gui.services.matlab_command_service import (
+            _sort_inferred_by_params_order,
+        )
 
         inferred = ["Time", "Force_Left", "Force_Right"]
         params = ["time", "force_left", "force_right"]
@@ -645,7 +670,9 @@ class TestSortInferredByParamsOrder:
         assert result == ["Time", "Force_Left", "Force_Right"]
 
     def test_unmatched_appended_at_end(self):
-        from scistack_gui.services.matlab_command_service import _sort_inferred_by_params_order
+        from scistack_gui.services.matlab_command_service import (
+            _sort_inferred_by_params_order,
+        )
 
         inferred = ["Extra", "Time", "Force_Left"]
         params = ["time", "force_left"]
@@ -653,7 +680,9 @@ class TestSortInferredByParamsOrder:
         assert result == ["Time", "Force_Left", "Extra"]
 
     def test_empty_params_preserves_inferred_order(self):
-        from scistack_gui.services.matlab_command_service import _sort_inferred_by_params_order
+        from scistack_gui.services.matlab_command_service import (
+            _sort_inferred_by_params_order,
+        )
 
         inferred = ["Force_Right", "Time"]
         result = _sort_inferred_by_params_order(inferred, [])
@@ -668,8 +697,8 @@ class TestMatlabFnProxyHash:
     def test_proxy_uses_unpack_false(self, monkeypatch):
         from hashlib import sha256
 
-        from scistack_gui.api.pipeline import _build_matlab_fn_proxy
         from scistack_gui import matlab_registry as _mr
+        from scistack_gui.api.pipeline import _build_matlab_fn_proxy
 
         class FakeInfo:
             source_hash = "a" * 64
@@ -677,9 +706,7 @@ class TestMatlabFnProxyHash:
             params = ("x",)
             output_names = ("a", "b", "c")
 
-        monkeypatch.setattr(
-            _mr, "get_matlab_function", lambda _name: FakeInfo()
-        )
+        monkeypatch.setattr(_mr, "get_matlab_function", lambda _name: FakeInfo())
 
         proxy = _build_matlab_fn_proxy("load_csv")
         expected = sha256(f"{FakeInfo.source_hash}-False".encode()).hexdigest()
@@ -689,8 +716,8 @@ class TestMatlabFnProxyHash:
     def test_single_output_hash_also_unpack_false(self, monkeypatch):
         from hashlib import sha256
 
-        from scistack_gui.api.pipeline import _build_matlab_fn_proxy
         from scistack_gui import matlab_registry as _mr
+        from scistack_gui.api.pipeline import _build_matlab_fn_proxy
 
         class FakeInfo:
             source_hash = "b" * 64
@@ -698,9 +725,7 @@ class TestMatlabFnProxyHash:
             params = ()
             output_names = ("only",)
 
-        monkeypatch.setattr(
-            _mr, "get_matlab_function", lambda _name: FakeInfo()
-        )
+        monkeypatch.setattr(_mr, "get_matlab_function", lambda _name: FakeInfo())
         proxy = _build_matlab_fn_proxy("fn")
         expected = sha256(f"{FakeInfo.source_hash}-False".encode()).hexdigest()
         assert proxy.hash == expected
@@ -710,7 +735,6 @@ class TestFindSciMatlabMatlabDir:
     def test_finds_matlab_dir(self):
         """scimatlab is installed in this environment; its matlab/ dir must be found."""
         from scistack_gui.server import _find_scimatlab_matlab_dir
-        from pathlib import Path
 
         result = _find_scimatlab_matlab_dir()
         assert result is not None, (
@@ -728,14 +752,11 @@ class TestFindSciMatlabMatlabDir:
         can call scidb.close_database(db) for post-close lock-release logging.
         """
         from scistack_gui.server import _find_scimatlab_matlab_dir
-        from pathlib import Path
 
         result = _find_scimatlab_matlab_dir()
         assert result is not None
         close_db = Path(result) / "+scidb" / "close_database.m"
-        assert close_db.exists(), (
-            f"scidb.close_database not found at {close_db}"
-        )
+        assert close_db.exists(), f"scidb.close_database not found at {close_db}"
         contents = close_db.read_text()
         # The RELEASED log MUST fire after close returns, not before.
         # Use rfind so docstring mentions of these strings (which appear
@@ -752,11 +773,8 @@ class TestFindSciMatlabMatlabDir:
     def test_scihist_configure_database_present(self):
         """Regression: +scihist/configure_database.m must exist so MATLAB can call it."""
         from scistack_gui.server import _find_scimatlab_matlab_dir
-        from pathlib import Path
 
         result = _find_scimatlab_matlab_dir()
         assert result is not None
         cfg_db = Path(result) / "+scihist" / "configure_database.m"
-        assert cfg_db.exists(), (
-            f"scihist.configure_database not found at {cfg_db}"
-        )
+        assert cfg_db.exists(), f"scihist.configure_database not found at {cfg_db}"

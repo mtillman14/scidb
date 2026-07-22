@@ -6,21 +6,17 @@ to_db()/from_db() run client-side; the server stores/returns raw data.
 
 import json
 import struct
-from typing import Any, Type
+from typing import Any
 
 import httpx
-import numpy as np
 import pandas as pd
-
 from scidb.variable import BaseVariable
 
-from .exceptions import NetworkError, SerializationError, ServerError
+from .exceptions import NetworkError, ServerError
 from .serialization import (
     decode_envelope,
-    decode_response,
     deserialize_data,
     encode_save_request,
-    serialize_data,
 )
 
 
@@ -37,7 +33,7 @@ class RemoteDatabaseManager:
     def __init__(self, base_url: str, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
-        self._registered_types: dict[str, Type[BaseVariable]] = {}
+        self._registered_types: dict[str, type[BaseVariable]] = {}
 
     # -----------------------------------------------------------------
     # Helpers
@@ -87,11 +83,13 @@ class RemoteDatabaseManager:
     @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
         """Check if a BaseVariable subclass overrides to_db or from_db."""
-        return "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
+        return (
+            "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
+        )
 
     def _response_to_variable(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         header: dict,
         body: bytes,
     ) -> BaseVariable:
@@ -107,9 +105,7 @@ class RemoteDatabaseManager:
             raw_data, pd.DataFrame
         ):
             # Strip internal columns before passing to from_db
-            internal_cols = [
-                c for c in raw_data.columns if c.startswith("_")
-            ]
+            internal_cols = [c for c in raw_data.columns if c.startswith("_")]
             if internal_cols:
                 raw_data = raw_data.drop(columns=internal_cols)
             raw_data = variable_class.from_db(raw_data)
@@ -125,20 +121,25 @@ class RemoteDatabaseManager:
     # Public API (mirrors DatabaseManager)
     # -----------------------------------------------------------------
 
-    def register(self, variable_class: Type[BaseVariable]) -> None:
+    def register(self, variable_class: type[BaseVariable]) -> None:
         """Register a variable type with the remote server."""
         type_name = variable_class.__name__
         self._registered_types[type_name] = variable_class
-        self._post_json("register", {
-            "type_name": type_name,
-            "table_name": variable_class.table_name(),
-            "schema_version": variable_class.schema_version,
-            "has_custom_serialization": self._has_custom_serialization(variable_class),
-        })
+        self._post_json(
+            "register",
+            {
+                "type_name": type_name,
+                "table_name": variable_class.table_name(),
+                "schema_version": variable_class.schema_version,
+                "has_custom_serialization": self._has_custom_serialization(
+                    variable_class
+                ),
+            },
+        )
 
     def save_variable(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         data: Any,
         index: Any = None,
         **metadata,
@@ -206,7 +207,9 @@ class RemoteDatabaseManager:
         meta = {
             "type_name": variable.__class__.__name__,
             "metadata": metadata,
-            "lineage": lineage.to_dict() if lineage and hasattr(lineage, "to_dict") else lineage,
+            "lineage": lineage.to_dict()
+            if lineage and hasattr(lineage, "to_dict")
+            else lineage,
             "lineage_hash": lineage_hash,
             "index": list(index) if index is not None else None,
             "has_custom_serialization": has_custom,
@@ -219,7 +222,7 @@ class RemoteDatabaseManager:
 
     def load(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         metadata: dict,
         version: str = "latest",
         loc: Any = None,
@@ -242,7 +245,7 @@ class RemoteDatabaseManager:
 
     def load_all(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         metadata: dict,
     ):
         """Load all matching variables as a generator."""
@@ -271,35 +274,44 @@ class RemoteDatabaseManager:
 
     def list_versions(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         **metadata,
     ) -> list[dict]:
         """List all versions at a schema location."""
-        result = self._post_json("list_versions", {
-            "type_name": variable_class.__name__,
-            "metadata": metadata,
-        })
+        result = self._post_json(
+            "list_versions",
+            {
+                "type_name": variable_class.__name__,
+                "metadata": metadata,
+            },
+        )
         return result["versions"]
 
     def get_provenance(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         version: str | None = None,
         **metadata,
     ) -> dict | None:
         """Get provenance of a variable."""
-        result = self._post_json("provenance", {
-            "type_name": variable_class.__name__,
-            "version": version,
-            "metadata": metadata,
-        })
+        result = self._post_json(
+            "provenance",
+            {
+                "type_name": variable_class.__name__,
+                "version": version,
+                "metadata": metadata,
+            },
+        )
         return result["provenance"]
 
     def get_provenance_by_schema(self, **schema_keys) -> list[dict]:
         """Get all provenance records matching schema keys."""
-        result = self._post_json("provenance_by_schema", {
-            "schema_keys": schema_keys,
-        })
+        result = self._post_json(
+            "provenance_by_schema",
+            {
+                "schema_keys": schema_keys,
+            },
+        )
         return result["records"]
 
     def get_pipeline_structure(self) -> list[dict]:
@@ -319,16 +331,19 @@ class RemoteDatabaseManager:
 
     def export_to_csv(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         path: str,
         **metadata,
     ) -> int:
         """Export matching variables to CSV (server-side)."""
-        result = self._post_json("export_to_csv", {
-            "type_name": variable_class.__name__,
-            "path": path,
-            "metadata": metadata,
-        })
+        result = self._post_json(
+            "export_to_csv",
+            {
+                "type_name": variable_class.__name__,
+                "path": path,
+                "metadata": metadata,
+            },
+        )
         return result["count"]
 
     def find_by_lineage(self, invocation) -> list | None:

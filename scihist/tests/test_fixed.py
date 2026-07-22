@@ -1,7 +1,5 @@
 """Tests for Fixed class."""
 
-import pytest
-
 from scidb import Fixed
 
 

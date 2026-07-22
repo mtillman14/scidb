@@ -3,7 +3,6 @@
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 _root = Path(__file__).parent.parent
@@ -14,20 +13,27 @@ sys.path.insert(0, str(_root / "scilineage" / "src"))
 sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "canonical-hash" / "src"))
 
-import scidb
-from scidb import configure_database, exclude_schema, include_schema, list_exclusions, for_each, BaseVariable
+from scidb.database import _local
 from scidb.exclusions import (
-    get_schema_overrides_hash,
-    filter_excluded_combos,
     _TABLE,
     _current_status,
+    filter_excluded_combos,
+    get_schema_overrides_hash,
 )
-from scidb.database import _local
 
+from scidb import (
+    BaseVariable,
+    configure_database,
+    exclude_schema,
+    for_each,
+    include_schema,
+    list_exclusions,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def clear_db_state():
@@ -49,6 +55,7 @@ def db(tmp_path):
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def _count_rows(db, **filters) -> int:
     """Count rows in __scidb_schema_overrides matching optional filters."""
     where_parts = []
@@ -66,6 +73,7 @@ def _count_rows(db, **filters) -> int:
 # ===========================================================================
 # Basic exclude / include
 # ===========================================================================
+
 
 class TestExcludeSchema:
     def test_basic_exclude(self, db):
@@ -133,6 +141,7 @@ class TestIncludeSchema:
 # list_exclusions
 # ===========================================================================
 
+
 class TestListExclusions:
     def test_returns_empty_when_none(self, db):
         df = list_exclusions(db=db)
@@ -163,6 +172,7 @@ class TestListExclusions:
 # No-op guard — exact-keyset semantics
 # ===========================================================================
 
+
 class TestNoOpGuard:
     def test_specific_can_be_added_even_if_wildcard_already_excluded(self, db):
         # Wildcard row: subject=3, trial=NULL
@@ -186,6 +196,7 @@ class TestNoOpGuard:
 # ===========================================================================
 # filter_excluded_combos
 # ===========================================================================
+
 
 class TestFilterExcludedCombos:
     def test_no_overrides_returns_all(self, db):
@@ -235,6 +246,7 @@ class TestFilterExcludedCombos:
 # get_schema_overrides_hash
 # ===========================================================================
 
+
 class TestSchemaOverridesHash:
     def test_empty_table_returns_stable_hash(self, db):
         h1 = get_schema_overrides_hash(db)
@@ -259,6 +271,7 @@ class TestSchemaOverridesHash:
 # Backends without a DuckDB layer (no _duck) — exclusions degrade gracefully
 # ===========================================================================
 
+
 class _NoDuckDB:
     """Database double that doesn't expose a DuckDB backend.
 
@@ -275,6 +288,7 @@ class TestExclusionsWithoutDuckBackend:
     def test_overrides_hash_returns_empty_payload_hash(self):
         import hashlib
         import json
+
         # Same value an empty overrides table would produce, not a crash.
         empty_payload_hash = hashlib.sha256(
             json.dumps([], sort_keys=True).encode()
@@ -282,7 +296,9 @@ class TestExclusionsWithoutDuckBackend:
         assert get_schema_overrides_hash(_NoDuckDB()) == empty_payload_hash
 
     def test_overrides_hash_is_stable_without_backend(self):
-        assert get_schema_overrides_hash(_NoDuckDB()) == get_schema_overrides_hash(_NoDuckDB())
+        assert get_schema_overrides_hash(_NoDuckDB()) == get_schema_overrides_hash(
+            _NoDuckDB()
+        )
 
     def test_filter_returns_combos_unchanged_without_backend(self):
         combos = [{"subject": "1", "trial": "1"}, {"subject": "1", "trial": "2"}]
@@ -293,6 +309,7 @@ class TestExclusionsWithoutDuckBackend:
 # ===========================================================================
 # Integration with for_each
 # ===========================================================================
+
 
 class ScalarOutput(BaseVariable):
     schema_version = 1

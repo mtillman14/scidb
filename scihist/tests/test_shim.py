@@ -39,9 +39,9 @@ def test_submodule_imports_still_resolve():
     # Existing code / tests import scihist submodules directly.
     from scihist.foreach import save as _save  # noqa: F401
     from scihist.state import (  # noqa: F401
-        check_node_state,
         check_combo_state,
         check_multiple_nodes_state,
+        check_node_state,
     )
 
 

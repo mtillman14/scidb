@@ -15,10 +15,9 @@ import os
 import sys
 
 import pandas as pd
-import pytest
+import scifor.foreach
 
 import scifor
-import scifor.foreach
 from scifor import for_each, set_schema
 
 
@@ -36,7 +35,8 @@ def make_df(subjects=(1, 2, 3), trials=(1, 2)):
 
 def messages(caplog, level=None):
     return [
-        r.getMessage() for r in caplog.records
+        r.getMessage()
+        for r in caplog.records
         if r.name == "scifor" and (level is None or r.levelno == level)
     ]
 
@@ -45,11 +45,16 @@ def messages(caplog, level=None):
 # Level policy: per-iteration lines are DEBUG
 # ---------------------------------------------------------------------------
 
+
 def test_run_lines_absent_at_info(caplog):
     set_schema(["subject", "trial"])
     with caplog.at_level(logging.INFO, logger="scifor"):
-        for_each(lambda value: value.mean(),
-                 inputs={"value": make_df()}, subject=[1, 2, 3], trial=[1, 2])
+        for_each(
+            lambda value: value.mean(),
+            inputs={"value": make_df()},
+            subject=[1, 2, 3],
+            trial=[1, 2],
+        )
     msgs = messages(caplog)
     assert not any(m.startswith("[run]") for m in msgs)
     assert not any(m.startswith("[done]") for m in msgs)
@@ -58,8 +63,12 @@ def test_run_lines_absent_at_info(caplog):
 def test_run_lines_present_at_debug(caplog):
     set_schema(["subject", "trial"])
     with caplog.at_level(logging.DEBUG, logger="scifor"):
-        for_each(lambda value: value.mean(),
-                 inputs={"value": make_df()}, subject=[1, 2, 3], trial=[1, 2])
+        for_each(
+            lambda value: value.mean(),
+            inputs={"value": make_df()},
+            subject=[1, 2, 3],
+            trial=[1, 2],
+        )
     msgs = messages(caplog)
     assert sum(1 for m in msgs if m.startswith("[run]")) == 6
     assert sum(1 for m in msgs if m.startswith("[done]")) == 6
@@ -68,18 +77,22 @@ def test_run_lines_present_at_debug(caplog):
 def test_banner_and_done_summary_at_info(caplog):
     set_schema(["subject", "trial"])
     with caplog.at_level(logging.INFO, logger="scifor"):
-        for_each(lambda value: value.mean(),
-                 inputs={"value": make_df()}, subject=[1, 2, 3], trial=[1, 2])
+        for_each(
+            lambda value: value.mean(),
+            inputs={"value": make_df()},
+            subject=[1, 2, 3],
+            trial=[1, 2],
+        )
     msgs = messages(caplog, logging.INFO)
     assert any("for_each(<lambda>) — 6 iterations" in m for m in msgs)
     assert any("subject=3 values [1, 2, 3]" in m for m in msgs)
-    assert any("done in" in m and "completed=6, failed=0, total=6" in m
-               for m in msgs)
+    assert any("done in" in m and "completed=6, failed=0, total=6" in m for m in msgs)
 
 
 # ---------------------------------------------------------------------------
 # Failure aggregation
 # ---------------------------------------------------------------------------
+
 
 def test_summary_aggregates_failure_reasons(caplog):
     set_schema(["subject", "trial"])
@@ -91,8 +104,7 @@ def test_summary_aggregates_failure_reasons(caplog):
         return float(value)
 
     with caplog.at_level(logging.DEBUG, logger="scifor"):
-        for_each(fn, inputs={"value": make_df()},
-                 subject=[1, 2, 3], trial=[1, 2])
+        for_each(fn, inputs={"value": make_df()}, subject=[1, 2, 3], trial=[1, 2])
 
     info = messages(caplog, logging.INFO)
     done = [m for m in info if "done in" in m]
@@ -103,22 +115,21 @@ def test_summary_aggregates_failure_reasons(caplog):
     assert "subject=1, trial=1" in failed[0]
 
     # First occurrence logs at WARN with the traceback attached.
-    warns = [r for r in caplog.records
-             if r.name == "scifor" and r.levelno == logging.WARNING]
+    warns = [
+        r for r in caplog.records if r.name == "scifor" and r.levelno == logging.WARNING
+    ]
     assert len(warns) == 1
     assert "iteration failed" in warns[0].getMessage()
     assert warns[0].exc_info is not None or warns[0].exc_text
 
     # Every failing iteration logs a [skip] DEBUG line.
-    skips = [m for m in messages(caplog, logging.DEBUG)
-             if m.startswith("[skip]")]
+    skips = [m for m in messages(caplog, logging.DEBUG) if m.startswith("[skip]")]
     assert len(skips) == 3
 
 
 def test_summary_caps_listed_combos(caplog):
     set_schema(["subject"])
-    df = pd.DataFrame({"subject": list(range(1, 9)),
-                       "value": [1.0] * 8})
+    df = pd.DataFrame({"subject": list(range(1, 9)), "value": [1.0] * 8})
 
     def fn(value):
         raise ValueError("always broken")
@@ -126,8 +137,7 @@ def test_summary_caps_listed_combos(caplog):
     with caplog.at_level(logging.INFO, logger="scifor"):
         for_each(fn, inputs={"value": df}, subject=list(range(1, 9)))
 
-    failed = [m for m in messages(caplog, logging.INFO)
-              if m.startswith("failed:")]
+    failed = [m for m in messages(caplog, logging.INFO) if m.startswith("failed:")]
     assert len(failed) == 1
     assert 'failed: 8 × "ValueError: always broken"' in failed[0]
     assert "(+3 more)" in failed[0]  # 8 combos, 5 listed
@@ -143,8 +153,7 @@ def test_summary_progress_event_carries_failure_reasons():
             raise ValueError("boom")
         return float(value)
 
-    for_each(fn, inputs={"value": df}, subject=[1, 2],
-             _progress_fn=events.append)
+    for_each(fn, inputs={"value": df}, subject=[1, 2], _progress_fn=events.append)
 
     summaries = [e for e in events if e.get("event") == "summary"]
     assert len(summaries) == 1
@@ -158,15 +167,19 @@ def test_summary_progress_event_carries_failure_reasons():
 # Periodic progress
 # ---------------------------------------------------------------------------
 
+
 def test_progress_fires_on_outermost_key_transitions(caplog, monkeypatch):
     monkeypatch.setattr(scifor.foreach, "_PROGRESS_START_DELAY_S", 0.0)
     monkeypatch.setattr(scifor.foreach, "_PROGRESS_MIN_INTERVAL_S", 0.0)
     set_schema(["subject", "trial"])
     with caplog.at_level(logging.INFO, logger="scifor"):
-        for_each(lambda value: value.mean(),
-                 inputs={"value": make_df()}, subject=[1, 2, 3], trial=[1, 2])
-    progress = [m for m in messages(caplog, logging.INFO)
-                if m.startswith("progress:")]
+        for_each(
+            lambda value: value.mean(),
+            inputs={"value": make_df()},
+            subject=[1, 2, 3],
+            trial=[1, 2],
+        )
+    progress = [m for m in messages(caplog, logging.INFO) if m.startswith("progress:")]
     # 3 subject transitions; the very first (subject=1 at combo 0) never logs.
     assert len(progress) == 2
     assert "subject=2 (2/3)" in progress[0]
@@ -179,10 +192,13 @@ def test_progress_respects_min_interval_guard(caplog, monkeypatch):
     monkeypatch.setattr(scifor.foreach, "_PROGRESS_MIN_INTERVAL_S", 1000.0)
     set_schema(["subject", "trial"])
     with caplog.at_level(logging.INFO, logger="scifor"):
-        for_each(lambda value: value.mean(),
-                 inputs={"value": make_df()}, subject=[1, 2, 3], trial=[1, 2])
-    progress = [m for m in messages(caplog, logging.INFO)
-                if m.startswith("progress:")]
+        for_each(
+            lambda value: value.mean(),
+            inputs={"value": make_df()},
+            subject=[1, 2, 3],
+            trial=[1, 2],
+        )
+    progress = [m for m in messages(caplog, logging.INFO) if m.startswith("progress:")]
     assert progress == []
 
 
@@ -190,15 +206,19 @@ def test_no_progress_on_fast_runs_by_default(caplog):
     """Default 5s start delay means short runs emit no progress lines."""
     set_schema(["subject", "trial"])
     with caplog.at_level(logging.INFO, logger="scifor"):
-        for_each(lambda value: value.mean(),
-                 inputs={"value": make_df()}, subject=[1, 2, 3], trial=[1, 2])
-    assert not any(m.startswith("progress:")
-                   for m in messages(caplog, logging.INFO))
+        for_each(
+            lambda value: value.mean(),
+            inputs={"value": make_df()},
+            subject=[1, 2, 3],
+            trial=[1, 2],
+        )
+    assert not any(m.startswith("progress:") for m in messages(caplog, logging.INFO))
 
 
 # ---------------------------------------------------------------------------
 # Isolation contracts
 # ---------------------------------------------------------------------------
+
 
 def test_scifor_does_not_import_scidb():
     """scifor must stay scidb-free: it logs via scistacklog directly.
@@ -226,7 +246,9 @@ def test_scifor_does_not_import_scidb():
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
     result = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True, env=env,
+        capture_output=True,
+        text=True,
+        env=env,
     )
     assert result.returncode == 0, (
         f"scifor imported scidb (or the probe failed):\n"

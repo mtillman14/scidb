@@ -21,13 +21,15 @@ def get_pipeline_graph(db, pipeline_id: str = "main") -> dict:
     for both protocol adapters.
     """
     from scistack_gui.api.pipeline import _build_graph
+
     return _build_graph(db, pipeline_id)
 
 
 def get_function_params(fn_name: str) -> list[str]:
     """Return non-private parameter names from the function's signature."""
-    from scistack_gui.api.pipeline import _fn_params_from_registry
     from scistack_gui import matlab_registry
+    from scistack_gui.api.pipeline import _fn_params_from_registry
+
     if matlab_registry.is_matlab_function(fn_name):
         info = matlab_registry.get_matlab_function(fn_name)
         return list(info.params)
@@ -45,8 +47,10 @@ def get_function_full_info(fn_name: str) -> dict:
     exists (the graph post-pass only tags nodes on a refetch).
     """
     from scidb.foreach import _endpoint_kind
-    from scistack_gui.api.pipeline import _fn_params_from_registry
+
     from scistack_gui import matlab_registry
+    from scistack_gui.api.pipeline import _fn_params_from_registry
+
     if matlab_registry.is_matlab_function(fn_name):
         info = matlab_registry.get_matlab_function(fn_name)
         return {
@@ -65,14 +69,17 @@ def get_function_full_info(fn_name: str) -> dict:
 
 def get_function_source(fn_name: str) -> dict:
     """Return the source file path and line number for a registered function."""
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
+    from scistack_gui import matlab_registry, registry
+
     if matlab_registry.is_matlab_function(fn_name):
         info = matlab_registry.get_matlab_function(fn_name)
         return {"ok": True, "file": str(info.file_path), "line": 1}
     fn = registry._functions.get(fn_name)
     if fn is None:
-        return {"ok": False, "error": f"Function '{fn_name}' is not registered (pass --module at startup)."}
+        return {
+            "ok": False,
+            "error": f"Function '{fn_name}' is not registered (pass --module at startup).",
+        }
     try:
         file = inspect.getsourcefile(fn) or inspect.getfile(fn)
         _, line = inspect.getsourcelines(fn)
@@ -90,8 +97,9 @@ def get_schema(db) -> dict:
 
 def get_info() -> dict:
     """Return metadata about the open database."""
-    from scistack_gui.db import get_db_path
     from scistack_gui import startup as _startup
+    from scistack_gui.db import get_db_path
+
     return {
         "db_name": get_db_path().name,
         "startup_errors": [e.to_dict() for e in _startup.get_startup_errors()],
@@ -100,14 +108,15 @@ def get_info() -> dict:
 
 def get_registry() -> dict:
     """Return all registered functions, variables, and MATLAB functions."""
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
     from scidb import BaseVariable
+    from scistack_gui import matlab_registry, registry
+
     matlab_fns = matlab_registry.get_all_function_names()
     matlab_mismatched = matlab_registry.get_mismatched_function_names()
     logger.info(
         "get_registry: %d python fns, %d matlab fns, %d vars",
-        len(registry._functions), len(matlab_fns),
+        len(registry._functions),
+        len(matlab_fns),
         len(BaseVariable._all_subclasses),
     )
     if matlab_fns:
@@ -125,13 +134,16 @@ def get_registry() -> dict:
 def get_variables_list() -> list[dict]:
     """Return all registered variable type names."""
     from scidb import BaseVariable
-    return [{"variable_name": name} for name in sorted(BaseVariable._all_subclasses.keys())]
+
+    return [
+        {"variable_name": name} for name in sorted(BaseVariable._all_subclasses.keys())
+    ]
 
 
 def refresh_module() -> dict:
     """Re-import user module and refresh registries."""
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
+    from scistack_gui import matlab_registry, registry
+
     try:
         if registry._config is not None:
             result = registry.refresh_all()

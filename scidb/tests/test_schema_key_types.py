@@ -14,12 +14,11 @@ The hybrid contract:
 
 import numpy as np
 import pytest
-
-import scifor as _scifor
-from scidb import BaseVariable, configure_database, for_each
 from scidb.database import DatabaseManager, _canonical_numeric_value
 from scidb.exceptions import SchemaKeyTypeError
 
+import scifor as _scifor
+from scidb import BaseVariable, configure_database, for_each
 
 SCHEMA = ["subject", "trial"]
 
@@ -35,6 +34,7 @@ def read_name(filepath):
     the combo, and the per-file content proves WHICH file was resolved.
     """
     from pathlib import Path
+
     return float(Path(str(filepath)).read_text().strip())
 
 
@@ -83,14 +83,16 @@ class TestDeclarationValidation:
     def test_unknown_key_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="not schema keys"):
             DatabaseManager(
-                tmp_path / "x.duckdb", SCHEMA,
+                tmp_path / "x.duckdb",
+                SCHEMA,
                 dataset_schema_key_types={"nope": "numeric"},
             )
 
     def test_bad_type_value_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="must be one of"):
             DatabaseManager(
-                tmp_path / "x.duckdb", SCHEMA,
+                tmp_path / "x.duckdb",
+                SCHEMA,
                 dataset_schema_key_types={"trial": "int"},
             )
 
@@ -127,10 +129,14 @@ class TestForEachNumericDeclared:
     def test_explicit_ints_resolve_and_store_canonical(self, db_numeric, padded_tree):
         for_each(
             read_name,
-            {"filepath": _scifor.PathInput("{subject}/6MWT-{trial}.mat",
-                                           root_folder=str(padded_tree))},
+            {
+                "filepath": _scifor.PathInput(
+                    "{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree)
+                )
+            },
             [PathName],
-            subject=[1], trial=[1, 2],
+            subject=[1],
+            trial=[1, 2],
         )
         # Files resolved despite padding; stored identity is canonical "1"/"2".
         assert sorted(db_numeric.distinct_schema_values("trial")) == ["1", "2"]
@@ -141,24 +147,35 @@ class TestForEachNumericDeclared:
     def test_discovery_driven_combos_canonicalized(self, db_numeric, padded_tree):
         for_each(
             read_name,
-            {"filepath": _scifor.PathInput("{subject}/6MWT-{trial}.mat",
-                                           root_folder=str(padded_tree))},
+            {
+                "filepath": _scifor.PathInput(
+                    "{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree)
+                )
+            },
             [PathName],
-            subject=[], trial=[],
+            subject=[],
+            trial=[],
         )
         # Discovery captured "001"/"002" but the declaration canonicalizes:
         # same stored identity as an explicit trial=[1, 2] run.
         assert sorted(db_numeric.distinct_schema_values("trial")) == ["1", "2"]
 
     def test_discovery_and_explicit_runs_share_identity(self, db_numeric, padded_tree):
-        pi = _scifor.PathInput("{subject}/6MWT-{trial}.mat",
-                               root_folder=str(padded_tree))
+        pi = _scifor.PathInput(
+            "{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree)
+        )
         for_each(read_name, {"filepath": pi}, [PathName], subject=[], trial=[])
-        n_after_first = len(db_numeric._duck._fetchall(
-            "SELECT record_id FROM _record WHERE type='PathName'"))
+        n_after_first = len(
+            db_numeric._duck._fetchall(
+                "SELECT record_id FROM _record WHERE type='PathName'"
+            )
+        )
         for_each(read_name, {"filepath": pi}, [PathName], subject=[1], trial=[1, 2])
-        n_after_second = len(db_numeric._duck._fetchall(
-            "SELECT record_id FROM _record WHERE type='PathName'"))
+        n_after_second = len(
+            db_numeric._duck._fetchall(
+                "SELECT record_id FROM _record WHERE type='PathName'"
+            )
+        )
         # The explicit run re-saves the same identities — no new records.
         assert n_after_second == n_after_first
 
@@ -168,10 +185,14 @@ class TestForEachUndeclared:
         with pytest.raises(SchemaKeyTypeError, match="schema_key_types"):
             for_each(
                 read_name,
-                {"filepath": _scifor.PathInput("{subject}/6MWT-{trial}.mat",
-                                               root_folder=str(padded_tree))},
+                {
+                    "filepath": _scifor.PathInput(
+                        "{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree)
+                    )
+                },
                 [PathName],
-                subject=[1], trial=[1, 2],
+                subject=[1],
+                trial=[1, 2],
             )
 
     def test_exact_matches_need_no_declaration(self, db_undeclared, padded_tree):
@@ -179,10 +200,14 @@ class TestForEachUndeclared:
         # the fallback never fires, no declaration needed (hybrid contract).
         for_each(
             read_name,
-            {"filepath": _scifor.PathInput("{subject}/6MWT-{trial}.mat",
-                                           root_folder=str(padded_tree))},
+            {
+                "filepath": _scifor.PathInput(
+                    "{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree)
+                )
+            },
             [PathName],
-            subject=[], trial=[],
+            subject=[],
+            trial=[],
         )
         assert sorted(db_undeclared.distinct_schema_values("trial")) == ["001", "002"]
 
@@ -191,10 +216,14 @@ class TestForEachStringDeclared:
     def test_padded_strings_resolve_exactly(self, db_string, padded_tree):
         for_each(
             read_name,
-            {"filepath": _scifor.PathInput("{subject}/6MWT-{trial}.mat",
-                                           root_folder=str(padded_tree))},
+            {
+                "filepath": _scifor.PathInput(
+                    "{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree)
+                )
+            },
             [PathName],
-            subject=[1], trial=["001", "002"],
+            subject=[1],
+            trial=["001", "002"],
         )
         assert sorted(db_string.distinct_schema_values("trial")) == ["001", "002"]
 
@@ -204,11 +233,16 @@ class TestForEachStringDeclared:
         # declare-error is raised (the key IS declared).
         for_each(
             read_name,
-            {"filepath": _scifor.PathInput("{subject}/6MWT-{trial}.mat",
-                                           root_folder=str(padded_tree))},
+            {
+                "filepath": _scifor.PathInput(
+                    "{subject}/6MWT-{trial}.mat", root_folder=str(padded_tree)
+                )
+            },
             [PathName],
-            subject=[1], trial=[1],
+            subject=[1],
+            trial=[1],
         )
         rows = db_string._duck._fetchall(
-            "SELECT COUNT(*) FROM _record WHERE type='PathName'")
+            "SELECT COUNT(*) FROM _record WHERE type='PathName'"
+        )
         assert rows[0][0] == 0

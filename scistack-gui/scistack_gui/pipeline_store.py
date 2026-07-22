@@ -124,9 +124,11 @@ def _ensure_tables(db) -> None:
             f"ALTER TABLE _pipeline_nodes ADD COLUMN pipeline_id VARCHAR "
             f"DEFAULT '{ROOT_PIPELINE_ID}'"
         )
-        logger.info("[pipeline_store] scoping migration: added pipeline_id "
-                    "column to _pipeline_nodes (existing nodes -> '%s')",
-                    ROOT_PIPELINE_ID)
+        logger.info(
+            "[pipeline_store] scoping migration: added pipeline_id "
+            "column to _pipeline_nodes (existing nodes -> '%s')",
+            ROOT_PIPELINE_ID,
+        )
     except Exception:
         pass  # Column already exists
     _duck(db)._execute(
@@ -140,7 +142,9 @@ def migrate_from_json(db, layout_path: Path) -> None:
 
     Safe to call repeatedly — checks the migration sentinel before acting.
     """
-    logger.info("[pipeline_store] migrate_from_json called (layout_path=%s)", layout_path)
+    logger.info(
+        "[pipeline_store] migrate_from_json called (layout_path=%s)", layout_path
+    )
     _ensure_tables(db)
 
     if not layout_path.exists():
@@ -156,14 +160,19 @@ def migrate_from_json(db, layout_path: Path) -> None:
             return
 
     if data.get(_MIGRATION_SENTINEL):
-        logger.debug("[pipeline_store] Migration already completed (sentinel found), skipping")
+        logger.debug(
+            "[pipeline_store] Migration already completed (sentinel found), skipping"
+        )
         return  # Already migrated.
 
     logger.info("[pipeline_store] Migrating manual_nodes and manual_edges to DuckDB")
     manual_nodes: dict = data.get("manual_nodes", {})
     manual_edges: list = data.get("manual_edges", [])
-    logger.debug("[pipeline_store] Found %d manual nodes and %d manual edges in JSON",
-                 len(manual_nodes), len(manual_edges))
+    logger.debug(
+        "[pipeline_store] Found %d manual nodes and %d manual edges in JSON",
+        len(manual_nodes),
+        len(manual_edges),
+    )
 
     migrated_nodes = 0
     for node_id, meta in manual_nodes.items():
@@ -177,11 +186,19 @@ def migrate_from_json(db, layout_path: Path) -> None:
     for edge in manual_edges:
         edge_id = edge.get("id", "")
         if edge_id:
-            _upsert_edge(db, edge_id, edge.get("source", ""), edge.get("target", ""),
-                         edge.get("sourceHandle"), edge.get("targetHandle"))
+            _upsert_edge(
+                db,
+                edge_id,
+                edge.get("source", ""),
+                edge.get("target", ""),
+                edge.get("sourceHandle"),
+                edge.get("targetHandle"),
+            )
             migrated_edges += 1
 
-    logger.info("[pipeline_store] Writing migration sentinel to JSON and removing migrated data")
+    logger.info(
+        "[pipeline_store] Writing migration sentinel to JSON and removing migrated data"
+    )
     # Clear migrated keys from JSON and write sentinel.
     data.pop("manual_nodes", None)
     data.pop("manual_edges", None)
@@ -191,13 +208,15 @@ def migrate_from_json(db, layout_path: Path) -> None:
 
     logger.info(
         "[pipeline_store] Migration complete - migrated %d nodes and %d edges from JSON to DuckDB",
-        migrated_nodes, migrated_edges,
+        migrated_nodes,
+        migrated_edges,
     )
 
 
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
+
 
 def get_manual_nodes(db, pipeline_id: "str | None" = None) -> dict[str, dict]:
     """Return {node_id: {"type", "label", "pipeline_id"[, "config"]}}.
@@ -208,8 +227,7 @@ def get_manual_nodes(db, pipeline_id: "str | None" = None) -> dict[str, dict]:
     _ensure_tables(db)
     if pipeline_id is None:
         rows = _duck(db)._fetchall(
-            "SELECT node_id, node_type, label, config, pipeline_id "
-            "FROM _pipeline_nodes"
+            "SELECT node_id, node_type, label, config, pipeline_id FROM _pipeline_nodes"
         )
     else:
         rows = _duck(db)._fetchall(
@@ -219,9 +237,12 @@ def get_manual_nodes(db, pipeline_id: "str | None" = None) -> dict[str, dict]:
         )
     result = {}
     for row in rows:
-        entry: dict = {"type": row[1], "label": row[2],
-                       "pipeline_id": row[4] or ROOT_PIPELINE_ID}
-        if row[3] and row[3] != '{}':
+        entry: dict = {
+            "type": row[1],
+            "label": row[2],
+            "pipeline_id": row[4] or ROOT_PIPELINE_ID,
+        }
+        if row[3] and row[3] != "{}":
             try:
                 entry["config"] = json.loads(row[3])
             except (json.JSONDecodeError, TypeError):
@@ -230,10 +251,17 @@ def get_manual_nodes(db, pipeline_id: "str | None" = None) -> dict[str, dict]:
     return result
 
 
-def write_manual_node(db, node_id: str, node_type: str, label: str,
-                      pipeline_id: str = ROOT_PIPELINE_ID) -> None:
-    logger.info("[pipeline_store] write_manual_node called (node_id=%r, type=%r, "
-                "label=%r, pipeline_id=%r)", node_id, node_type, label, pipeline_id)
+def write_manual_node(
+    db, node_id: str, node_type: str, label: str, pipeline_id: str = ROOT_PIPELINE_ID
+) -> None:
+    logger.info(
+        "[pipeline_store] write_manual_node called (node_id=%r, type=%r, "
+        "label=%r, pipeline_id=%r)",
+        node_id,
+        node_type,
+        label,
+        pipeline_id,
+    )
     _ensure_tables(db)
     logger.info("[pipeline_store] Upserting node into _pipeline_nodes table")
     _upsert_node(db, node_id, node_type, label, pipeline_id)
@@ -245,15 +273,13 @@ def update_node_config(db, node_id: str, config: dict) -> None:
     _ensure_tables(db)
     _duck(db)._execute(
         "UPDATE _pipeline_nodes SET config = ? WHERE node_id = ?",
-        [json.dumps(config), node_id]
+        [json.dumps(config), node_id],
     )
 
 
 def delete_node(db, node_id: str) -> None:
     logger.info("[pipeline_store] delete_node called (node_id=%r)", node_id)
-    _duck(db)._execute(
-        "DELETE FROM _pipeline_nodes WHERE node_id = ?", [node_id]
-    )
+    _duck(db)._execute("DELETE FROM _pipeline_nodes WHERE node_id = ?", [node_id])
     logger.info("[pipeline_store] Node deleted from _pipeline_nodes table")
 
 
@@ -263,9 +289,7 @@ def graduate_manual_node(db, old_id: str, new_id: str) -> None:
     Also rewrites any manual edges that reference old_id so they point to
     new_id instead of becoming dangling.
     """
-    _duck(db)._execute(
-        "DELETE FROM _pipeline_nodes WHERE node_id = ?", [old_id]
-    )
+    _duck(db)._execute("DELETE FROM _pipeline_nodes WHERE node_id = ?", [old_id])
     # Update edges that reference the old node ID.
     _duck(db)._execute(
         "UPDATE _pipeline_edges SET source = ? WHERE source = ?",
@@ -280,6 +304,7 @@ def graduate_manual_node(db, old_id: str, new_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Edges
 # ---------------------------------------------------------------------------
+
 
 def get_manual_edges(db) -> list[dict]:
     """Return all manual edges as a list of dicts."""
@@ -300,10 +325,14 @@ def get_manual_edges(db) -> list[dict]:
 
 
 def write_manual_edge(db, edge: dict) -> None:
-    logger.info("[pipeline_store] write_manual_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
-                edge.get("id"), edge.get("source"), edge.get("target"),
-                edge.get("sourceHandle") or edge.get("source_handle"),
-                edge.get("targetHandle") or edge.get("target_handle"))
+    logger.info(
+        "[pipeline_store] write_manual_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
+        edge.get("id"),
+        edge.get("source"),
+        edge.get("target"),
+        edge.get("sourceHandle") or edge.get("source_handle"),
+        edge.get("targetHandle") or edge.get("target_handle"),
+    )
     _ensure_tables(db)
     logger.info("[pipeline_store] Upserting edge into _pipeline_edges table")
     _upsert_edge(
@@ -319,9 +348,7 @@ def write_manual_edge(db, edge: dict) -> None:
 
 def delete_manual_edge(db, edge_id: str) -> None:
     logger.info("[pipeline_store] delete_manual_edge called (edge_id=%r)", edge_id)
-    _duck(db)._execute(
-        "DELETE FROM _pipeline_edges WHERE edge_id = ?", [edge_id]
-    )
+    _duck(db)._execute("DELETE FROM _pipeline_edges WHERE edge_id = ?", [edge_id])
     logger.info("[pipeline_store] Edge deleted from _pipeline_edges table")
 
 
@@ -329,11 +356,17 @@ def delete_manual_edge(db, edge_id: str) -> None:
 # Pending constants
 # ---------------------------------------------------------------------------
 
+
 def add_pending_constant(db, const_name: str, value: str) -> None:
-    logger.info("[pipeline_store] add_pending_constant called (const_name=%r, value=%r)",
-                const_name, value)
+    logger.info(
+        "[pipeline_store] add_pending_constant called (const_name=%r, value=%r)",
+        const_name,
+        value,
+    )
     _ensure_tables(db)
-    logger.info("[pipeline_store] Inserting pending constant into _pipeline_pending_constants table")
+    logger.info(
+        "[pipeline_store] Inserting pending constant into _pipeline_pending_constants table"
+    )
     _duck(db)._execute(
         "INSERT INTO _pipeline_pending_constants (constant_name, value) VALUES (?, ?) "
         "ON CONFLICT DO NOTHING",
@@ -343,13 +376,18 @@ def add_pending_constant(db, const_name: str, value: str) -> None:
 
 
 def remove_pending_constant(db, const_name: str, value: str) -> None:
-    logger.info("[pipeline_store] remove_pending_constant called (const_name=%r, value=%r)",
-                const_name, value)
+    logger.info(
+        "[pipeline_store] remove_pending_constant called (const_name=%r, value=%r)",
+        const_name,
+        value,
+    )
     _duck(db)._execute(
         "DELETE FROM _pipeline_pending_constants WHERE constant_name = ? AND value = ?",
         [const_name, value],
     )
-    logger.info("[pipeline_store] Pending constant removed from _pipeline_pending_constants table")
+    logger.info(
+        "[pipeline_store] Pending constant removed from _pipeline_pending_constants table"
+    )
 
 
 def get_pending_constants(db) -> dict[str, set[str]]:
@@ -368,12 +406,12 @@ def get_pending_constants(db) -> dict[str, set[str]]:
 # Pipelines (nested-pipeline scopes)
 # ---------------------------------------------------------------------------
 
+
 def list_pipelines(db) -> list[dict]:
     """All pipeline scopes: [{"pipeline_id", "name"}], root first."""
     _ensure_tables(db)
     rows = _duck(db)._fetchall(
-        "SELECT pipeline_id, name FROM _pipelines "
-        "ORDER BY (pipeline_id != ?), name",
+        "SELECT pipeline_id, name FROM _pipelines ORDER BY (pipeline_id != ?), name",
         [ROOT_PIPELINE_ID],
     )
     return [{"pipeline_id": r[0], "name": r[1]} for r in rows]
@@ -435,8 +473,7 @@ def delete_pipeline(db, pipeline_id: str) -> None:
     if consumers:
         names = sorted({r[0] for r in consumers})
         raise ValueError(
-            f"pipeline is still used by {names} — remove those pipeline "
-            f"nodes first"
+            f"pipeline is still used by {names} — remove those pipeline nodes first"
         )
     node_rows = _duck(db)._fetchall(
         "SELECT node_id FROM _pipeline_nodes WHERE pipeline_id = ?",
@@ -449,19 +486,23 @@ def delete_pipeline(db, pipeline_id: str) -> None:
             [nid, nid],
         )
     _duck(db)._execute(
-        "DELETE FROM _pipeline_nodes WHERE pipeline_id = ?", [pipeline_id])
+        "DELETE FROM _pipeline_nodes WHERE pipeline_id = ?", [pipeline_id]
+    )
     _duck(db)._execute(
-        "DELETE FROM _pipeline_uses WHERE parent_pipeline_id = ?",
-        [pipeline_id])
-    _duck(db)._execute(
-        "DELETE FROM _pipelines WHERE pipeline_id = ?", [pipeline_id])
-    logger.info("[pipeline_store] delete_pipeline: %s (%d node(s) removed)",
-                pipeline_id, len(node_ids))
+        "DELETE FROM _pipeline_uses WHERE parent_pipeline_id = ?", [pipeline_id]
+    )
+    _duck(db)._execute("DELETE FROM _pipelines WHERE pipeline_id = ?", [pipeline_id])
+    logger.info(
+        "[pipeline_store] delete_pipeline: %s (%d node(s) removed)",
+        pipeline_id,
+        len(node_ids),
+    )
 
 
 # ---------------------------------------------------------------------------
 # Pipeline uses (pipeline-as-node edges between scopes)
 # ---------------------------------------------------------------------------
+
 
 def _uses_reachable(db, start_id: str) -> set:
     """Pipeline ids reachable from start_id through _pipeline_uses edges."""
@@ -470,8 +511,7 @@ def _uses_reachable(db, start_id: str) -> set:
     while frontier:
         current = frontier.pop()
         rows = _duck(db)._fetchall(
-            "SELECT child_pipeline_id FROM _pipeline_uses "
-            "WHERE parent_pipeline_id = ?",
+            "SELECT child_pipeline_id FROM _pipeline_uses WHERE parent_pipeline_id = ?",
             [current],
         )
         for (child,) in rows:
@@ -481,8 +521,9 @@ def _uses_reachable(db, start_id: str) -> set:
     return reachable
 
 
-def add_pipeline_use(db, parent_pipeline_id: str, child_pipeline_id: str,
-                     binding: "dict | None" = None) -> str:
+def add_pipeline_use(
+    db, parent_pipeline_id: str, child_pipeline_id: str, binding: "dict | None" = None
+) -> str:
     """Place ``child`` as a pipeline NODE on ``parent``'s canvas.
 
     One _pipeline_uses row + one canvas node whose node_id IS the use_id
@@ -495,8 +536,9 @@ def add_pipeline_use(db, parent_pipeline_id: str, child_pipeline_id: str,
     for pid in (parent_pipeline_id, child_pipeline_id):
         if pid not in known:
             raise ValueError(f"unknown pipeline_id '{pid}'")
-    if child_pipeline_id == parent_pipeline_id or \
-            parent_pipeline_id in _uses_reachable(db, child_pipeline_id):
+    if child_pipeline_id == parent_pipeline_id or parent_pipeline_id in _uses_reachable(
+        db, child_pipeline_id
+    ):
         raise ValueError(
             f"placing this pipeline would create a dependency cycle "
             f"('{child_pipeline_id}' already reaches '{parent_pipeline_id}')"
@@ -506,27 +548,28 @@ def add_pipeline_use(db, parent_pipeline_id: str, child_pipeline_id: str,
         "INSERT INTO _pipeline_uses "
         "(use_id, parent_pipeline_id, child_pipeline_id, binding_json) "
         "VALUES (?, ?, ?, ?)",
-        [use_id, parent_pipeline_id, child_pipeline_id,
-         json.dumps(binding or {})],
+        [use_id, parent_pipeline_id, child_pipeline_id, json.dumps(binding or {})],
     )
     child_name = next(
-        p["name"] for p in list_pipelines(db)
-        if p["pipeline_id"] == child_pipeline_id
+        p["name"] for p in list_pipelines(db) if p["pipeline_id"] == child_pipeline_id
     )
     _upsert_node(db, use_id, "pipelineNode", child_name, parent_pipeline_id)
-    logger.info("[pipeline_store] add_pipeline_use: '%s' placed on '%s' "
-                "(use_id=%s, binding=%s)", child_pipeline_id,
-                parent_pipeline_id, use_id, binding or {})
+    logger.info(
+        "[pipeline_store] add_pipeline_use: '%s' placed on '%s' "
+        "(use_id=%s, binding=%s)",
+        child_pipeline_id,
+        parent_pipeline_id,
+        use_id,
+        binding or {},
+    )
     return use_id
 
 
 def remove_pipeline_use(db, use_id: str) -> None:
     """Remove a pipeline node: the use row, its canvas node, its edges."""
     _ensure_tables(db)
-    _duck(db)._execute(
-        "DELETE FROM _pipeline_uses WHERE use_id = ?", [use_id])
-    _duck(db)._execute(
-        "DELETE FROM _pipeline_nodes WHERE node_id = ?", [use_id])
+    _duck(db)._execute("DELETE FROM _pipeline_uses WHERE use_id = ?", [use_id])
+    _duck(db)._execute("DELETE FROM _pipeline_nodes WHERE node_id = ?", [use_id])
     _duck(db)._execute(
         "DELETE FROM _pipeline_edges WHERE source = ? OR target = ?",
         [use_id, use_id],
@@ -555,12 +598,14 @@ def get_pipeline_uses(db, parent_pipeline_id: "str | None" = None) -> list[dict]
             binding = json.loads(binding_json) if binding_json else {}
         except (json.JSONDecodeError, TypeError):
             binding = {}
-        result.append({
-            "use_id": use_id,
-            "parent_pipeline_id": parent_id,
-            "child_pipeline_id": child_id,
-            "binding": binding,
-        })
+        result.append(
+            {
+                "use_id": use_id,
+                "parent_pipeline_id": parent_id,
+                "child_pipeline_id": child_id,
+                "binding": binding,
+            }
+        )
     return result
 
 
@@ -571,20 +616,19 @@ def update_use_binding(db, use_id: str, binding: dict) -> None:
     unknown = set(binding) - allowed
     if unknown:
         raise ValueError(
-            f"unknown binding key(s) {sorted(unknown)} — allowed: "
-            f"{sorted(allowed)}"
+            f"unknown binding key(s) {sorted(unknown)} — allowed: {sorted(allowed)}"
         )
     _duck(db)._execute(
         "UPDATE _pipeline_uses SET binding_json = ? WHERE use_id = ?",
         [json.dumps(binding), use_id],
     )
-    logger.info("[pipeline_store] update_use_binding: %s -> %s",
-                use_id, binding)
+    logger.info("[pipeline_store] update_use_binding: %s -> %s", use_id, binding)
 
 
 # ---------------------------------------------------------------------------
 # Hidden nodes (user-deleted DB-derived nodes)
 # ---------------------------------------------------------------------------
+
 
 def hide_node(db, node_id: str) -> None:
     """Mark a DB-derived node as hidden so _build_graph won't recreate it."""
@@ -619,9 +663,7 @@ def unhide_nodes_by_prefix(db, prefix: str) -> None:
 def get_hidden_node_ids(db) -> set[str]:
     """Return the set of node IDs that the user has explicitly deleted."""
     _ensure_tables(db)
-    rows = _duck(db)._fetchall(
-        "SELECT node_id FROM _pipeline_hidden_nodes"
-    )
+    rows = _duck(db)._fetchall("SELECT node_id FROM _pipeline_hidden_nodes")
     return {row[0] for row in rows}
 
 
@@ -629,8 +671,10 @@ def get_hidden_node_ids(db) -> set[str]:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _upsert_node(db, node_id: str, node_type: str, label: str,
-                 pipeline_id: str = ROOT_PIPELINE_ID) -> None:
+
+def _upsert_node(
+    db, node_id: str, node_type: str, label: str, pipeline_id: str = ROOT_PIPELINE_ID
+) -> None:
     _duck(db)._execute(
         "INSERT INTO _pipeline_nodes (node_id, node_type, label, pipeline_id) "
         "VALUES (?, ?, ?, ?) "
@@ -640,8 +684,9 @@ def _upsert_node(db, node_id: str, node_type: str, label: str,
     )
 
 
-def _upsert_edge(db, edge_id: str, source: str, target: str,
-                 source_handle, target_handle) -> None:
+def _upsert_edge(
+    db, edge_id: str, source: str, target: str, source_handle, target_handle
+) -> None:
     _duck(db)._execute(
         "INSERT INTO _pipeline_edges "
         "(edge_id, source, target, source_handle, target_handle) "

@@ -26,11 +26,9 @@ sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "scimatlab" / "src"))
 
 import numpy as np
-import pytest
-
-from scimatlab.bridge import for_each_prepare, register_matlab_variable
 from scidb.database import configure_database
 from scidb.foreach import for_each as scidb_for_each
+from scimatlab.bridge import for_each_prepare, register_matlab_variable
 
 
 def double(x):
@@ -41,8 +39,7 @@ def double(x):
 def _stored_invocation(db, fn_name):
     """(function_name, function_hash) of the latest invocation for fn_name."""
     rows = db._duck._fetchall(
-        "SELECT function_name, function_hash FROM _invocation "
-        "WHERE function_name = ?",
+        "SELECT function_name, function_hash FROM _invocation WHERE function_name = ?",
         [fn_name],
     )
     assert rows, f"no _invocation row recorded for {fn_name!r}"
@@ -69,7 +66,6 @@ def _prep(db, fn_hash, outputs, *, skip_computed, **iters):
 
 
 class TestBridgeSkipComputed:
-
     def _seed(self, tmp_path):
         """Configure DB, register types, save input + compute one output."""
         db = configure_database(tmp_path / "skip.duckdb", ["subject", "trial"])
@@ -95,8 +91,12 @@ class TestBridgeSkipComputed:
         db, fn_hash = self._seed(tmp_path)
         try:
             combos = _prep(
-                db, fn_hash, ["Filtered_Skip"],
-                skip_computed=True, subject=[1], trial=[1],
+                db,
+                fn_hash,
+                ["Filtered_Skip"],
+                skip_computed=True,
+                subject=[1],
+                trial=[1],
             )
             assert combos == [], f"expected combo skipped, got {combos}"
         finally:
@@ -107,8 +107,12 @@ class TestBridgeSkipComputed:
         db, fn_hash = self._seed(tmp_path)
         try:
             combos = _prep(
-                db, fn_hash, ["Filtered_Skip"],
-                skip_computed=False, subject=[1], trial=[1],
+                db,
+                fn_hash,
+                ["Filtered_Skip"],
+                skip_computed=False,
+                subject=[1],
+                trial=[1],
             )
             assert len(combos) == 1, f"expected combo kept, got {combos}"
         finally:
@@ -124,8 +128,12 @@ class TestBridgeSkipComputed:
         db, _real_hash = self._seed(tmp_path)
         try:
             combos = _prep(
-                db, "deadbeefdeadbeef", ["Filtered_Skip"],
-                skip_computed=True, subject=[1], trial=[1],
+                db,
+                "deadbeefdeadbeef",
+                ["Filtered_Skip"],
+                skip_computed=True,
+                subject=[1],
+                trial=[1],
             )
             assert len(combos) == 1, f"expected recompute, got {combos}"
         finally:
@@ -137,8 +145,12 @@ class TestBridgeSkipComputed:
         try:
             # subject=2 has an input but no Filtered output yet.
             combos = _prep(
-                db, fn_hash, ["Filtered_Skip"],
-                skip_computed=True, subject=[2], trial=[1],
+                db,
+                fn_hash,
+                ["Filtered_Skip"],
+                skip_computed=True,
+                subject=[2],
+                trial=[1],
             )
             assert len(combos) == 1, f"expected first-run combo kept, got {combos}"
         finally:
@@ -152,7 +164,8 @@ class TestBridgeSkipComputed:
             # we configured), so the skip still applies — the point here is it
             # must not raise.
             prep = for_each_prepare(
-                "double", fn_hash,
+                "double",
+                fn_hash,
                 {"x": _var_spec("RawSignal_Skip")},
                 ["Filtered_Skip"],
                 {"subject": [1], "trial": [1]},

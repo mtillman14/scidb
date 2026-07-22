@@ -1,9 +1,11 @@
 """Integration tests for scidb - full end-to-end workflows."""
 
 import json
+
 import numpy as np
 import pandas as pd
 import pytest
+from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 from scidb import (
     BaseVariable,
@@ -12,7 +14,6 @@ from scidb import (
     configure_database,
 )
 
-from conftest import DEFAULT_TEST_SCHEMA_KEYS
 
 class TestEndToEndScalarWorkflow:
     """Test complete workflow with scalar values."""
@@ -111,11 +112,13 @@ class TestEndToEndDataFrameWorkflow:
 
     def test_save_and_load_dataframe(self, db, dataframe_class):
         """Save and load a DataFrame without to_db/from_db."""
-        original = pd.DataFrame({
-            "time": [0.0, 0.1, 0.2, 0.3],
-            "x": [1.0, 2.0, 3.0, 4.0],
-            "y": [5.0, 6.0, 7.0, 8.0],
-        })
+        original = pd.DataFrame(
+            {
+                "time": [0.0, 0.1, 0.2, 0.3],
+                "x": [1.0, 2.0, 3.0, 4.0],
+                "y": [5.0, 6.0, 7.0, 8.0],
+            }
+        )
         dataframe_class.save(original, subject=1, trial=1)
 
         loaded = dataframe_class.load(subject=1, trial=1)
@@ -123,11 +126,13 @@ class TestEndToEndDataFrameWorkflow:
 
     def test_preserve_column_types(self, db, dataframe_class):
         """Test that column types are preserved."""
-        original = pd.DataFrame({
-            "int_col": pd.array([1, 2, 3], dtype="int64"),
-            "float_col": pd.array([1.1, 2.2, 3.3], dtype="float64"),
-            "str_col": ["a", "b", "c"],
-        })
+        original = pd.DataFrame(
+            {
+                "int_col": pd.array([1, 2, 3], dtype="int64"),
+                "float_col": pd.array([1.1, 2.2, 3.3], dtype="float64"),
+                "str_col": ["a", "b", "c"],
+            }
+        )
         dataframe_class.save(original, subject=1)
 
         loaded = dataframe_class.load(subject=1)
@@ -136,13 +141,15 @@ class TestEndToEndDataFrameWorkflow:
 
     def test_10x5_dataframe_roundtrip(self, db, dataframe_class):
         """A 10x5 DataFrame should roundtrip without to_db/from_db."""
-        original = pd.DataFrame({
-            "a": np.arange(10, dtype="float64"),
-            "b": np.arange(10, 20, dtype="float64"),
-            "c": np.arange(20, 30, dtype="int64"),
-            "d": [f"s{i}" for i in range(10)],
-            "e": np.linspace(0, 1, 10),
-        })
+        original = pd.DataFrame(
+            {
+                "a": np.arange(10, dtype="float64"),
+                "b": np.arange(10, 20, dtype="float64"),
+                "c": np.arange(20, 30, dtype="int64"),
+                "d": [f"s{i}" for i in range(10)],
+                "e": np.linspace(0, 1, 10),
+            }
+        )
         dataframe_class.save(original, subject=1, trial=1)
 
         loaded = dataframe_class.load(subject=1, trial=1)
@@ -154,11 +161,13 @@ class TestEndToEndCustomDataFrameWorkflow:
 
     def test_save_and_load_custom_dataframe(self, db, custom_dataframe_class):
         """Save and load a DataFrame with explicit to_db/from_db."""
-        original = pd.DataFrame({
-            "time": [0.0, 0.1, 0.2, 0.3],
-            "x": [1.0, 2.0, 3.0, 4.0],
-            "y": [5.0, 6.0, 7.0, 8.0],
-        })
+        original = pd.DataFrame(
+            {
+                "time": [0.0, 0.1, 0.2, 0.3],
+                "x": [1.0, 2.0, 3.0, 4.0],
+                "y": [5.0, 6.0, 7.0, 8.0],
+            }
+        )
         custom_dataframe_class.save(original, subject=1, trial=1)
 
         loaded = custom_dataframe_class.load(subject=1, trial=1)
@@ -248,9 +257,7 @@ class TestDatabasePersistence:
         assert loaded.data == 42
         assert loaded.record_id == record_id
 
-    def test_multiple_types_persist(
-        self, tmp_path, scalar_class, array_class
-    ):
+    def test_multiple_types_persist(self, tmp_path, scalar_class, array_class):
         """Multiple types should persist after reconnect."""
         db_path = tmp_path / "persist_test.duckdb"
 
@@ -289,6 +296,7 @@ class TestErrorHandling:
 
     def test_load_type_never_registered_raises_not_registered(self, db):
         """Loading a type that was never saved should raise NotRegisteredError."""
+
         class NeverSavedType(BaseVariable):
             pass
 
@@ -297,6 +305,7 @@ class TestErrorHandling:
 
     def test_load_type_never_registered_with_metadata_raises_not_registered(self, db):
         """Loading a never-registered type with metadata should raise NotRegisteredError."""
+
         class NeverSavedType2(BaseVariable):
             pass
 
@@ -305,6 +314,7 @@ class TestErrorHandling:
 
     def test_load_type_registered_but_no_records_gives_descriptive_error(self, db):
         """Loading a registered type with no records should say 'registered but has no saved records'."""
+
         class RegisteredButEmpty(BaseVariable):
             pass
 
@@ -322,6 +332,7 @@ class TestCustomVariableType:
 
         class Point3D(BaseVariable):
             """Represents a 3D point."""
+
             schema_version = 1
 
             def to_db(self) -> pd.DataFrame:
@@ -346,15 +357,14 @@ class TestCustomVariableType:
 
         class Config(BaseVariable):
             """Represents a configuration dict."""
+
             schema_version = 1
 
             def to_db(self) -> pd.DataFrame:
-                import json
                 return pd.DataFrame({"config_json": [json.dumps(self.data)]})
 
             @classmethod
             def from_db(cls, df: pd.DataFrame) -> dict:
-                import json
                 return json.loads(df["config_json"].iloc[0])
 
         original = {
@@ -550,7 +560,9 @@ class TestBatchLoadingAPI:
         scalar_class.save(20, subject=1, trial=1, algorithm="v2")
         scalar_class.save(30, subject=1, trial=1, algorithm="v3")
 
-        results = scalar_class.load(version="all", subject=1, trial=1, algorithm=["v1", "v2"])
+        results = scalar_class.load(
+            version="all", subject=1, trial=1, algorithm=["v1", "v2"]
+        )
         assert len(results) == 2
         assert {r.data for r in results} == {10, 20}
 
@@ -561,8 +573,12 @@ class TestBatchLoadingAPI:
         # Save data: 2 subjects × 2 algorithms × 2 versions each
         for s in [1, 2]:
             for algo in ["v1", "v2"]:
-                scalar_class.save(s * 100 + hash(algo) % 10, subject=s, trial=1, algorithm=algo)
-                scalar_class.save(s * 100 + hash(algo) % 10 + 1, subject=s, trial=1, algorithm=algo)
+                scalar_class.save(
+                    s * 100 + hash(algo) % 10, subject=s, trial=1, algorithm=algo
+                )
+                scalar_class.save(
+                    s * 100 + hash(algo) % 10 + 1, subject=s, trial=1, algorithm=algo
+                )
 
         # Query all versions for subjects [1,2] with algorithms ["v1","v2"]
         results = scalar_class.load(
@@ -588,6 +604,7 @@ class TestBatchLoadingAPI:
 
     def test_load_returns_single_for_plain_metadata(self, db):
         """load(subject=1, trial=1) returns a single BaseVariable when one record matches."""
+
         class ListParam(BaseVariable):
             schema_version = 1
 
@@ -732,21 +749,23 @@ class TestSaveBatchSchemaValidation:
         good = {"RHAM": np.array([1.0, 2.0]), "RVL": np.array([3.0, 4.0])}
         data_items = [
             (good, {"subject": 1, "trial": 1}),
-            ({}, {"subject": 1, "trial": 2}),          # empty -> skip
+            ({}, {"subject": 1, "trial": 2}),  # empty -> skip
             (good, {"subject": 1, "trial": 3}),
         ]
         record_ids = db.save_batch(EmgValue, data_items)
 
         assert len(record_ids) == 3
         assert isinstance(record_ids[0], str)
-        assert record_ids[1] is None                    # skipped slot
+        assert record_ids[1] is None  # skipped slot
         assert isinstance(record_ids[2], str)
 
         # Valid records persisted and load back.
         np.testing.assert_array_equal(
-            EmgValue.load(subject=1, trial=1).data["RHAM"], [1.0, 2.0])
+            EmgValue.load(subject=1, trial=1).data["RHAM"], [1.0, 2.0]
+        )
         np.testing.assert_array_equal(
-            EmgValue.load(subject=1, trial=3).data["RVL"], [3.0, 4.0])
+            EmgValue.load(subject=1, trial=3).data["RVL"], [3.0, 4.0]
+        )
         # The empty record was not saved.
         with pytest.raises(NotFoundError):
             EmgValue.load(subject=1, trial=2)
@@ -758,13 +777,18 @@ class TestSaveBatchSchemaValidation:
         # NOTE: use length>=2 arrays. _infer_data_columns unwraps length-1
         # arrays to scalars (DOUBLE), which mismatches the DOUBLE[] storage row
         # — a separate pre-existing quirk unrelated to schema validation.
-        full = {"RHAM": np.array([1.0, 9.0]), "RVL": np.array([2.0, 8.0]),
-                "LHAM": np.array([3.0, 7.0])}
-        partial = {"RHAM": np.array([1.0, 9.0]),
-                   "RVL": np.array([2.0, 8.0])}  # missing LHAM
+        full = {
+            "RHAM": np.array([1.0, 9.0]),
+            "RVL": np.array([2.0, 8.0]),
+            "LHAM": np.array([3.0, 7.0]),
+        }
+        partial = {
+            "RHAM": np.array([1.0, 9.0]),
+            "RVL": np.array([2.0, 8.0]),
+        }  # missing LHAM
         data_items = [
             (full, {"subject": 1, "trial": 1}),
-            (partial, {"subject": 1, "trial": 2}),      # missing a key -> skip
+            (partial, {"subject": 1, "trial": 2}),  # missing a key -> skip
             (full, {"subject": 1, "trial": 3}),
         ]
         record_ids = db.save_batch(EmgValue2, data_items)
@@ -776,6 +800,7 @@ class TestSaveBatchSchemaValidation:
 
     def test_skips_shape_mismatch_record(self, db):
         """A scalar where the column stores a vector (or vice versa) is skipped."""
+
         class EmgValue3(BaseVariable):
             schema_version = 1
 
@@ -784,7 +809,7 @@ class TestSaveBatchSchemaValidation:
         scalar = {"RHAM": 1.0, "RVL": np.array([3.0, 4.0])}
         data_items = [
             (vec, {"subject": 1, "trial": 1}),
-            (scalar, {"subject": 1, "trial": 2}),       # shape mismatch -> skip
+            (scalar, {"subject": 1, "trial": 2}),  # shape mismatch -> skip
         ]
         record_ids = db.save_batch(EmgValue3, data_items)
 
@@ -796,12 +821,13 @@ class TestSaveBatchSchemaValidation:
     def test_leading_empty_dict_does_not_define_schema(self, db):
         """An empty dict as the FIRST item must not become the table schema;
         the first usable record defines it and the empty one is skipped."""
+
         class EmgValue4(BaseVariable):
             schema_version = 1
 
         good = {"RHAM": np.array([1.0, 2.0]), "RVL": np.array([3.0, 4.0])}
         data_items = [
-            ({}, {"subject": 1, "trial": 1}),           # leading empty -> skip
+            ({}, {"subject": 1, "trial": 1}),  # leading empty -> skip
             (good, {"subject": 1, "trial": 2}),
             (good, {"subject": 1, "trial": 3}),
         ]
@@ -811,10 +837,12 @@ class TestSaveBatchSchemaValidation:
         assert isinstance(record_ids[1], str)
         assert isinstance(record_ids[2], str)
         np.testing.assert_array_equal(
-            EmgValue4.load(subject=1, trial=2).data["RHAM"], [1.0, 2.0])
+            EmgValue4.load(subject=1, trial=2).data["RHAM"], [1.0, 2.0]
+        )
 
     def test_all_records_incompatible_returns_all_none(self, db):
         """If every record is incompatible, nothing saves and all slots None."""
+
         class EmgValue5(BaseVariable):
             schema_version = 1
 
@@ -841,10 +869,14 @@ class TestSaveBatchSingleElementArrayDict:
             schema_version = 1
 
         data_items = [
-            ({"RHAM": np.array([1.5]), "RVL": np.array([2.5])},
-             {"subject": 1, "trial": 1}),
-            ({"RHAM": np.array([3.5]), "RVL": np.array([4.5])},
-             {"subject": 1, "trial": 2}),
+            (
+                {"RHAM": np.array([1.5]), "RVL": np.array([2.5])},
+                {"subject": 1, "trial": 1},
+            ),
+            (
+                {"RHAM": np.array([3.5]), "RVL": np.array([4.5])},
+                {"subject": 1, "trial": 2},
+            ),
         ]
         record_ids = db.save_batch(OneSampleEmg, data_items)
         assert all(isinstance(r, str) for r in record_ids)
@@ -873,7 +905,9 @@ class TestSaveAutoDistribute:
     """save() auto-distributes a DataFrame whose columns include schema keys."""
 
     def test_single_data_col(self, db, scalar_class):
-        df = pd.DataFrame({"subject": [1, 2, 3], "trial": [1, 1, 1], "value": [10.0, 20.0, 30.0]})
+        df = pd.DataFrame(
+            {"subject": [1, 2, 3], "trial": [1, 1, 1], "value": [10.0, 20.0, 30.0]}
+        )
         ids = scalar_class.save(df)
         assert len(ids) == 3
         assert scalar_class.load(subject=1, trial=1).data == 10.0
@@ -889,12 +923,14 @@ class TestSaveAutoDistribute:
 
     def test_multiple_data_cols(self, db, dataframe_class):
         # Two non-schema columns → each row saved as a 1-row DataFrame.
-        df = pd.DataFrame({
-            "subject": [1, 2],
-            "trial":   [1, 1],
-            "a": [0.1, 0.2],
-            "b": [0.3, 0.4],
-        })
+        df = pd.DataFrame(
+            {
+                "subject": [1, 2],
+                "trial": [1, 1],
+                "a": [0.1, 0.2],
+                "b": [0.3, 0.4],
+            }
+        )
         ids = dataframe_class.save(df)
         assert len(ids) == 2
         v = dataframe_class.load(subject=1, trial=1)

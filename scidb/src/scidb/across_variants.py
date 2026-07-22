@@ -48,9 +48,9 @@ class AcrossVariants:
     """
 
     def __init__(self, var_type: Any):
-        from .merge import Merge
-        from .each_of import EachOf
         from .column_selection import ColumnSelection
+        from .each_of import EachOf
+        from .merge import Merge
 
         if isinstance(var_type, Merge):
             raise TypeError(

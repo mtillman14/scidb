@@ -26,9 +26,8 @@ Usage (from a server entry point)::
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +93,7 @@ def _record(err: StartupError) -> None:
 # ---------------------------------------------------------------------------
 # Stale lockfile handling
 # ---------------------------------------------------------------------------
-def check_lockfile_staleness(project_root: Path) -> Optional[StartupError]:
+def check_lockfile_staleness(project_root: Path) -> StartupError | None:
     """Inspect ``project_root`` for a stale ``uv.lock`` and sync if needed.
 
     Returns the :class:`StartupError` that was recorded, or ``None`` if
@@ -136,6 +135,7 @@ def check_lockfile_staleness(project_root: Path) -> Optional[StartupError]:
             is_lockfile_stale,
             sync,
         )
+
         logger.info("[startup] successfully imported scistack.uv_wrapper")
     except ImportError:
         logger.debug(
@@ -146,20 +146,28 @@ def check_lockfile_staleness(project_root: Path) -> Optional[StartupError]:
     logger.info("[startup] checking if lockfile is stale")
     try:
         stale = is_lockfile_stale(project_root)
-        logger.info("[startup] lockfile staleness check result: %s", "STALE" if stale else "FRESH")
+        logger.info(
+            "[startup] lockfile staleness check result: %s",
+            "STALE" if stale else "FRESH",
+        )
     except Exception:  # pragma: no cover — defensive
         logger.debug("[startup] is_lockfile_stale raised unexpectedly", exc_info=True)
         return None
 
     if not stale:
-        logger.debug("[startup] uv.lock at %s is up to date, no sync needed", project_root)
+        logger.debug(
+            "[startup] uv.lock at %s is up to date, no sync needed", project_root
+        )
         return None
 
     logger.info("[startup] uv.lock is stale in %s — running uv sync", project_root)
     try:
         logger.info("[startup] executing uv sync with 300s timeout")
         result = sync(project_root, timeout=300.0)
-        logger.info("[startup] uv sync completed with exit code %d", result.returncode if hasattr(result, 'returncode') else 0)
+        logger.info(
+            "[startup] uv sync completed with exit code %d",
+            result.returncode if hasattr(result, "returncode") else 0,
+        )
     except UvNotFoundError as e:
         logger.warning("[startup] uv is not installed: %s", e)
         err = StartupError(

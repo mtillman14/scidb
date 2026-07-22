@@ -114,7 +114,11 @@ def _serialize_for_hash(obj: Any) -> bytes:
 
     # Pandas Series — hash name + values by value (index intentionally ignored,
     # consistent with the DataFrame path; object dtype handled above).
-    if hasattr(obj, "to_numpy") and hasattr(obj, "name") and not hasattr(obj, "columns"):
+    if (
+        hasattr(obj, "to_numpy")
+        and hasattr(obj, "name")
+        and not hasattr(obj, "columns")
+    ):
         return (
             b"series:"
             + _serialize_for_hash(obj.name)
@@ -124,8 +128,10 @@ def _serialize_for_hash(obj: Any) -> bytes:
 
     # Python array.array (MATLAB bridge can produce these)
     import array as _array_mod
+
     if isinstance(obj, _array_mod.array):
         import numpy as np
+
         return _serialize_for_hash(np.array(obj))
 
     # Unsupported type

@@ -21,6 +21,7 @@ def setup_function():
 # Plain dtypes
 # ---------------------------------------------------------------------------
 
+
 def test_int_key_column_roundtrips_int():
     """key=[] on an int column: int out, numeric order."""
     set_schema(["subject"])
@@ -36,10 +37,12 @@ def test_int_key_column_roundtrips_int():
 def test_int32_key_column_roundtrips_int32():
     """Exact dtype width restores (int32 in, int32 out — not int64)."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": pd.Series([1, 2], dtype="int32"),
-        "value": [1.0, 2.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": pd.Series([1, 2], dtype="int32"),
+            "value": [1.0, 2.0],
+        }
+    )
 
     result = for_each(lambda x: x, inputs={"x": df}, subject=[])
 
@@ -64,15 +67,18 @@ def test_string_key_column_roundtrips_verbatim():
 # Categorical dtypes
 # ---------------------------------------------------------------------------
 
+
 def test_categorical_int_key_column_roundtrips_numeric_order():
     """Int-backed categorical: categorical out (same dtype), rows iterated
     in numeric (not lexical) order — pandas categoricals keep value dtypes,
     so 10 sorts after 2."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": pd.Categorical([1, 2, 10]),
-        "value": [10, 20, 30],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": pd.Categorical([1, 2, 10]),
+            "value": [10, 20, 30],
+        }
+    )
 
     result = for_each(lambda x: x, inputs={"x": df}, subject=[])
 
@@ -86,10 +92,12 @@ def test_categorical_ordered_key_column_roundtrips():
     """Categories and orderedness survive the round trip."""
     set_schema(["phase"])
     dtype = pd.CategoricalDtype(["pre", "post"], ordered=True)
-    df = pd.DataFrame({
-        "phase": pd.Series(["pre", "post"], dtype=dtype),
-        "value": [1, 2],
-    })
+    df = pd.DataFrame(
+        {
+            "phase": pd.Series(["pre", "post"], dtype=dtype),
+            "value": [1, 2],
+        }
+    )
 
     result = for_each(lambda x: x, inputs={"x": df}, phase=[])
 
@@ -131,6 +139,7 @@ def test_flatten_mode_restores_dtype():
 # ---------------------------------------------------------------------------
 # Keys without a captured dtype, and conflicts
 # ---------------------------------------------------------------------------
+
 
 def test_explicit_iterable_without_column_keeps_own_type():
     """A key with no input DataFrame column keeps the iterable's own type

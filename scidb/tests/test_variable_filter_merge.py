@@ -24,44 +24,51 @@ Note on as_table=True + no explicit metadata iterables:
     After (Side=="L") & (SubjectGroup=="A"): 1 row.
 """
 
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root / "src"))
 
-from scidb import BaseVariable, configure_database, for_each, branch_param, Variant
 from scidb.foreach import Merge
 
+from scidb import BaseVariable, Variant, branch_param, configure_database, for_each
 
 # ===========================================================================
 # Variable classes
 # ===========================================================================
 
+
 class GaitData(BaseVariable):
     """Trial-level gait measurement (scalar)."""
+
     schema_version = 1
 
 
 class ForceData(BaseVariable):
     """Trial-level force measurement (scalar)."""
+
     schema_version = 1
 
 
 class Side(BaseVariable):
     """Trial-level side label ("L" or "R")."""
+
     schema_version = 1
 
 
 class SubjectGroup(BaseVariable):
     """Subject-level group label (coarser than trial)."""
+
     schema_version = 1
 
 
 # ===========================================================================
 # Fixtures
 # ===========================================================================
+
 
 @pytest.fixture
 def full_merge_db(tmp_path):
@@ -120,8 +127,8 @@ def partial_force_db(tmp_path):
 # VariableFilter — same level as constituents
 # ===========================================================================
 
-class TestVariableFilterMerge:
 
+class TestVariableFilterMerge:
     def test_variable_filter_filters_merge_rows(self, full_merge_db):
         """VariableFilter (Side=="L") must exclude trial=2 rows from Merge table.
 
@@ -147,7 +154,7 @@ class TestVariableFilterMerge:
         # Only trial=1 rows kept (Side=L); trial=2 (Side=R) excluded
         assert len(tbl) == 2, f"Expected 2 rows (trial=1 only), got {len(tbl)}"
         if "trial" in tbl.columns:
-            assert set(str(t) for t in tbl["trial"].unique()) == {"1"}, (
+            assert {str(t) for t in tbl["trial"].unique()} == {"1"}, (
                 f"trial=2 leaked into filtered Merge: {tbl['trial'].unique()}"
             )
 
@@ -172,7 +179,7 @@ class TestVariableFilterMerge:
         tbl = captured[0]
         assert len(tbl) == 2, f"Expected 2 rows (trial=2 only), got {len(tbl)}"
         if "trial" in tbl.columns:
-            assert set(str(t) for t in tbl["trial"].unique()) == {"2"}, (
+            assert {str(t) for t in tbl["trial"].unique()} == {"2"}, (
                 f"trial=1 leaked into Side=R filtered Merge: {tbl['trial'].unique()}"
             )
 
@@ -181,8 +188,8 @@ class TestVariableFilterMerge:
 # VariableFilter — coarser than constituents (subject-level filter)
 # ===========================================================================
 
-class TestCoarserVariableFilterMerge:
 
+class TestCoarserVariableFilterMerge:
     def test_coarser_filter_expands_and_filters_merge(self, full_merge_db):
         """SubjectGroup=="A" (subject-level) keeps only subject=1 rows (2 of 4)."""
         captured = []
@@ -205,7 +212,7 @@ class TestCoarserVariableFilterMerge:
         # subject=1 only (2 trials → 2 rows)
         assert len(tbl) == 2, f"Expected 2 rows (subject=1, trials 1+2), got {len(tbl)}"
         if "subject" in tbl.columns:
-            assert set(str(s) for s in tbl["subject"].unique()) == {"1"}, (
+            assert {str(s) for s in tbl["subject"].unique()} == {"1"}, (
                 f"subject=2 leaked into group-A filtered Merge: {tbl['subject'].unique()}"
             )
 
@@ -214,8 +221,8 @@ class TestCoarserVariableFilterMerge:
 # NotFilter with Merge
 # ===========================================================================
 
-class TestNotFilterMerge:
 
+class TestNotFilterMerge:
     def test_not_filter_gives_complement(self, full_merge_db):
         """~(Side=="L") should keep only trial=2 rows (2 of 4)."""
         captured = []
@@ -237,7 +244,7 @@ class TestNotFilterMerge:
         tbl = captured[0]
         assert len(tbl) == 2, f"Expected 2 rows (trial=2, NOT Side=L), got {len(tbl)}"
         if "trial" in tbl.columns:
-            assert set(str(t) for t in tbl["trial"].unique()) == {"2"}, (
+            assert {str(t) for t in tbl["trial"].unique()} == {"2"}, (
                 f"trial=1 leaked into NOT(Side=L) Merge: {tbl['trial'].unique()}"
             )
 
@@ -246,8 +253,8 @@ class TestNotFilterMerge:
 # CompoundFilter with Merge
 # ===========================================================================
 
-class TestCompoundFilterMerge:
 
+class TestCompoundFilterMerge:
     def test_and_filter_narrows_merge(self, full_merge_db):
         """(Side=="L") & (SubjectGroup=="A") → only subject=1,trial=1 (1 of 4 rows)."""
         captured = []
@@ -274,8 +281,8 @@ class TestCompoundFilterMerge:
 # Coverage error — filter missing for schema_id that survives Merge inner join
 # ===========================================================================
 
-class TestMergeFilterCoverageError:
 
+class TestMergeFilterCoverageError:
     def test_missing_filter_data_for_merge_result_raises(self, tmp_path):
         """Side missing for sub=2,tr=* which IS in the Merge result → ValueError."""
         db = configure_database(tmp_path / "cov_err.duckdb", ["subject", "trial"])
@@ -305,8 +312,8 @@ class TestMergeFilterCoverageError:
 # No false-positive — filter missing only for schema_id eliminated by Merge
 # ===========================================================================
 
-class TestMergeFilterNoFalsePositive:
 
+class TestMergeFilterNoFalsePositive:
     def test_no_error_when_filter_gap_matches_merge_gap(self, partial_force_db):
         """Side missing sub=2,tr=2 which is also absent from Merge → no error.
 
@@ -336,7 +343,7 @@ class TestMergeFilterNoFalsePositive:
             f"Expected 2 rows (trial=1 combos within partial Merge), got {len(tbl)}"
         )
         if "trial" in tbl.columns:
-            assert set(str(t) for t in tbl["trial"].unique()) == {"1"}, (
+            assert {str(t) for t in tbl["trial"].unique()} == {"1"}, (
                 f"trial=2 leaked: {tbl['trial'].unique()}"
             )
 
@@ -345,11 +352,14 @@ class TestMergeFilterNoFalsePositive:
 # _validate_filter_coverage with target_schema_ids_override
 # ===========================================================================
 
-class TestValidateFilterCoverageOverride:
 
+class TestValidateFilterCoverageOverride:
     def test_override_uses_provided_ids_not_table(self, tmp_path):
         """target_schema_ids_override replaces the table lookup for coverage target."""
-        from scidb.filters import _validate_filter_coverage, _get_all_schema_ids_for_variable
+        from scidb.filters import (
+            _get_all_schema_ids_for_variable,
+            _validate_filter_coverage,
+        )
 
         db = configure_database(tmp_path / "cov_override.duckdb", ["subject", "trial"])
         try:
@@ -365,16 +375,24 @@ class TestValidateFilterCoverageOverride:
             # Without override: target (GaitData) includes sub=2,tr=1 → coverage fails
             with pytest.raises(ValueError, match="missing data"):
                 _validate_filter_coverage(
-                    db, Side, GaitData,
-                    Side.table_name(), GaitData.table_name(),
-                    filter_level_idx=1, target_level_idx=1,
+                    db,
+                    Side,
+                    GaitData,
+                    Side.table_name(),
+                    GaitData.table_name(),
+                    filter_level_idx=1,
+                    target_level_idx=1,
                 )
 
             # With override equal to filter_ids (sub=1 only) → no missing locations
             _validate_filter_coverage(
-                db, Side, GaitData,
-                Side.table_name(), GaitData.table_name(),
-                filter_level_idx=1, target_level_idx=1,
+                db,
+                Side,
+                GaitData,
+                Side.table_name(),
+                GaitData.table_name(),
+                filter_level_idx=1,
+                target_level_idx=1,
                 target_schema_ids_override=filter_ids,
             )
         finally:
@@ -392,18 +410,22 @@ class TestValidateFilterCoverageOverride:
 # applied via branch_param/Variant, is what distinguishes same-input variants.)
 # ===========================================================================
 
+
 class Measure(BaseVariable):
     """Trial-level source measurement (scalar)."""
+
     schema_version = 1
 
 
 class Partner(BaseVariable):
     """Trial-level merge partner (scalar)."""
+
     schema_version = 1
 
 
 class Derived(BaseVariable):
     """Trial-level output computed by for_each in two constant (factor) variants."""
+
     schema_version = 1
 
 
@@ -440,14 +462,14 @@ def variant_merge_db(tmp_path):
             _derive,
             inputs={"signal": Measure, "factor": factor},
             outputs=[Derived],
-            subject=[1, 2], trial=[1, 2],
+            subject=[1, 2],
+            trial=[1, 2],
         )
     yield db
     db.close()
 
 
 class TestMergeSelectsVariantByBranchParam:
-
     def test_direct_load_selects_one_variant(self, variant_merge_db):
         """Direct .load() pinned to factor=1 returns one record per combo.
 
@@ -469,7 +491,9 @@ class TestMergeSelectsVariantByBranchParam:
 
         for_each(
             collect,
-            inputs={"inputVal": Merge(Partner, Variant(Derived, fn="_derive", factor=1))},
+            inputs={
+                "inputVal": Merge(Partner, Variant(Derived, fn="_derive", factor=1))
+            },
             outputs=[Derived],
             as_table=True,
             save=False,
@@ -499,7 +523,9 @@ class TestMergeSelectsVariantByBranchParam:
 
         for_each(
             collect,
-            inputs={"inputVal": Merge(Partner, Variant(Derived, fn="_derive", factor=100))},
+            inputs={
+                "inputVal": Merge(Partner, Variant(Derived, fn="_derive", factor=100))
+            },
             outputs=[Derived],
             as_table=True,
             save=False,

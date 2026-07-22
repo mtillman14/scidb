@@ -14,8 +14,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def create_variable(name: str, docstring: str | None = None,
-                    language: str = "python") -> dict:
+def create_variable(
+    name: str, docstring: str | None = None, language: str = "python"
+) -> dict:
     """Validate, write a new BaseVariable subclass, and refresh the registry.
 
     Works for both Python and MATLAB variables.
@@ -25,8 +26,7 @@ def create_variable(name: str, docstring: str | None = None,
         {"ok": False, "error": message} on failure.
     """
     from scidb import BaseVariable
-    from scistack_gui import registry
-    from scistack_gui import matlab_registry
+    from scistack_gui import matlab_registry, registry
 
     name = name.strip()
     logger.debug("create_variable: name=%r, language=%r", name, language)
@@ -35,9 +35,15 @@ def create_variable(name: str, docstring: str | None = None,
     if not name or not name.isidentifier() or keyword.iskeyword(name):
         return {"ok": False, "error": f"'{name}' is not a valid class name."}
     if name.startswith("_"):
-        return {"ok": False, "error": "Variable names must not start with an underscore."}
+        return {
+            "ok": False,
+            "error": "Variable names must not start with an underscore.",
+        }
     if not name[0].isupper():
-        return {"ok": False, "error": "Variable names should start with an uppercase letter."}
+        return {
+            "ok": False,
+            "error": "Variable names should start with an uppercase letter.",
+        }
     if name in BaseVariable._all_subclasses:
         return {"ok": False, "error": f"A variable named '{name}' already exists."}
 
@@ -54,9 +60,11 @@ def create_variable(name: str, docstring: str | None = None,
 
     if target_file is None:
         # No Python target — fall back to MATLAB if configured.
-        if (matlab_registry.has_matlab_config()
-                and matlab_registry._config is not None
-                and matlab_registry._config.matlab_variable_dir is not None):
+        if (
+            matlab_registry.has_matlab_config()
+            and matlab_registry._config is not None
+            and matlab_registry._config.matlab_variable_dir is not None
+        ):
             return _create_matlab_variable(name, docstring)
         return {"ok": False, "error": "No module file was loaded at startup."}
 
@@ -88,8 +96,14 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
     """Create a MATLAB classdef variable file and register the surrogate."""
     from scistack_gui import matlab_registry
 
-    if matlab_registry._config is None or matlab_registry._config.matlab_variable_dir is None:
-        return {"ok": False, "error": "No matlab.variable_dir configured in [tool.scistack.matlab]."}
+    if (
+        matlab_registry._config is None
+        or matlab_registry._config.matlab_variable_dir is None
+    ):
+        return {
+            "ok": False,
+            "error": "No matlab.variable_dir configured in [tool.scistack.matlab].",
+        }
 
     target_dir = matlab_registry._config.matlab_variable_dir
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +125,7 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
 
     try:
         from scimatlab.bridge import register_matlab_variable
+
         register_matlab_variable(name)
         matlab_registry.refresh_all()
     except Exception as e:
@@ -125,4 +140,5 @@ def get_variable_records(variable_name: str, db) -> dict:
     Delegates to the query logic in api/variables.py.
     """
     from scistack_gui.api.variables import get_variable_records as _get_var_records
+
     return _get_var_records(variable_name, db)

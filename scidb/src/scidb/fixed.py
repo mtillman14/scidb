@@ -40,6 +40,7 @@ class Fixed:
     def to_key(self) -> str:
         """Return a canonical string for use as a version key."""
         from .column_selection import ColumnSelection
+
         if isinstance(self.var_type, ColumnSelection):
             inner_key = self.var_type.to_key()
         elif isinstance(self.var_type, type):

@@ -1,11 +1,20 @@
 """Tests for scifor.for_each in standalone (no-DB) mode."""
 
-import pytest
-import pandas as pd
 import numpy as np
+import pandas as pd
+import pytest
 
 import scifor
-from scifor import set_schema, for_each, Fixed, Merge, ColumnSelection, Col, ColName, PathOutput
+from scifor import (
+    Col,
+    ColName,
+    ColumnSelection,
+    Fixed,
+    Merge,
+    PathOutput,
+    for_each,
+    set_schema,
+)
 
 
 def setup_function():
@@ -16,6 +25,7 @@ def setup_function():
 # ---------------------------------------------------------------------------
 # Helper fixtures
 # ---------------------------------------------------------------------------
+
 
 def make_df(subjects=(1, 2), sessions=("pre", "post"), data_col="emg"):
     rows = []
@@ -28,6 +38,7 @@ def make_df(subjects=(1, 2), sessions=("pre", "post"), data_col="emg"):
 # ---------------------------------------------------------------------------
 # DataFrame detection
 # ---------------------------------------------------------------------------
+
 
 def test_per_combo_df_detected():
     """DataFrame with schema key columns is treated as per-combo."""
@@ -80,10 +91,12 @@ def test_per_combo_df_single_value_extracted():
 def test_per_combo_df_multiple_rows_passed_as_df():
     """Multiple matching rows -> numpy column vector passed."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "emg": [1.0, 2.0, 3.0, 4.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "emg": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
     received_shapes = []
     received_types = []
 
@@ -94,7 +107,7 @@ def test_per_combo_df_multiple_rows_passed_as_df():
 
     for_each(fn, inputs={"data": df}, subject=[1, 2])
     # After dropping schema col "subject", we get a vector of 2 emg values
-    assert received_shapes == [(2,1), (2,1)]
+    assert received_shapes == [(2, 1), (2, 1)]
     assert received_types == [np.ndarray, np.ndarray]
 
 
@@ -115,6 +128,7 @@ def test_as_table_forces_dataframe():
 # ---------------------------------------------------------------------------
 # Fixed(DataFrame, ...)
 # ---------------------------------------------------------------------------
+
 
 def test_fixed_dataframe():
     """Fixed(df, session='pre') filters with overridden metadata."""
@@ -146,6 +160,7 @@ def test_fixed_dataframe():
 # [] standalone resolution
 # ---------------------------------------------------------------------------
 
+
 def test_empty_list_resolved_from_df():
     """[] resolved by scanning DataFrame inputs for distinct values."""
     set_schema(["subject", "session"])
@@ -173,6 +188,7 @@ def test_empty_list_no_df_raises():
 # ---------------------------------------------------------------------------
 # Return DataFrame
 # ---------------------------------------------------------------------------
+
 
 def test_return_df_metadata_columns():
     """Result DataFrame has metadata columns."""
@@ -234,6 +250,7 @@ def test_return_df_auto_output_names():
 # distribute=True
 # ---------------------------------------------------------------------------
 
+
 def test_distribute_requires_schema():
     """distribute=True with no schema raises ValueError."""
     with pytest.raises(ValueError, match="set_schema"):
@@ -268,6 +285,7 @@ def test_distribute_splits_into_result_table():
 # dry_run
 # ---------------------------------------------------------------------------
 
+
 def test_dry_run_returns_none(capsys):
     set_schema(["subject"])
     df = pd.DataFrame({"subject": [1, 2], "value": [1.0, 2.0]})
@@ -282,11 +300,10 @@ def test_dry_run_returns_none(capsys):
     assert "[dry-run]" in captured.out
 
 
-
-
 # ---------------------------------------------------------------------------
 # Constant inputs
 # ---------------------------------------------------------------------------
+
 
 def test_constant_scalar_input():
     set_schema(["subject"])
@@ -308,14 +325,17 @@ def test_constant_scalar_input():
 # where= with Col filters
 # ---------------------------------------------------------------------------
 
+
 def test_where_col_filter():
     """where= filters DataFrame rows after combo filtering."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 1],
-        "speed": [0.5, 1.5, 2.5],
-        "value": [10.0, 20.0, 30.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 1],
+            "speed": [0.5, 1.5, 2.5],
+            "value": [10.0, 20.0, 30.0],
+        }
+    )
     received = []
 
     def fn(data):
@@ -336,6 +356,7 @@ def test_where_col_filter():
 # ---------------------------------------------------------------------------
 # Merge
 # ---------------------------------------------------------------------------
+
 
 def test_merge_two_dataframes():
     """Merge combines two DataFrames column-wise per combo."""
@@ -363,6 +384,7 @@ def test_merge_two_dataframes():
 # ColumnSelection
 # ---------------------------------------------------------------------------
 
+
 def test_column_selection_single():
     """ColumnSelection extracts a single column as array."""
     set_schema(["subject"])
@@ -386,7 +408,9 @@ def test_column_selection_single():
 def test_column_selection_multiple():
     """ColumnSelection with multiple columns returns sub-DataFrame."""
     set_schema(["subject"])
-    df = pd.DataFrame({"subject": [1, 2], "a": [1.0, 2.0], "b": [3.0, 4.0], "c": [5.0, 6.0]})
+    df = pd.DataFrame(
+        {"subject": [1, 2], "a": [1.0, 2.0], "b": [3.0, 4.0], "c": [5.0, 6.0]}
+    )
     received = []
 
     def fn(data):
@@ -406,12 +430,14 @@ def test_column_selection_multiple():
 def test_as_table_with_single_column_selection():
     """as_table=True + single ColumnSelection returns DataFrame with schema cols."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "trial": [1, 2, 1, 2],
-        "signal": [10.0, 20.0, 30.0, 40.0],
-        "noise": [0.1, 0.2, 0.3, 0.4],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "trial": [1, 2, 1, 2],
+            "signal": [10.0, 20.0, 30.0, 40.0],
+            "noise": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
     received = []
 
     def fn(data):
@@ -442,12 +468,14 @@ def test_as_table_with_single_column_selection():
 def test_as_table_with_multi_column_selection():
     """as_table=True + multi ColumnSelection returns DataFrame with schema cols + selected cols."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-        "c": [100.0, 200.0, 300.0, 400.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+            "c": [100.0, 200.0, 300.0, 400.0],
+        }
+    )
     received = []
 
     def fn(data):
@@ -477,11 +505,13 @@ def test_as_table_with_multi_column_selection():
 def test_as_table_false_with_column_selection_returns_array():
     """as_table=False (default) + single ColumnSelection returns array, not DataFrame."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 2],
-        "signal": [10.0, 20.0],
-        "noise": [0.1, 0.2],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 2],
+            "signal": [10.0, 20.0],
+            "noise": [0.1, 0.2],
+        }
+    )
     received = []
 
     def fn(data):
@@ -503,14 +533,17 @@ def test_as_table_false_with_column_selection_returns_array():
 # iterate=True (for_columns) + as_table
 # ---------------------------------------------------------------------------
 
+
 def test_iterate_default_passes_bare_arrays():
     """iterate=True without as_table feeds each column as a bare numpy array."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(v):
@@ -533,12 +566,14 @@ def test_iterate_default_passes_bare_arrays():
 def test_iterate_as_table_passes_dataframe_with_schema_cols():
     """iterate=True + as_table feeds a DataFrame with all schema cols + the one current column."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-        "noise": [0.1, 0.2, 0.3, 0.4],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+            "noise": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
     received = []
 
     def fn(v):
@@ -573,12 +608,14 @@ def test_iterate_as_table_enables_argmax_label_lookup():
     """With a label column declared as a schema key, as_table iterate can map argmax to that label."""
     # intervention is a schema key but is NOT iterated (only subject is)
     set_schema(["subject", "intervention"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 1, 2, 2, 2],
-        "intervention": [1, 2, 3, 1, 2, 3],
-        "StepLength": [0.5, 0.9, 0.2, 0.1, 0.4, 0.8],
-        "Cadence": [10.0, 5.0, 8.0, 7.0, 9.0, 3.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 1, 2, 2, 2],
+            "intervention": [1, 2, 3, 1, 2, 3],
+            "StepLength": [0.5, 0.9, 0.2, 0.1, 0.4, 0.8],
+            "Cadence": [10.0, 5.0, 8.0, 7.0, 9.0, 3.0],
+        }
+    )
     received_cols = []
 
     def best_intervention(v):
@@ -602,14 +639,17 @@ def test_iterate_as_table_enables_argmax_label_lookup():
 # iterate=True (for_columns) multi-output-per-column reassembly
 # ---------------------------------------------------------------------------
 
+
 def test_iterate_dict_return_expands_to_suffixed_columns():
     """A dict return per column expands to <col>__<key> columns."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
 
     def stats(v):
         return {"min": float(np.min(v)), "max": float(np.max(v))}
@@ -631,11 +671,13 @@ def test_iterate_dict_return_expands_to_suffixed_columns():
 def test_iterate_varying_output_counts_per_column():
     """Different source columns may return different numbers/names of outputs."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
 
     def stats(v):
         # 'a' gets just max; 'b' gets max + min — keyed off magnitude
@@ -691,17 +733,22 @@ def test_iterate_multi_output_with_as_table_value_and_label():
     """The motivating case: per column, return both the max value and the
     identity of the best label (a non-iterated schema key)."""
     set_schema(["subject", "intervention"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 1, 2, 2, 2],
-        "intervention": [1, 2, 3, 1, 2, 3],
-        "StepLength": [0.5, 0.9, 0.2, 0.1, 0.4, 0.8],
-        "Cadence": [10.0, 5.0, 8.0, 7.0, 9.0, 3.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 1, 2, 2, 2],
+            "intervention": [1, 2, 3, 1, 2, 3],
+            "StepLength": [0.5, 0.9, 0.2, 0.1, 0.4, 0.8],
+            "Cadence": [10.0, 5.0, 8.0, 7.0, 9.0, 3.0],
+        }
+    )
 
     def best(v):
         col = [c for c in v.columns if c not in ("subject", "intervention")][0]
         idx = v[col].idxmax()
-        return {"value": float(v.loc[idx, col]), "best": int(v.loc[idx, "intervention"])}
+        return {
+            "value": float(v.loc[idx, col]),
+            "best": int(v.loc[idx, "intervention"]),
+        }
 
     result = for_each(
         best,
@@ -727,8 +774,8 @@ def test_iterate_duplicate_output_column_raises():
     def stats(v):
         col = [c for c in v.columns if c != "subject"][0]
         if col == "a":
-            return {"b": float(np.max(v["a"]))}   # -> "a__b"
-        return float(np.max(v["a__b"]))           # scalar -> "a__b" (collision)
+            return {"b": float(np.max(v["a"]))}  # -> "a__b"
+        return float(np.max(v["a__b"]))  # scalar -> "a__b" (collision)
 
     with pytest.raises(ValueError, match="duplicate output column"):
         for_each(
@@ -760,19 +807,24 @@ def test_iterate_function_failure_lists_all_bad_columns(capsys):
     EVERY offending column (not just the first), and logs it to stderr."""
     set_schema(["subject"])
     # Two numeric columns the function can handle; two string columns it can't.
-    df = pd.DataFrame({
-        "subject": [1, 1],
-        "good1": [1.0, 2.0],
-        "label1": ["x", "y"],
-        "good2": [3.0, 4.0],
-        "label2": ["p", "q"],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1],
+            "good1": [1.0, 2.0],
+            "label1": ["x", "y"],
+            "good2": [3.0, 4.0],
+            "label2": ["p", "q"],
+        }
+    )
 
     with pytest.raises(scifor.ColumnFunctionError) as excinfo:
         for_each(
             lambda v: float(np.mean(np.asarray(v, dtype=float))),
-            inputs={"v": ColumnSelection(df, ["good1", "label1", "good2", "label2"],
-                                         iterate=True)},
+            inputs={
+                "v": ColumnSelection(
+                    df, ["good1", "label1", "good2", "label2"], iterate=True
+                )
+            },
             subject=[1],
         )
 
@@ -805,14 +857,17 @@ def test_iterate_function_failure_propagates_not_skipped():
 # iterate=True (for_columns) all-columns resolution (empty [] = all)
 # ---------------------------------------------------------------------------
 
+
 def test_iterate_all_columns_resolves_from_dataframe():
     """for_columns with no/empty columns iterates over all non-schema columns."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     result = for_each(
         lambda v: float(np.max(v)),
         inputs={"v": ColumnSelection(df, iterate=True)},  # no columns -> all
@@ -852,11 +907,13 @@ def test_noniterate_all_columns_passes_all_data_cols():
     """Non-iterate ColumnSelection with empty columns passes all data columns
     (schema keys excluded) as a sub-DataFrame."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(data):
@@ -873,16 +930,19 @@ def test_noniterate_all_columns_passes_all_data_cols():
 # excl_columns — drop named columns from the resolved selection
 # ---------------------------------------------------------------------------
 
+
 def test_iterate_excl_columns_drops_from_all_columns():
     """excl_columns removes columns from the all-columns expansion: they are not
     iterated and are absent from the aggregated result."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "label": ["x", "x", "y", "y"],   # non-numeric, to be excluded
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "label": ["x", "x", "y", "y"],  # non-numeric, to be excluded
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     result = for_each(
         lambda v: float(np.max(v)),
         inputs={"v": ColumnSelection(df, iterate=True, excl_columns=["label"])},
@@ -896,16 +956,19 @@ def test_iterate_excl_columns_drops_from_all_columns():
 def test_iterate_excl_columns_drops_from_explicit_list():
     """excl_columns also subtracts from an explicit columns list."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 2],
-        "a": [1.0, 2.0],
-        "b": [3.0, 4.0],
-        "c": [5.0, 6.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 2],
+            "a": [1.0, 2.0],
+            "b": [3.0, 4.0],
+            "c": [5.0, 6.0],
+        }
+    )
     result = for_each(
         lambda v: float(np.max(v)),
-        inputs={"v": ColumnSelection(df, ["a", "b", "c"], iterate=True,
-                                     excl_columns=["b"])},
+        inputs={
+            "v": ColumnSelection(df, ["a", "b", "c"], iterate=True, excl_columns=["b"])
+        },
         subject=[1, 2],
     )
     assert list(result.columns) == ["subject", "a", "c"]
@@ -915,25 +978,29 @@ def test_iterate_excl_columns_lets_run_succeed_after_failure():
     """The workflow from ColumnFunctionError: excluding the reported non-numeric
     columns makes the same run complete."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "good": [1.0, 2.0, 3.0, 4.0],
-        "label1": ["x", "x", "y", "y"],
-        "label2": ["p", "p", "q", "q"],
-    })
-    fn = lambda v: float(np.mean(np.asarray(v, dtype=float)))
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "good": [1.0, 2.0, 3.0, 4.0],
+            "label1": ["x", "x", "y", "y"],
+            "label2": ["p", "p", "q", "q"],
+        }
+    )
+
+    def fn(v):
+        return float(np.mean(np.asarray(v, dtype=float)))
 
     # Without exclusion: hard error naming both bad columns.
     with pytest.raises(scifor.ColumnFunctionError) as excinfo:
-        for_each(fn, inputs={"v": ColumnSelection(df, iterate=True)},
-                 subject=[1, 2])
+        for_each(fn, inputs={"v": ColumnSelection(df, iterate=True)}, subject=[1, 2])
     assert {c for c, _ in excinfo.value.failures} == {"label1", "label2"}
 
     # Excluding them: the run completes over the remaining numeric column.
     result = for_each(
         fn,
-        inputs={"v": ColumnSelection(df, iterate=True,
-                                     excl_columns=["label1", "label2"])},
+        inputs={
+            "v": ColumnSelection(df, iterate=True, excl_columns=["label1", "label2"])
+        },
         subject=[1, 2],
     )
     assert list(result.columns) == ["subject", "good"]
@@ -944,12 +1011,14 @@ def test_noniterate_excl_columns_drops_data_column():
     sub-DataFrame passed to the function. (Two data columns remain so the
     selection stays a DataFrame rather than collapsing to a 1-col array.)"""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-        "c": [100.0, 200.0, 300.0, 400.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+            "c": [100.0, 200.0, 300.0, 400.0],
+        }
+    )
     received = []
     for_each(
         lambda data: received.append(data) or 0,
@@ -963,6 +1032,7 @@ def test_noniterate_excl_columns_drops_data_column():
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
+
 
 def test_function_error_skips(caplog):
     """Function errors skip the iteration gracefully.
@@ -991,6 +1061,7 @@ def test_function_error_skips(caplog):
 # ---------------------------------------------------------------------------
 # Result table structure
 # ---------------------------------------------------------------------------
+
 
 def test_result_table_default_output_name():
     """Default output column is 'output'."""
@@ -1035,6 +1106,7 @@ def test_flatten_mode_dataframe_outputs():
 # ColName resolution
 # ---------------------------------------------------------------------------
 
+
 def test_colname_single_data_column():
     """ColName(df) resolves to the one non-schema data column name."""
     set_schema(["subject", "session"])
@@ -1045,7 +1117,7 @@ def test_colname_single_data_column():
         received.append(col_name)
         return table[col_name].mean()
 
-    result = for_each(
+    for_each(
         fn,
         inputs={"table": df, "col_name": ColName(df)},
         as_table=True,
@@ -1058,11 +1130,13 @@ def test_colname_single_data_column():
 def test_colname_multiple_data_columns_errors():
     """ColName raises ValueError when the DataFrame has 2+ data columns."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 2],
-        "emg": [0.1, 0.2],
-        "force": [1.0, 2.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 2],
+            "emg": [0.1, 0.2],
+            "force": [1.0, 2.0],
+        }
+    )
     with pytest.raises(ValueError, match="2 data columns"):
         for_each(
             lambda table, col_name: 0,
@@ -1087,17 +1161,19 @@ def test_colname_no_data_columns_errors():
 def test_colname_with_other_inputs():
     """ColName works alongside regular table and constant inputs."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 2],
-        "velocity": [3.0, 4.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 2],
+            "velocity": [3.0, 4.0],
+        }
+    )
     received = []
 
     def fn(table, col_name, scale):
         received.append((col_name, scale))
         return table[col_name].iloc[0] * scale
 
-    result = for_each(
+    for_each(
         fn,
         inputs={"table": df, "col_name": ColName(df), "scale": 2.0},
         as_table=True,
@@ -1112,14 +1188,17 @@ def test_colname_with_other_inputs():
 # Deferred ColName() — resolves to the current for_columns column
 # ---------------------------------------------------------------------------
 
+
 def test_deferred_colname_resolves_to_current_column():
     """No-arg ColName() resolves per-column to the current for_columns column."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(v, col_name):
@@ -1128,8 +1207,10 @@ def test_deferred_colname_resolves_to_current_column():
 
     result = for_each(
         fn,
-        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
-                "col_name": ColName()},
+        inputs={
+            "v": ColumnSelection(df, ["a", "b"], iterate=True),
+            "col_name": ColName(),
+        },
         subject=[1, 2],
     )
     # Two combos x two columns; each call sees the name of its current column.
@@ -1141,11 +1222,13 @@ def test_deferred_colname_resolves_to_current_column():
 def test_deferred_colname_with_as_table_iterate_input():
     """Deferred ColName() works when the iterate input is fed as_table."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(v, col_name):
@@ -1155,8 +1238,10 @@ def test_deferred_colname_with_as_table_iterate_input():
 
     result = for_each(
         fn,
-        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
-                "col_name": ColName()},
+        inputs={
+            "v": ColumnSelection(df, ["a", "b"], iterate=True),
+            "col_name": ColName(),
+        },
         as_table=True,
         subject=[1, 2],
     )
@@ -1168,11 +1253,13 @@ def test_deferred_colname_with_as_table_iterate_input():
 def test_deferred_colname_with_two_zipped_iterate_inputs():
     """Deferred ColName() resolves to the shared column axis of zipped inputs."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(x, y, col_name):
@@ -1181,9 +1268,11 @@ def test_deferred_colname_with_two_zipped_iterate_inputs():
 
     result = for_each(
         fn,
-        inputs={"x": ColumnSelection(df, ["a", "b"], iterate=True),
-                "y": ColumnSelection(df, ["a", "b"], iterate=True),
-                "col_name": ColName()},
+        inputs={
+            "x": ColumnSelection(df, ["a", "b"], iterate=True),
+            "y": ColumnSelection(df, ["a", "b"], iterate=True),
+            "col_name": ColName(),
+        },
         subject=[1, 2],
     )
     assert received == ["a", "b", "a", "b"]
@@ -1208,14 +1297,17 @@ def test_deferred_colname_without_iterate_input_raises():
 # Bare ColName class (forgiving, no parentheses) is normalized to ColName()
 # ---------------------------------------------------------------------------
 
+
 def test_bare_colname_class_resolves_like_deferred():
     """Passing the bare ColName class behaves like the deferred ColName()."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(v, col_name):
@@ -1224,8 +1316,10 @@ def test_bare_colname_class_resolves_like_deferred():
 
     result = for_each(
         fn,
-        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
-                "col_name": ColName},  # bare class, no parentheses
+        inputs={
+            "v": ColumnSelection(df, ["a", "b"], iterate=True),
+            "col_name": ColName,
+        },  # bare class, no parentheses
         subject=[1, 2],
     )
     assert received == ["a", "b", "a", "b"]
@@ -1250,16 +1344,19 @@ def test_bare_colname_class_without_iterate_input_raises_clear_error():
 # PathOutput — output-path template (combo metadata + {ColName})
 # ---------------------------------------------------------------------------
 
+
 def test_pathoutput_colname_token_resolves_per_column():
     """PathOutput(Path) substitutes {ColName} per column and preserves Path type."""
     from pathlib import Path
 
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(v, filename):
@@ -1269,8 +1366,10 @@ def test_pathoutput_colname_token_resolves_per_column():
     root = Path("/tmp/anova")
     result = for_each(
         fn,
-        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
-                "filename": PathOutput(root / "{ColName}_anova2way.pdf")},
+        inputs={
+            "v": ColumnSelection(df, ["a", "b"], iterate=True),
+            "filename": PathOutput(root / "{ColName}_anova2way.pdf"),
+        },
         subject=[1, 2],
     )
     # Two combos x two columns; each call sees its own per-column Path.
@@ -1288,11 +1387,13 @@ def test_pathoutput_colname_token_resolves_per_column():
 def test_pathoutput_str_template_preserves_str_type():
     """PathOutput(str) substitutes {ColName} and returns a str (not a Path)."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1],
-        "a": [1.0, 2.0],
-        "b": [10.0, 20.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1],
+            "a": [1.0, 2.0],
+            "b": [10.0, 20.0],
+        }
+    )
     received = []
 
     def fn(v, filename):
@@ -1301,8 +1402,10 @@ def test_pathoutput_str_template_preserves_str_type():
 
     for_each(
         fn,
-        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
-                "filename": PathOutput("{ColName}_results.json")},
+        inputs={
+            "v": ColumnSelection(df, ["a", "b"], iterate=True),
+            "filename": PathOutput("{ColName}_results.json"),
+        },
         subject=[1],
     )
     assert received == ["a_results.json", "b_results.json"]
@@ -1321,8 +1424,10 @@ def test_pathoutput_substitutes_combo_metadata():
 
     for_each(
         fn,
-        inputs={"velocity": ColumnSelection(df, ["velocity"]),
-                "filename": PathOutput("subject_{subject}.pdf")},
+        inputs={
+            "velocity": ColumnSelection(df, ["velocity"]),
+            "filename": PathOutput("subject_{subject}.pdf"),
+        },
         subject=[1, 2],
     )
     assert received == ["subject_1.pdf", "subject_2.pdf"]
@@ -1331,11 +1436,13 @@ def test_pathoutput_substitutes_combo_metadata():
 def test_pathoutput_combines_metadata_and_column():
     """PathOutput fills both {subject} (combo) and {ColName} (current column)."""
     set_schema(["subject"])
-    df = pd.DataFrame({
-        "subject": [1, 1, 2, 2],
-        "a": [1.0, 2.0, 3.0, 4.0],
-        "b": [10.0, 20.0, 30.0, 40.0],
-    })
+    df = pd.DataFrame(
+        {
+            "subject": [1, 1, 2, 2],
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     received = []
 
     def fn(v, filename):
@@ -1344,8 +1451,10 @@ def test_pathoutput_combines_metadata_and_column():
 
     for_each(
         fn,
-        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True),
-                "filename": PathOutput("{subject}_{ColName}.pdf")},
+        inputs={
+            "v": ColumnSelection(df, ["a", "b"], iterate=True),
+            "filename": PathOutput("{subject}_{ColName}.pdf"),
+        },
         subject=[1, 2],
     )
     assert received == ["1_a.pdf", "1_b.pdf", "2_a.pdf", "2_b.pdf"]
@@ -1363,8 +1472,10 @@ def test_pathoutput_without_tokens_passes_through_unchanged():
 
     for_each(
         fn,
-        inputs={"velocity": ColumnSelection(df, ["velocity"]),
-                "filename": PathOutput("static_name.pdf")},
+        inputs={
+            "velocity": ColumnSelection(df, ["velocity"]),
+            "filename": PathOutput("static_name.pdf"),
+        },
         subject=[1, 2],
     )
     assert received == ["static_name.pdf", "static_name.pdf"]
@@ -1386,6 +1497,7 @@ def test_pathoutput_colname_token_without_iterate_input_raises():
 # ---------------------------------------------------------------------------
 # Dtype restore robustness
 # ---------------------------------------------------------------------------
+
 
 def test_restore_schema_column_dtypes_duplicate_labels():
     """Duplicate column labels must not crash the dtype restore.

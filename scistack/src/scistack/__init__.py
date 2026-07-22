@@ -8,6 +8,16 @@ Top-level modules:
 - :mod:`scistack.user_config` — user-global configuration (coming in Phase 5)
 """
 
+from scistack.project import scaffold_project, validate_project_name
+from scistack.user_config import (
+    Tap,
+    UserConfig,
+    add_tap,
+    list_taps,
+    load_config,
+    refresh_tap,
+    remove_tap,
+)
 from scistack.uv_wrapper import (
     AddResult,
     LockedPackage,
@@ -19,16 +29,6 @@ from scistack.uv_wrapper import (
     read_lockfile,
     remove,
     sync,
-)
-from scistack.project import scaffold_project, validate_project_name
-from scistack.user_config import (
-    Tap,
-    UserConfig,
-    add_tap,
-    list_taps,
-    load_config,
-    refresh_tap,
-    remove_tap,
 )
 
 __version__ = "0.1.0"

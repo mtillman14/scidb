@@ -22,15 +22,25 @@ Example:
     raw = RawSignal.load(subject=1, session="A")
 """
 
+# From scifor (Layer 1)
+from scifor import Col, PathInput, PathOutput, get_schema, set_schema
+
+from .across_variants import AcrossVariants
+from .artifact_stamp import read_artifact_stamp, stamp_artifact
+from .colname import ColName
+from .column_selection import ColumnSelection
+from .constant import Constant, constant
 from .database import configure_database, get_database, get_user_id
-from .lineage_save import save
-from .state import (
-    check_combo_state,
-    check_node_state,
-    check_multiple_nodes_state,
-    check_pathinput_node_state,
+from .discover import (
+    DiscoveryResult,
+    ModuleError,
+    ModuleExports,
+    PackageResult,
+    discover_module,
+    scan_package,
+    scan_project,
 )
-from .log import Log
+from .each_of import EachOf
 from .exceptions import (
     AmbiguousParamError,
     AmbiguousVersionError,
@@ -42,36 +52,25 @@ from .exceptions import (
     ReservedMetadataKeyError,
     SciStackError,
 )
+from .exclusions import exclude_schema, include_schema, list_exclusions
+from .filters import raw_sql, schema_key
+from .fixed import Fixed
 
 # Batch execution (Layer 2 — DB-backed, no lineage)
 from .foreach import for_each
-from .fixed import Fixed
-from .variant import Variant, branch_param
-from .across_variants import AcrossVariants
-from .artifact_stamp import stamp_artifact, read_artifact_stamp
-from .merge import Merge
-from .column_selection import ColumnSelection
-from .colname import ColName
-from .each_of import EachOf
 from .foreach_config import ForEachConfig
+from .lineage_save import save
+from .log import Log
+from .merge import Merge
 from .pipeline import Pipeline, PipelineBinding, Step, active_pipeline, scistack
-
-# From scifor (Layer 1)
-from scifor import Col, set_schema, get_schema, PathInput, PathOutput
-
-from .variable import BaseVariable
-from .filters import raw_sql, schema_key
-from .constant import Constant, constant
-from .exclusions import exclude_schema, include_schema, list_exclusions
-from .discover import (
-    DiscoveryResult,
-    ModuleError,
-    ModuleExports,
-    PackageResult,
-    discover_module,
-    scan_package,
-    scan_project,
+from .state import (
+    check_combo_state,
+    check_multiple_nodes_state,
+    check_node_state,
+    check_pathinput_node_state,
 )
+from .variable import BaseVariable
+from .variant import Variant, branch_param
 
 __version__ = "0.1.0"
 

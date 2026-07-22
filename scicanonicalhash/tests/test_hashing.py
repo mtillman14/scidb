@@ -133,9 +133,7 @@ class TestCanonicalHash:
         d2 = pd.DataFrame({"a": [1, 2, 3]}, index=[10, 11, 12])
         d3 = d1.iloc[1:]  # non-default index from a row split
         assert canonical_hash(d1) == canonical_hash(d2)
-        assert canonical_hash(d3) == canonical_hash(
-            pd.DataFrame({"a": [2, 3]})
-        )
+        assert canonical_hash(d3) == canonical_hash(pd.DataFrame({"a": [2, 3]}))
 
 
 class TestGenerateRecordId:

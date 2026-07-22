@@ -13,11 +13,10 @@ import json
 
 import numpy as np
 import pytest
+from scidb.inspect import Inspector, render
+from scidb.inspect.cli import main
 
 from scidb import BaseVariable, NotFoundError, configure_database, for_each
-from scidb.inspect import Inspector
-from scidb.inspect.cli import main
-from scidb.inspect import render
 
 SCHEMA_KEYS = ["subject", "session"]
 
@@ -47,12 +46,21 @@ def build_pipeline_db(db_path, extra_unrun_input: bool = False):
     PipeRaw.save(np.array([1.0, 2.0]), subject="S01", session="1")
     PipeRaw.save(np.array([3.0, 4.0]), subject="S02", session="1")
     subjects = ["S01", "S02"]
-    for_each(bandpass2, {"signal": PipeRaw, "low_hz": 20}, [PipeFilt],
-             subject=subjects, session=["1"])
-    for_each(bandpass2, {"signal": PipeRaw, "low_hz": 30}, [PipeFilt],
-             subject=subjects, session=["1"])
-    for_each(stats2, {"signal": PipeRaw}, [PipeStats],
-             subject=subjects, session=["1"])
+    for_each(
+        bandpass2,
+        {"signal": PipeRaw, "low_hz": 20},
+        [PipeFilt],
+        subject=subjects,
+        session=["1"],
+    )
+    for_each(
+        bandpass2,
+        {"signal": PipeRaw, "low_hz": 30},
+        [PipeFilt],
+        subject=subjects,
+        session=["1"],
+    )
+    for_each(stats2, {"signal": PipeRaw}, [PipeStats], subject=subjects, session=["1"])
     if extra_unrun_input:
         # New input data with no re-run → every step has missing expected work.
         PipeRaw.save(np.array([5.0, 6.0]), subject="S03", session="1")
@@ -105,11 +113,12 @@ class TestGraphStructure:
         g = insp.pipeline()
         by_fn = {f.function_name: f for f in g.functions}
         bp = by_fn["bandpass2"]
-        var_to_fn = [(e.source, e.target, e.param) for e in g.edges
-                     if e.target == bp.id]
+        var_to_fn = [
+            (e.source, e.target, e.param) for e in g.edges if e.target == bp.id
+        ]
         assert var_to_fn == [("var__PipeRaw", bp.id, "signal")]
         fn_to_var = [(e.source, e.target) for e in g.edges if e.source == bp.id]
-        assert ("var__PipeFilt" in {t for _, t in fn_to_var})
+        assert "var__PipeFilt" in {t for _, t in fn_to_var}
 
     def test_record_count_per_step(self, insp):
         g = insp.pipeline()
@@ -214,6 +223,7 @@ class TestRenderStyle:
 
     def test_ascii_preset_is_pure_ascii(self, insp):
         from scidb.inspect.render import ASCII_STYLE
+
         text = render.render_pipeline_tree(insp.pipeline(), style=ASCII_STYLE)
         text.encode("ascii")  # raises if any Unicode glyph leaked through
         assert "* PipeRaw" in text
@@ -221,6 +231,7 @@ class TestRenderStyle:
 
     def test_custom_tag_wording_without_renderer_change(self, insp):
         from scidb.inspect.render import RenderStyle
+
         style = RenderStyle(tag_fmt="<{tag}>", stored_hash_note="")
         text = render.render_pipeline_tree(insp.pipeline(), style=style)
         assert "<green>" in text
@@ -228,6 +239,7 @@ class TestRenderStyle:
 
     def test_schema_tree_shares_the_style(self, insp):
         from scidb.inspect.render import ASCII_STYLE
+
         text = render.render_schema_tree(insp.schema_tree(), style=ASCII_STYLE)
         text.encode("ascii")
 
@@ -252,7 +264,10 @@ class TestCli:
     def test_pipeline_json(self, green_db, capsys):
         assert main(["--db", str(green_db), "pipeline", "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert {f["function_name"] for f in payload["functions"]} == {"bandpass2", "stats2"}
+        assert {f["function_name"] for f in payload["functions"]} == {
+            "bandpass2",
+            "stats2",
+        }
 
     def test_pipeline_json_flag(self, green_db, capsys):
         assert main(["--db", str(green_db), "pipeline", "--json"]) == 0
@@ -264,15 +279,39 @@ class TestCli:
 
     def test_pipeline_mermaid_to_file(self, green_db, tmp_path, capsys):
         out_file = tmp_path / "pipe.mmd"
-        assert main(["--db", str(green_db), "pipeline",
-                     "--format", "mermaid", "-o", str(out_file)]) == 0
+        assert (
+            main(
+                [
+                    "--db",
+                    str(green_db),
+                    "pipeline",
+                    "--format",
+                    "mermaid",
+                    "-o",
+                    str(out_file),
+                ]
+            )
+            == 0
+        )
         captured = capsys.readouterr()
         assert captured.out == ""  # file mode keeps stdout clean
         assert out_file.read_text().startswith("flowchart TD")
 
     def test_pipeline_type_filter(self, green_db, capsys):
-        assert main(["--db", str(green_db), "pipeline",
-                     "--type", "PipeStats", "--format", "json"]) == 0
+        assert (
+            main(
+                [
+                    "--db",
+                    str(green_db),
+                    "pipeline",
+                    "--type",
+                    "PipeStats",
+                    "--format",
+                    "json",
+                ]
+            )
+            == 0
+        )
         payload = json.loads(capsys.readouterr().out)
         assert {v["name"] for v in payload["variables"]} == {"PipeRaw", "PipeStats"}
 

@@ -27,7 +27,9 @@ class ColumnSelection:
     For standalone DataFrame usage, see scifor.ColumnSelection.
     """
 
-    def __init__(self, var_type: type, columns: "list[str] | None" = [], iterate: bool = False):
+    def __init__(
+        self, var_type: type, columns: "list[str] | None" = None, iterate: bool = False
+    ):
         """
         Args:
             var_type: The variable class to load.
@@ -39,6 +41,8 @@ class ColumnSelection:
                 reassemble into one wide output; if False (default), pass the
                 column(s) as a single argument.
         """
+        if columns is None:
+            columns = []
         self.var_type = var_type
         # Normalize the all-columns sentinel to an empty list (copying any
         # provided list so a shared default object is never mutated).
@@ -48,14 +52,14 @@ class ColumnSelection:
     @property
     def __name__(self) -> str:
         """Return a display name for format_inputs and error messages."""
-        var_name = getattr(self.var_type, '__name__', type(self.var_type).__name__)
+        var_name = getattr(self.var_type, "__name__", type(self.var_type).__name__)
         suffix = ", iterate" if self.iterate else ""
         if not self.columns:
-            return f'{var_name}[<all columns>{suffix}]'
+            return f"{var_name}[<all columns>{suffix}]"
         if len(self.columns) == 1 and not self.iterate:
             return f'{var_name}["{self.columns[0]}"]'
         cols = ", ".join(f'"{c}"' for c in self.columns)
-        return f'{var_name}[{cols}{suffix}]'
+        return f"{var_name}[{cols}{suffix}]"
 
     def load(self, **metadata) -> Any:
         """Load from the underlying var_type, then apply column selection."""
@@ -82,6 +86,7 @@ class ColumnSelection:
     def __eq__(self, other):
         try:
             from scidb.filters import ColumnFilter
+
             return ColumnFilter(self.var_type, self.columns[0], "==", other)
         except ImportError:
             raise NotImplementedError(
@@ -91,6 +96,7 @@ class ColumnSelection:
     def __ne__(self, other):
         try:
             from scidb.filters import ColumnFilter
+
             return ColumnFilter(self.var_type, self.columns[0], "!=", other)
         except ImportError:
             raise NotImplementedError(
@@ -100,6 +106,7 @@ class ColumnSelection:
     def __lt__(self, other):
         try:
             from scidb.filters import ColumnFilter
+
             return ColumnFilter(self.var_type, self.columns[0], "<", other)
         except ImportError:
             raise NotImplementedError(
@@ -109,6 +116,7 @@ class ColumnSelection:
     def __le__(self, other):
         try:
             from scidb.filters import ColumnFilter
+
             return ColumnFilter(self.var_type, self.columns[0], "<=", other)
         except ImportError:
             raise NotImplementedError(
@@ -118,6 +126,7 @@ class ColumnSelection:
     def __gt__(self, other):
         try:
             from scidb.filters import ColumnFilter
+
             return ColumnFilter(self.var_type, self.columns[0], ">", other)
         except ImportError:
             raise NotImplementedError(
@@ -127,6 +136,7 @@ class ColumnSelection:
     def __ge__(self, other):
         try:
             from scidb.filters import ColumnFilter
+
             return ColumnFilter(self.var_type, self.columns[0], ">=", other)
         except ImportError:
             raise NotImplementedError(
@@ -137,11 +147,10 @@ class ColumnSelection:
         """Create an InFilter for set membership testing."""
         try:
             from scidb.filters import InFilter
+
             return InFilter(self.var_type, self.columns[0], list(values))
         except ImportError:
-            raise NotImplementedError(
-                "isin() on ColumnSelection requires scidb."
-            )
+            raise NotImplementedError("isin() on ColumnSelection requires scidb.")
 
     def to_key(self) -> str:
         """Return a canonical string for use as a version key.
@@ -150,7 +159,7 @@ class ColumnSelection:
         iterated column set (including the empty ``[]`` -> all-columns
         resolution done before this is called) invalidates cached results.
         """
-        name = getattr(self.var_type, '__name__', repr(self.var_type))
+        name = getattr(self.var_type, "__name__", repr(self.var_type))
         return f"{name}[{self.columns!r}, iterate={self.iterate}]"
 
     def __hash__(self):

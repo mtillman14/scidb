@@ -1,13 +1,10 @@
 """Tests for scidb.for_each (DB-backed wrapper)."""
 
-import pytest
-from io import StringIO
-import sys
-
 import numpy as np
 import pandas as pd
+import pytest
 
-from scidb import for_each, Fixed, ColumnSelection, Merge
+from scidb import Fixed, for_each
 
 
 def _make_simple_mock_db():
@@ -549,6 +546,7 @@ class TestForEachAllLevels:
             def distinct_schema_combinations(self, keys):
                 # Return full cartesian product so no filtering happens
                 from itertools import product as _product
+
                 lists = [self._values[k] for k in keys]
                 return [tuple(str(v) for v in combo) for combo in _product(*lists)]
 
@@ -617,8 +615,8 @@ class TestForEachAllLevels:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            subject=[1],       # explicit single subject
-            session=[],         # all sessions from db
+            subject=[1],  # explicit single subject
+            session=[],  # all sessions from db
         )
 
         # 1 subject * 3 sessions = 3 iterations
@@ -650,8 +648,7 @@ class TestForEachAllLevels:
         )
 
         assert len(MockOutput.saved_data) == 0
-        warn_records = [r for r in caplog.records
-                        if r.levelno >= logging.WARNING]
+        warn_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("no values found" in r.getMessage() for r in warn_records)
 
     def test_no_db_raises_helpful_error(self):
@@ -1197,7 +1194,10 @@ class TestForEachConfigKeys:
 
         for_each(
             process,
-            inputs={"baseline": Fixed(MockVariableA, session="BL"), "current": MockVariableB},
+            inputs={
+                "baseline": Fixed(MockVariableA, session="BL"),
+                "current": MockVariableB,
+            },
             outputs=[MockOutput],
             db=self._make_mock_db(),
             subject=[1],
@@ -1237,11 +1237,15 @@ class TestForEachConfigKeys:
             return "b"
 
         db = self._make_mock_db()
-        for_each(fn_a, inputs={"x": MockVariableA}, outputs=[MockOutput], db=db, subject=[1])
+        for_each(
+            fn_a, inputs={"x": MockVariableA}, outputs=[MockOutput], db=db, subject=[1]
+        )
         meta_a = MockOutput.saved_data[0]["metadata"]["__fn"]
 
         MockOutput.reset()
-        for_each(fn_b, inputs={"x": MockVariableA}, outputs=[MockOutput], db=db, subject=[1])
+        for_each(
+            fn_b, inputs={"x": MockVariableA}, outputs=[MockOutput], db=db, subject=[1]
+        )
         meta_b = MockOutput.saved_data[0]["metadata"]["__fn"]
 
         assert meta_a == "fn_a"
@@ -1327,7 +1331,10 @@ class TestForEachSchemaFiltering:
 
         # Only 2 of 4 combos exist
         assert len(MockOutput.saved_data) == 2
-        saved = [(d["metadata"]["subject"], d["metadata"]["session"]) for d in MockOutput.saved_data]
+        saved = [
+            (d["metadata"]["subject"], d["metadata"]["session"])
+            for d in MockOutput.saved_data
+        ]
         assert ("1", "A") in saved
         assert ("2", "B") in saved
 
@@ -1433,7 +1440,7 @@ class TestForEachSchemaFiltering:
             inputs={"x": MockVariableA},
             outputs=[MockOutput],
             db=db,
-            subject=[],          # resolved from db: ["1", "2", "3"]
+            subject=[],  # resolved from db: ["1", "2", "3"]
             session=["A", "B"],  # explicit
         )
 
@@ -1491,7 +1498,8 @@ class TestForEachSchemaFiltering:
             )
 
         assert any(
-            "filtered 3 non-existent schema combinations (from 4 to 1)" in r.getMessage()
+            "filtered 3 non-existent schema combinations (from 4 to 1)"
+            in r.getMessage()
             for r in caplog.records
         )
 
@@ -1505,7 +1513,12 @@ class TestForEachSchemaFiltering:
         db = self._make_mock_db(
             schema_values={"subject": ["1", "2"], "session": ["A", "B"]},
             schema_combinations={
-                ("subject", "session"): [("1", "A"), ("1", "B"), ("2", "A"), ("2", "B")],
+                ("subject", "session"): [
+                    ("1", "A"),
+                    ("1", "B"),
+                    ("2", "A"),
+                    ("2", "B"),
+                ],
             },
             schema_keys=["subject", "session"],
         )
@@ -1520,8 +1533,10 @@ class TestForEachSchemaFiltering:
                 session=[],
             )
 
-        assert not any("filtered" in r.getMessage() and "non-existent" in r.getMessage()
-                       for r in caplog.records)
+        assert not any(
+            "filtered" in r.getMessage() and "non-existent" in r.getMessage()
+            for r in caplog.records
+        )
         assert len(MockOutput.saved_data) == 4
 
     def test_integer_to_string_coercion(self):
@@ -1548,7 +1563,10 @@ class TestForEachSchemaFiltering:
         )
 
         assert len(MockOutput.saved_data) == 2
-        saved = [(d["metadata"]["subject"], d["metadata"]["session"]) for d in MockOutput.saved_data]
+        saved = [
+            (d["metadata"]["subject"], d["metadata"]["session"])
+            for d in MockOutput.saved_data
+        ]
         assert ("1", "A") in saved
         assert ("2", "B") in saved
 

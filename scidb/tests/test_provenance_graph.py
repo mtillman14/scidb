@@ -13,11 +13,10 @@ These run additively alongside the legacy _lineage writes (deleted in Phase 5).
 
 import numpy as np
 import pytest
+from scidb.provenance import CONSTANT_TYPE, compute_constant_record_id
+
 import scifor as _scifor
-
 from scidb import BaseVariable, configure_database, for_each
-from scidb.provenance import compute_constant_record_id, CONSTANT_TYPE
-
 
 SCHEMA = ["subject", "session"]
 
@@ -67,8 +66,13 @@ def test_raw_save_creates_record_entity(db):
 # ---------------------------------------------------------------------------
 def test_for_each_writes_bipartite_graph(db):
     RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-    for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-             subject=["S01"], session=["1"])
+    for_each(
+        bandpass,
+        {"signal": RawSignal, "low_hz": 20},
+        [Filtered],
+        subject=["S01"],
+        session=["1"],
+    )
 
     # One invocation for bandpass.
     inv = db._duck._fetchall(
@@ -82,7 +86,8 @@ def test_for_each_writes_bipartite_graph(db):
 
     # Inputs: the variable 'signal' plus the constant 'low_hz'.
     inputs = {
-        (p, r) for (p, r) in db._duck._fetchall(
+        (p, r)
+        for (p, r) in db._duck._fetchall(
             "SELECT param_name, input_record_id FROM _invocation_input WHERE invocation_id = ?",
             [inv_id],
         )
@@ -112,7 +117,9 @@ def test_for_each_writes_bipartite_graph(db):
     assert len(out) == 1
     assert out[0][0] == 0
     out_rid = out[0][1]
-    rtype = db._duck._fetchall("SELECT type FROM _record WHERE record_id = ?", [out_rid])
+    rtype = db._duck._fetchall(
+        "SELECT type FROM _record WHERE record_id = ?", [out_rid]
+    )
     assert rtype and rtype[0][0] == "Filtered"
 
     # Run audit: one run linked to the invocation.
@@ -128,10 +135,20 @@ def test_for_each_writes_bipartite_graph(db):
 # ---------------------------------------------------------------------------
 def test_distinct_constants_distinct_invocations(db):
     RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-    for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-             subject=["S01"], session=["1"])
-    for_each(bandpass, {"signal": RawSignal, "low_hz": 30}, [Filtered],
-             subject=["S01"], session=["1"])
+    for_each(
+        bandpass,
+        {"signal": RawSignal, "low_hz": 20},
+        [Filtered],
+        subject=["S01"],
+        session=["1"],
+    )
+    for_each(
+        bandpass,
+        {"signal": RawSignal, "low_hz": 30},
+        [Filtered],
+        subject=["S01"],
+        session=["1"],
+    )
 
     assert _count(db, "_invocation") == 2
     # Two executions → two run rows.
@@ -143,13 +160,23 @@ def test_distinct_constants_distinct_invocations(db):
 # ---------------------------------------------------------------------------
 def test_rerun_idempotent_graph_new_run(db):
     RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-    for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-             subject=["S01"], session=["1"])
+    for_each(
+        bandpass,
+        {"signal": RawSignal, "low_hz": 20},
+        [Filtered],
+        subject=["S01"],
+        session=["1"],
+    )
     inv_after_first = _count(db, "_invocation")
     out_after_first = _count(db, "_invocation_output")
 
-    for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-             subject=["S01"], session=["1"])
+    for_each(
+        bandpass,
+        {"signal": RawSignal, "low_hz": 20},
+        [Filtered],
+        subject=["S01"],
+        session=["1"],
+    )
 
     # Graph did not grow...
     assert _count(db, "_invocation") == inv_after_first
@@ -188,8 +215,11 @@ def test_distribute_fanout_one_invocation_unique_slots(db):
     ]
 
     run_id = record_run(
-        db, graph_records, function_name="calc_fanout",
-        where_clause=None, user_id="tester",
+        db,
+        graph_records,
+        function_name="calc_fanout",
+        where_clause=None,
+        user_id="tester",
     )
     assert run_id is not None
 
@@ -197,15 +227,21 @@ def test_distribute_fanout_one_invocation_unique_slots(db):
     assert _count(db, "_invocation") == 1
     # n distinct output edges, each with a unique (invocation_id, output_num).
     assert _count(db, "_invocation_output") == n
-    onums = [r[0] for r in db._duck._fetchall(
-        "SELECT output_num FROM _invocation_output")]
+    onums = [
+        r[0] for r in db._duck._fetchall("SELECT output_num FROM _invocation_output")
+    ]
     assert len(set(onums)) == n
 
     # Re-running is idempotent for the graph (same ids, ON CONFLICT DO NOTHING):
     # no new invocation/output rows, but a fresh _run is appended.
     runs_before = _count(db, "_run")
-    record_run(db, graph_records, function_name="calc_fanout",
-               where_clause=None, user_id="tester")
+    record_run(
+        db,
+        graph_records,
+        function_name="calc_fanout",
+        where_clause=None,
+        user_id="tester",
+    )
     assert _count(db, "_invocation") == 1
     assert _count(db, "_invocation_output") == n
     assert _count(db, "_run") == runs_before + 1
@@ -217,8 +253,13 @@ def test_distribute_fanout_one_invocation_unique_slots(db):
 def test_multiple_subjects_independent_invocations(db):
     for subj in ["S01", "S02"]:
         RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
-    for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-             subject=["S01", "S02"], session=["1"])
+    for_each(
+        bandpass,
+        {"signal": RawSignal, "low_hz": 20},
+        [Filtered],
+        subject=["S01", "S02"],
+        session=["1"],
+    )
 
     # Different upstream record per subject → different input binding → 2 invocations.
     assert _count(db, "_invocation") == 2

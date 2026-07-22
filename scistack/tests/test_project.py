@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -183,8 +182,9 @@ class TestScaffoldDatabase:
         )
         db_path = root / "schema_study.duckdb"
         # Re-open and verify the schema keys.
-        from scidb import configure_database
         from scidb.database import _local
+
+        from scidb import configure_database
 
         db = configure_database(db_path, ["subject", "session"])
         assert db.dataset_schema_keys == ["subject", "session"]
@@ -289,12 +289,19 @@ class TestCli:
     def test_cli_project_new_happy_path(self, tmp_path):
         from scistack.__main__ import main
 
-        ret = main([
-            "project", "new", "cli_study",
-            "--schema-keys", "subject", "session",
-            "--parent-dir", str(tmp_path),
-            "--no-uv-sync",
-        ])
+        ret = main(
+            [
+                "project",
+                "new",
+                "cli_study",
+                "--schema-keys",
+                "subject",
+                "session",
+                "--parent-dir",
+                str(tmp_path),
+                "--no-uv-sync",
+            ]
+        )
         assert ret == 0
         assert (tmp_path / "cli_study" / "pyproject.toml").is_file()
         assert (tmp_path / "cli_study" / "src" / "cli_study" / "__init__.py").is_file()
@@ -303,12 +310,18 @@ class TestCli:
         from scistack.__main__ import main
 
         (tmp_path / "dup_study").mkdir()
-        ret = main([
-            "project", "new", "dup_study",
-            "--schema-keys", "subject",
-            "--parent-dir", str(tmp_path),
-            "--no-uv-sync",
-        ])
+        ret = main(
+            [
+                "project",
+                "new",
+                "dup_study",
+                "--schema-keys",
+                "subject",
+                "--parent-dir",
+                str(tmp_path),
+                "--no-uv-sync",
+            ]
+        )
         assert ret == 1
 
     def test_cli_project_subcommand_without_new_returns_1(self):
@@ -429,6 +442,7 @@ class TestTemplateContent:
         assert "created" in text
         # Just verify it parses as a date
         import datetime
+
         for line in text.splitlines():
             if "created" in line:
                 date_str = line.split("=", 1)[1].strip().strip('"')

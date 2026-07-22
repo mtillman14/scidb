@@ -1,7 +1,6 @@
 """Tests for scifor.schema — set_schema / get_schema."""
 
-import pytest
-from scifor.schema import set_schema, get_schema
+from scifor.schema import get_schema, set_schema
 
 
 def setup_function():

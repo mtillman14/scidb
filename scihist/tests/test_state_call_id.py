@@ -10,11 +10,10 @@ detection still hold through the public ``check_node_state`` API.
 
 import numpy as np
 import pytest
-import scifor as _scifor
-
-from scidb import BaseVariable, configure_database, for_each
 from scihist.state import check_node_state
 
+import scifor as _scifor
+from scidb import BaseVariable, configure_database, for_each
 
 SCHEMA = ["subject", "session"]
 
@@ -56,10 +55,22 @@ def test_two_configs_partial_each_union_is_red(db):
     """
     _seed(db, subjects=["1", "2"], sessions=["A", "B"])
 
-    for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 20},
-             outputs=[Filtered], db=db, subject=["1", "2"], session=["A"])
-    for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 50},
-             outputs=[Filtered], db=db, subject=["1", "2"], session=["B"])
+    for_each(
+        bandpass,
+        inputs={"signal": RawSignal, "low_hz": 20},
+        outputs=[Filtered],
+        db=db,
+        subject=["1", "2"],
+        session=["A"],
+    )
+    for_each(
+        bandpass,
+        inputs={"signal": RawSignal, "low_hz": 50},
+        outputs=[Filtered],
+        db=db,
+        subject=["1", "2"],
+        session=["B"],
+    )
 
     state = check_node_state(bandpass, [Filtered], db=db)
     assert state["counts"]["up_to_date"] == 4, state
@@ -73,8 +84,14 @@ def test_two_configs_fully_run_is_green(db):
     _seed(db, subjects=["1", "2"], sessions=["A", "B"])
 
     for low_hz in (20, 50):
-        for_each(bandpass, inputs={"signal": RawSignal, "low_hz": low_hz},
-                 outputs=[Filtered], db=db, subject=["1", "2"], session=["A", "B"])
+        for_each(
+            bandpass,
+            inputs={"signal": RawSignal, "low_hz": low_hz},
+            outputs=[Filtered],
+            db=db,
+            subject=["1", "2"],
+            session=["A", "B"],
+        )
 
     state = check_node_state(bandpass, [Filtered], db=db)
     # 2 configs × 4 locations = 8 expected, all present.
@@ -88,8 +105,14 @@ def test_config_partial_run_is_red(db):
     detection: subjects 2,3 exist in input but weren't processed → missing)."""
     _seed(db, subjects=["1", "2", "3"], sessions=["A"])
 
-    for_each(bandpass, inputs={"signal": RawSignal, "low_hz": 20},
-             outputs=[Filtered], db=db, subject=["1"], session=["A"])
+    for_each(
+        bandpass,
+        inputs={"signal": RawSignal, "low_hz": 20},
+        outputs=[Filtered],
+        db=db,
+        subject=["1"],
+        session=["A"],
+    )
 
     state = check_node_state(bandpass, [Filtered], db=db)
     assert state["counts"]["up_to_date"] == 1, state

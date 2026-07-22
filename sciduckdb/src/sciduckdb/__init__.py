@@ -2,20 +2,20 @@
 
 from .sciduckdb import (
     SciDuck,
-    schema_keys_from_db,
+    _bulk_df_to_storage_rows,
+    _dataframe_to_storage_rows,
+    _flatten_dict,
+    _infer_data_columns,
     _infer_duckdb_type,
     _numpy_dtype_to_duckdb,
     _python_to_storage,
-    _storage_to_python,
-    _storage_to_python_column,
-    _infer_data_columns,
     _record_schema_mismatch,
     _storage_signature,
-    _value_to_storage_row,
-    _dataframe_to_storage_rows,
-    _bulk_df_to_storage_rows,
-    _flatten_dict,
+    _storage_to_python,
+    _storage_to_python_column,
     _unflatten_dict,
+    _value_to_storage_row,
+    schema_keys_from_db,
 )
 
 __all__ = [

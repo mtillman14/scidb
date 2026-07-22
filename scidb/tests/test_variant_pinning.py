@@ -20,18 +20,17 @@ Covers:
 import numpy as np
 import pandas as pd
 import pytest
-import scifor as _scifor
 
+import scifor as _scifor
 from scidb import (
     BaseVariable,
-    configure_database,
-    for_each,
+    EachOf,
     Fixed,
+    Merge,
     Variant,
     branch_param,
-    Merge,
-    ColumnSelection,
-    EachOf,
+    configure_database,
+    for_each,
 )
 
 
@@ -62,16 +61,31 @@ def db(tmp_path):
 # Variable types
 # ---------------------------------------------------------------------------
 
-class RawSignal(BaseVariable): pass
-class FilteredEMG(BaseVariable): pass
-class Force(BaseVariable): pass
-class Result(BaseVariable): pass
-class Aggregated(BaseVariable): pass
+
+class RawSignal(BaseVariable):
+    pass
+
+
+class FilteredEMG(BaseVariable):
+    pass
+
+
+class Force(BaseVariable):
+    pass
+
+
+class Result(BaseVariable):
+    pass
+
+
+class Aggregated(BaseVariable):
+    pass
 
 
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
+
 
 def bandpass(signal, low_hz):
     """Filter with a parameter that creates branch_param variants."""
@@ -98,19 +112,26 @@ def aggregate_sum(signal):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_two_variants(db, subjects=("S01",), sessions=("1",)):
     """Save RawSignal then create low_hz=20 and low_hz=50 FilteredEMG variants."""
     for subj in subjects:
         for sess in sessions:
             RawSignal.save(np.array([1.0, 2.0, 3.0]), subject=subj, session=sess)
     for low_hz in [20, 50]:
-        for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
-                 subject=list(subjects), session=list(sessions))
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": low_hz},
+            [FilteredEMG],
+            subject=list(subjects),
+            session=list(sessions),
+        )
 
 
 # ---------------------------------------------------------------------------
 # 1. Construction guards
 # ---------------------------------------------------------------------------
+
 
 class TestVariantConstruction:
     def test_rejects_merge(self):
@@ -153,9 +174,13 @@ class TestVariantConstruction:
 # 2. to_key / __name__
 # ---------------------------------------------------------------------------
 
+
 class TestVariantKeys:
     def test_to_key_plain(self):
-        assert Variant(FilteredEMG, low_hz=20).to_key() == "Variant(FilteredEMG, low_hz=20)"
+        assert (
+            Variant(FilteredEMG, low_hz=20).to_key()
+            == "Variant(FilteredEMG, low_hz=20)"
+        )
 
     def test_to_key_sorted(self):
         v = Variant(FilteredEMG, low_hz=20, threshold=0.5)
@@ -166,12 +191,16 @@ class TestVariantKeys:
         assert v.to_key() == "Variant(Fixed(FilteredEMG, session='BL'), low_hz=20)"
 
     def test_name_property(self):
-        assert Variant(FilteredEMG, low_hz=20).__name__ == "Variant(FilteredEMG, low_hz=20)"
+        assert (
+            Variant(FilteredEMG, low_hz=20).__name__
+            == "Variant(FilteredEMG, low_hz=20)"
+        )
 
 
 # ---------------------------------------------------------------------------
 # 3. Pinning a plain input
 # ---------------------------------------------------------------------------
+
 
 class TestVariantPinsPlainInput:
     def test_pins_single_variant(self, db):
@@ -182,8 +211,12 @@ class TestVariantPinsPlainInput:
 
         # Pin to low_hz=20: scale runs over only that variant
         result = for_each(
-            scale, {"x": Variant(FilteredEMG, low_hz=20)}, [Result],
-            subject=["S01"], session=["1"], save=False,
+            scale,
+            {"x": Variant(FilteredEMG, low_hz=20)},
+            [Result],
+            subject=["S01"],
+            session=["1"],
+            save=False,
         )
         assert result is not None
         assert len(result) == 1
@@ -195,8 +228,12 @@ class TestVariantPinsPlainInput:
     def test_pins_other_variant(self, db):
         _make_two_variants(db)
         result = for_each(
-            scale, {"x": Variant(FilteredEMG, low_hz=50)}, [Result],
-            subject=["S01"], session=["1"], save=False,
+            scale,
+            {"x": Variant(FilteredEMG, low_hz=50)},
+            [Result],
+            subject=["S01"],
+            session=["1"],
+            save=False,
         )
         val = result["Result"].iloc[0]
         val = val.sum() if isinstance(val, np.ndarray) else val
@@ -214,6 +251,7 @@ class TestVariantPinsPlainInput:
 # 4. Variant + Fixed (order-agnostic)
 # ---------------------------------------------------------------------------
 
+
 class TestVariantWithFixed:
     def test_both_orders_load_identical_data(self, db):
         """Fixed(Variant(...)) and Variant(Fixed(...)) load identically.
@@ -227,8 +265,13 @@ class TestVariantWithFixed:
         RawSignal.save(2.0, subject="S01", session="BL")
         RawSignal.save(5.0, subject="S01", session="EX")
         for low_hz in [20, 50]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
-                     subject=["S01"], session=["BL", "EX"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [FilteredEMG],
+                subject=["S01"],
+                session=["BL", "EX"],
+            )
 
         spec_a = Fixed(Variant(FilteredEMG, low_hz=20), session="BL")
         spec_b = Variant(Fixed(FilteredEMG, session="BL"), low_hz=20)
@@ -251,6 +294,7 @@ class TestVariantWithFixed:
 # 5. Variant + ColumnSelection
 # ---------------------------------------------------------------------------
 
+
 class TestVariantWithColumnSelection:
     def test_variant_wraps_column_selection(self, db):
         # FilteredEMG holds a DataFrame with a "v" column
@@ -260,12 +304,18 @@ class TestVariantWithColumnSelection:
         for subj in ["S01"]:
             RawSignal.save(np.array([1.0, 2.0, 3.0]), subject=subj, session="1")
         for low_hz in [20, 50]:
-            for_each(make_frame, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
-                     subject=["S01"], session=["1"])
+            for_each(
+                make_frame,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [FilteredEMG],
+                subject=["S01"],
+                session=["1"],
+            )
 
         spec = Variant(FilteredEMG["v"], low_hz=20)
-        result = for_each(scale, {"x": spec}, [Result],
-                          subject=["S01"], session=["1"], save=False)
+        result = for_each(
+            scale, {"x": spec}, [Result], subject=["S01"], session=["1"], save=False
+        )
         val = result["Result"].iloc[0]
         val = val.sum() if isinstance(val, np.ndarray) else val
         assert val == 120.0
@@ -274,6 +324,7 @@ class TestVariantWithColumnSelection:
 # ---------------------------------------------------------------------------
 # 6. Variant inside Merge (per-constituent)
 # ---------------------------------------------------------------------------
+
 
 class TestVariantInMerge:
     def test_per_constituent_pinning(self, db):
@@ -291,8 +342,13 @@ class TestVariantInMerge:
 
         RawSignal.save(2.0, subject="S01", session="1")
         for low_hz in [20, 50]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [FilteredEMG],
+                subject=["S01"],
+                session=["1"],
+            )
         # Force has a single variant
         Force.save(7.0, subject="S01", session="1")
 
@@ -313,21 +369,27 @@ class TestVariantInMerge:
 # 7. EachOf(Variant, Variant) — once per variant, concatenated
 # ---------------------------------------------------------------------------
 
+
 class TestEachOfVariant:
     def test_runs_once_per_pinned_variant(self, db):
         _make_two_variants(db)
         result = for_each(
             scale,
-            {"x": EachOf(Variant(FilteredEMG, low_hz=20), Variant(FilteredEMG, low_hz=50))},
+            {
+                "x": EachOf(
+                    Variant(FilteredEMG, low_hz=20), Variant(FilteredEMG, low_hz=50)
+                )
+            },
             [Result],
-            subject=["S01"], session=["1"], save=False,
+            subject=["S01"],
+            session=["1"],
+            save=False,
         )
         assert result is not None
         # Two alternatives → two concatenated rows
         assert len(result) == 2
         vals = sorted(
-            (v.sum() if isinstance(v, np.ndarray) else v)
-            for v in result["Result"]
+            (v.sum() if isinstance(v, np.ndarray) else v) for v in result["Result"]
         )
         assert vals == [120.0, 300.0]
 
@@ -336,25 +398,36 @@ class TestEachOfVariant:
 # 8. Aggregation no longer smushes variants when pinned (motivating case)
 # ---------------------------------------------------------------------------
 
+
 class TestVariantFixesAggregationSmushing:
     def test_pinned_aggregation_sees_one_variant(self, db):
         for sess in ["1", "2"]:
             RawSignal.save(1.0, subject="S01", session=sess)
         for low_hz in [20, 50]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
-                     subject=["S01"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [FilteredEMG],
+                subject=["S01"],
+                session=["1", "2"],
+            )
 
         # Without pinning, full aggregation AUTO-SPLITS per variant group (D1):
         # low_hz=20 → 20+20 = 40, low_hz=50 → 50+50 = 100 — one call each.
         # (Pre-D1 it pooled all 4 records into a single 140.0 "smush".)
-        unpinned = for_each(aggregate_sum, {"signal": FilteredEMG}, [Aggregated],
-                            save=False)
+        unpinned = for_each(
+            aggregate_sum, {"signal": FilteredEMG}, [Aggregated], save=False
+        )
         assert len(unpinned) == 2
         assert sorted(float(v) for v in unpinned["Aggregated"]) == [40.0, 100.0]
 
         # Pinned to low_hz=20: aggregation only sees the 2 matching records → 40.
-        pinned = for_each(aggregate_sum, {"signal": Variant(FilteredEMG, low_hz=20)},
-                          [Aggregated], save=False)
+        pinned = for_each(
+            aggregate_sum,
+            {"signal": Variant(FilteredEMG, low_hz=20)},
+            [Aggregated],
+            save=False,
+        )
         assert len(pinned) == 1
         assert pinned["Aggregated"].iloc[0] == 40.0
 
@@ -362,6 +435,7 @@ class TestVariantFixesAggregationSmushing:
 # ---------------------------------------------------------------------------
 # 9. where= + Variant coexist
 # ---------------------------------------------------------------------------
+
 
 class TestVariantWithWhere:
     def test_where_and_branch_param_coexist_in_load(self, db):
@@ -375,8 +449,13 @@ class TestVariantWithWhere:
         for sess in ["1", "2"]:
             RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session=sess)
         for low_hz in [20, 50]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
-                     subject=["S01"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [FilteredEMG],
+                subject=["S01"],
+                session=["1", "2"],
+            )
 
         # where restricts to session 1 (2 variants there); branch param pins low_hz=20.
         results = FilteredEMG.load(where=schema_key("session") == "1", low_hz=20)
@@ -393,14 +472,23 @@ class TestVariantWithWhere:
         for sess in ["1", "2"]:
             RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session=sess)
         for low_hz in [20, 50]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [FilteredEMG],
-                     subject=["S01"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [FilteredEMG],
+                subject=["S01"],
+                session=["1", "2"],
+            )
 
         # where restricts to session 1; Variant pins low_hz=20.
         result = for_each(
-            scale, {"x": Variant(FilteredEMG, low_hz=20)}, [Result],
+            scale,
+            {"x": Variant(FilteredEMG, low_hz=20)},
+            [Result],
             where=schema_key("session") == "1",
-            subject=["S01"], session=["1"], save=False,
+            subject=["S01"],
+            session=["1"],
+            save=False,
         )
         assert len(result) == 1
         val = result["Result"].iloc[0]

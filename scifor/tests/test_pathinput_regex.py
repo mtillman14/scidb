@@ -10,7 +10,6 @@ These tests mirror the MATLAB-side regex tests in
 """
 
 import pytest
-
 from scifor.pathinput import PathInput
 
 
@@ -113,5 +112,7 @@ class TestRegexFlagPropagation:
     def test_discover_unaffected_by_regex(self, tmp_files):
         # ``regex`` is a load()-time flag only; discover() ignores it.
         pi_plain = PathInput("{subject}/6mwt-001.xlsx", root_folder=str(tmp_files))
-        pi_regex = PathInput("{subject}/6mwt-001.xlsx", root_folder=str(tmp_files), regex=True)
+        pi_regex = PathInput(
+            "{subject}/6mwt-001.xlsx", root_folder=str(tmp_files), regex=True
+        )
         assert pi_plain.discover() == pi_regex.discover()

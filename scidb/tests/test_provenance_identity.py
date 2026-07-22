@@ -9,6 +9,7 @@ Covers ``scidb.provenance``:
 """
 
 import scidb.provenance as prov
+
 from scidb import configure_database
 
 
@@ -38,8 +39,12 @@ def test_constant_value_rendering():
 # Invocation ids
 # ---------------------------------------------------------------------------
 def test_invocation_id_deterministic():
-    a = prov.compute_invocation_id("fnhash", [], False, [("signal", "rid1"), ("low_hz", "ridc")])
-    b = prov.compute_invocation_id("fnhash", [], False, [("signal", "rid1"), ("low_hz", "ridc")])
+    a = prov.compute_invocation_id(
+        "fnhash", [], False, [("signal", "rid1"), ("low_hz", "ridc")]
+    )
+    b = prov.compute_invocation_id(
+        "fnhash", [], False, [("signal", "rid1"), ("low_hz", "ridc")]
+    )
     assert a == b
 
 
@@ -56,8 +61,12 @@ def test_invocation_id_function_hash_matters():
 
 
 def test_invocation_id_binding_value_matters():
-    a = prov.compute_invocation_id("fn", [], False, [("low_hz", prov.compute_constant_record_id(20))])
-    b = prov.compute_invocation_id("fn", [], False, [("low_hz", prov.compute_constant_record_id(21))])
+    a = prov.compute_invocation_id(
+        "fn", [], False, [("low_hz", prov.compute_constant_record_id(20))]
+    )
+    b = prov.compute_invocation_id(
+        "fn", [], False, [("low_hz", prov.compute_constant_record_id(21))]
+    )
     assert a != b
 
 
@@ -100,6 +109,7 @@ def _inline_invocation_id(meta):
         _parse_json_dict,
         _variable_bindings,
     )
+
     from scicanonicalhash import canonical_hash
 
     var_b = _variable_bindings(meta)
@@ -111,8 +121,12 @@ def _inline_invocation_id(meta):
     distribute = bool(meta.get("__distribute", False))
     bindings = list(var_b)
     for param, value in const_b.items():
-        bindings.append((param, constant_record_id_from_hash(canonical_hash(value)), None))
-    return compute_invocation_id(meta.get("__fn_hash") or "", as_table, distribute, bindings)
+        bindings.append(
+            (param, constant_record_id_from_hash(canonical_hash(value)), None)
+        )
+    return compute_invocation_id(
+        meta.get("__fn_hash") or "", as_table, distribute, bindings
+    )
 
 
 def test_inline_invocation_id_matches_helper():
@@ -122,21 +136,26 @@ def test_inline_invocation_id_matches_helper():
 
     metas = [
         # plain variable + constant
-        {"__fn_hash": "h1",
-         "__upstream": json.dumps({"__rid_signal": "rid_sig"}),
-         "__constants": json.dumps({"low_hz": 20})},
+        {
+            "__fn_hash": "h1",
+            "__upstream": json.dumps({"__rid_signal": "rid_sig"}),
+            "__constants": json.dumps({"low_hz": 20}),
+        },
         # multiple constants, no variables
-        {"__fn_hash": "h2",
-         "__constants": json.dumps({"a": 1, "b": "x", "c": 3.5})},
+        {"__fn_hash": "h2", "__constants": json.dumps({"a": 1, "b": "x", "c": 3.5})},
         # aggregation flag + inputs list
-        {"__fn_hash": "h3",
-         "__upstream": json.dumps({"__rid_x": "r1", "__rid_y": "r2"}),
-         "__inputs": json.dumps({"x": "k", "y": "k"}),
-         "__as_table": True},
+        {
+            "__fn_hash": "h3",
+            "__upstream": json.dumps({"__rid_x": "r1", "__rid_y": "r2"}),
+            "__inputs": json.dumps({"x": "k", "y": "k"}),
+            "__as_table": True,
+        },
         # distribute flag
-        {"__fn_hash": "h4",
-         "__upstream": json.dumps({"__rid_x": "r1"}),
-         "__distribute": True},
+        {
+            "__fn_hash": "h4",
+            "__upstream": json.dumps({"__rid_x": "r1"}),
+            "__distribute": True,
+        },
     ]
     for meta in metas:
         assert _inline_invocation_id(meta) == invocation_id_for_meta(meta)
@@ -161,13 +180,19 @@ def test_provenance_tables_created(tmp_path):
     db = configure_database(tmp_path / "prov.duckdb", ["subject", "trial"])
     try:
         names = {
-            r[0] for r in db._duck._fetchall(
+            r[0]
+            for r in db._duck._fetchall(
                 "SELECT table_name FROM information_schema.tables"
             )
         }
         for t in (
-            "_record", "_constant", "_invocation", "_invocation_input",
-            "_invocation_output", "_run", "_run_invocation",
+            "_record",
+            "_constant",
+            "_invocation",
+            "_invocation_input",
+            "_invocation_output",
+            "_run",
+            "_run_invocation",
         ):
             assert t in names, f"missing table {t}"
     finally:
@@ -178,14 +203,20 @@ def test_record_table_columns(tmp_path):
     db = configure_database(tmp_path / "prov2.duckdb", ["subject"])
     try:
         cols = {
-            r[0] for r in db._duck._fetchall(
+            r[0]
+            for r in db._duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = '_record'"
             )
         }
         assert cols == {
-            "record_id", "created_at", "type", "schema_id",
-            "content_hash", "schema_version", "excluded",
+            "record_id",
+            "created_at",
+            "type",
+            "schema_id",
+            "content_hash",
+            "schema_version",
+            "excluded",
         }
     finally:
         db.close()

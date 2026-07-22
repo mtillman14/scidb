@@ -15,11 +15,11 @@ FastAPI mode (scistack-gui CLI) is unchanged and still works.
 
 import argparse
 import json
+import logging
 import os
 import sys
 import threading
 import time
-import logging
 from pathlib import Path
 
 # Logging: the scistacklog facade owns the scistack layer loggers — its
@@ -43,11 +43,14 @@ logger = logging.getLogger("scistack_gui.server")
 if os.environ.get("SCISTACK_GUI_DEBUG"):
     try:
         import debugpy
+
         _port = int(os.environ.get("SCISTACK_GUI_DEBUG_PORT", "5678"))
         debugpy.listen(("127.0.0.1", _port))
         logger.info(f"debugpy listening on 127.0.0.1:{_port} (attach from VS Code)")
         if os.environ.get("SCISTACK_GUI_DEBUG_WAIT"):
-            logger.info("SCISTACK_GUI_DEBUG_WAIT set — blocking until debugger attaches...")
+            logger.info(
+                "SCISTACK_GUI_DEBUG_WAIT set — blocking until debugger attaches..."
+            )
             debugpy.wait_for_client()
             logger.info("debugger attached")
     except Exception as e:
@@ -57,6 +60,7 @@ if os.environ.get("SCISTACK_GUI_DEBUG"):
 def _send(obj: dict) -> None:
     """Write a JSON-RPC message to stdout (thread-safe with notify._lock)."""
     from scistack_gui.notify import _lock
+
     msg = json.dumps(obj)
     with _lock:
         sys.stdout.write(msg + "\n")
@@ -76,8 +80,7 @@ def _respond_error(req_id, code: int, message: str):
 def _send_progress(message: str) -> None:
     """Emit a startup progress notification. Uses _send directly because
     notify.enable() has not been called yet during startup."""
-    _send({"jsonrpc": "2.0", "method": "progress",
-           "params": {"message": message}})
+    _send({"jsonrpc": "2.0", "method": "progress", "params": {"message": message}})
 
 
 # ---------------------------------------------------------------------------
@@ -86,14 +89,17 @@ def _send_progress(message: str) -> None:
 # Each handler takes (params: dict) and returns a JSON-serialisable result.
 # They call into the same business logic as the FastAPI route handlers.
 
+
 def _h_get_pipeline(params):
-    from scistack_gui.services.pipeline_service import get_pipeline_graph
     from scistack_gui.db import get_db
+    from scistack_gui.services.pipeline_service import get_pipeline_graph
+
     return get_pipeline_graph(get_db(), params.get("pipeline_id", "main"))
 
 
 def _h_get_layout(params):
     from scistack_gui.services.layout_service import get_layout
+
     return get_layout(params.get("pipeline_id", "main"))
 
 
@@ -101,58 +107,71 @@ def _h_get_layout(params):
 # Store-level ValueErrors propagate; the dispatch loop's error mapping
 # reports them as JSON-RPC errors with the store's message.
 
+
 def _h_list_pipelines(params):
     from scistack_gui.services.scope_service import list_pipelines
+
     return list_pipelines()
 
 
 def _h_create_pipeline(params):
     from scistack_gui.services.scope_service import create_pipeline
+
     return create_pipeline(params["name"])
 
 
 def _h_rename_pipeline(params):
     from scistack_gui.services.scope_service import rename_pipeline
+
     return rename_pipeline(params["pipeline_id"], params["name"])
 
 
 def _h_delete_pipeline(params):
     from scistack_gui.services.scope_service import delete_pipeline
+
     return delete_pipeline(params["pipeline_id"])
 
 
 def _h_get_pipeline_interface(params):
     from scistack_gui.services.scope_service import pipeline_interface
+
     return pipeline_interface(params["pipeline_id"])
 
 
 def _h_add_pipeline_use(params):
     from scistack_gui.services.scope_service import add_pipeline_use
+
     return add_pipeline_use(
-        params["parent_pipeline_id"], params["child_pipeline_id"],
-        params.get("binding"), params.get("x", 0.0), params.get("y", 0.0),
+        params["parent_pipeline_id"],
+        params["child_pipeline_id"],
+        params.get("binding"),
+        params.get("x", 0.0),
+        params.get("y", 0.0),
     )
 
 
 def _h_update_use_binding(params):
     from scistack_gui.services.scope_service import update_use_binding
+
     return update_use_binding(params["use_id"], params["binding"])
 
 
 def _h_remove_pipeline_use(params):
     from scistack_gui.services.scope_service import remove_pipeline_use
+
     return remove_pipeline_use(params["use_id"])
 
 
 def _h_get_pipeline_plan(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.execution_service import plan_pipeline
-    return plan_pipeline(get_db(), params["pipeline_id"],
-                         params.get("target", ""))
+
+    return plan_pipeline(get_db(), params["pipeline_id"], params.get("target", ""))
 
 
 def _h_start_pipeline_run(params):
     from scistack_gui.api.run import start_pipeline_run
+
     return start_pipeline_run(
         params["pipeline_id"],
         params.get("mode", "all"),
@@ -166,91 +185,117 @@ def _h_start_pipeline_run(params):
 def _h_get_endpoint_artifacts(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.endpoint_service import endpoint_artifacts
+
     return endpoint_artifacts(get_db(), params["fn_name"])
 
 
 def _h_write_report(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.endpoint_service import write_report
+
     return write_report(get_db())
 
 
 def _h_get_schema(params):
-    from scistack_gui.services.pipeline_service import get_schema
     from scistack_gui.db import get_db
+    from scistack_gui.services.pipeline_service import get_schema
+
     return get_schema(get_db())
 
 
 def _h_get_info(params):
     from scistack_gui.services.pipeline_service import get_info
+
     return get_info()
 
 
 def _h_get_registry(params):
     from scistack_gui.services.pipeline_service import get_registry
+
     return get_registry()
 
 
 def _h_get_function_params(params):
     from scistack_gui.services.pipeline_service import get_function_full_info
+
     return get_function_full_info(params["name"])
 
 
 def _h_get_function_source(params):
     from scistack_gui.services.pipeline_service import get_function_source
+
     return get_function_source(params["name"])
 
 
 def _h_get_variable_records(params):
-    from scistack_gui.services.variable_service import get_variable_records
     from scistack_gui.db import get_db
+    from scistack_gui.services.variable_service import get_variable_records
+
     return get_variable_records(params["name"], get_db())
 
 
 def _h_get_constants(params):
     from scistack_gui.services.layout_service import get_constants
+
     return get_constants()
 
 
 def _h_get_path_inputs(params):
     from scistack_gui.services.layout_service import get_path_inputs
+
     return get_path_inputs()
 
 
 def _h_put_layout(params):
     from scistack_gui.services.layout_service import put_layout
-    return put_layout(params["node_id"], params["x"], params["y"],
-                      params.get("node_type"), params.get("label"),
-                      params.get("pipeline_id", "main"))
+
+    return put_layout(
+        params["node_id"],
+        params["x"],
+        params["y"],
+        params.get("node_type"),
+        params.get("label"),
+        params.get("pipeline_id", "main"),
+    )
 
 
 def _h_delete_layout(params):
     from scistack_gui.services.layout_service import delete_layout
+
     return delete_layout(params["node_id"])
 
 
 def _h_put_edge(params):
     from scistack_gui.services.layout_service import put_edge
-    return put_edge(params["edge_id"], params["source"], params["target"],
-                    params.get("source_handle"), params.get("target_handle"))
+
+    return put_edge(
+        params["edge_id"],
+        params["source"],
+        params["target"],
+        params.get("source_handle"),
+        params.get("target_handle"),
+    )
 
 
 def _h_delete_edge(params):
     from scistack_gui.services.layout_service import delete_edge
+
     return delete_edge(params["edge_id"])
 
 
 def _h_put_pending_constant(params):
-    from scistack_gui.services.layout_service import put_pending_constant
     from scistack_gui.notify import notify
+    from scistack_gui.services.layout_service import put_pending_constant
+
     result = put_pending_constant(params["name"], params["value"])
     notify("dag_updated", {})
     return result
 
 
 def _h_delete_pending_constant(params):
-    from scistack_gui.services.layout_service import delete_pending_constant
     from scistack_gui.notify import notify
+    from scistack_gui.services.layout_service import delete_pending_constant
+
     result = delete_pending_constant(params["name"], params["value"])
     notify("dag_updated", {})
     return result
@@ -258,46 +303,56 @@ def _h_delete_pending_constant(params):
 
 def _h_create_constant(params):
     from scistack_gui.services.layout_service import create_constant
+
     return create_constant(params["name"])
 
 
 def _h_delete_constant(params):
     from scistack_gui.services.layout_service import delete_constant
+
     return delete_constant(params["name"])
 
 
 def _h_create_path_input(params):
     from scistack_gui.services.layout_service import create_path_input
-    return create_path_input(params["name"], params.get("template", ""),
-                             params.get("root_folder"))
+
+    return create_path_input(
+        params["name"], params.get("template", ""), params.get("root_folder")
+    )
 
 
 def _h_update_path_input(params):
     from scistack_gui.services.layout_service import update_path_input
-    return update_path_input(params["name"], params.get("template", ""),
-                             params.get("root_folder"))
+
+    return update_path_input(
+        params["name"], params.get("template", ""), params.get("root_folder")
+    )
 
 
 def _h_delete_path_input(params):
     from scistack_gui.services.layout_service import delete_path_input
+
     return delete_path_input(params["name"])
 
 
 def _h_put_node_config(params):
-    from scistack_gui.services.layout_service import put_node_config
     from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import put_node_config
+
     return put_node_config(get_db(), params["node_id"], params.get("config", {}))
 
 
 def _h_get_variables_list(params):
     from scistack_gui.services.pipeline_service import get_variables_list
+
     return get_variables_list()
 
 
 def _h_start_run(params):
     import uuid
-    from scistack_gui.db import get_db, acquire_db_connection, release_db_connection
-    from scistack_gui.api.run import _run_in_thread, WhereFilterSpec
+
+    from scistack_gui.api.run import WhereFilterSpec, _run_in_thread
+    from scistack_gui.db import acquire_db_connection, get_db, release_db_connection
 
     logger.info("[server] JSON-RPC start_run handler called")
     logger.debug("[server] Request params: %s", params)
@@ -316,9 +371,13 @@ def _h_start_run(params):
     logger.info(
         "[server] Parsed request: run_id=%s, function=%s, language=%s, variants=%d, "
         "schema_filter=%s, schema_level=%s, run_options=%s, where_filters=%d",
-        run_id, function_name, language, len(variants),
+        run_id,
+        function_name,
+        language,
+        len(variants),
         list(schema_filter.keys()) if schema_filter else None,
-        schema_level, run_options,
+        schema_level,
+        run_options,
         len(where_filters) if where_filters else 0,
     )
 
@@ -328,8 +387,16 @@ def _h_start_run(params):
     def _run_wrapper():
         logger.debug("[server] Run wrapper thread started (run_id=%s)", run_id)
         try:
-            _run_in_thread(run_id, function_name, variants, db, schema_filter,
-                           schema_level, run_options, where_filters)
+            _run_in_thread(
+                run_id,
+                function_name,
+                variants,
+                db,
+                schema_filter,
+                schema_level,
+                run_options,
+                where_filters,
+            )
         finally:
             logger.debug("[server] Releasing DB connection (run_id=%s)", run_id)
             release_db_connection()
@@ -344,6 +411,7 @@ def _h_start_run(params):
 
 def _h_cancel_run(params):
     from scistack_gui.services.run_service import cancel_run
+
     run_id = params["run_id"]
     logger.info("[server] JSON-RPC cancel_run handler called for run_id=%s", run_id)
     result = cancel_run(run_id)
@@ -353,16 +421,20 @@ def _h_cancel_run(params):
 
 def _h_force_cancel_run(params):
     from scistack_gui.services.run_service import force_cancel_run
+
     run_id = params["run_id"]
-    logger.info("[server] JSON-RPC force_cancel_run handler called for run_id=%s", run_id)
+    logger.info(
+        "[server] JSON-RPC force_cancel_run handler called for run_id=%s", run_id
+    )
     result = force_cancel_run(run_id)
     logger.debug("[server] force_cancel_run result: %s (run_id=%s)", result, run_id)
     return result
 
 
 def _h_refresh_module(params):
-    from scistack_gui.services.pipeline_service import refresh_module
     from scistack_gui.notify import notify
+    from scistack_gui.services.pipeline_service import refresh_module
+
     result = refresh_module()
     if result.get("ok"):
         notify("dag_updated", {})
@@ -370,8 +442,9 @@ def _h_refresh_module(params):
 
 
 def _h_create_variable(params):
-    from scistack_gui.services.variable_service import create_variable
     from scistack_gui.notify import notify
+    from scistack_gui.services.variable_service import create_variable
+
     result = create_variable(
         params.get("name", ""),
         params.get("docstring"),
@@ -397,18 +470,22 @@ def _h_create_variable(params):
 # Project config panel (Phase 6)
 # ---------------------------------------------------------------------------
 
+
 def _h_get_project_code(params):
     from scistack_gui.services.project_service import get_project_code
+
     return get_project_code()
 
 
 def _h_get_project_libraries(params):
     from scistack_gui.services.project_service import get_project_libraries
+
     return get_project_libraries()
 
 
 def _h_refresh_project(params):
     from scistack_gui.services.project_service import refresh_project
+
     return refresh_project()
 
 
@@ -416,29 +493,35 @@ def _h_refresh_project(params):
 # Index & library management (Phase 7)
 # ---------------------------------------------------------------------------
 
+
 def _h_get_indexes(params):
     from scistack_gui.services.indexes_service import list_indexes
+
     return list_indexes()
 
 
 def _h_search_index_packages(params):
     from scistack_gui.services.indexes_service import search_index_packages
+
     return search_index_packages(params.get("name", ""), q=params.get("q", ""))
 
 
 def _h_add_library(params):
     from scistack_gui.services.indexes_service import add_library
+
     return add_library(params)
 
 
 def _h_remove_library(params):
     from scistack_gui.services.indexes_service import remove_library
+
     return remove_library(params.get("name", ""))
 
 
 # ---------------------------------------------------------------------------
 # MATLAB support
 # ---------------------------------------------------------------------------
+
 
 def _find_scimatlab_matlab_dir() -> str | None:
     """Return the scimatlab MATLAB package directory, or None if not found.
@@ -468,9 +551,7 @@ def _find_scimatlab_matlab_dir() -> str | None:
             info = json.loads(direct_url_text)
             if info.get("dir_info", {}).get("editable", False):
                 url = info.get("url", "")
-                logger.info(
-                    "_find_scimatlab_matlab_dir: editable install at %s", url
-                )
+                logger.info("_find_scimatlab_matlab_dir: editable install at %s", url)
     except Exception:
         pass  # dist not found or JSON parse error — fall through to find_spec
 
@@ -483,9 +564,7 @@ def _find_scimatlab_matlab_dir() -> str | None:
             if d.is_dir():
                 logger.info("_find_scimatlab_matlab_dir: found %s", d)
                 return str(d)
-            logger.warning(
-                "_find_scimatlab_matlab_dir: matlab/ not found at %s", d
-            )
+            logger.warning("_find_scimatlab_matlab_dir: matlab/ not found at %s", d)
     except Exception as exc:
         logger.warning("_find_scimatlab_matlab_dir: find_spec failed: %s", exc)
 
@@ -493,8 +572,9 @@ def _find_scimatlab_matlab_dir() -> str | None:
 
 
 def _h_generate_matlab_command(params):
-    from scistack_gui.services.matlab_command_service import generate_matlab_command
     from scistack_gui.db import get_db
+    from scistack_gui.services.matlab_command_service import generate_matlab_command
+
     return generate_matlab_command(params["function_name"], get_db(), params)
 
 
@@ -558,6 +638,7 @@ METHODS = {
 # Main loop
 # ---------------------------------------------------------------------------
 
+
 def _summarize_params(params: dict, max_len: int = 120) -> str:
     """Return a compact one-line summary of RPC params for logging."""
     if not params:
@@ -576,6 +657,7 @@ def _summarize_params(params: dict, max_len: int = 120) -> str:
 def _handle_request(req: dict) -> None:
     """Process a single JSON-RPC request."""
     from scidb.log import Log
+
     from scistack_gui.db import acquire_db_connection, release_db_connection
 
     req_id = req.get("id")
@@ -613,30 +695,56 @@ def main():
     t0 = time.monotonic()
     parser = argparse.ArgumentParser(prog="scistack-gui-server")
     parser.add_argument("--db", type=Path, required=True, help="Path to .duckdb file")
-    parser.add_argument("--module", "-m", type=Path, default=None,
-                        help="Path to pipeline .py file (single-file mode)")
-    parser.add_argument("--project", "-p", type=Path, default=None,
-                        help="Path to pyproject.toml or directory containing one "
-                             "(project mode — reads [tool.scistack] config)")
-    parser.add_argument("--schema-keys", type=str, default=None,
-                        help="Comma-separated schema keys; if provided and --db "
-                             "does not exist, a new database is created.")
+    parser.add_argument(
+        "--module",
+        "-m",
+        type=Path,
+        default=None,
+        help="Path to pipeline .py file (single-file mode)",
+    )
+    parser.add_argument(
+        "--project",
+        "-p",
+        type=Path,
+        default=None,
+        help="Path to pyproject.toml or directory containing one "
+        "(project mode — reads [tool.scistack] config)",
+    )
+    parser.add_argument(
+        "--schema-keys",
+        type=str,
+        default=None,
+        help="Comma-separated schema keys; if provided and --db "
+        "does not exist, a new database is created.",
+    )
     args = parser.parse_args()
 
     if args.module and args.project:
-        print(json.dumps({
-            "jsonrpc": "2.0", "method": "error",
-            "params": {"message": "--module and --project are mutually exclusive."}
-        }))
+        print(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "error",
+                    "params": {
+                        "message": "--module and --project are mutually exclusive."
+                    },
+                }
+            )
+        )
         sys.exit(1)
 
     db_path = args.db.resolve()
     create_new = not db_path.exists()
     if create_new and not args.schema_keys:
-        print(json.dumps({
-            "jsonrpc": "2.0", "method": "error",
-            "params": {"message": f"Database not found: {db_path}"}
-        }))
+        print(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "error",
+                    "params": {"message": f"Database not found: {db_path}"},
+                }
+            )
+        )
         sys.exit(1)
 
     # Import user code first (same order as __main__.py) so that
@@ -646,13 +754,15 @@ def main():
     if args.project:
         # Project mode: load from [tool.scistack] in pyproject.toml
         from scistack_gui.config import load_config
+
         try:
             _send_progress("Loading project config...")
             config = load_config(args.project, db_path)
             result = registry.load_from_config(config)
             logger.info(
                 "Project mode: %d functions, %d variables",
-                len(result["functions"]), len(result["variables"]),
+                len(result["functions"]),
+                len(result["variables"]),
             )
             _send_progress(
                 f"Loaded {len(result['functions'])} Python functions, "
@@ -661,6 +771,7 @@ def main():
             # Load MATLAB registry if MATLAB config is present.
             if config.matlab_functions or config.matlab_variables:
                 from scistack_gui import matlab_registry
+
                 _send_progress(
                     f"Loading MATLAB registry ({len(config.matlab_functions)} "
                     f"functions, {len(config.matlab_variables)} variables)..."
@@ -673,42 +784,64 @@ def main():
                 )
                 _send_progress("MATLAB registry loaded")
         except (FileNotFoundError, ValueError) as e:
-            print(json.dumps({
-                "jsonrpc": "2.0", "method": "error",
-                "params": {"message": f"Config error: {e}"}
-            }))
+            print(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "error",
+                        "params": {"message": f"Config error: {e}"},
+                    }
+                )
+            )
             sys.exit(1)
         except Exception as e:
-            print(json.dumps({
-                "jsonrpc": "2.0", "method": "error",
-                "params": {"message": f"Error loading project: {e}"}
-            }))
+            print(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "error",
+                        "params": {"message": f"Error loading project: {e}"},
+                    }
+                )
+            )
             sys.exit(1)
     elif args.module:
         # Single-file mode (legacy)
         module_path = args.module.resolve()
         if not module_path.exists():
-            print(json.dumps({
-                "jsonrpc": "2.0", "method": "error",
-                "params": {"message": f"Module not found: {module_path}"}
-            }))
+            print(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "error",
+                        "params": {"message": f"Module not found: {module_path}"},
+                    }
+                )
+            )
             sys.exit(1)
         import importlib.util
+
         spec = importlib.util.spec_from_file_location("user_pipeline", module_path)
         user_mod = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(user_mod)
         except Exception as e:
-            print(json.dumps({
-                "jsonrpc": "2.0", "method": "error",
-                "params": {"message": f"Error importing module: {e}"}
-            }))
+            print(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "error",
+                        "params": {"message": f"Error importing module: {e}"},
+                    }
+                )
+            )
             sys.exit(1)
         registry.register_module(user_mod, module_path=module_path)
         logger.info("Loaded module: %s", module_path)
 
     # Initialise the database (create if missing and schema keys supplied)
-    from scistack_gui.db import init_db, create_db
+    from scistack_gui.db import create_db, init_db
+
     _send_progress("Opening database...")
     try:
         if create_new:
@@ -719,19 +852,26 @@ def main():
             db = init_db(db_path)
             logger.info("Opened database: %s", db_path)
     except Exception as e:
-        print(json.dumps({
-            "jsonrpc": "2.0", "method": "error",
-            "params": {"message": f"Error opening database: {e}"}
-        }))
+        print(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "error",
+                    "params": {"message": f"Error opening database: {e}"},
+                }
+            )
+        )
         sys.exit(1)
 
     # Bridge Python logging → scidb.log so that scihist/scistack_gui logger
     # calls appear in the unified log file.
     from scidb.log import Log
+
     Log.bridge_python_logging()
 
     # Enable JSON-RPC notifications on stdout
     from scistack_gui.notify import enable
+
     enable()
 
     # Phase 8: Stale lockfile detection on project open.
@@ -740,23 +880,27 @@ def main():
     # recorded in scistack_gui.startup; the frontend picks it up via the
     # next /api/info call (see _h_get_info).
     from scistack_gui import startup as _startup
+
     _startup.check_lockfile_staleness(db_path.parent)
 
     # Signal readiness
     logger.info("Startup complete in %.2fs", time.monotonic() - t0)
-    _send({
-        "jsonrpc": "2.0",
-        "method": "ready",
-        "params": {
-            "db_name": db_path.name,
-            "schema_keys": db.dataset_schema_keys,
-        },
-    })
+    _send(
+        {
+            "jsonrpc": "2.0",
+            "method": "ready",
+            "params": {
+                "db_name": db_path.name,
+                "schema_keys": db.dataset_schema_keys,
+            },
+        }
+    )
 
     # Release the DuckDB file lock now that startup is complete. It will be
     # reacquired automatically when the first request arrives. This allows
     # MATLAB (or any other process) to open the same database immediately.
     from scistack_gui.db import close_initial_connection
+
     close_initial_connection()
     logger.info("DB connection released after startup — MATLAB can now access the file")
 
@@ -774,9 +918,7 @@ def main():
 
         # Handle each request in a thread so long-running calls (like start_run)
         # don't block the main loop from reading the next request.
-        threading.Thread(
-            target=_handle_request, args=(req,), daemon=True
-        ).start()
+        threading.Thread(target=_handle_request, args=(req,), daemon=True).start()
 
     logger.info("stdin closed, shutting down.")
 

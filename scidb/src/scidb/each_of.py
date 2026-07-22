@@ -22,7 +22,5 @@ class EachOf:
         self.alternatives = list(alternatives)
 
     def __repr__(self) -> str:
-        items = ", ".join(
-            getattr(a, "__name__", repr(a)) for a in self.alternatives
-        )
+        items = ", ".join(getattr(a, "__name__", repr(a)) for a in self.alternatives)
         return f"EachOf({items})"

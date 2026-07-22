@@ -40,7 +40,7 @@ class ColumnSelection:
     def __init__(
         self,
         data: Any,
-        columns: "list[str] | None" = [],
+        columns: "list[str] | None" = None,
         iterate: bool = False,
         excl_columns: "list[str] | None" = None,
     ):
@@ -58,6 +58,8 @@ class ColumnSelection:
                 non-data columns reported by a ``ColumnFunctionError`` without
                 having to enumerate every column you *do* want.
         """
+        if columns is None:
+            columns = []
         self.data = data
         # Normalize the all-columns sentinel to an empty list (copying any
         # provided list so a shared default object is never mutated).
@@ -74,23 +76,25 @@ class ColumnSelection:
             excl = ", ".join(f'"{c}"' for c in self.excl_columns)
             suffix = f"{suffix}, excl=[{excl}]"
         if not self.columns:
-            return f'{data_name}[<all columns>{suffix}]'
+            return f"{data_name}[<all columns>{suffix}]"
         if len(self.columns) == 1 and not self.iterate and not self.excl_columns:
             return f'{data_name}["{self.columns[0]}"]'
         cols = ", ".join(f'"{c}"' for c in self.columns)
-        return f'{data_name}[{cols}{suffix}]'
+        return f"{data_name}[{cols}{suffix}]"
 
     def __hash__(self):
-        return hash((id(self.data), tuple(self.columns), self.iterate,
-                     tuple(self.excl_columns)))
+        return hash(
+            (id(self.data), tuple(self.columns), self.iterate, tuple(self.excl_columns))
+        )
 
 
 def _display_name(obj: Any) -> str:
     """Get a display name for an object."""
     try:
         import pandas as pd
+
         if isinstance(obj, pd.DataFrame):
             return f"DataFrame{list(obj.columns)}"
     except ImportError:
         pass
-    return getattr(obj, '__name__', type(obj).__name__)
+    return getattr(obj, "__name__", type(obj).__name__)

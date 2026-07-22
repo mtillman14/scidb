@@ -25,8 +25,8 @@ import warnings as _warnings
 import numpy as np
 import pandas as pd
 import pytest
-import scifor as _scifor
 
+import scifor as _scifor
 from scidb import (
     AcrossVariants,
     BaseVariable,
@@ -37,7 +37,6 @@ from scidb import (
     configure_database,
     for_each,
 )
-
 
 # ---------------------------------------------------------------------------
 # Schema and fixtures
@@ -59,6 +58,7 @@ def db(tmp_path):
 # ---------------------------------------------------------------------------
 # Variable types
 # ---------------------------------------------------------------------------
+
 
 class RawSignal(BaseVariable):
     pass
@@ -87,6 +87,7 @@ class Feature(BaseVariable):
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
+
 
 def bandpass(signal, low_hz):
     """Filter with a parameter that creates variants."""
@@ -130,6 +131,7 @@ def _values(result, col="Aggregated"):
 # 1. Full (grand) aggregation auto-splits per variant group
 # ---------------------------------------------------------------------------
 
+
 class TestFullAggregationAutoSplit:
     """Full aggregation (no schema keys iterated) splits per variant group."""
 
@@ -140,11 +142,15 @@ class TestFullAggregationAutoSplit:
                 RawSignal.save(np.array([1.0, 2.0, 3.0]), subject=subj, session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1", "2"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          save=False)
+        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated], save=False)
 
         assert result is not None
         assert len(result) == 2, "Expected one iteration per variant group"
@@ -159,11 +165,15 @@ class TestFullAggregationAutoSplit:
             RawSignal.save(np.array([1.0]), subject=subj, session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          save=True)
+        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated], save=True)
 
         assert result is not None
         assert len(result) == 2
@@ -176,8 +186,13 @@ class TestFullAggregationAutoSplit:
         RawSignal.save(np.array([2.0]), subject="S02", session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
         for_each(aggregate_sum, {"signal": Filtered}, [Aggregated], save=True)
 
@@ -193,18 +208,30 @@ class TestFullAggregationAutoSplit:
             RawSignal.save(np.array([1.0]), subject="S01", session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1", "2"],
+            )
 
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                              subject=["S01"], save=True)
+            result = for_each(
+                aggregate_sum,
+                {"signal": Filtered},
+                [Aggregated],
+                subject=["S01"],
+                save=True,
+            )
 
         assert len(result) == 2
-        bp_warnings = [w for w in caught
-                       if "branch_params key" in str(w.message)
-                       and "overwritten" in str(w.message)]
+        bp_warnings = [
+            w
+            for w in caught
+            if "branch_params key" in str(w.message) and "overwritten" in str(w.message)
+        ]
         assert not bp_warnings, (
             "Auto-split aggregation must not merge conflicting branch_params: "
             f"{[str(w.message) for w in bp_warnings]}"
@@ -214,6 +241,7 @@ class TestFullAggregationAutoSplit:
 # ---------------------------------------------------------------------------
 # 2. Partial aggregation auto-splits per variant group
 # ---------------------------------------------------------------------------
+
 
 class TestPartialAggregationAutoSplit:
     """Partial aggregation (subset of schema keys) splits per variant group."""
@@ -225,11 +253,21 @@ class TestPartialAggregationAutoSplit:
                 RawSignal.save(np.array([1.0, 2.0]), subject=subj, session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1", "2"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          subject=["S01", "S02"], save=False)
+        result = for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=False,
+        )
 
         assert result is not None
         assert len(result) == 4, "Expected 2 subjects x 2 variant groups"
@@ -243,11 +281,21 @@ class TestPartialAggregationAutoSplit:
                 RawSignal.save(np.array([1.0]), subject=subj, session=sess)
 
         for low_hz in [10, 20]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1", "2"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          subject=["S01", "S02"], save=True)
+        result = for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=True,
+        )
 
         assert result is not None
         assert len(result) == 4
@@ -266,18 +314,28 @@ class TestPartialAggregationAutoSplit:
         RawSignal.save(np.array([3.0, 4.0]), subject="S02", session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1", "2"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          subject=["S01", "S02"], save=False)
+        result = for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=False,
+        )
 
         assert result is not None
         assert len(result) == 4
         # S01: low20 -> 2 x (20+40) = 120 ; low30 -> 2 x (30+60) = 180
         # S02: low20 -> (60+80) = 140    ; low30 -> (90+120) = 210
         by_subject = {}
-        for subj, val in zip(result["subject"], result["Aggregated"]):
+        for subj, val in zip(result["subject"], result["Aggregated"], strict=False):
             if isinstance(val, np.ndarray):
                 val = val.item() if val.size == 1 else val.sum()
             by_subject.setdefault(subj, []).append(float(val))
@@ -289,25 +347,45 @@ class TestPartialAggregationAutoSplit:
 # 3. Multi-input Cartesian expansion
 # ---------------------------------------------------------------------------
 
+
 class TestMultiInputSplit:
     def test_two_split_inputs_expand_cartesian(self, db):
         """Two multi-variant inputs -> signature product (mirrors rid expansion)."""
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
         for k in [2, 3]:
-            for_each(scale, {"signal": RawSignal, "k": k}, [Scaled],
-                     subject=["S01"], session=["1"])
+            for_each(
+                scale,
+                {"signal": RawSignal, "k": k},
+                [Scaled],
+                subject=["S01"],
+                session=["1"],
+            )
 
         def add_both(a, b):
-            av = a.select_dtypes(include="number").values.sum() if isinstance(a, pd.DataFrame) else np.asarray(a).sum()
-            bv = b.select_dtypes(include="number").values.sum() if isinstance(b, pd.DataFrame) else np.asarray(b).sum()
+            av = (
+                a.select_dtypes(include="number").values.sum()
+                if isinstance(a, pd.DataFrame)
+                else np.asarray(a).sum()
+            )
+            bv = (
+                b.select_dtypes(include="number").values.sum()
+                if isinstance(b, pd.DataFrame)
+                else np.asarray(b).sum()
+            )
             return float(av + bv)
 
-        result = for_each(add_both, {"a": Filtered, "b": Scaled}, [Combined],
-                          save=False)
+        result = for_each(
+            add_both, {"a": Filtered, "b": Scaled}, [Combined], save=False
+        )
 
         assert result is not None
         assert len(result) == 4, "Expected 2 x 2 signature product"
@@ -319,6 +397,7 @@ class TestMultiInputSplit:
 # 4. Multi-step pipelines propagate groups
 # ---------------------------------------------------------------------------
 
+
 class TestMultiStepAggregationPipeline:
     def test_two_step_aggregation_pipeline_stays_split(self, db):
         """Aggregation -> aggregation keeps variant groups separate end-to-end."""
@@ -327,17 +406,26 @@ class TestMultiStepAggregationPipeline:
                 RawSignal.save(np.array([1.0, 2.0, 3.0]), subject=subj, session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1", "2"],
+            )
 
-        step2 = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                         subject=["S01", "S02"], save=True)
+        step2 = for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=True,
+        )
         assert len(step2) == 4  # 2 subjects x 2 groups
 
         # Grand aggregation over Aggregated: its records carry the inherited
         # bandpass.low_hz, so the split continues -- one Feature per group.
-        step3 = for_each(extract_mean, {"signal": Aggregated}, [Feature],
-                         save=True)
+        step3 = for_each(extract_mean, {"signal": Aggregated}, [Feature], save=True)
         assert step3 is not None
         assert len(step3) == 2
 
@@ -349,11 +437,15 @@ class TestMultiStepAggregationPipeline:
             RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          save=True)
+        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated], save=True)
 
         assert result is not None
         assert len(result) == 2
@@ -365,6 +457,7 @@ class TestMultiStepAggregationPipeline:
 # 5. Provenance per group
 # ---------------------------------------------------------------------------
 
+
 class TestProvenancePerGroup:
     def test_group_record_has_upstream_metadata(self, db):
         """Each group's record stores provenance for ITS contributing rids only."""
@@ -372,11 +465,21 @@ class TestProvenancePerGroup:
             RawSignal.save(np.array([1.0]), subject="S01", session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1", "2"],
+            )
 
-        for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                 subject=["S01"], save=True)
+        for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            subject=["S01"],
+            save=True,
+        )
 
         agg20 = Aggregated.load(subject="S01", **branch_param("bandpass", low_hz=20))
         prov = db.get_upstream_provenance(agg20.record_id)
@@ -390,15 +493,27 @@ class TestProvenancePerGroup:
         """introspect=True exposes each row's variant-group branch_params."""
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          save=False, introspect=True)
+        result = for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            save=False,
+            introspect=True,
+        )
 
         assert len(result) == 2
         assert "_branch_params_signal" in result.columns
-        bps = sorted(bp.get("bandpass.low_hz") for bp in result["_branch_params_signal"])
+        bps = sorted(
+            bp.get("bandpass.low_hz") for bp in result["_branch_params_signal"]
+        )
         assert bps == [20, 30]
         assert not any(c.startswith("__vsig_") for c in result.columns)
 
@@ -407,8 +522,13 @@ class TestProvenancePerGroup:
         RawSignal.save(np.array([2.0]), subject="S02", session="1")
 
         for low_hz in [10, 20]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
         for_each(aggregate_sum, {"signal": Filtered}, [Aggregated], save=True)
 
@@ -423,6 +543,7 @@ class TestProvenancePerGroup:
 # 6. Ragged variant groups: warn and aggregate partially
 # ---------------------------------------------------------------------------
 
+
 class TestRaggedVariantGroups:
     def test_ragged_groups_warn_and_aggregate_partially(self, db):
         """A group covering fewer locations warns and aggregates what it has."""
@@ -430,15 +551,30 @@ class TestRaggedVariantGroups:
             RawSignal.save(np.array([1.0]), subject="S01", session=sess)
 
         # low_hz=20 exists at both sessions; low_hz=30 only at session 1.
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1", "2"])
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 30}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1", "2"],
+        )
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 30},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                              subject=["S01"], save=False)
+            result = for_each(
+                aggregate_sum,
+                {"signal": Filtered},
+                [Aggregated],
+                subject=["S01"],
+                save=False,
+            )
 
         assert len(result) == 2
         # low20: 20+20 = 40 (both sessions); low30: 30 (session 1 only)
@@ -451,6 +587,7 @@ class TestRaggedVariantGroups:
 # 7. AcrossVariants: explicit pooling opt-in
 # ---------------------------------------------------------------------------
 
+
 class TestAcrossVariants:
     @pytest.mark.filterwarnings("ignore:branch_params key.*overwritten")
     def test_pooled_aggregation_with_branch_param_columns(self, db):
@@ -460,8 +597,13 @@ class TestAcrossVariants:
                 RawSignal.save(np.array([1.0, 2.0, 3.0]), subject=subj, session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1", "2"],
+            )
 
         seen = {}
 
@@ -483,8 +625,12 @@ class TestAcrossVariants:
                         total += float(arr.sum())
             return total
 
-        result = for_each(multiverse_sum, {"signal": AcrossVariants(Filtered)},
-                          [Aggregated], save=False)
+        result = for_each(
+            multiverse_sum,
+            {"signal": AcrossVariants(Filtered)},
+            [Aggregated],
+            save=False,
+        )
 
         assert result is not None
         assert len(result) == 1, "AcrossVariants pools into a single call"
@@ -512,8 +658,13 @@ class TestAcrossVariants:
             return pd.DataFrame({"bandpass2.low_hz": np.asarray(signal) * low_hz})
 
         for low_hz in [20, 30]:
-            for_each(bandpass2, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass2,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
         def pooled(signal):
             # With the colliding bp column skipped, the pooled input is a
@@ -523,8 +674,9 @@ class TestAcrossVariants:
 
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            result = for_each(pooled, {"signal": AcrossVariants(Filtered)},
-                              [Aggregated], save=False)
+            result = for_each(
+                pooled, {"signal": AcrossVariants(Filtered)}, [Aggregated], save=False
+            )
 
         assert len(result) == 1
         collisions = [w for w in caught if "collide" in str(w.message)]
@@ -533,14 +685,24 @@ class TestAcrossVariants:
     def test_across_variants_full_iteration_warns_noop(self, db):
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            result = for_each(aggregate_sum, {"signal": AcrossVariants(Filtered)},
-                              [Aggregated], subject=["S01"], session=["1"],
-                              save=False)
+            result = for_each(
+                aggregate_sum,
+                {"signal": AcrossVariants(Filtered)},
+                [Aggregated],
+                subject=["S01"],
+                session=["1"],
+                save=False,
+            )
 
         noop = [w for w in caught if "FULL iteration" in str(w.message)]
         assert noop, "Expected a full-iteration no-op warning"
@@ -555,12 +717,16 @@ class TestAcrossVariants:
         with pytest.raises(TypeError):
             AcrossVariants(ColumnSelection(Filtered, ["a"]))
         # Idempotent nesting collapses.
-        assert AcrossVariants(AcrossVariants(Filtered)).to_key() == "AcrossVariants(Filtered)"
+        assert (
+            AcrossVariants(AcrossVariants(Filtered)).to_key()
+            == "AcrossVariants(Filtered)"
+        )
 
 
 # ---------------------------------------------------------------------------
 # 8. No-variant aggregations are unchanged (parity)
 # ---------------------------------------------------------------------------
+
 
 class TestNoVariantParity:
     def test_single_variant_no_split(self, db):
@@ -568,11 +734,21 @@ class TestNoVariantParity:
             for sess in ["1", "2"]:
                 RawSignal.save(np.array([1.0, 2.0]), subject=subj, session=sess)
 
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01", "S02"], session=["1", "2"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01", "S02"],
+            session=["1", "2"],
+        )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          subject=["S01", "S02"], save=True)
+        result = for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=True,
+        )
 
         assert result is not None
         assert len(result) == 2, "One group -> one call per subject, as before"
@@ -585,8 +761,13 @@ class TestNoVariantParity:
         for subj in ["S01", "S02"]:
             RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          subject=["S01", "S02"], save=True)
+        result = for_each(
+            aggregate_sum,
+            {"signal": RawSignal},
+            [Aggregated],
+            subject=["S01", "S02"],
+            save=True,
+        )
 
         assert result is not None
         assert len(result) == 2
@@ -600,8 +781,7 @@ class TestNoVariantParity:
             for sess in ["1", "2"]:
                 RawSignal.save(np.array([1.0]), subject=subj, session=sess)
 
-        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated],
-                          save=True)
+        result = for_each(aggregate_sum, {"signal": RawSignal}, [Aggregated], save=True)
 
         assert result is not None
         assert len(result) == 1
@@ -612,11 +792,21 @@ class TestNoVariantParity:
             RawSignal.save(np.array([1.0]), subject="S01", session=sess)
 
         for low_hz in [10, 20, 30, 40, 50]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1", "2"],
+            )
 
-        result = for_each(aggregate_sum, {"signal": Filtered}, [Aggregated],
-                          subject=["S01"], save=True)
+        result = for_each(
+            aggregate_sum,
+            {"signal": Filtered},
+            [Aggregated],
+            subject=["S01"],
+            save=True,
+        )
 
         assert result is not None
         assert len(result) == 5
@@ -632,6 +822,7 @@ class TestNoVariantParity:
 #     to distribute's schema-level resolution)
 # ---------------------------------------------------------------------------
 
+
 class TestDistributeWithAggregation:
     def test_distribute_ignores_vsig_schema_extension(self, db):
         """Aggregation extends the scifor schema with __vsig_*; distribute
@@ -643,12 +834,18 @@ class TestDistributeWithAggregation:
         def double_values(signal):
             return np.asarray(signal).ravel() * 2
 
-        result = for_each(double_values, {"signal": RawSignal}, [Filtered],
-                          subject=["S01"], distribute=True, save=True)
+        result = for_each(
+            double_values,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=["S01"],
+            distribute=True,
+            save=True,
+        )
 
         assert result is not None and len(result) == 3
         # Row k of [2, 4, 6] lands at session k.
-        for sess, expected in zip(["1", "2", "3"], [2.0, 4.0, 6.0]):
+        for sess, expected in zip(["1", "2", "3"], [2.0, 4.0, 6.0], strict=False):
             rec = Filtered.load(subject="S01", session=sess)
             assert float(np.asarray(rec.data).ravel()[0]) == expected
 
@@ -657,6 +854,7 @@ class TestDistributeWithAggregation:
 # 9. skip_computed binds variant groups to their consumed-rid sets
 # ---------------------------------------------------------------------------
 
+
 class TestSkipComputedWithSplit:
     def test_no_cross_group_skip(self, db):
         """Second run skips BOTH groups; a NEW group computes (no cross-skip)."""
@@ -664,8 +862,13 @@ class TestSkipComputedWithSplit:
             RawSignal.save(np.array([1.0]), subject="S01", session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1", "2"],
+            )
 
         calls = {"n": 0}
 
@@ -673,8 +876,13 @@ class TestSkipComputedWithSplit:
             calls["n"] += 1
             return aggregate_sum(signal)
 
-        kwargs = dict(inputs={"signal": Filtered}, outputs=[Aggregated],
-                      subject=["S01"], save=True, skip_computed=True)
+        kwargs = {
+            "inputs": {"signal": Filtered},
+            "outputs": [Aggregated],
+            "subject": ["S01"],
+            "save": True,
+            "skip_computed": True,
+        }
 
         for_each(agg_counting, **kwargs)
         assert calls["n"] == 2, "First run computes both groups"
@@ -683,8 +891,13 @@ class TestSkipComputedWithSplit:
         assert calls["n"] == 2, "Second identical run skips both groups"
 
         # Add a THIRD variant upstream: only the new group may compute.
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 40}, [Filtered],
-                 subject=["S01"], session=["1", "2"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 40},
+            [Filtered],
+            subject=["S01"],
+            session=["1", "2"],
+        )
 
         for_each(agg_counting, **kwargs)
         assert calls["n"] == 3, (
@@ -702,8 +915,13 @@ class TestSkipComputedWithSplit:
             calls["n"] += 1
             return aggregate_sum(signal)
 
-        kwargs = dict(inputs={"signal": RawSignal}, outputs=[Aggregated],
-                      subject=["S01"], save=True, skip_computed=True)
+        kwargs = {
+            "inputs": {"signal": RawSignal},
+            "outputs": [Aggregated],
+            "subject": ["S01"],
+            "save": True,
+            "skip_computed": True,
+        }
 
         for_each(agg_counting, **kwargs)
         assert calls["n"] == 1
@@ -723,6 +941,7 @@ class TestSkipComputedWithSplit:
 # Save-kwarg variant alignment (align, not cross-product)
 # ---------------------------------------------------------------------------
 
+
 class TestSaveKwargAlignment:
     """Iterating a key that is ALSO a save-time non-schema kwarg must align
     each combo with its matching ``__save__.<key>`` variant group, not
@@ -739,9 +958,7 @@ class TestSaveKwargAlignment:
         calls = []
 
         def total_signal(data):
-            vals = np.concatenate(
-                [np.asarray(v).ravel() for v in data["RawSignal"]]
-            )
+            vals = np.concatenate([np.asarray(v).ravel() for v in data["RawSignal"]])
             calls.append(float(vals.sum()))
             return float(vals.sum())
 
@@ -768,18 +985,16 @@ class TestSaveKwargAlignment:
 
         def total_signal(data):
             calls["n"] += 1
-            vals = np.concatenate(
-                [np.asarray(v).ravel() for v in data["RawSignal"]]
-            )
+            vals = np.concatenate([np.asarray(v).ravel() for v in data["RawSignal"]])
             return float(vals.sum())
 
-        kwargs = dict(
-            inputs={"data": RawSignal},
-            outputs=[Aggregated],
-            subject=["1"],
-            run=["A", "B"],
-            skip_computed=True,
-        )
+        kwargs = {
+            "inputs": {"data": RawSignal},
+            "outputs": [Aggregated],
+            "subject": ["1"],
+            "run": ["A", "B"],
+            "skip_computed": True,
+        }
         for_each(total_signal, **kwargs)
         assert calls["n"] == 2
 

@@ -20,8 +20,8 @@ from dataclasses import dataclass, replace
 from .api import (
     DbOverview,
     ExclusionRecord,
-    PickCandidate,
     NodeStateSummary,
+    PickCandidate,
     ProvenanceTree,
     RecordSummary,
     RunRecord,
@@ -43,46 +43,46 @@ class RenderStyle:
     """
 
     # -- tree glyphs --------------------------------------------------------
-    var_bullet: str = "● "            # top-level (root/isolated) variable
-    branch_mid: str = "├─ "           # function under a variable, not last
+    var_bullet: str = "● "  # top-level (root/isolated) variable
+    branch_mid: str = "├─ "  # function under a variable, not last
     branch_last: str = "└─ "
-    cont_mid: str = "│  "             # continuation prefixes under the above
+    cont_mid: str = "│  "  # continuation prefixes under the above
     cont_last: str = "   "
-    out_branch_mid: str = "├─▶ "      # output variable under a function
+    out_branch_mid: str = "├─▶ "  # output variable under a function
     out_branch_last: str = "└─▶ "
     out_cont_mid: str = "│   "
     out_cont_last: str = "    "
-    back_ref_suffix: str = "  (↑ shown above)"   # repeated variable node
+    back_ref_suffix: str = "  (↑ shown above)"  # repeated variable node
     back_ref_fn_fmt: str = "{name} (↑ shown above)"  # repeated function node
-    input_marker: str = "◀"           # "param ◀ Type" lines (--values)
-    variant_bullet: str = "· "        # per-variant lines (--variants)
+    input_marker: str = "◀"  # "param ◀ Type" lines (--values)
+    variant_bullet: str = "· "  # per-variant lines (--variants)
 
     # -- suffix / label formats --------------------------------------------
-    records_suffix_fmt: str = "    {n} records"        # pipeline tree nodes
-    node_records_suffix_fmt: str = "  {n} records"     # schema tree nodes
+    records_suffix_fmt: str = "    {n} records"  # pipeline tree nodes
+    node_records_suffix_fmt: str = "  {n} records"  # schema tree nodes
     variants_suffix_fmt: str = "  {n} variants"
     variant_records_suffix_fmt: str = "   {n} records"  # --variants lines
-    constants_set_fmt: str = "{k} = {{{vals}}}"        # low_hz = {20, 30}
+    constants_set_fmt: str = "{k} = {{{vals}}}"  # low_hz = {20, 30}
     constants_single_fmt: str = "{k} = {v}"
     no_constants_label: str = "(no constants)"
 
     # -- state-tag wording ---------------------------------------------------
     tag_fmt: str = "[{tag}]"
     tag_unknown: str = "[state unknown]"
-    stored_hash_note: str = ", last-run recipe"    # basis caveat on the tag
+    stored_hash_note: str = ", last-run recipe"  # basis caveat on the tag
     missing_note_fmt: str = " — {missing}/{total} combos missing"
 
     # -- trace / state (Phase 3) ---------------------------------------------
     record_id_fmt: str = "record {rid}"
     id_abbrev_len: int = 8
     id_ellipsis: str = "…"
-    label_sep: str = "    "            # between segments of a record/fn line
+    label_sep: str = "    "  # between segments of a record/fn line
     saved_fmt: str = "saved {ts} by {user}"
     saved_no_user_fmt: str = "saved {ts}"
     fn_hash_fmt: str = "fn_hash {h}"
     run_note_fmt: str = "(run {n}×, last {ts})"
     raw_tag: str = "  (raw save)"
-    const_join: str = "  "             # between k=v pairs on a constants line
+    const_join: str = "  "  # between k=v pairs on a constants line
     missing_line_fmt: str = "    missing  {combo}"
     missing_more_fmt: str = "    … +{n} more"
     missing_display_cap: int = 25
@@ -187,7 +187,8 @@ def render_variables(variables: list[VariableSummary]) -> str:
             [
                 v.name,
                 v.schema_level,
-                v.record_count if not v.excluded_count
+                v.record_count
+                if not v.excluded_count
                 else f"{v.record_count} (+{v.excluded_count} excl)",
                 v.variant_count,
                 v.last_saved,
@@ -225,7 +226,9 @@ def render_schema_summary(tree: SchemaTree) -> str:
     def walk(node: SchemaNode):
         if node.schema_id is not None and node.schema_level is not None:
             locations[node.schema_level] = locations.get(node.schema_level, 0) + 1
-            records[node.schema_level] = records.get(node.schema_level, 0) + node.record_count
+            records[node.schema_level] = (
+                records.get(node.schema_level, 0) + node.record_count
+            )
         for c in node.children:
             walk(c)
 
@@ -237,10 +240,12 @@ def render_schema_summary(tree: SchemaTree) -> str:
         # Report in hierarchy order (levels are schema key names).
         ordered = [k for k in tree.schema_keys if k in locations]
         ordered += [k for k in locations if k not in tree.schema_keys]
-        lines.append(format_table(
-            ["level", "locations", "records"],
-            [[lvl, locations[lvl], records[lvl]] for lvl in ordered],
-        ))
+        lines.append(
+            format_table(
+                ["level", "locations", "records"],
+                [[lvl, locations[lvl], records[lvl]] for lvl in ordered],
+            )
+        )
     else:
         lines.append("(no schema locations realized yet)")
     return "\n".join(lines)
@@ -252,8 +257,11 @@ def render_schema_tree(tree: SchemaTree, style: RenderStyle | None = None) -> st
 
     def walk(node: SchemaNode, prefix: str, is_last: bool):
         branch = s.branch_last if is_last else s.branch_mid
-        count = (s.node_records_suffix_fmt.format(n=node.record_count)
-                 if node.record_count else "")
+        count = (
+            s.node_records_suffix_fmt.format(n=node.record_count)
+            if node.record_count
+            else ""
+        )
         lines.append(f"{prefix}{branch}{node.key}={node.value}{count}")
         child_prefix = prefix + (s.cont_last if is_last else s.cont_mid)
         for i, c in enumerate(node.children):
@@ -276,7 +284,8 @@ def render_variants_table(variants: list[VariantSummary]) -> str:
                 v.output_type,
                 v.output_num,
                 v.function_name,
-                ", ".join(f"{k}={val}" for k, val in sorted(v.constants.items())) or "-",
+                ", ".join(f"{k}={val}" for k, val in sorted(v.constants.items()))
+                or "-",
                 v.record_count,
                 v.call_id,
             ]
@@ -288,6 +297,7 @@ def render_variants_table(variants: list[VariantSummary]) -> str:
 # ---------------------------------------------------------------------------
 # Pipeline renderers
 # ---------------------------------------------------------------------------
+
 
 def _state_tag(state: str, counts: dict, basis: str, s: RenderStyle) -> str:
     """Shared tag wording for pipeline nodes and the state command."""
@@ -307,8 +317,9 @@ def _fn_state_tag(fn: FunctionNode, s: RenderStyle) -> str:
     return _state_tag(fn.state, fn.state_counts, fn.state_basis, s)
 
 
-def _fn_label_lines(fn: FunctionNode, expand_variants: bool,
-                    include_values: bool, s: RenderStyle) -> list[str]:
+def _fn_label_lines(
+    fn: FunctionNode, expand_variants: bool, include_values: bool, s: RenderStyle
+) -> list[str]:
     head = f"{fn.function_name}  {_fn_state_tag(fn, s)}"
     if fn.variant_count > 1:
         head += s.variants_suffix_fmt.format(n=fn.variant_count)
@@ -316,22 +327,31 @@ def _fn_label_lines(fn: FunctionNode, expand_variants: bool,
     if expand_variants:
         seen = set()
         for v in fn.variants:
-            const_str = ", ".join(
-                f"{k}={val}" for k, val in sorted(v.constants.items())
-            ) or s.no_constants_label
+            const_str = (
+                ", ".join(f"{k}={val}" for k, val in sorted(v.constants.items()))
+                or s.no_constants_label
+            )
             if const_str in seen:
                 continue
             seen.add(const_str)
-            n = sum(x.record_count for x in fn.variants
-                    if sorted(x.constants.items()) == sorted(v.constants.items()))
-            lines.append(f"{s.variant_bullet}{const_str}"
-                         + s.variant_records_suffix_fmt.format(n=n))
+            n = sum(
+                x.record_count
+                for x in fn.variants
+                if sorted(x.constants.items()) == sorted(v.constants.items())
+            )
+            lines.append(
+                f"{s.variant_bullet}{const_str}"
+                + s.variant_records_suffix_fmt.format(n=n)
+            )
     elif fn.constants:
-        lines.append("   ".join(
-            s.constants_set_fmt.format(k=k, vals=", ".join(vals))
-            if len(vals) > 1 else s.constants_single_fmt.format(k=k, v=vals[0])
-            for k, vals in fn.constants.items()
-        ))
+        lines.append(
+            "   ".join(
+                s.constants_set_fmt.format(k=k, vals=", ".join(vals))
+                if len(vals) > 1
+                else s.constants_single_fmt.format(k=k, v=vals[0])
+                for k, vals in fn.constants.items()
+            )
+        )
     if include_values:
         for param, var_type in sorted(fn.input_params.items()):
             lines.append(f"{param} {s.input_marker} {var_type}")
@@ -340,9 +360,12 @@ def _fn_label_lines(fn: FunctionNode, expand_variants: bool,
     return lines
 
 
-def render_pipeline_tree(graph: PipelineGraph, expand_variants: bool = False,
-                         include_values: bool = False,
-                         style: RenderStyle | None = None) -> str:
+def render_pipeline_tree(
+    graph: PipelineGraph,
+    expand_variants: bool = False,
+    include_values: bool = False,
+    style: RenderStyle | None = None,
+) -> str:
     s = style or DEFAULT_STYLE
     if not graph.functions and not graph.variables:
         return "(empty pipeline)"
@@ -375,8 +398,9 @@ def render_pipeline_tree(graph: PipelineGraph, expand_variants: bool = False,
         branch = s.branch_last if is_last else s.branch_mid
         cont = s.cont_last if is_last else s.cont_mid
         if fid in visited_fns:
-            lines.append(prefix + branch
-                         + s.back_ref_fn_fmt.format(name=fn.function_name))
+            lines.append(
+                prefix + branch + s.back_ref_fn_fmt.format(name=fn.function_name)
+            )
             return
         visited_fns.add(fid)
         label_lines = _fn_label_lines(fn, expand_variants, include_values, s)
@@ -388,7 +412,9 @@ def render_pipeline_tree(graph: PipelineGraph, expand_variants: bool = False,
             out_branch = s.out_branch_last if j == len(outs) - 1 else s.out_branch_mid
             out_cont = s.out_cont_last if j == len(outs) - 1 else s.out_cont_mid
             v = variables[f"var__{out}"]
-            count = s.records_suffix_fmt.format(n=v.record_count) if v.record_count else ""
+            count = (
+                s.records_suffix_fmt.format(n=v.record_count) if v.record_count else ""
+            )
             lines.append(f"{prefix}{cont}{out_branch}{out}{count}")
             if v.id in visited_vars:
                 if consumers.get(v.id):
@@ -401,8 +427,7 @@ def render_pipeline_tree(graph: PipelineGraph, expand_variants: bool = False,
 
     # Roots: source variables (no producer, has consumers), then loader
     # functions with no variable inputs, then anything left unvisited.
-    roots = [v.id for v in graph.variables
-             if not v.produced_by and consumers.get(v.id)]
+    roots = [v.id for v in graph.variables if not v.produced_by and consumers.get(v.id)]
     for var_id in roots:
         emit_var(var_id)
     for fn in graph.functions:
@@ -412,13 +437,18 @@ def render_pipeline_tree(graph: PipelineGraph, expand_variants: bool = False,
         if fn.id not in visited_fns:
             emit_fn(fn.id, "", True)
 
-    isolated = [v for v in graph.variables
-                if v.id not in visited_vars and not v.produced_by and not v.consumed_by]
+    isolated = [
+        v
+        for v in graph.variables
+        if v.id not in visited_vars and not v.produced_by and not v.consumed_by
+    ]
     if isolated:
         lines.append("")
         lines.append("not in any pipeline step:")
         for v in isolated:
-            count = s.records_suffix_fmt.format(n=v.record_count) if v.record_count else ""
+            count = (
+                s.records_suffix_fmt.format(n=v.record_count) if v.record_count else ""
+            )
             lines.append(f"{s.var_bullet}{v.name}{count}")
     return "\n".join(lines)
 
@@ -427,8 +457,9 @@ def _mermaid_id(node_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", node_id)
 
 
-def render_pipeline_mermaid(graph: PipelineGraph,
-                            style: RenderStyle | None = None) -> str:
+def render_pipeline_mermaid(
+    graph: PipelineGraph, style: RenderStyle | None = None
+) -> str:
     s = style or DEFAULT_STYLE
     lines = ["flowchart TD"]
     for v in graph.variables:
@@ -442,7 +473,7 @@ def render_pipeline_mermaid(graph: PipelineGraph,
         lines.append(f'    {_mermaid_id(f.id)}[["{label}"]]')
         state_classes[f.state].append(_mermaid_id(f.id))
     for e in graph.edges:
-        arrow = f'-->|{e.param}|' if e.param else "-->"
+        arrow = f"-->|{e.param}|" if e.param else "-->"
         lines.append(f"    {_mermaid_id(e.source)} {arrow} {_mermaid_id(e.target)}")
     lines.append(f"    classDef stgreen {s.mermaid_green}")
     lines.append(f"    classDef stred {s.mermaid_red}")
@@ -453,11 +484,14 @@ def render_pipeline_mermaid(graph: PipelineGraph,
     return "\n".join(lines)
 
 
-def render_pipeline_dot(graph: PipelineGraph,
-                        style: RenderStyle | None = None) -> str:
+def render_pipeline_dot(graph: PipelineGraph, style: RenderStyle | None = None) -> str:
     s = style or DEFAULT_STYLE
     colors = {"green": s.dot_green, "red": s.dot_red, "unknown": s.dot_unknown}
-    lines = ["digraph pipeline {", "    rankdir=TB;", '    node [fontname="Helvetica"];']
+    lines = [
+        "digraph pipeline {",
+        "    rankdir=TB;",
+        '    node [fontname="Helvetica"];',
+    ]
     for v in graph.variables:
         label = f"{v.name}\\n{v.record_count} records" if v.record_count else v.name
         lines.append(f'    "{v.id}" [shape=ellipse label="{label}"];')
@@ -514,7 +548,9 @@ def render_trace(tree: ProvenanceTree, style: RenderStyle | None = None) -> str:
         if n.saved:
             parts.append(
                 s.saved_fmt.format(ts=n.saved, user=n.saved_by)
-                if n.saved_by else s.saved_no_user_fmt.format(ts=n.saved))
+                if n.saved_by
+                else s.saved_no_user_fmt.format(ts=n.saved)
+            )
         label = s.label_sep.join(parts)
         if n.function_name is None:
             label += s.raw_tag
@@ -528,13 +564,15 @@ def render_trace(tree: ProvenanceTree, style: RenderStyle | None = None) -> str:
         if n.function_hash:
             fn_parts.append(s.fn_hash_fmt.format(h=_abbrev(n.function_hash, s)))
         if n.run_count:
-            fn_parts.append(s.run_note_fmt.format(n=n.run_count,
-                                                  ts=n.last_run or "?"))
+            fn_parts.append(s.run_note_fmt.format(n=n.run_count, ts=n.last_run or "?"))
         lines.append(f"{prefix}{s.branch_last}{s.label_sep.join(fn_parts)}")
         inner = prefix + s.cont_last
         if n.constants:
-            lines.append(inner + "  " + s.const_join.join(
-                f"{k}={v}" for k, v in sorted(n.constants.items())))
+            lines.append(
+                inner
+                + "  "
+                + s.const_join.join(f"{k}={v}" for k, v in sorted(n.constants.items()))
+            )
         for param, spec in sorted(n.path_inputs.items()):
             info = parse_path_input(spec)
             shown = info["template"] if info else spec
@@ -548,10 +586,12 @@ def render_trace(tree: ProvenanceTree, style: RenderStyle | None = None) -> str:
                 lines.append(
                     f"{inner}{branch}{inp.param} {s.input_marker} {inp.variable}"
                     f"{s.label_sep}"
-                    + s.record_id_fmt.format(rid=_abbrev(inp.record_id, s)))
+                    + s.record_id_fmt.format(rid=_abbrev(inp.record_id, s))
+                )
                 continue
-            lines.append(f"{inner}{branch}{inp.param} {s.input_marker} "
-                         f"{record_label(child)}")
+            lines.append(
+                f"{inner}{branch}{inp.param} {s.input_marker} {record_label(child)}"
+            )
             if child.record_id in visited:
                 lines[-1] += s.back_ref_suffix
                 continue
@@ -570,8 +610,11 @@ def render_trace(tree: ProvenanceTree, style: RenderStyle | None = None) -> str:
     return "\n".join(lines)
 
 
-def render_node_states(states: list[NodeStateSummary], show_missing: bool = False,
-                       style: RenderStyle | None = None) -> str:
+def render_node_states(
+    states: list[NodeStateSummary],
+    show_missing: bool = False,
+    style: RenderStyle | None = None,
+) -> str:
     s = style or DEFAULT_STYLE
     if not states:
         return "(no pipeline functions recorded)"
@@ -581,15 +624,27 @@ def render_node_states(states: list[NodeStateSummary], show_missing: bool = Fals
         headers.insert(1, "config")
     rows = []
     for st in states:
-        row = [st.function_name,
-               _state_tag(st.state,
-                          {"up_to_date": st.up_to_date, "missing": st.missing},
-                          # basis note is its own column here — keep tags short
-                          basis="", s=s),
-               st.state_basis, st.up_to_date, st.missing]
+        row = [
+            st.function_name,
+            _state_tag(
+                st.state,
+                {"up_to_date": st.up_to_date, "missing": st.missing},
+                # basis note is its own column here — keep tags short
+                basis="",
+                s=s,
+            ),
+            st.state_basis,
+            st.up_to_date,
+            st.missing,
+        ]
         if has_configs:
-            row.insert(1, s.const_join.join(
-                f"{k}={v}" for k, v in sorted((st.constants or {}).items())) or "-")
+            row.insert(
+                1,
+                s.const_join.join(
+                    f"{k}={v}" for k, v in sorted((st.constants or {}).items())
+                )
+                or "-",
+            )
         rows.append(row)
     lines = [format_table(headers, rows)]
     if show_missing:
@@ -606,8 +661,7 @@ def render_node_states(states: list[NodeStateSummary], show_missing: bool = Fals
     return "\n".join(lines)
 
 
-def render_pick_table(candidates: list[PickCandidate],
-                      schema_keys: list[str]) -> str:
+def render_pick_table(candidates: list[PickCandidate], schema_keys: list[str]) -> str:
     if not candidates:
         return "(no matching records)"
     used_keys = [k for k in schema_keys if any(k in c.schema for c in candidates)]
@@ -626,8 +680,7 @@ def render_pick_table(candidates: list[PickCandidate],
     return format_table(headers, rows)
 
 
-def render_exclusions(exclusions: list[ExclusionRecord],
-                      schema_keys: list[str]) -> str:
+def render_exclusions(exclusions: list[ExclusionRecord], schema_keys: list[str]) -> str:
     if not exclusions:
         return "(no schema exclusions)"
     used_keys = [k for k in schema_keys if any(k in e.schema for e in exclusions)]

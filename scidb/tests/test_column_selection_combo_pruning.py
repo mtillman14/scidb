@@ -19,13 +19,11 @@ exactly like a plain variable input does, and must never hand the function an
 empty per-combo table for a location that has no data.
 """
 
-import numpy as np
 import pandas as pd
 import pytest
 
 import scifor as _scifor
 from scidb import BaseVariable, configure_database, for_each
-
 
 SCHEMA = ["subject", "session"]
 
@@ -54,15 +52,21 @@ def _seed_sparse(db):
     """
     GaitData.save(
         pd.DataFrame({"StepLength": [1.0, 2.0], "Cadence": [10.0, 20.0]}),
-        db=db, subject="1", session="A",
+        db=db,
+        subject="1",
+        session="A",
     )
     GaitData.save(
         pd.DataFrame({"StepLength": [3.0, 4.0], "Cadence": [30.0, 40.0]}),
-        db=db, subject="1", session="B",
+        db=db,
+        subject="1",
+        session="B",
     )
     GaitData.save(
         pd.DataFrame({"StepLength": [5.0, 6.0], "Cadence": [50.0, 60.0]}),
-        db=db, subject="2", session="A",
+        db=db,
+        subject="2",
+        session="A",
     )
 
 
@@ -84,15 +88,17 @@ def _make_recorder():
     def record(value):
         rows = len(value)
         combos = (
-            set(zip(value["subject"].tolist(), value["session"].tolist()))
+            set(zip(value["subject"].tolist(), value["session"].tolist(), strict=False))
             if rows
             else set()
         )
-        calls.append({
-            "rows": rows,
-            "combos": combos,
-            "columns": list(value.columns),
-        })
+        calls.append(
+            {
+                "rows": rows,
+                "combos": combos,
+                "columns": list(value.columns),
+            }
+        )
         return float(rows)
 
     return record, calls
@@ -123,8 +129,10 @@ class TestColumnSelectionComboPruning:
             record,
             {"value": GaitData["StepLength"]},
             [OutVar],
-            subject=[], session=[],
-            as_table=True, save=False,
+            subject=[],
+            session=[],
+            as_table=True,
+            save=False,
         )
 
         empty_calls = [c for c in calls if c["rows"] == 0]
@@ -149,8 +157,10 @@ class TestColumnSelectionComboPruning:
             rec_plain,
             {"value": GaitData},
             [OutVar],
-            subject=[], session=[],
-            as_table=True, save=False,
+            subject=[],
+            session=[],
+            as_table=True,
+            save=False,
         )
 
         rec_sel, calls_sel = _make_recorder()
@@ -158,8 +168,10 @@ class TestColumnSelectionComboPruning:
             rec_sel,
             {"value": GaitData["StepLength"]},
             [OutVar],
-            subject=[], session=[],
-            as_table=True, save=False,
+            subject=[],
+            session=[],
+            as_table=True,
+            save=False,
         )
 
         assert _visited_combos(calls_plain) == _visited_combos(calls_sel) == POPULATED

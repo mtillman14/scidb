@@ -1,20 +1,23 @@
 """Tests for scifor.filters — Col, ColFilter, CompoundFilter, NotFilter."""
 
-import pytest
 import pandas as pd
-from scifor.filters import Col, ColFilter, CompoundFilter, NotFilter
+import pytest
+from scifor.filters import Col, ColFilter, NotFilter
 
 
 @pytest.fixture
 def sample_df():
-    return pd.DataFrame({
-        "side": ["L", "R", "L", "R"],
-        "speed": [1.0, 1.5, 2.0, 2.5],
-        "value": [10, 20, 30, 40],
-    })
+    return pd.DataFrame(
+        {
+            "side": ["L", "R", "L", "R"],
+            "speed": [1.0, 1.5, 2.0, 2.5],
+            "value": [10, 20, 30, 40],
+        }
+    )
 
 
 # --- Col factory ---
+
 
 def test_col_eq_creates_colfilter():
     f = Col("side") == "R"
@@ -56,6 +59,7 @@ def test_col_ge(sample_df):
 
 # --- ColFilter.apply ---
 
+
 def test_colfilter_apply_eq(sample_df):
     f = Col("side") == "R"
     mask = f.apply(sample_df)
@@ -63,6 +67,7 @@ def test_colfilter_apply_eq(sample_df):
 
 
 # --- CompoundFilter ---
+
 
 def test_compound_and(sample_df):
     f = (Col("side") == "R") & (Col("speed") > 1.5)
@@ -77,6 +82,7 @@ def test_compound_or(sample_df):
 
 
 # --- NotFilter ---
+
 
 def test_not_filter(sample_df):
     f = ~(Col("side") == "R")
@@ -94,6 +100,7 @@ def test_double_invert(sample_df):
 
 
 # --- to_key ---
+
 
 def test_colfilter_to_key():
     f = Col("side") == "R"

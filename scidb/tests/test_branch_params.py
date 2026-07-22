@@ -17,11 +17,10 @@ Tests run across multiple data types and realistic multi-subject pipelines.
 import numpy as np
 import pandas as pd
 import pytest
-import scifor as _scifor
-
-from scidb import BaseVariable, NotFoundError, configure_database, for_each
 from scidb.exceptions import AmbiguousParamError, AmbiguousVersionError
 
+import scifor as _scifor
+from scidb import BaseVariable, NotFoundError, configure_database, for_each
 
 # ---------------------------------------------------------------------------
 # Schema and fixtures
@@ -44,17 +43,35 @@ def db(tmp_path):
 # Variable types used across tests
 # ---------------------------------------------------------------------------
 
-class RawSignal(BaseVariable): pass
-class Filtered(BaseVariable): pass
-class Spectrum(BaseVariable): pass
-class Spikes(BaseVariable): pass
-class Feature(BaseVariable): pass
-class Intermediate(BaseVariable): pass
+
+class RawSignal(BaseVariable):
+    pass
+
+
+class Filtered(BaseVariable):
+    pass
+
+
+class Spectrum(BaseVariable):
+    pass
+
+
+class Spikes(BaseVariable):
+    pass
+
+
+class Feature(BaseVariable):
+    pass
+
+
+class Intermediate(BaseVariable):
+    pass
 
 
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
+
 
 def bandpass(signal, low_hz):
     if isinstance(signal, np.ndarray):
@@ -101,6 +118,7 @@ DATA_VARIANTS = [
 # 1. Branch Isolation — constants produce distinct records
 # ---------------------------------------------------------------------------
 
+
 class TestBranchIsolation:
     """for_each with different scalar constants creates distinct stored records."""
 
@@ -108,10 +126,20 @@ class TestBranchIsolation:
     def test_two_constant_values_create_two_versions(self, db, data):
         RawSignal.save(data, subject="S01", session="1")
 
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 30}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 30},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         versions = db.list_versions(Filtered, subject="S01", session="1")
         assert len(versions) == 2
@@ -119,10 +147,20 @@ class TestBranchIsolation:
     def test_rerun_same_constants_is_idempotent(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
 
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         versions = db.list_versions(Filtered, subject="S01", session="1")
         assert len(versions) == 1
@@ -131,8 +169,13 @@ class TestBranchIsolation:
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
 
         for low_hz in [10, 20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
         versions = db.list_versions(Filtered, subject="S01", session="1")
         assert len(versions) == 3
@@ -140,15 +183,23 @@ class TestBranchIsolation:
     def test_branch_params_values_match_constants(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
 
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 30}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 30},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         versions = db.list_versions(Filtered, subject="S01", session="1")
-        low_hz_values = sorted(
-            v["branch_params"]["bandpass.low_hz"] for v in versions
-        )
+        low_hz_values = sorted(v["branch_params"]["bandpass.low_hz"] for v in versions)
         assert low_hz_values == [20, 30]
 
     def test_multiple_schema_locations_each_get_independent_variants(self, db):
@@ -157,8 +208,13 @@ class TestBranchIsolation:
                 RawSignal.save(np.array([1.0, 2.0]), subject=subj, session=sess)
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1", "2"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1", "2"],
+            )
 
         for subj in ["S01", "S02"]:
             for sess in ["1", "2"]:
@@ -170,12 +226,22 @@ class TestBranchIsolation:
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
         for thresh in [0.5, 0.6]:
-            for_each(detect_spikes, {"signal": Filtered, "threshold": thresh}, [Spikes],
-                     subject=["S01"], session=["1"])
+            for_each(
+                detect_spikes,
+                {"signal": Filtered, "threshold": thresh},
+                [Spikes],
+                subject=["S01"],
+                session=["1"],
+            )
 
         assert len(db.list_versions(Spikes, subject="S01", session="1")) == 4
 
@@ -183,6 +249,7 @@ class TestBranchIsolation:
 # ---------------------------------------------------------------------------
 # 2. branch_params Accumulation
 # ---------------------------------------------------------------------------
+
 
 class TestBranchParamsAccumulation:
     """branch_params grows correctly as records pass through pipeline steps."""
@@ -194,18 +261,33 @@ class TestBranchParamsAccumulation:
 
     def test_single_step_adds_namespaced_constant(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         assert f.branch_params == {"bandpass.low_hz": 20}
 
     def test_two_step_chain_accumulates_both_steps(self, db):
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
 
         s = Spikes.load(subject="S01", session="1")
         assert s.branch_params["bandpass.low_hz"] == 20
@@ -213,12 +295,27 @@ class TestBranchParamsAccumulation:
 
     def test_three_step_chain_accumulates_all(self, db):
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
-        for_each(extract_feature, {"spikes": Spikes, "win_size": 10}, [Feature],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            extract_feature,
+            {"spikes": Spikes, "win_size": 10},
+            [Feature],
+            subject=["S01"],
+            session=["1"],
+        )
 
         feat = Feature.load(subject="S01", session="1")
         assert feat.branch_params["bandpass.low_hz"] == 20
@@ -228,8 +325,13 @@ class TestBranchParamsAccumulation:
     def test_no_constants_step_does_not_add_to_branch_params(self, db):
         """A step with no scalar constants contributes nothing to branch_params."""
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(compute_spectrum, {"signal": RawSignal}, [Spectrum],
-                 subject=["S01"], session=["1"])
+        for_each(
+            compute_spectrum,
+            {"signal": RawSignal},
+            [Spectrum],
+            subject=["S01"],
+            session=["1"],
+        )
 
         sp = Spectrum.load(subject="S01", session="1")
         assert sp.branch_params == {}
@@ -237,8 +339,13 @@ class TestBranchParamsAccumulation:
     @pytest.mark.parametrize("data", DATA_VARIANTS)
     def test_branch_params_accumulates_regardless_of_data_type(self, db, data):
         RawSignal.save(data, subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         assert f.branch_params["bandpass.low_hz"] == 20
@@ -247,8 +354,13 @@ class TestBranchParamsAccumulation:
         for subj in ["S01", "S02"]:
             RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
 
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01", "S02"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01", "S02"],
+            session=["1"],
+        )
 
         for subj in ["S01", "S02"]:
             f = Filtered.load(subject=subj, session="1")
@@ -259,16 +371,27 @@ class TestBranchParamsAccumulation:
 # 3. Branch-Aware Load
 # ---------------------------------------------------------------------------
 
+
 class TestBranchAwareLoad:
     """load(**branch_params) filters records by parameter values."""
 
     @pytest.fixture(autouse=True)
     def _two_filtered_variants(self, db):
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 30}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 30},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
     def test_load_without_filter_raises_ambiguous_version_error(self, db):
         with pytest.raises(AmbiguousVersionError) as exc_info:
@@ -302,11 +425,21 @@ class TestBranchAwareLoad:
     def test_ambiguous_param_error_when_same_name_in_two_steps(self, db):
         """Two pipeline steps that both use 'threshold' → AmbiguousParamError."""
         # Build Intermediate from Filtered via smooth(threshold=0.1)
-        for_each(smooth, {"signal": Filtered, "threshold": 0.1}, [Intermediate],
-                 subject=["S01"], session=["1"])
+        for_each(
+            smooth,
+            {"signal": Filtered, "threshold": 0.1},
+            [Intermediate],
+            subject=["S01"],
+            session=["1"],
+        )
         # Then detect_spikes on Intermediate with threshold=0.5
-        for_each(detect_spikes, {"signal": Intermediate, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
+        for_each(
+            detect_spikes,
+            {"signal": Intermediate, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
 
         # Spikes.branch_params has both smooth.threshold and detect_spikes.threshold
         # Only one Spikes variant at S01/1 per (low_hz, smooth.threshold, detect.threshold)
@@ -316,10 +449,20 @@ class TestBranchAwareLoad:
 
     def test_load_with_multiple_branch_params_filters(self, db):
         """Downstream record loadable with multiple filters."""
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.6}, [Spikes],
-                 subject=["S01"], session=["1"])
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.6},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
 
         s = Spikes.load(subject="S01", session="1", low_hz=20, threshold=0.5)
         assert s.branch_params["bandpass.low_hz"] == 20
@@ -330,6 +473,7 @@ class TestBranchAwareLoad:
 # 4. list_versions with branch_params
 # ---------------------------------------------------------------------------
 
+
 class TestListVersions:
     """list_versions returns and filters by branch_params."""
 
@@ -339,12 +483,22 @@ class TestListVersions:
             RawSignal.save(np.array([1.0, 2.0, 3.0]), subject=subj, session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
         for thresh in [0.5, 0.6]:
-            for_each(detect_spikes, {"signal": Filtered, "threshold": thresh}, [Spikes],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                detect_spikes,
+                {"signal": Filtered, "threshold": thresh},
+                [Spikes],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
     def test_list_versions_contains_branch_params_key(self, db):
         versions = db.list_versions(Filtered, subject="S01", session="1")
@@ -360,8 +514,9 @@ class TestListVersions:
         assert all(r["branch_params"]["bandpass.low_hz"] == 20 for r in results)
 
     def test_list_versions_filter_by_two_params(self, db):
-        results = db.list_versions(Spikes, subject="S01", session="1",
-                                   low_hz=20, threshold=0.5)
+        results = db.list_versions(
+            Spikes, subject="S01", session="1", low_hz=20, threshold=0.5
+        )
         assert len(results) == 1
         bp = results[0]["branch_params"]
         assert bp["bandpass.low_hz"] == 20
@@ -393,16 +548,27 @@ class TestListVersions:
 # 5. Variant Exclusion
 # ---------------------------------------------------------------------------
 
+
 class TestVariantExclusion:
     """exclude_variant and include_variant control record visibility."""
 
     @pytest.fixture(autouse=True)
     def _two_filtered_variants(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 30}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 30},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
     def test_exclude_by_record_id_reduces_visible_count(self, db):
         versions = db.list_versions(Filtered, subject="S01", session="1")
@@ -444,8 +610,9 @@ class TestVariantExclusion:
     def test_include_excluded_flag_shows_excluded_records(self, db):
         db.exclude_variant(Filtered, subject="S01", session="1", low_hz=20)
 
-        all_v = db.list_versions(Filtered, subject="S01", session="1",
-                                 include_excluded=True)
+        all_v = db.list_versions(
+            Filtered, subject="S01", session="1", include_excluded=True
+        )
         assert len(all_v) == 2
         excluded = [v for v in all_v if v.get("excluded")]
         assert len(excluded) == 1
@@ -460,13 +627,16 @@ class TestVariantExclusion:
         assert len(remaining) == 0, "All variants should be excluded"
 
         # Verify they still exist with include_excluded=True
-        all_v = db.list_versions(Filtered, subject="S01", session="1", include_excluded=True)
+        all_v = db.list_versions(
+            Filtered, subject="S01", session="1", include_excluded=True
+        )
         assert len(all_v) == 2, "Both variants should exist but be excluded"
 
 
 # ---------------------------------------------------------------------------
 # 6. list_pipeline_variants
 # ---------------------------------------------------------------------------
+
 
 class TestListPipelineVariants:
     """list_pipeline_variants returns distinct (fn, constants, output_type) entries."""
@@ -477,12 +647,22 @@ class TestListPipelineVariants:
             RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
         for thresh in [0.5, 0.6]:
-            for_each(detect_spikes, {"signal": Filtered, "threshold": thresh}, [Spikes],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                detect_spikes,
+                {"signal": Filtered, "threshold": thresh},
+                [Spikes],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
     def test_total_variant_count(self, db):
         # 2 bandpass + 2 detect_spikes = 4 variants
@@ -521,8 +701,13 @@ class TestListPipelineVariants:
         assert raw_v == []
 
     def test_no_constants_step_has_empty_constants_dict(self, db):
-        for_each(compute_spectrum, {"signal": RawSignal}, [Spectrum],
-                 subject=["S01", "S02"], session=["1"])
+        for_each(
+            compute_spectrum,
+            {"signal": RawSignal},
+            [Spectrum],
+            subject=["S01", "S02"],
+            session=["1"],
+        )
 
         spectra_v = db.list_pipeline_variants(output_type="Spectrum")
         assert len(spectra_v) == 1
@@ -537,8 +722,13 @@ class TestListPipelineVariants:
     def test_record_count_increases_after_more_schema_locations(self, db):
         """Adding S03 increases record_count to 3."""
         RawSignal.save(np.array([7.0, 8.0]), subject="S03", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S03"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S03"],
+            session=["1"],
+        )
 
         filtered_v = db.list_pipeline_variants(output_type="Filtered")
         low20 = next(v for v in filtered_v if v["constants"]["low_hz"] == 20)
@@ -548,6 +738,7 @@ class TestListPipelineVariants:
 # ---------------------------------------------------------------------------
 # 7. get_upstream_provenance
 # ---------------------------------------------------------------------------
+
 
 class TestGetUpstreamProvenance:
     """get_upstream_provenance traces records back to their roots."""
@@ -568,8 +759,13 @@ class TestGetUpstreamProvenance:
 
     def test_single_hop_chain_length_and_structure(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(f.record_id)
@@ -584,10 +780,20 @@ class TestGetUpstreamProvenance:
 
     def test_multi_hop_chain_correct_order(self, db):
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
 
         s = Spikes.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(s.record_id)
@@ -602,12 +808,22 @@ class TestGetUpstreamProvenance:
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
 
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
         for thresh in [0.5, 0.6]:
-            for_each(detect_spikes, {"signal": Filtered, "threshold": thresh}, [Spikes],
-                     subject=["S01"], session=["1"])
+            for_each(
+                detect_spikes,
+                {"signal": Filtered, "threshold": thresh},
+                [Spikes],
+                subject=["S01"],
+                session=["1"],
+            )
 
         s_20_05 = Spikes.load(subject="S01", session="1", low_hz=20, threshold=0.5)
         chain_20 = db.get_upstream_provenance(s_20_05.record_id)
@@ -622,10 +838,20 @@ class TestGetUpstreamProvenance:
     def test_constants_per_node_are_step_only_not_cumulative(self, db):
         """Each node's 'constants' shows only that step's own constants."""
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
 
         s = Spikes.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(s.record_id)
@@ -640,8 +866,13 @@ class TestGetUpstreamProvenance:
 
     def test_schema_present_in_all_nodes(self, db):
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(f.record_id)
@@ -652,8 +883,13 @@ class TestGetUpstreamProvenance:
 
     def test_inputs_field_links_to_correct_upstream(self, db):
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         raw = RawSignal.load(subject="S01", session="1")
         f = Filtered.load(subject="S01", session="1")
@@ -668,10 +904,20 @@ class TestGetUpstreamProvenance:
 
     def test_max_depth_cuts_traversal(self, db):
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
 
         s = Spikes.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(s.record_id, max_depth=1)
@@ -683,12 +929,27 @@ class TestGetUpstreamProvenance:
 
     def test_full_four_step_chain(self, db):
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
-        for_each(extract_feature, {"spikes": Spikes, "win_size": 10}, [Feature],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
+        for_each(
+            extract_feature,
+            {"spikes": Spikes, "win_size": 10},
+            [Feature],
+            subject=["S01"],
+            session=["1"],
+        )
 
         feat = Feature.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(feat.record_id)
@@ -703,8 +964,13 @@ class TestGetUpstreamProvenance:
     @pytest.mark.parametrize("data", DATA_VARIANTS)
     def test_provenance_works_for_all_data_types(self, db, data):
         RawSignal.save(data, subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(f.record_id)
@@ -718,11 +984,21 @@ class TestGetUpstreamProvenance:
     def test_multi_input_provenance_both_inputs_linked(self, db):
         """Function taking two inputs: both appear in the inputs field."""
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
         # Spikes uses Filtered as a sole input
-        for_each(detect_spikes, {"signal": Filtered, "threshold": 0.5}, [Spikes],
-                 subject=["S01"], session=["1"])
+        for_each(
+            detect_spikes,
+            {"signal": Filtered, "threshold": 0.5},
+            [Spikes],
+            subject=["S01"],
+            session=["1"],
+        )
 
         s = Spikes.load(subject="S01", session="1")
         chain = db.get_upstream_provenance(s.record_id)
@@ -736,6 +1012,7 @@ class TestGetUpstreamProvenance:
 # ---------------------------------------------------------------------------
 # 8. list_variables
 # ---------------------------------------------------------------------------
+
 
 class TestListVariables:
     """db.list_variables() returns a DataFrame of stored variable types."""
@@ -752,8 +1029,13 @@ class TestListVariables:
 
     def test_multiple_types_all_appear(self, db):
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
         result = db.list_variables()
         names = set(result["variable_name"].tolist())
         assert "RawSignal" in names
@@ -777,6 +1059,7 @@ class TestListVariables:
 # 9. Additional exclusion edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestVariantExclusionEdgeCases:
     """Edge cases for exclude_variant / include_variant."""
 
@@ -785,8 +1068,13 @@ class TestVariantExclusionEdgeCases:
         for subj in ["S01", "S02"]:
             RawSignal.save(np.array([1.0, 2.0]), subject=subj, session="1")
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01", "S02"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01", "S02"],
+                session=["1"],
+            )
 
     def test_exclude_by_record_id_string(self, db):
         """exclude_variant accepts a raw record_id string."""
@@ -803,8 +1091,9 @@ class TestVariantExclusionEdgeCases:
         versions_before = db.list_versions(Filtered, subject="S01", session="1")
         assert len(versions_before) == 1
 
-        all_versions = db.list_versions(Filtered, subject="S01", session="1",
-                                        include_excluded=True)
+        all_versions = db.list_versions(
+            Filtered, subject="S01", session="1", include_excluded=True
+        )
         excluded_rid = next(v["record_id"] for v in all_versions if v.get("excluded"))
         db.include_variant(excluded_rid)
 
@@ -837,6 +1126,7 @@ class TestVariantExclusionEdgeCases:
 # 9b. Multi-variant exclusion (new behavior)
 # ---------------------------------------------------------------------------
 
+
 class TestMultiVariantExclusion:
     """Test that exclude_variant and include_variant work on multiple variants."""
 
@@ -862,7 +1152,9 @@ class TestMultiVariantExclusion:
     def test_exclude_all_variants_for_one_session(self, db):
         """Excluding by session only should exclude all branch_params for that session."""
         count = db.exclude_variant(Filtered, session="post")
-        assert count == 6, "Should exclude 2 subjects × 3 low_hz values for session=post"
+        assert count == 6, (
+            "Should exclude 2 subjects × 3 low_hz values for session=post"
+        )
 
         # Verify only pre session remains
         remaining = Filtered.load(version="all", db=db)
@@ -941,7 +1233,9 @@ class TestMultiVariantExclusion:
 
         # Verify all remaining records are session=pre
         for rec in all_after:
-            assert rec.metadata["session"] == "pre", f"Found {rec.metadata['session']}, expected 'pre'"
+            assert rec.metadata["session"] == "pre", (
+                f"Found {rec.metadata['session']}, expected 'pre'"
+            )
 
         # Verify excluded records still exist in database using list_versions
         all_versions = db.list_versions(Filtered, include_excluded=True)
@@ -967,6 +1261,7 @@ class TestMultiVariantExclusion:
 # 10. Additional list_versions edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestListVersionsEdgeCases:
     """Additional list_versions behaviours not covered in the main suite."""
 
@@ -974,11 +1269,17 @@ class TestListVersionsEdgeCases:
         """list_versions can filter by fully-namespaced branch_params key."""
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
-        results = db.list_versions(Filtered, subject="S01", session="1",
-                                   **{"bandpass.low_hz": 20})
+        results = db.list_versions(
+            Filtered, subject="S01", session="1", **{"bandpass.low_hz": 20}
+        )
         assert len(results) == 1
         assert results[0]["branch_params"]["bandpass.low_hz"] == 20
 
@@ -988,20 +1289,31 @@ class TestListVersionsEdgeCases:
 
     def test_list_versions_entries_have_timestamp(self, db):
         RawSignal.save(np.array([1.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
         versions = db.list_versions(Filtered, subject="S01", session="1")
         assert all("timestamp" in v for v in versions)
 
     def test_list_versions_include_excluded_shows_excluded_flag(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
         db.exclude_variant(Filtered, subject="S01", session="1", low_hz=20)
 
-        all_v = db.list_versions(Filtered, subject="S01", session="1",
-                                 include_excluded=True)
+        all_v = db.list_versions(
+            Filtered, subject="S01", session="1", include_excluded=True
+        )
         excluded = [v for v in all_v if v.get("excluded")]
         active = [v for v in all_v if not v.get("excluded")]
         assert len(excluded) == 1
@@ -1012,30 +1324,43 @@ class TestListVersionsEdgeCases:
 # 11. String and boolean constants in branch_params
 # ---------------------------------------------------------------------------
 
+
 class TestBranchParamsConstantTypes:
     """branch_params correctly stores and retrieves non-numeric constant types."""
 
     def test_string_constant_stored_in_branch_params(self, db):
         """String-valued constants appear in branch_params."""
+
         def process(signal, method):
             return signal
 
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(process, {"signal": RawSignal, "method": "fft"}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            process,
+            {"signal": RawSignal, "method": "fft"},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         assert f.branch_params.get("process.method") == "fft"
 
     def test_two_string_constants_create_distinct_variants(self, db):
         """Two different string constants produce two distinct records."""
+
         def process(signal, method):
             return signal
 
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
         for method in ["fft", "wavelet"]:
-            for_each(process, {"signal": RawSignal, "method": method}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                process,
+                {"signal": RawSignal, "method": method},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
         versions = db.list_versions(Filtered, subject="S01", session="1")
         assert len(versions) == 2
@@ -1045,8 +1370,13 @@ class TestBranchParamsConstantTypes:
     def test_integer_constant_type_preserved_in_branch_params(self, db):
         """Integer branch_params values come back as numbers, not strings."""
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         val = f.branch_params["bandpass.low_hz"]
@@ -1058,14 +1388,21 @@ class TestBranchParamsConstantTypes:
 # 12. Dry run does not persist records
 # ---------------------------------------------------------------------------
 
+
 class TestDryRun:
     """for_each with dry_run=True displays plans but does not save anything."""
 
     def test_dry_run_does_not_save_results(self, db):
         RawSignal.save(np.array([1.0, 2.0, 3.0]), subject="S01", session="1")
 
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"], dry_run=True)
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+            dry_run=True,
+        )
 
         versions = db.list_versions(Filtered, subject="S01", session="1")
         assert len(versions) == 0
@@ -1073,8 +1410,14 @@ class TestDryRun:
     def test_dry_run_returns_none(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
 
-        result = for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                          subject=["S01"], session=["1"], dry_run=True)
+        result = for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+            dry_run=True,
+        )
 
         assert result is None
 
@@ -1083,13 +1426,19 @@ class TestDryRun:
 # 13. Unambiguous load (single variant) does not raise
 # ---------------------------------------------------------------------------
 
+
 class TestUnambiguousLoad:
     """load() works normally when exactly one variant exists."""
 
     def test_load_single_variant_no_branch_params_needed(self, db):
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
-        for_each(bandpass, {"signal": RawSignal, "low_hz": 20}, [Filtered],
-                 subject=["S01"], session=["1"])
+        for_each(
+            bandpass,
+            {"signal": RawSignal, "low_hz": 20},
+            [Filtered],
+            subject=["S01"],
+            session=["1"],
+        )
 
         f = Filtered.load(subject="S01", session="1")
         assert f is not None
@@ -1099,8 +1448,13 @@ class TestUnambiguousLoad:
         """Excluding one of two variants makes load() unambiguous."""
         RawSignal.save(np.array([1.0, 2.0]), subject="S01", session="1")
         for low_hz in [20, 30]:
-            for_each(bandpass, {"signal": RawSignal, "low_hz": low_hz}, [Filtered],
-                     subject=["S01"], session=["1"])
+            for_each(
+                bandpass,
+                {"signal": RawSignal, "low_hz": low_hz},
+                [Filtered],
+                subject=["S01"],
+                session=["1"],
+            )
 
         db.exclude_variant(Filtered, subject="S01", session="1", low_hz=30)
         f = Filtered.load(subject="S01", session="1")

@@ -95,7 +95,7 @@ def producing_invocation_batch(duck, record_ids) -> dict:
     invocation (raw/manual records are absent from the map). Matches the
     per-record function's "lowest invocation_id wins" tie-break.
     """
-    ids = [r for r in dict.fromkeys(record_ids)]
+    ids = list(dict.fromkeys(record_ids))
     if not ids:
         return {}
     rows = _chunked_in(
@@ -118,7 +118,7 @@ def producing_invocation_batch(duck, record_ids) -> dict:
 def output_num_batch(duck, record_ids) -> dict:
     """Batched :func:`output_num_for` — ``{record_id: output_num}`` for records
     with a producing invocation (lowest invocation_id wins, mirroring LIMIT 1)."""
-    ids = [r for r in dict.fromkeys(record_ids)]
+    ids = list(dict.fromkeys(record_ids))
     if not ids:
         return {}
     rows = _chunked_in(
@@ -181,10 +181,13 @@ def _build_upstream_closure(duck, seed_record_ids, max_depth: int = 20):
             inv_fn_name[inv_id] = fn_name
 
         # 2) inputs for the newly discovered invocations (skip ones already loaded).
-        inv_ids = list(dict.fromkeys(
-            rec_to_inv[r][0] for r in new_records
-            if r in rec_to_inv and rec_to_inv[r][0] not in inv_var_inputs
-        ))
+        inv_ids = list(
+            dict.fromkeys(
+                rec_to_inv[r][0]
+                for r in new_records
+                if r in rec_to_inv and rec_to_inv[r][0] not in inv_var_inputs
+            )
+        )
         if not inv_ids:
             depth += 1
             frontier = []
@@ -210,7 +213,9 @@ def _build_upstream_closure(duck, seed_record_ids, max_depth: int = 20):
             if rtype == CONSTANT_TYPE:
                 # Namespace by the producing function name (as derived_branch_params).
                 fn_name = inv_fn_name.get(inv_id)
-                inv_constants[inv_id][f"{fn_name}.{param_name}"] = _safe_literal(value_repr)
+                inv_constants[inv_id][f"{fn_name}.{param_name}"] = _safe_literal(
+                    value_repr
+                )
             else:
                 var_pairs.setdefault(inv_id, []).append((param_name, in_rid))
                 next_frontier.append(in_rid)
@@ -233,7 +238,7 @@ def branch_params_batch(duck, record_ids, max_depth: int = 20) -> dict:
     semantics to the per-record version (same DFS order, same last-write-wins on
     a namespaced-key collision), so results match byte-for-byte.
     """
-    seeds = [r for r in dict.fromkeys(record_ids)]
+    seeds = list(dict.fromkeys(record_ids))
     if not seeds:
         return {}
     rec_to_inv, inv_constants, inv_var_inputs = _build_upstream_closure(
@@ -284,11 +289,13 @@ def invocation_inputs(duck, invocation_id: str):
         if rtype == CONSTANT_TYPE:
             constants[param_name] = _safe_literal(value_repr)
         else:
-            var_inputs.append({
-                "record_id": in_rid,
-                "param_name": param_name,
-                "variable_type": rtype,
-            })
+            var_inputs.append(
+                {
+                    "record_id": in_rid,
+                    "param_name": param_name,
+                    "variable_type": rtype,
+                }
+            )
     var_inputs.sort(key=lambda d: (d["param_name"], d["record_id"]))
     return var_inputs, constants
 
@@ -307,7 +314,7 @@ def invocation_path_inputs(duck, invocation_id: str) -> dict[str, str]:
         "WHERE ii.invocation_id = ? AND r.type = ?",
         [invocation_id, PATHINPUT_TYPE],
     )
-    return {param: spec for param, spec in rows}
+    return dict(rows)
 
 
 def stored_invocation_signature(duck, record_id: str):
@@ -340,7 +347,11 @@ def stored_invocation_signature(duck, record_id: str):
             const_hashes[param] = chash
         else:
             var_inputs[param] = (in_rid, selector)
-    return {"function_hash": fn_hash, "var_inputs": var_inputs, "const_hashes": const_hashes}
+    return {
+        "function_hash": fn_hash,
+        "var_inputs": var_inputs,
+        "const_hashes": const_hashes,
+    }
 
 
 def _fetch_record_node(duck, record_id: str, schema_keys: list[str]):
@@ -434,16 +445,18 @@ def upstream_provenance(db, record_id: str, max_depth: int = 20) -> list[dict]:
         else:
             fn_name, var_inputs, constants = None, [], {}
 
-        result.append({
-            "record_id": rid,
-            "variable_type": node["type"],
-            "schema": node["schema"],
-            "branch_params": derived_branch_params(duck, rid, max_depth),
-            "function_name": fn_name,
-            "constants": constants,
-            "depth": depth,
-            "inputs": var_inputs,
-        })
+        result.append(
+            {
+                "record_id": rid,
+                "variable_type": node["type"],
+                "schema": node["schema"],
+                "branch_params": derived_branch_params(duck, rid, max_depth),
+                "function_name": fn_name,
+                "constants": constants,
+                "depth": depth,
+                "inputs": var_inputs,
+            }
+        )
 
         for inp in var_inputs:
             queue.append((inp["record_id"], depth + 1))
@@ -465,11 +478,13 @@ def pipeline(db, record_id: str, max_depth: int = 20) -> dict:
     edges = []
     for node in nodes:
         for inp in node["inputs"]:
-            edges.append({
-                "from_record_id": inp["record_id"],
-                "to_record_id": node["record_id"],
-                "param_name": inp["param_name"],
-            })
+            edges.append(
+                {
+                    "from_record_id": inp["record_id"],
+                    "to_record_id": node["record_id"],
+                    "param_name": inp["param_name"],
+                }
+            )
     return {"nodes": nodes, "edges": edges}
 
 
@@ -541,32 +556,38 @@ def pipeline_structure(duck) -> list[dict]:
     results: list = []
     for inv_id, fn_name, fn_hash in inv_rows:
         out_types = [
-            r[0] for r in duck._fetchall(
+            r[0]
+            for r in duck._fetchall(
                 "SELECT DISTINCT r.type FROM _invocation_output io "
                 "JOIN _record r ON r.record_id = io.output_record_id "
                 "WHERE io.invocation_id = ?",
                 [inv_id],
             )
         ]
-        in_types = tuple(sorted(
-            r[0] for r in duck._fetchall(
-                "SELECT r.type FROM _invocation_input ii "
-                "JOIN _record r ON r.record_id = ii.input_record_id "
-                "WHERE ii.invocation_id = ? AND r.type NOT IN (?, ?)",
-                [inv_id, CONSTANT_TYPE, PATHINPUT_TYPE],
+        in_types = tuple(
+            sorted(
+                r[0]
+                for r in duck._fetchall(
+                    "SELECT r.type FROM _invocation_input ii "
+                    "JOIN _record r ON r.record_id = ii.input_record_id "
+                    "WHERE ii.invocation_id = ? AND r.type NOT IN (?, ?)",
+                    [inv_id, CONSTANT_TYPE, PATHINPUT_TYPE],
+                )
             )
-        ))
+        )
         for out_type in out_types:
             key = (fn_name, fn_hash, out_type, in_types)
             if key in seen:
                 continue
             seen.add(key)
-            results.append({
-                "function_name": fn_name,
-                "function_hash": fn_hash,
-                "output_type": out_type,
-                "input_types": list(in_types),
-            })
+            results.append(
+                {
+                    "function_name": fn_name,
+                    "function_hash": fn_hash,
+                    "output_type": out_type,
+                    "input_types": list(in_types),
+                }
+            )
     return results
 
 
@@ -595,7 +616,7 @@ def consumed_input_schema_ids(duck, record_ids) -> dict[str, frozenset]:
     Constants and PathInput specs are excluded (no schema location); NULL schema_ids
     are dropped. Raw records (no producing invocation) get no entry.
     """
-    ids = [r for r in dict.fromkeys(record_ids)]
+    ids = list(dict.fromkeys(record_ids))
     if not ids:
         return {}
     placeholders = ", ".join(["?"] * len(ids))
@@ -667,7 +688,7 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
             "WHERE invocation_id = ? AND selector IS NOT NULL",
             [inv_id],
         )
-        selectors = {p: s for p, s in sel_rows}
+        selectors = dict(sel_rows)
         input_types = {i["param_name"]: i["variable_type"] for i in var_inputs}
         path_inputs = invocation_path_inputs(duck, inv_id)
         at = sorted(as_table) if as_table else []
@@ -739,7 +760,7 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
         [SAVE_FUNCTION_NAME],
     )
 
-    groups: dict = {}        # group_key -> info dict
+    groups: dict = {}  # group_key -> info dict
     group_records: dict = {}  # group_key -> set(output_record_id)
 
     for inv_id, fn_name, as_table, distribute in inv_rows:
@@ -767,11 +788,13 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
             if output_type is not None and out_type != output_type:
                 continue
             gkey = (
-                out_type, fn_name,
+                out_type,
+                fn_name,
                 tuple(sorted(input_types.items())),
                 tuple(sorted((k, repr(v)) for k, v in constants.items())),
                 output_num,
-                tuple(at), bool(distribute),
+                tuple(at),
+                bool(distribute),
             )
             if gkey not in groups:
                 vk: dict = {"__fn": fn_name}
@@ -794,8 +817,7 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
             group_records[gkey].add(out_rid)
 
     return [
-        {**groups[gkey], "record_count": len(group_records[gkey])}
-        for gkey in groups
+        {**groups[gkey], "record_count": len(group_records[gkey])} for gkey in groups
     ]
 
 
@@ -858,6 +880,7 @@ def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> Non
     input data into ``into``. Cross-products each input param's current records at
     every schema location where all params have data."""
     import itertools
+
     from .provenance import compute_constant_record_id, compute_invocation_id
 
     input_types = cfg["input_types"]
@@ -871,9 +894,11 @@ def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> Non
         param: _current_records_by_schema(duck, vtype)
         for param, vtype in input_types.items()
     }
-    common_schema = set.intersection(
-        *[set(m.keys()) for m in per_param.values()]
-    ) if per_param else set()
+    common_schema = (
+        set.intersection(*[set(m.keys()) for m in per_param.values()])
+        if per_param
+        else set()
+    )
     param_names = list(input_types.keys())
     for sid in common_schema:
         choices = [[(p, rid) for rid in per_param[p][sid]] for p in param_names]
@@ -881,7 +906,10 @@ def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> Non
             bindings = [(p, rid, selectors.get(p)) for p, rid in combo]
             bindings += [(p, crid, None) for p, crid in const_bindings]
             inv_id = compute_invocation_id(
-                fn_hash, cfg["as_table"], cfg["distribute"], bindings,
+                fn_hash,
+                cfg["as_table"],
+                cfg["distribute"],
+                bindings,
             )
             into.add((inv_id, sid))
 
@@ -896,13 +924,15 @@ def config_from_inputs(inputs: dict) -> dict:
     selector, PathInput/PathOutput/ColName are excluded, everything else is a
     constant. ``as_table``/``distribute`` aren't expressible here → defaults.
     """
-    from .foreach import _is_loadable
     from .colname import ColName
     from .column_selection import ColumnSelection
     from .fixed import Fixed
+    from .foreach import _is_loadable
     from .provenance_save import compute_input_selectors
+
     try:
-        from scifor import PathInput as _PathInput, PathOutput as _PathOutput
+        from scifor import PathInput as _PathInput
+        from scifor import PathOutput as _PathOutput
     except ImportError:
         _PathInput = _PathOutput = None
 
@@ -994,14 +1024,18 @@ def realized_inputless_schema_ids(duck, fn_name: str, const_rids: dict) -> set:
             "WHERE ii.invocation_id = ? AND r.type = ?",
             [inv_id, CONSTANT_TYPE],
         )
-        if {p: rid for p, rid in rows} == const_rids:
+        if dict(rows) == const_rids:
             out |= sids
     return out
 
 
-def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
-                                      inputs_fallback: dict | None = None,
-                                      call_id: str | None = None) -> set:
+def expected_invocations_for_function(
+    db,
+    fn_name: str,
+    fn_hash: str,
+    inputs_fallback: dict | None = None,
+    call_id: str | None = None,
+) -> set:
     """Expected ``{(invocation_id, schema_id)}`` pairs for ``fn_name`` (§9c).
 
     Derived live from the graph (no persisted snapshot — see the removal of
@@ -1035,15 +1069,18 @@ def expected_invocations_for_function(db, fn_name: str, fn_hash: str,
 
     configs = function_variant_configs(duck, fn_name)
     if call_id is not None:
-        matched = [c for c in configs
-                   if config_call_id(fn_name, c) == call_id]
+        matched = [c for c in configs if config_call_id(fn_name, c) == call_id]
         logger.debug(
             "expected_invocations(%s): call_id=%s matched %d/%d config(s)",
-            fn_name, call_id, len(matched), len(configs),
+            fn_name,
+            call_id,
+            len(matched),
+            len(configs),
         )
         configs = matched
-        scoped_inv_ids = set().union(
-            *[c["invocation_ids"] for c in configs]) if configs else set()
+        scoped_inv_ids = (
+            set().union(*[c["invocation_ids"] for c in configs]) if configs else set()
+        )
 
     # (a) realized inputless invocations (PathInput-only loaders, etc.)
     realized = realized_inputless_invocations(duck, fn_name)

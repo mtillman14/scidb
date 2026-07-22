@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import shutil
-import sys
 import textwrap
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-
 from scistack_gui.api import project as _project_mod
 
 
@@ -19,14 +14,12 @@ def index_client(populated_db, tmp_path, monkeypatch):
     FastAPI TestClient with a project directory, a tapped index with
     a packages.toml, and mocked uv operations.
     """
-    from scistack_gui import registry as _registry
-    from scistack_gui.app import create_app
     from fastapi.testclient import TestClient
+    from scistack_gui.app import create_app
 
     # Set up project structure
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "idx_project"\nversion = "0.1.0"\n'
-        'dependencies = []\n'
+        '[project]\nname = "idx_project"\nversion = "0.1.0"\ndependencies = []\n'
     )
     src = tmp_path / "src" / "idx_project"
     src.mkdir(parents=True)
@@ -130,7 +123,9 @@ class TestAddLibrary:
             ok = True
             combined_output = ""
 
-        def fake_add(root, package, *, version=None, index=None, dev=False, timeout=None):
+        def fake_add(
+            root, package, *, version=None, index=None, dev=False, timeout=None
+        ):
             calls.append({"package": package, "version": version, "index": index})
             return FakeResult()
 
@@ -138,11 +133,14 @@ class TestAddLibrary:
         # Also mock _run_scan to avoid side effects
         monkeypatch.setattr(_project_mod, "_run_scan", lambda: None)
 
-        resp = index_client.post("/api/project/libraries", json={
-            "name": "mylab-preprocessing",
-            "version": "0.3.0",
-            "index": "https://github.com/mylab/index/simple",
-        })
+        resp = index_client.post(
+            "/api/project/libraries",
+            json={
+                "name": "mylab-preprocessing",
+                "version": "0.3.0",
+                "index": "https://github.com/mylab/index/simple",
+            },
+        )
         data = resp.json()
         assert data["ok"] is True
         assert len(calls) == 1

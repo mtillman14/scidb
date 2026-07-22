@@ -11,12 +11,14 @@ the record_id. Unsupported/unparseable formats fall back to a
 import json as _json
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-import scifor as _scifor
+from scidb.database import _local
 
+import scifor as _scifor
 from scidb import (
     BaseVariable,
     PathOutput,
@@ -25,8 +27,6 @@ from scidb import (
     read_artifact_stamp,
     stamp_artifact,
 )
-from scidb.database import _local
-
 
 SCHEMA = ["subject", "trial"]
 
@@ -76,6 +76,7 @@ def _make_figure_file(path):
 # 1. Unit round-trips per format (no DB)
 # ---------------------------------------------------------------------------
 
+
 class TestStampRoundTrips:
     @pytest.mark.parametrize("ext", ["png", "svg", "pdf"])
     def test_stamp_and_read_back(self, tmp_path, ext):
@@ -115,6 +116,7 @@ class TestStampRoundTrips:
 # 2. Fallbacks
 # ---------------------------------------------------------------------------
 
+
 class TestStampFallbacks:
     def test_unsupported_extension_writes_sidecar(self, tmp_path):
         path = tmp_path / "fig.jpg"
@@ -152,6 +154,7 @@ class TestStampFallbacks:
 # 3. plot_ integration: record and draft stamps
 # ---------------------------------------------------------------------------
 
+
 class TestPlotStamping:
     def _seed(self):
         for subj in ["S01", "S02"]:
@@ -165,11 +168,17 @@ class TestPlotStamping:
             ax.plot(np.asarray(signal).ravel())
             return fig
 
-        for_each(plot_sig,
-                 {"signal": RawSignal,
-                  "filename": PathOutput(str(tmp_path / "{subject}_{trial}.png"))},
-                 [PlotFigure], finalized=True,
-                 subject=["S01", "S02"], trial=["1"])
+        for_each(
+            plot_sig,
+            {
+                "signal": RawSignal,
+                "filename": PathOutput(str(tmp_path / "{subject}_{trial}.png")),
+            },
+            [PlotFigure],
+            finalized=True,
+            subject=["S01", "S02"],
+            trial=["1"],
+        )
 
         rec = PlotFigure.load(subject="S01", trial="1")
         blob = read_artifact_stamp(tmp_path / "S01_1.png")
@@ -192,11 +201,16 @@ class TestPlotStamping:
             ax.plot(np.asarray(signal).ravel())
             return fig
 
-        for_each(plot_sig,
-                 {"signal": RawSignal,
-                  "filename": PathOutput(str(tmp_path / "{subject}_{trial}.png"))},
-                 [PlotFigure],  # finalized default False -> draft
-                 subject=["S01", "S02"], trial=["1"])
+        for_each(
+            plot_sig,
+            {
+                "signal": RawSignal,
+                "filename": PathOutput(str(tmp_path / "{subject}_{trial}.png")),
+            },
+            [PlotFigure],  # finalized default False -> draft
+            subject=["S01", "S02"],
+            trial=["1"],
+        )
 
         assert db.list_versions(PlotFigure) == []
         blob = read_artifact_stamp(tmp_path / "S02_1.png")
@@ -217,11 +231,16 @@ class TestPlotStamping:
             ax.plot(np.asarray(signal).ravel())
             return fig
 
-        kwargs = dict(
-            inputs={"signal": RawSignal,
-                    "filename": PathOutput(str(tmp_path / "{subject}_{trial}.png"))},
-            outputs=[PlotFigure], finalized=True,
-            subject=["S01"], trial=["1"])
+        kwargs = {
+            "inputs": {
+                "signal": RawSignal,
+                "filename": PathOutput(str(tmp_path / "{subject}_{trial}.png")),
+            },
+            "outputs": [PlotFigure],
+            "finalized": True,
+            "subject": ["S01"],
+            "trial": ["1"],
+        }
         for_each(plot_sig, **kwargs)
         first = read_artifact_stamp(tmp_path / "S01_1.png")["record_id"]
 
@@ -240,6 +259,7 @@ class TestPlotStamping:
 # 4. stat_ integration: PDF report stamping (incl. aggregation inputs)
 # ---------------------------------------------------------------------------
 
+
 class TestStatReportStamping:
     def test_record_stamp_on_pdf_report_with_aggregated_inputs(self, db, tmp_path):
         RawSignal.save(1.0, subject="S01", trial="1")
@@ -252,9 +272,12 @@ class TestStatReportStamping:
             plt.close(fig)
             return {"n_rows": len(df)}
 
-        for_each(stat_summary,
-                 {"df": RawSignal, "filename": PathOutput(str(report))},
-                 [StatResult], finalized=True)  # grand aggregation
+        for_each(
+            stat_summary,
+            {"df": RawSignal, "filename": PathOutput(str(report))},
+            [StatResult],
+            finalized=True,
+        )  # grand aggregation
 
         rec = StatResult.load()
         blob = read_artifact_stamp(report)
@@ -264,8 +287,9 @@ class TestStatReportStamping:
         assert "draft" not in blob
         # Aggregation: BOTH contributing records, grouped under the param name
         # (indexed __upstream keys df_0/df_1 collapse back to "df").
-        raw_rids = {RawSignal.load(subject=s, trial="1").record_id
-                    for s in ["S01", "S02"]}
+        raw_rids = {
+            RawSignal.load(subject=s, trial="1").record_id for s in ["S01", "S02"]
+        }
         assert set(blob["inputs"].keys()) == {"df"}
         assert set(blob["inputs"]["df"]) == raw_rids
         # The stored record and the stamped file agree on the report path.
@@ -280,9 +304,11 @@ class TestStatReportStamping:
             assert filename is None
             return {"n_rows": len(df)}
 
-        for_each(stat_summary,
-                 {"df": RawSignal, "filename": PathOutput(str(report))},
-                 [StatResult])
+        for_each(
+            stat_summary,
+            {"df": RawSignal, "filename": PathOutput(str(report))},
+            [StatResult],
+        )
 
         assert not report.exists()
         assert not (tmp_path / "draft_report.pdf.provenance.json").exists()

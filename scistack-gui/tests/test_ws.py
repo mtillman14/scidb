@@ -20,7 +20,6 @@ import threading
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from scistack_gui.api import ws as ws_mod
 
 
@@ -82,8 +81,10 @@ class TestPushMessageThreadPath:
         pushed message must reach BOTH — under the old shared-queue design
         one pump consumed each message and raced the other."""
         client = TestClient(_ws_app())
-        with client.websocket_connect("/ws") as s1, \
-             client.websocket_connect("/ws") as s2:
+        with (
+            client.websocket_connect("/ws") as s1,
+            client.websocket_connect("/ws") as s2,
+        ):
             done = {"type": "run_done", "run_id": "both", "success": True}
             t = threading.Thread(target=ws_mod.push_message, args=(done,))
             t.start()

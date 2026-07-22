@@ -11,15 +11,16 @@ nested LIST, JSON) so the database can be inspected with DBeaver or any
 DuckDB-compatible viewer.
 """
 
-import duckdb
-import logging
-import pandas as pd
-import numpy as np
-import json
 import datetime
+import json
+import logging
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
+
+import duckdb
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger("sciduck")
 
@@ -39,6 +40,7 @@ def _schema_str(value):
 # ---------------------------------------------------------------------------
 # Type mapping helpers
 # ---------------------------------------------------------------------------
+
 
 def _numpy_dtype_to_duckdb(dtype: np.dtype) -> str:
     """Map a numpy scalar dtype to a DuckDB type string."""
@@ -63,7 +65,7 @@ def _numpy_dtype_to_duckdb(dtype: np.dtype) -> str:
     return "VARCHAR"
 
 
-def _infer_duckdb_type(value: Any) -> Tuple[str, dict]:
+def _infer_duckdb_type(value: Any) -> tuple[str, dict]:
     """
     Infer the DuckDB column type and a metadata dict for round-trip
     restoration from a single Python/numpy value.
@@ -356,9 +358,10 @@ def _unflatten_dict(flat, path_map):
 # DatabaseManager)
 # ---------------------------------------------------------------------------
 
+
 def _infer_data_columns(
-    sample_value: Any, data_col_name: Optional[str] = None
-) -> Tuple[dict, dict]:
+    sample_value: Any, data_col_name: str | None = None
+) -> tuple[dict, dict]:
     """
     From a sample data value, return:
       - data_col_types: dict of {col_name: duckdb_type_str}
@@ -427,13 +430,24 @@ def _infer_data_columns(
 # allowed while shape changes (scalar vs vector) and category changes
 # (DOUBLE vs VARCHAR) are rejected.
 _NUMERIC_DDB_TYPES = {
-    "BOOLEAN", "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
-    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "FLOAT", "REAL", "DOUBLE",
+    "BOOLEAN",
+    "TINYINT",
+    "SMALLINT",
+    "INTEGER",
+    "BIGINT",
+    "HUGEINT",
+    "UTINYINT",
+    "USMALLINT",
+    "UINTEGER",
+    "UBIGINT",
+    "FLOAT",
+    "REAL",
+    "DOUBLE",
 }
 _TEMPORAL_DDB_TYPES = {"DATE", "TIME", "TIMESTAMP", "INTERVAL"}
 
 
-def _storage_signature(ddb_type: str) -> Tuple[str, int]:
+def _storage_signature(ddb_type: str) -> tuple[str, int]:
     """Reduce a DuckDB column type string to (base_category, array_depth).
 
     array_depth counts trailing ``[]`` (0 = scalar, 1 = vector, 2 = matrix).
@@ -460,9 +474,7 @@ def _storage_signature(ddb_type: str) -> Tuple[str, int]:
     return (category, depth)
 
 
-def _record_schema_mismatch(
-    ref_col_types: dict, rec_col_types: dict
-) -> Optional[str]:
+def _record_schema_mismatch(ref_col_types: dict, rec_col_types: dict) -> str | None:
     """Return a human-readable reason a record can't join the batch, or None.
 
     A record "fits" the batch schema when it has exactly the reference column
@@ -522,9 +534,7 @@ def _dataframe_to_storage_rows(df: pd.DataFrame, dtype_meta: dict) -> list:
     return rows
 
 
-def _bulk_df_to_storage_rows(
-    df_list: list, record_ids: list, dtype_meta: dict
-) -> list:
+def _bulk_df_to_storage_rows(df_list: list, record_ids: list, dtype_meta: dict) -> list:
     """Bulk convert N DataFrames to (record_id, ...storage_values) rows.
 
     Equivalent to calling _dataframe_to_storage_rows N times and assembling
@@ -542,7 +552,7 @@ def _bulk_df_to_storage_rows(
     # Fall back to per-row path if schemas differ (shouldn't happen in normal use).
     if not all(list(df.columns) == first_cols for df in df_list):
         rows: list = []
-        for rid, df in zip(record_ids, df_list):
+        for rid, df in zip(record_ids, df_list, strict=False):
             for storage_row in _dataframe_to_storage_rows(df, dtype_meta):
                 rows.append((rid,) + tuple(storage_row))
         return rows
@@ -550,7 +560,7 @@ def _bulk_df_to_storage_rows(
     # Build flat record_id list: one entry per storage row (multi-row records
     # contribute len(df) entries, typical 1-row records contribute 1).
     expanded_rids = []
-    for rid, df in zip(record_ids, df_list):
+    for rid, df in zip(record_ids, df_list, strict=False):
         expanded_rids.extend([rid] * len(df))
 
     # Concat once so column operations don't cross DataFrame boundaries.
@@ -565,7 +575,8 @@ def _bulk_df_to_storage_rows(
         if ptype == "ndarray":
             vals = raw.to_numpy()
             col_arrays[col] = [
-                v.tolist() if isinstance(v, np.ndarray)
+                v.tolist()
+                if isinstance(v, np.ndarray)
                 else (v if isinstance(v, list) else [v])
                 for v in vals
             ]
@@ -605,10 +616,7 @@ def _value_to_storage_row(value: Any, dtype_meta: dict) -> list:
             flat, _ = _flatten_dict(value)
         else:
             flat = value
-        return [
-            _python_to_storage(flat[col], col_metas[col])
-            for col in col_metas
-        ]
+        return [_python_to_storage(flat[col], col_metas[col]) for col in col_metas]
     else:
         # Single column — get the one key (could be "value" or a named column)
         col_name = next(iter(col_metas))
@@ -620,7 +628,8 @@ def _value_to_storage_row(value: Any, dtype_meta: dict) -> list:
 # Main class
 # ---------------------------------------------------------------------------
 
-def schema_keys_from_db(db_path: Union[str, Path]) -> List[str]:
+
+def schema_keys_from_db(db_path: str | Path) -> list[str]:
     """Read the dataset schema keys stored in an existing database.
 
     Opens ``db_path`` read-only, reads the ``_schema`` table's key columns
@@ -640,10 +649,13 @@ def schema_keys_from_db(db_path: Union[str, Path]) -> List[str]:
             "AND column_name NOT IN ('schema_id', 'schema_level') "
             "ORDER BY ordinal_position"
         ).fetchall()
-        has_table = con.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_name = '_schema'"
-        ).fetchall()[0][0] > 0
+        has_table = (
+            con.execute(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_name = '_schema'"
+            ).fetchall()[0][0]
+            > 0
+        )
     finally:
         con.close()
     if not has_table:
@@ -670,13 +682,16 @@ class SciDuck:
         lock beyond DuckDB's shared read lock.
     """
 
-    def __init__(self, db_path: Union[str, Path], dataset_schema: List[str],
-                 read_only: bool = False):
+    def __init__(
+        self, db_path: str | Path, dataset_schema: list[str], read_only: bool = False
+    ):
         self.db_path = str(db_path)
         self.dataset_schema = list(dataset_schema)
         self.read_only = bool(read_only)
         self._lock = threading.Lock()
-        logger.debug("DuckDB lock ACQUIRED (read_only=%s): %s", self.read_only, self.db_path)
+        logger.debug(
+            "DuckDB lock ACQUIRED (read_only=%s): %s", self.read_only, self.db_path
+        )
         self.con = duckdb.connect(self.db_path, read_only=self.read_only)
         if self.read_only:
             self._validate_schema_columns()
@@ -763,8 +778,8 @@ class SciDuck:
 
     def _table_exists(self, name: str) -> bool:
         rows = self._fetchall(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_name = ?", [name]
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+            [name],
         )
         return rows[0][0] > 0
 
@@ -827,7 +842,8 @@ class SciDuck:
                 )
             return
         existing_cols = [
-            row[0] for row in self._fetchall(
+            row[0]
+            for row in self._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = '_schema' "
                 "AND column_name NOT IN ('schema_id', 'schema_level') "
@@ -844,7 +860,7 @@ class SciDuck:
     # Schema entry management
     # ------------------------------------------------------------------
 
-    def _schema_key_columns(self, schema_level: str) -> List[str]:
+    def _schema_key_columns(self, schema_level: str) -> list[str]:
         """Return schema columns from the top down to (and including) schema_level."""
         idx = self.dataset_schema.index(schema_level)
         return self.dataset_schema[: idx + 1]
@@ -867,16 +883,16 @@ class SciDuck:
 
         where = " AND ".join(conditions)
         rows = self._fetchall(
-            f'SELECT schema_id FROM _schema WHERE schema_level = ? AND {where}',
+            f"SELECT schema_id FROM _schema WHERE schema_level = ? AND {where}",
             params,
         )
         if rows:
             return rows[0][0]
 
         # Insert new entry — use MAX+1 for consistency with batch path
-        new_id = self._fetchall(
-            "SELECT COALESCE(MAX(schema_id), 0) + 1 FROM _schema"
-        )[0][0]
+        new_id = self._fetchall("SELECT COALESCE(MAX(schema_id), 0) + 1 FROM _schema")[
+            0
+        ][0]
         col_names = ["schema_id", "schema_level"] + key_cols
         placeholders = ", ".join(["?"] * len(col_names))
         col_str = ", ".join(f'"{c}"' for c in col_names)
@@ -923,16 +939,14 @@ class SciDuck:
 
             # Build a single query to find all existing matches at this level
             # We fetch all rows for this schema_level and match in Python
-            null_conditions = " AND ".join(
-                f'"{col}" IS NULL' for col in null_cols
-            )
-            where_clause = f'schema_level = ?'
+            null_conditions = " AND ".join(f'"{col}" IS NULL' for col in null_cols)
+            where_clause = "schema_level = ?"
             if null_conditions:
-                where_clause += f' AND {null_conditions}'
+                where_clause += f" AND {null_conditions}"
 
             col_select = ", ".join(f'"{c}"' for c in key_cols)
             rows = self._fetchall(
-                f'SELECT schema_id, {col_select} FROM _schema WHERE {where_clause}',
+                f"SELECT schema_id, {col_select} FROM _schema WHERE {where_clause}",
                 [schema_level],
             )
 
@@ -940,7 +954,9 @@ class SciDuck:
             existing_lookup = {}
             for row in rows:
                 sid = row[0]
-                row_key = tuple(_schema_str(v) if v is not None else "" for v in row[1:])
+                row_key = tuple(
+                    _schema_str(v) if v is not None else "" for v in row[1:]
+                )
                 existing_lookup[row_key] = sid
 
             # Match entries against existing rows
@@ -973,7 +989,7 @@ class SciDuck:
                     result[combo_key] = new_id
 
                 # Use DataFrame-based insert for speed
-                insert_df = pd.DataFrame(insert_rows, columns=col_names)
+                pd.DataFrame(insert_rows, columns=col_names)
                 self.con.execute(
                     f"INSERT INTO _schema ({col_str}) SELECT * FROM insert_df"
                 )
@@ -988,7 +1004,7 @@ class SciDuck:
         self,
         name: str,
         data: Any,
-        schema_level: Optional[str] = None,
+        schema_level: str | None = None,
         description: str = "",
         force: bool = False,
         **schema_keys,
@@ -1023,16 +1039,22 @@ class SciDuck:
         if schema_keys:
             provided_schema_cols = [k for k in self.dataset_schema if k in schema_keys]
             if schema_level is None:
-                schema_level = provided_schema_cols[-1] if provided_schema_cols else self.dataset_schema[-1]
+                schema_level = (
+                    provided_schema_cols[-1]
+                    if provided_schema_cols
+                    else self.dataset_schema[-1]
+                )
             if schema_level not in self.dataset_schema:
                 raise ValueError(
                     f"schema_level '{schema_level}' not in {self.dataset_schema}"
                 )
             key_cols = provided_schema_cols
-            entries = [(
-                {k: schema_keys[k] for k in key_cols},
-                data,
-            )]
+            entries = [
+                (
+                    {k: schema_keys[k] for k in key_cols},
+                    data,
+                )
+            ]
 
         else:
             if schema_level is None:
@@ -1044,11 +1066,19 @@ class SciDuck:
             key_cols = self._schema_key_columns(schema_level)
 
             # Mode A: DataFrame with schema columns
-            if isinstance(data, pd.DataFrame) and all(c in data.columns for c in key_cols):
-                entries, data_col_name = self._entries_from_dataframe(data, key_cols, schema_level)
+            if isinstance(data, pd.DataFrame) and all(
+                c in data.columns for c in key_cols
+            ):
+                entries, data_col_name = self._entries_from_dataframe(
+                    data, key_cols, schema_level
+                )
 
             # Mode C: dict with tuple keys
-            elif isinstance(data, dict) and data and isinstance(next(iter(data.keys())), tuple):
+            elif (
+                isinstance(data, dict)
+                and data
+                and isinstance(next(iter(data.keys())), tuple)
+            ):
                 entries = []
                 for key_tuple, value in data.items():
                     if len(key_tuple) != len(key_cols):
@@ -1056,7 +1086,7 @@ class SciDuck:
                             f"Key tuple length {len(key_tuple)} != "
                             f"expected {len(key_cols)} for level '{schema_level}'"
                         )
-                    key_dict = dict(zip(key_cols, key_tuple))
+                    key_dict = dict(zip(key_cols, key_tuple, strict=False))
                     entries.append((key_dict, value))
 
             else:
@@ -1069,12 +1099,15 @@ class SciDuck:
 
         # --- Determine column types from the first entry's data ---
         sample_value = entries[0][1]
-        data_col_types, dtype_meta = self._infer_data_columns(sample_value, data_col_name)
+        data_col_types, dtype_meta = self._infer_data_columns(
+            sample_value, data_col_name
+        )
 
         # --- Ensure the variable table exists ---
         is_dataframe = dtype_meta.get("mode") == "dataframe"
-        self._ensure_variable_table(name, data_col_types, schema_level,
-                                    is_dataframe=is_dataframe)
+        self._ensure_variable_table(
+            name, data_col_types, schema_level, is_dataframe=is_dataframe
+        )
 
         # --- Insert rows (INSERT OR REPLACE for "latest wins" semantics) ---
         col_names = ["schema_id"] + list(data_col_types.keys())
@@ -1095,7 +1128,8 @@ class SciDuck:
                 storage_values = self._value_to_storage_row(value, dtype_meta)
                 row = [schema_id] + storage_values
                 self._execute(
-                    f'INSERT OR REPLACE INTO "{name}" ({col_str}) VALUES ({placeholders})', row
+                    f'INSERT OR REPLACE INTO "{name}" ({col_str}) VALUES ({placeholders})',
+                    row,
                 )
 
         # --- Register in _variables (one row per variable) ---
@@ -1107,8 +1141,8 @@ class SciDuck:
         )
 
     def _entries_from_dataframe(
-        self, df: pd.DataFrame, key_cols: List[str], schema_level: str
-    ) -> Tuple[List[Tuple[dict, Any]], Optional[str]]:
+        self, df: pd.DataFrame, key_cols: list[str], schema_level: str
+    ) -> tuple[list[tuple[dict, Any]], str | None]:
         """
         Convert a DataFrame (Mode A) into a list of (key_dict, row_data) entries.
 
@@ -1138,8 +1172,8 @@ class SciDuck:
         return entries, single_col_name
 
     def _infer_data_columns(
-        self, sample_value: Any, data_col_name: Optional[str] = None
-    ) -> Tuple[dict, dict]:
+        self, sample_value: Any, data_col_name: str | None = None
+    ) -> tuple[dict, dict]:
         """Delegate to module-level _infer_data_columns."""
         return _infer_data_columns(sample_value, data_col_name)
 
@@ -1147,8 +1181,13 @@ class SciDuck:
         """Delegate to module-level _value_to_storage_row."""
         return _value_to_storage_row(value, dtype_meta)
 
-    def _ensure_variable_table(self, name: str, data_col_types: dict, schema_level: str,
-                               is_dataframe: bool = False):
+    def _ensure_variable_table(
+        self,
+        name: str,
+        data_col_types: dict,
+        schema_level: str,
+        is_dataframe: bool = False,
+    ):
         """Create the variable table if it doesn't exist."""
         if self._table_exists(name):
             return
@@ -1178,7 +1217,7 @@ class SciDuck:
         name: str,
         raw: bool = True,
         **schema_keys,
-    ) -> Union[pd.DataFrame, Any]:
+    ) -> pd.DataFrame | Any:
         """
         Load a variable from the database.
 
@@ -1216,9 +1255,9 @@ class SciDuck:
         data_select = ", ".join(f'v."{c}"' for c in data_cols)
 
         sql = (
-            f'SELECT {schema_select}, {data_select} '
+            f"SELECT {schema_select}, {data_select} "
             f'FROM "{name}" v '
-            f'JOIN _schema s ON v.schema_id = s.schema_id'
+            f"JOIN _schema s ON v.schema_id = s.schema_id"
         )
         params: list = []
 
@@ -1229,7 +1268,7 @@ class SciDuck:
                 conditions.append(f's."{col}" = ?')
                 params.append(_schema_str(val))
         if conditions:
-            sql += ' WHERE ' + ' AND '.join(conditions)
+            sql += " WHERE " + " AND ".join(conditions)
 
         df = self._fetchdf(sql, params or None)
 
@@ -1243,8 +1282,9 @@ class SciDuck:
             result = {}
             for c, meta in columns_meta.items():
                 if c in df.columns:
-                    result[c] = [_storage_to_python(df[c].iloc[i], meta)
-                                 for i in range(len(df))]
+                    result[c] = [
+                        _storage_to_python(df[c].iloc[i], meta) for i in range(len(df))
+                    ]
             df_columns = dtype_meta.get("df_columns", data_cols)
             return pd.DataFrame(result, columns=df_columns)
 
@@ -1318,18 +1358,14 @@ class SciDuck:
         """
         if self._table_exists(name):
             self._execute(f'DROP TABLE "{name}"')
-        self._execute(
-            "DELETE FROM _variables WHERE variable_name = ?", [name]
-        )
-        self._execute(
-            "DELETE FROM _variable_groups WHERE variable_name = ?", [name]
-        )
+        self._execute("DELETE FROM _variables WHERE variable_name = ?", [name])
+        self._execute("DELETE FROM _variable_groups WHERE variable_name = ?", [name])
 
     # ------------------------------------------------------------------
     # Groups
     # ------------------------------------------------------------------
 
-    def add_to_group(self, group_name: str, variable_names: Union[str, List[str]]):
+    def add_to_group(self, group_name: str, variable_names: str | list[str]):
         """Add one or more variables to a group."""
         if isinstance(variable_names, str):
             variable_names = [variable_names]
@@ -1340,7 +1376,7 @@ class SciDuck:
                 [group_name, vn],
             )
 
-    def remove_from_group(self, group_name: str, variable_names: Union[str, List[str]]):
+    def remove_from_group(self, group_name: str, variable_names: str | list[str]):
         """Remove one or more variables from a group."""
         if isinstance(variable_names, str):
             variable_names = [variable_names]
@@ -1351,14 +1387,14 @@ class SciDuck:
                 [group_name, vn],
             )
 
-    def list_groups(self) -> List[str]:
+    def list_groups(self) -> list[str]:
         """List all group names."""
         rows = self._fetchall(
             "SELECT DISTINCT group_name FROM _variable_groups ORDER BY group_name"
         )
         return [r[0] for r in rows]
 
-    def get_group(self, group_name: str) -> List[str]:
+    def get_group(self, group_name: str) -> list[str]:
         """Get all variable names in a group."""
         rows = self._fetchall(
             "SELECT variable_name FROM _variable_groups "
@@ -1371,12 +1407,11 @@ class SciDuck:
     # Schema introspection
     # ------------------------------------------------------------------
 
-    def distinct_schema_values(self, key: str) -> List:
+    def distinct_schema_values(self, key: str) -> list:
         """Return all distinct non-null values for a schema column, sorted."""
         if key not in self.dataset_schema:
             raise ValueError(
-                f"'{key}' is not a schema column. "
-                f"Available: {self.dataset_schema}"
+                f"'{key}' is not a schema column. Available: {self.dataset_schema}"
             )
         rows = self._fetchall(
             f'SELECT DISTINCT "{key}" FROM _schema '
@@ -1399,8 +1434,7 @@ class SciDuck:
         for k in keys:
             if k not in self.dataset_schema:
                 raise ValueError(
-                    f"'{k}' is not a schema column. "
-                    f"Available: {self.dataset_schema}"
+                    f"'{k}' is not a schema column. Available: {self.dataset_schema}"
                 )
         col_list = ", ".join(f'"{k}"' for k in keys)
         where_clause = " AND ".join(f'"{k}" IS NOT NULL' for k in keys)
@@ -1431,10 +1465,14 @@ class SciDuck:
 
     def reopen(self):
         """Reopen the DuckDB connection after close(), preserving read_only mode."""
-        logger.debug("DuckDB lock ACQUIRED (reopen, read_only=%s): %s",
-                    getattr(self, "read_only", False), self.db_path)
-        self.con = duckdb.connect(str(self.db_path),
-                                  read_only=getattr(self, "read_only", False))
+        logger.debug(
+            "DuckDB lock ACQUIRED (reopen, read_only=%s): %s",
+            getattr(self, "read_only", False),
+            self.db_path,
+        )
+        self.con = duckdb.connect(
+            str(self.db_path), read_only=getattr(self, "read_only", False)
+        )
 
     def __enter__(self):
         """Enter context manager."""

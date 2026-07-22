@@ -6,7 +6,7 @@ but returns the DataFrame in-memory instead of writing a file.
 
 import pandas as pd
 
-from scifor import set_schema, Merge, ColumnSelection, Col
+from scifor import Col, ColumnSelection, Merge, set_schema
 
 
 def setup_function():
@@ -45,7 +45,7 @@ def test_as_df_inner_join_drops_non_matching_rows():
         {"subject": [1, 2, 3], "trial": [1, 1, 1], "Speed": [1.1, 1.3, 9.9]}
     )
     df = Merge(step, speed).as_df()
-    assert set(zip(df.subject, df.trial)) == {(1, 1), (2, 1)}
+    assert set(zip(df.subject, df.trial, strict=False)) == {(1, 1), (2, 1)}
 
 
 def test_as_df_where_filter():
@@ -82,9 +82,7 @@ def test_as_df_column_selection():
             "Cadence": [100, 110],
         }
     )
-    speed = pd.DataFrame(
-        {"subject": [1, 1], "trial": [1, 2], "Speed": [1.1, 1.2]}
-    )
+    speed = pd.DataFrame({"subject": [1, 1], "trial": [1, 2], "Speed": [1.1, 1.2]})
     df = Merge(ColumnSelection(gait, ["StepLength"]), speed).as_df()
     assert list(df.columns) == ["subject", "trial", "StepLength", "Speed"]
     assert "Cadence" not in df.columns

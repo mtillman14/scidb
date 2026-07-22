@@ -2,11 +2,13 @@
 """Test that unified function hashing works correctly."""
 
 import sys
+
 sys.path.insert(0, "scilineage/src")
 sys.path.insert(0, "scidb/src")
 
-from scilineage.hashing import compute_function_hash
 from scidb.foreach_config import _compute_fn_hash
+from scilineage.hashing import compute_function_hash
+
 from scilineage import LineageFcn
 
 
@@ -14,7 +16,8 @@ def test_bytecode_ignores_formatting():
     """Reformatting should not change hash."""
 
     # Version 1: compact
-    def add_v1(x,y):return x+y
+    def add_v1(x, y):
+        return x + y
 
     # Version 2: formatted
     def add_v2(x, y):
@@ -64,7 +67,7 @@ def test_docstring_ignored():
     print(f"With docstring hash: {hash2}")
     # Docstrings are in co_consts, so they WILL change the hash
     # This is actually desired - changing docstrings in bytecode is a change
-    print(f"✓ Docstrings may affect hash (they're in bytecode constants)")
+    print("✓ Docstrings may affect hash (they're in bytecode constants)")
 
 
 def test_scidb_uses_shared_function():

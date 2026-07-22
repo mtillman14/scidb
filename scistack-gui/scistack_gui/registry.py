@@ -49,6 +49,7 @@ ENTRY_POINT_GROUP = "scistack.plugins"
 # Single-file mode (legacy, backward-compatible)
 # ---------------------------------------------------------------------------
 
+
 def register_module(module, *, module_path: Path | None = None) -> None:
     """
     Scan a user module for pipeline functions and BaseVariable subclasses.
@@ -67,7 +68,10 @@ def register_module(module, *, module_path: Path | None = None) -> None:
         logger.debug("[registry] Stored module path for refresh: %s", module_path)
 
     _scan_module_functions(module, source=str(module_path or "<unknown>"))
-    logger.info("[registry] Module registration complete - %d functions registered", len(_functions))
+    logger.info(
+        "[registry] Module registration complete - %d functions registered",
+        len(_functions),
+    )
 
 
 def refresh_module() -> dict:
@@ -80,13 +84,16 @@ def refresh_module() -> dict:
     logger.info("[registry] Starting module refresh from %s", _module_path)
     if _module_path is None:
         raise RuntimeError(
-            "No module was loaded at startup (--module not passed). "
-            "Nothing to refresh."
+            "No module was loaded at startup (--module not passed). Nothing to refresh."
         )
 
     old_fns = set(_functions.keys())
     old_vars = set(BaseVariable._all_subclasses.keys())
-    logger.debug("[registry] Before refresh: %d functions, %d variables", len(old_fns), len(old_vars))
+    logger.debug(
+        "[registry] Before refresh: %d functions, %d variables",
+        len(old_fns),
+        len(old_vars),
+    )
 
     # Clear the function registry so removed functions don't linger.
     logger.info("[registry] Clearing function registry")
@@ -105,7 +112,11 @@ def refresh_module() -> dict:
 
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
-    logger.debug("[registry] After refresh: %d functions, %d variables", len(new_fns), len(new_vars))
+    logger.debug(
+        "[registry] After refresh: %d functions, %d variables",
+        len(new_fns),
+        len(new_vars),
+    )
 
     logger.info("[registry] Module refresh complete")
     return _diff_summary(old_fns, new_fns, old_vars, new_vars)
@@ -114,6 +125,7 @@ def refresh_module() -> dict:
 # ---------------------------------------------------------------------------
 # Project mode (multi-source)
 # ---------------------------------------------------------------------------
+
 
 def load_from_config(config: SciStackConfig) -> dict:
     """
@@ -134,7 +146,11 @@ def load_from_config(config: SciStackConfig) -> dict:
 
     old_fns = set(_functions.keys())
     old_vars = set(BaseVariable._all_subclasses.keys())
-    logger.debug("[registry] Before load: %d functions, %d variables", len(old_fns), len(old_vars))
+    logger.debug(
+        "[registry] Before load: %d functions, %d variables",
+        len(old_fns),
+        len(old_vars),
+    )
 
     logger.info("[registry] Clearing function registry")
     _functions.clear()
@@ -154,7 +170,9 @@ def load_from_config(config: SciStackConfig) -> dict:
 
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
-    logger.debug("[registry] After load: %d functions, %d variables", len(new_fns), len(new_vars))
+    logger.debug(
+        "[registry] After load: %d functions, %d variables", len(new_fns), len(new_vars)
+    )
 
     logger.info("[registry] Config loading complete")
     return _diff_summary(old_fns, new_fns, old_vars, new_vars)
@@ -188,7 +206,11 @@ def _load_file_modules(paths: list[Path]) -> None:
             fn_count_before = len(_functions)
             _scan_module_functions(mod, source=str(path))
             fn_count_after = len(_functions)
-            logger.info("[registry] Loaded module file: %s (%d functions)", path, fn_count_after - fn_count_before)
+            logger.info(
+                "[registry] Loaded module file: %s (%d functions)",
+                path,
+                fn_count_after - fn_count_before,
+            )
         except Exception:
             logger.exception("[registry] Failed to load module file: %s", path)
 
@@ -197,7 +219,9 @@ def _load_packages(names: list[str]) -> None:
     """Import each named package and walk its submodules for functions."""
     logger.debug("[registry] Importing %d packages", len(names))
     for pkg_idx, pkg_name in enumerate(names):
-        logger.debug("[registry] Processing package %d/%d: %s", pkg_idx + 1, len(names), pkg_name)
+        logger.debug(
+            "[registry] Processing package %d/%d: %s", pkg_idx + 1, len(names), pkg_name
+        )
         try:
             pkg = importlib.import_module(pkg_name)
         except ImportError:
@@ -208,13 +232,17 @@ def _load_packages(names: list[str]) -> None:
         fn_count_before = len(_functions)
         _scan_module_functions(pkg, source=f"package:{pkg_name}")
         fn_count_after = len(_functions)
-        logger.info("[registry] Loaded package: %s (%d functions from top level)", pkg_name, fn_count_after - fn_count_before)
+        logger.info(
+            "[registry] Loaded package: %s (%d functions from top level)",
+            pkg_name,
+            fn_count_after - fn_count_before,
+        )
 
         # Walk submodules if it's a package (has __path__).
         pkg_path = getattr(pkg, "__path__", None)
         if pkg_path is not None:
             submodule_count = 0
-            for importer, modname, ispkg in pkgutil.walk_packages(
+            for _importer, modname, _ispkg in pkgutil.walk_packages(
                 pkg_path, prefix=pkg_name + "."
             ):
                 try:
@@ -223,8 +251,14 @@ def _load_packages(names: list[str]) -> None:
                     _scan_module_functions(submod, source=f"package:{modname}")
                     submodule_count += 1
                 except Exception:
-                    logger.exception("[registry] Failed to import submodule: %s", modname)
-            logger.debug("[registry] Walked %d submodules in package %s", submodule_count, pkg_name)
+                    logger.exception(
+                        "[registry] Failed to import submodule: %s", modname
+                    )
+            logger.debug(
+                "[registry] Walked %d submodules in package %s",
+                submodule_count,
+                pkg_name,
+            )
 
 
 def _load_entry_points() -> None:
@@ -240,7 +274,12 @@ def _load_entry_points() -> None:
     eps_list = list(eps)
     logger.debug("[registry] Found %d entry points", len(eps_list))
     for ep_idx, ep in enumerate(eps_list):
-        logger.debug("[registry] Processing entry point %d/%d: %s", ep_idx + 1, len(eps_list), ep.name)
+        logger.debug(
+            "[registry] Processing entry point %d/%d: %s",
+            ep_idx + 1,
+            len(eps_list),
+            ep.name,
+        )
         try:
             mod = ep.load()
             # entry point value can be a module or a callable; if it's a
@@ -249,10 +288,19 @@ def _load_entry_points() -> None:
                 fn_count_before = len(_functions)
                 _scan_module_functions(mod, source=f"entrypoint:{ep.name}")
                 fn_count_after = len(_functions)
-                logger.info("[registry] Loaded entry point: %s = %s (%d functions)", ep.name, ep.value, fn_count_after - fn_count_before)
+                logger.info(
+                    "[registry] Loaded entry point: %s = %s (%d functions)",
+                    ep.name,
+                    ep.value,
+                    fn_count_after - fn_count_before,
+                )
             elif callable(mod):
                 _register_function(ep.name, mod, source=f"entrypoint:{ep.name}")
-                logger.info("[registry] Loaded entry point: %s = %s (1 function)", ep.name, ep.value)
+                logger.info(
+                    "[registry] Loaded entry point: %s = %s (1 function)",
+                    ep.name,
+                    ep.value,
+                )
         except Exception:
             logger.exception("[registry] Failed to load entry point: %s", ep.name)
 
@@ -260,6 +308,7 @@ def _load_entry_points() -> None:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _scan_module_functions(module, *, source: str) -> None:
     """Scan a module for top-level callables and register them.
@@ -279,7 +328,7 @@ def _scan_module_functions(module, *, source: str) -> None:
     for name, obj in inspect.getmembers(
         module, lambda o: callable(o) and not inspect.isclass(o)
     ):
-        if name.startswith('_'):
+        if name.startswith("_"):
             continue
         if getattr(obj, "__module__", None) != module_name:
             skipped_reexports.append(name)
@@ -287,11 +336,18 @@ def _scan_module_functions(module, *, source: str) -> None:
         _register_function(name, obj, source=source)
         discovered.append(name)
     if discovered:
-        logger.debug("[registry] Discovered %d functions from %s: %s", len(discovered), source, discovered)
+        logger.debug(
+            "[registry] Discovered %d functions from %s: %s",
+            len(discovered),
+            source,
+            discovered,
+        )
     if skipped_reexports:
         logger.debug(
             "[registry] Skipped %d imported/re-exported callables from %s (not defined there): %s",
-            len(skipped_reexports), source, skipped_reexports,
+            len(skipped_reexports),
+            source,
+            skipped_reexports,
         )
 
 
@@ -301,7 +357,9 @@ def _register_function(name: str, fn, *, source: str) -> None:
     if existing_source is not None and existing_source != source:
         logger.warning(
             "[registry] Function '%s' from %s shadows previous definition from %s",
-            name, source, existing_source,
+            name,
+            source,
+            existing_source,
         )
     _functions[name] = fn
     _function_sources[name] = source
@@ -309,15 +367,21 @@ def _register_function(name: str, fn, *, source: str) -> None:
 
 
 def _diff_summary(
-    old_fns: set[str], new_fns: set[str],
-    old_vars: set[str], new_vars: set[str],
+    old_fns: set[str],
+    new_fns: set[str],
+    old_vars: set[str],
+    new_vars: set[str],
 ) -> dict:
     """Build a summary dict of what changed."""
     added_fns = new_fns - old_fns
     removed_fns = old_fns - new_fns
     added_vars = new_vars - old_vars
 
-    logger.info("[registry] Registry summary: %d functions, %d variables", len(new_fns), len(new_vars))
+    logger.info(
+        "[registry] Registry summary: %d functions, %d variables",
+        len(new_fns),
+        len(new_vars),
+    )
     if added_fns:
         logger.info("[registry] Added functions: %s", sorted(added_fns))
     if removed_fns:
@@ -337,6 +401,7 @@ def _diff_summary(
 # ---------------------------------------------------------------------------
 # Lookup API (unchanged)
 # ---------------------------------------------------------------------------
+
 
 def get_function(name: str):
     fn = _functions.get(name)

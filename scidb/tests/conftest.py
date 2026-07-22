@@ -1,15 +1,12 @@
 """Pytest configuration and shared fixtures for scidb tests."""
 
-import os
-import tempfile
+# Add all local packages to path for imports
+import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
-# Add all local packages to path for imports
-import sys
 _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root / "src"))
 sys.path.insert(0, str(_root / "canonical-hash" / "src"))
@@ -19,9 +16,9 @@ sys.path.insert(0, str(_root / "sciduckdb" / "src"))
 sys.path.insert(0, str(_root / "scifor" / "src"))
 sys.path.insert(0, str(_root / "scihist" / "src"))
 
-from scidb import BaseVariable, configure_database
 from scidb.database import _local
 
+from scidb import BaseVariable, configure_database
 
 # Default schema keys for testing - defines the hierarchical dataset structure.
 # Keys not in this list are treated as version parameters (e.g. stage, type, dtype).
@@ -51,46 +48,52 @@ def configured_db(tmp_path):
     yield db
     db.close()
     # Clear the global state
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
+    if hasattr(_local, "database"):
+        delattr(_local, "database")
 
 
 @pytest.fixture(autouse=True)
 def clear_global_db():
     """Clear global database state before each test."""
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
+    if hasattr(_local, "database"):
+        delattr(_local, "database")
     yield
-    if hasattr(_local, 'database'):
-        delattr(_local, 'database')
+    if hasattr(_local, "database"):
+        delattr(_local, "database")
 
 
 # --- Sample Variable Classes for Testing ---
 # ScalarValue, ArrayValue, MatrixValue use native SciDuck storage (no to_db/from_db).
 # DataFrameValue uses custom serialization to test that path too.
 
+
 class ScalarValue(BaseVariable):
     """Simple scalar value — uses native SciDuck storage."""
+
     schema_version = 1
 
 
 class ArrayValue(BaseVariable):
     """1D numpy array — uses native SciDuck storage."""
+
     schema_version = 1
 
 
 class MatrixValue(BaseVariable):
     """2D numpy array — uses native SciDuck storage."""
+
     schema_version = 2  # Different schema version for testing
 
 
 class DataFrameValue(BaseVariable):
     """Pandas DataFrame — uses native storage (no to_db/from_db needed)."""
+
     schema_version = 1
 
 
 class CustomDataFrameValue(BaseVariable):
     """Pandas DataFrame — uses custom serialization (to_db/from_db)."""
+
     schema_version = 1
 
     def to_db(self) -> pd.DataFrame:

@@ -1,13 +1,12 @@
 """Integration tests for introspect= flag on load() and for_each()."""
 
 import json
-import numpy as np
-import pytest
-import scifor as _scifor
 
-from scidb import BaseVariable, configure_database, for_each, Fixed
+import pytest
 from scidb.database import _local
 
+import scifor as _scifor
+from scidb import BaseVariable, Fixed, configure_database, for_each
 
 DEFAULT_SCHEMA_KEYS = ["subject", "trial"]
 
@@ -33,6 +32,7 @@ def clear_global_db():
 def ScalarVar(db):
     class ScalarVar(BaseVariable):
         schema_version = 1
+
     db.register(ScalarVar)
     return ScalarVar
 
@@ -40,6 +40,7 @@ def ScalarVar(db):
 # ---------------------------------------------------------------------------
 # load(introspect=True) — non-df path
 # ---------------------------------------------------------------------------
+
 
 class TestLoadIntrospectNonDf:
     def test_returns_basevariable_unchanged(self, db, ScalarVar):
@@ -101,8 +102,10 @@ class TestLoadIntrospectNonDf:
         # Save raw input, run two for_each passes with different constants.
         class Raw(BaseVariable):
             schema_version = 1
+
         class Processed(BaseVariable):
             schema_version = 1
+
         db.register(Raw)
         db.register(Processed)
 
@@ -111,10 +114,20 @@ class TestLoadIntrospectNonDf:
         def scale(signal, factor):
             return signal * factor
 
-        for_each(scale, inputs={"signal": Raw, "factor": 2.0},
-                 outputs=[Processed], subject=[1], trial=[1])
-        for_each(scale, inputs={"signal": Raw, "factor": 3.0},
-                 outputs=[Processed], subject=[1], trial=[1])
+        for_each(
+            scale,
+            inputs={"signal": Raw, "factor": 2.0},
+            outputs=[Processed],
+            subject=[1],
+            trial=[1],
+        )
+        for_each(
+            scale,
+            inputs={"signal": Raw, "factor": 3.0},
+            outputs=[Processed],
+            subject=[1],
+            trial=[1],
+        )
 
         p2 = Processed.load(subject=1, trial=1, factor=2.0, introspect=True)
         p3 = Processed.load(subject=1, trial=1, factor=3.0, introspect=True)
@@ -127,9 +140,11 @@ class TestLoadIntrospectNonDf:
 # load(as_df=True, introspect=True)
 # ---------------------------------------------------------------------------
 
+
 class TestLoadIntrospectAsDf:
     def test_returns_dataframe(self, db, ScalarVar):
         import pandas as pd
+
         ScalarVar.save(42, subject=1, trial=1)
         df = ScalarVar.load(as_df=True, subject=1, trial=1, introspect=True)
         assert isinstance(df, pd.DataFrame)
@@ -138,7 +153,13 @@ class TestLoadIntrospectAsDf:
     def test_introspect_columns_present(self, db, ScalarVar):
         ScalarVar.save(42, subject=1, trial=1)
         df = ScalarVar.load(as_df=True, subject=1, trial=1, introspect=True)
-        for col in ("record_id", "branch_params", "content_hash", "where", "version_mode"):
+        for col in (
+            "record_id",
+            "branch_params",
+            "content_hash",
+            "where",
+            "version_mode",
+        ):
             assert col in df.columns, f"missing column: {col}"
 
     def test_record_id_is_non_empty_string(self, db, ScalarVar):
@@ -161,8 +182,7 @@ class TestLoadIntrospectAsDf:
         # BaseVariable.to_db() stores under column "value"
         ScalarVar.save(42, subject=1, trial=1)
         filt = ScalarVar["value"] > 5
-        df = ScalarVar.load(as_df=True, subject=1, trial=1,
-                            introspect=True, where=filt)
+        df = ScalarVar.load(as_df=True, subject=1, trial=1, introspect=True, where=filt)
         assert df["where"].iloc[0] == repr(filt)
 
     def test_version_mode_repeated(self, db, ScalarVar):
@@ -182,7 +202,13 @@ class TestLoadIntrospectAsDf:
     def test_no_introspect_columns_without_flag(self, db, ScalarVar):
         ScalarVar.save(42, subject=1, trial=1)
         df = ScalarVar.load(as_df=True, subject=1, trial=1)
-        for col in ("record_id", "branch_params", "content_hash", "where", "version_mode"):
+        for col in (
+            "record_id",
+            "branch_params",
+            "content_hash",
+            "where",
+            "version_mode",
+        ):
             assert col not in df.columns
 
 
@@ -190,16 +216,18 @@ class TestLoadIntrospectAsDf:
 # for_each(introspect=True)
 # ---------------------------------------------------------------------------
 
+
 def _identity(x):
     return x
 
 
 class TestForEachIntrospect:
-
     def _setup(self, db, ScalarVar):
         """Save records and register an output class. Returns the Out class."""
+
         class Out(BaseVariable):
             schema_version = 1
+
         db.register(Out)
         return Out
 
@@ -209,8 +237,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1, 2], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1, 2],
+            trial=[1],
+            introspect=True,
         )
         assert "_record_id_x" in result.columns
 
@@ -219,8 +251,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
+            introspect=True,
         )
         assert isinstance(result["_record_id_x"].iloc[0], str)
         assert len(result["_record_id_x"].iloc[0]) > 0
@@ -230,8 +266,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
+            introspect=True,
         )
         assert "_branch_params_x" in result.columns
         assert isinstance(result["_branch_params_x"].iloc[0], dict)
@@ -241,8 +281,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
+            introspect=True,
         )
         assert "_call_id" in result.columns
         call_id = result["_call_id"].iloc[0]
@@ -255,8 +299,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1, 2], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1, 2],
+            trial=[1],
+            introspect=True,
         )
         assert result["_call_id"].nunique() == 1
 
@@ -265,8 +313,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
+            introspect=True,
         )
         assert "_config_keys" in result.columns
         ck = json.loads(result["_config_keys"].iloc[0])
@@ -278,8 +330,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
+            introspect=True,
         )
         assert "_where" in result.columns
         assert result["_where"].iloc[0] is None
@@ -291,8 +347,13 @@ class TestForEachIntrospect:
         filt = ScalarVar["value"] > 5
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1], where=filt, introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
+            where=filt,
+            introspect=True,
         )
         assert "_where" in result.columns
         assert result["_where"].iloc[0] == repr(filt)
@@ -303,8 +364,10 @@ class TestForEachIntrospect:
 
         class Dummy(BaseVariable):
             schema_version = 1
+
         class Out(BaseVariable):
             schema_version = 1
+
         db.register(Dummy)
         db.register(Out)
 
@@ -319,7 +382,8 @@ class TestForEachIntrospect:
             f,
             inputs={"x": Dummy, "fixed": Fixed(ScalarVar, subject=1, trial=1)},
             outputs=[Out],
-            subject=[1, 2], trial=[1],
+            subject=[1, 2],
+            trial=[1],
             introspect=True,
         )
         assert "_record_id_fixed" in result.columns
@@ -331,8 +395,12 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1], introspect=True,
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
+            introspect=True,
         )
         cols = list(result.columns)
         out_idx = cols.index("Out")
@@ -345,8 +413,11 @@ class TestForEachIntrospect:
         Out = self._setup(db, ScalarVar)
 
         result = for_each(
-            _identity, inputs={"x": ScalarVar}, outputs=[Out],
-            subject=[1], trial=[1],
+            _identity,
+            inputs={"x": ScalarVar},
+            outputs=[Out],
+            subject=[1],
+            trial=[1],
         )
         for col in result.columns:
             assert not col.startswith("_record_id_")

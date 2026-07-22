@@ -41,9 +41,7 @@ class Merge:
 
     def __init__(self, *tables: Any):
         if len(tables) < 2:
-            raise ValueError(
-                f"Merge requires at least 2 inputs, got {len(tables)}."
-            )
+            raise ValueError(f"Merge requires at least 2 inputs, got {len(tables)}.")
         for t in tables:
             if isinstance(t, Merge):
                 raise TypeError("Cannot nest Merge inside another Merge.")
@@ -142,8 +140,9 @@ def _display_name(obj: Any) -> str:
     """Get a display name for an object."""
     try:
         import pandas as pd
+
         if isinstance(obj, pd.DataFrame):
             return f"DataFrame{list(obj.columns)}"
     except ImportError:
         pass
-    return getattr(obj, '__name__', type(obj).__name__)
+    return getattr(obj, "__name__", type(obj).__name__)

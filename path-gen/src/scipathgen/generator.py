@@ -1,8 +1,9 @@
 """Path generation from templates and metadata combinations."""
 
+from collections.abc import Iterator
 from itertools import product
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 class PathGenerator:
@@ -56,7 +57,7 @@ class PathGenerator:
         # Pre-compute all combinations for efficient indexing
         self._items: list[tuple[Path, dict[str, Any]]] = []
         for combo in product(*self.metadata_values):
-            meta = dict(zip(self.metadata_keys, combo))
+            meta = dict(zip(self.metadata_keys, combo, strict=False))
             relative_path = Path(path_template.format(**meta))
             if self.root_folder is not None:
                 full_path = (self.root_folder / relative_path).resolve()

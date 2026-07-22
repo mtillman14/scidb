@@ -6,11 +6,8 @@ All functions are pure — no DB or fixtures required.
 
 import json
 
-import pytest
-
 from scistack_gui.domain.graph_builder import (
     AggregatedData,
-    GraduationAction,
     aggregate_variants,
     auto_clean_pending_constants,
     build_constant_nodes,
@@ -26,14 +23,15 @@ from scistack_gui.domain.graph_builder import (
     parse_path_input,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _cid(seed: str = "default") -> str:
     """Synthesize a 16-hex call_id for tests.  Stable per seed string."""
     import hashlib
+
     return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 
@@ -41,7 +39,10 @@ def _variant(fn, out, inputs=None, constants=None, count=1, call_id=None):
     return {
         "function_name": fn,
         "output_type": out,
-        "call_id": call_id or _cid(f"{fn}:{json.dumps(constants or {}, sort_keys=True)}:{json.dumps(inputs or {}, sort_keys=True)}"),
+        "call_id": call_id
+        or _cid(
+            f"{fn}:{json.dumps(constants or {}, sort_keys=True)}:{json.dumps(inputs or {}, sort_keys=True)}"
+        ),
         "input_types": inputs or {},
         "constants": constants or {},
         "record_count": count,
@@ -50,16 +51,28 @@ def _variant(fn, out, inputs=None, constants=None, count=1, call_id=None):
 
 def _fkey(fn, *, inputs=None, constants=None) -> tuple[str, str]:
     """Build the FnKey that ``_variant(fn, ..., inputs, constants, ...)`` produces."""
-    return (fn, _cid(f"{fn}:{json.dumps(constants or {}, sort_keys=True)}:{json.dumps(inputs or {}, sort_keys=True)}"))
+    return (
+        fn,
+        _cid(
+            f"{fn}:{json.dumps(constants or {}, sort_keys=True)}:{json.dumps(inputs or {}, sort_keys=True)}"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
 # parse_path_input
 # ---------------------------------------------------------------------------
 
+
 class TestParsePathInput:
     def test_json_format(self):
-        val = json.dumps({"__type": "PathInput", "template": "{subject}/raw.csv", "root_folder": "/data"})
+        val = json.dumps(
+            {
+                "__type": "PathInput",
+                "template": "{subject}/raw.csv",
+                "root_folder": "/data",
+            }
+        )
         result = parse_path_input(val)
         assert result == {"template": "{subject}/raw.csv", "root_folder": "/data"}
 
@@ -96,9 +109,14 @@ class TestParsePathInput:
 # aggregate_variants
 # ---------------------------------------------------------------------------
 
+
 class TestAggregateVariants:
     def test_basic_variant_parsed(self):
-        variants = [_variant("bandpass", "Filtered", inputs={"signal": "Raw"}, constants={"hz": 20})]
+        variants = [
+            _variant(
+                "bandpass", "Filtered", inputs={"signal": "Raw"}, constants={"hz": 20}
+            )
+        ]
         agg = aggregate_variants(variants, listed_var_names=set())
         fkey = _fkey("bandpass", inputs={"signal": "Raw"}, constants={"hz": 20})
         assert "Filtered" in agg.all_var_types
@@ -166,7 +184,14 @@ class TestAggregateVariants:
 
     def test_pathinput_only_function_with_constants(self):
         pi_json = json.dumps({"__type": "PathInput", "template": "{subject}/raw.csv"})
-        variants = [_variant("loadFile", "Loaded", inputs={"filepath": pi_json}, constants={"hz": 100})]
+        variants = [
+            _variant(
+                "loadFile",
+                "Loaded",
+                inputs={"filepath": pi_json},
+                constants={"hz": 100},
+            )
+        ]
         agg = aggregate_variants(variants, listed_var_names=set())
         fkey = _fkey("loadFile", inputs={"filepath": pi_json}, constants={"hz": 100})
         assert fkey in agg.fn_input_params
@@ -175,7 +200,9 @@ class TestAggregateVariants:
 
     def test_mixed_pathinput_and_variable_inputs(self):
         pi_json = json.dumps({"__type": "PathInput", "template": "{subject}/raw.csv"})
-        variants = [_variant("process", "Out", inputs={"filepath": pi_json, "signal": "Raw"})]
+        variants = [
+            _variant("process", "Out", inputs={"filepath": pi_json, "signal": "Raw"})
+        ]
         agg = aggregate_variants(variants, listed_var_names=set())
         fkey = _fkey("process", inputs={"filepath": pi_json, "signal": "Raw"})
         assert fkey in agg.fn_input_params
@@ -206,10 +233,13 @@ class TestAggregateVariants:
 # filter_hidden
 # ---------------------------------------------------------------------------
 
+
 class TestFilterHidden:
     def _agg(self):
         variants = [
-            _variant("bandpass", "Filtered", inputs={"signal": "Raw"}, constants={"hz": 20}),
+            _variant(
+                "bandpass", "Filtered", inputs={"signal": "Raw"}, constants={"hz": 20}
+            ),
             _variant("normalize", "Normed", inputs={"signal": "Filtered"}),
         ]
         agg = aggregate_variants(variants, listed_var_names=set())
@@ -272,6 +302,7 @@ class TestFilterHidden:
 # auto_clean_pending_constants
 # ---------------------------------------------------------------------------
 
+
 class TestAutoCleanPendingConstants:
     def test_removes_value_already_in_db(self):
         pending = {"hz": {"20", "30"}}
@@ -298,9 +329,12 @@ class TestAutoCleanPendingConstants:
 # build_variable_nodes
 # ---------------------------------------------------------------------------
 
+
 class TestBuildVariableNodes:
     def test_node_structure(self):
-        nodes = build_variable_nodes({"RawEMG"}, record_counts={"RawEMG": 4}, run_states={})
+        nodes = build_variable_nodes(
+            {"RawEMG"}, record_counts={"RawEMG": 4}, run_states={}
+        )
         assert len(nodes) == 1
         n = nodes[0]
         assert n["id"] == "var__RawEMG"
@@ -330,6 +364,7 @@ class TestBuildVariableNodes:
 # build_constant_nodes
 # ---------------------------------------------------------------------------
 
+
 class TestBuildConstantNodes:
     def test_node_structure(self):
         const_counts = {"hz": {"10": 3, "20": 5}}
@@ -357,7 +392,9 @@ class TestBuildConstantNodes:
     def test_pending_record_count_is_zero(self):
         const_counts = {"hz": {"10": 3}}
         nodes = build_constant_nodes(const_counts, pending_constants={"hz": {"99"}})
-        pending_entry = next(v for v in nodes[0]["data"]["values"] if v["value"] == "99")
+        pending_entry = next(
+            v for v in nodes[0]["data"]["values"] if v["value"] == "99"
+        )
         assert pending_entry["record_count"] == 0
 
 
@@ -365,21 +402,28 @@ class TestBuildConstantNodes:
 # overlay_saved_path_inputs
 # ---------------------------------------------------------------------------
 
+
 class TestOverlaySavedPathInputs:
     def test_updates_existing_entry(self):
-        path_inputs = {"mypath": {"template": "", "root_folder": None, "functions": {"f"}}}
+        path_inputs = {
+            "mypath": {"template": "", "root_folder": None, "functions": {"f"}}
+        }
         saved = [{"name": "mypath", "template": "{s}/file.csv", "root_folder": "/data"}]
         result = overlay_saved_path_inputs(path_inputs, saved)
         assert result["mypath"]["template"] == "{s}/file.csv"
         assert result["mypath"]["root_folder"] == "/data"
 
     def test_adds_new_entry_from_saved(self):
-        result = overlay_saved_path_inputs({}, [{"name": "newpath", "template": "{s}/x.csv"}])
+        result = overlay_saved_path_inputs(
+            {}, [{"name": "newpath", "template": "{s}/x.csv"}]
+        )
         assert "newpath" in result
         assert result["newpath"]["functions"] == set()
 
     def test_does_not_overwrite_template_if_saved_empty(self):
-        path_inputs = {"p": {"template": "existing", "root_folder": None, "functions": set()}}
+        path_inputs = {
+            "p": {"template": "existing", "root_folder": None, "functions": set()}
+        }
         saved = [{"name": "p", "template": "", "root_folder": None}]
         result = overlay_saved_path_inputs(path_inputs, saved)
         # Empty template should not overwrite existing.
@@ -390,9 +434,16 @@ class TestOverlaySavedPathInputs:
 # build_path_input_nodes
 # ---------------------------------------------------------------------------
 
+
 class TestBuildPathInputNodes:
     def test_node_structure(self):
-        path_inputs = {"mypath": {"template": "{s}/f.csv", "root_folder": "/data", "functions": set()}}
+        path_inputs = {
+            "mypath": {
+                "template": "{s}/f.csv",
+                "root_folder": "/data",
+                "functions": set(),
+            }
+        }
         nodes = build_path_input_nodes(path_inputs)
         assert len(nodes) == 1
         n = nodes[0]
@@ -406,22 +457,23 @@ class TestBuildPathInputNodes:
 # build_function_nodes
 # ---------------------------------------------------------------------------
 
+
 class TestBuildFunctionNodes:
     BP_CID = _cid("bp-test")
     BP_KEY = ("bandpass", BP_CID)
     BP_NODE = f"fn__bandpass__{BP_CID}"
 
     def _make(self, **overrides):
-        defaults = dict(
-            fn_input_params={self.BP_KEY: {"signal": "Raw"}},
-            fn_outputs={self.BP_KEY: {"Filtered"}},
-            fn_constants={self.BP_KEY: {"hz"}},
-            fn_variants_map={self.BP_KEY: []},
-            fn_params_map={"bandpass": ["signal", "hz"]},
-            run_states={self.BP_NODE: "green"},
-            matlab_functions=set(),
-            saved_configs={"bandpass": None},
-        )
+        defaults = {
+            "fn_input_params": {self.BP_KEY: {"signal": "Raw"}},
+            "fn_outputs": {self.BP_KEY: {"Filtered"}},
+            "fn_constants": {self.BP_KEY: {"hz"}},
+            "fn_variants_map": {self.BP_KEY: []},
+            "fn_params_map": {"bandpass": ["signal", "hz"]},
+            "run_states": {self.BP_NODE: "green"},
+            "matlab_functions": set(),
+            "saved_configs": {"bandpass": None},
+        }
         defaults.update(overrides)
         return build_function_nodes(**defaults)
 
@@ -447,7 +499,9 @@ class TestBuildFunctionNodes:
         assert "language" not in nodes[0]["data"]
 
     def test_saved_config_applied(self):
-        nodes = self._make(saved_configs={"bandpass": {"schemaFilter": {"subject": [1]}}})
+        nodes = self._make(
+            saved_configs={"bandpass": {"schemaFilter": {"subject": [1]}}}
+        )
         assert nodes[0]["data"]["schemaFilter"] == {"subject": [1]}
 
     def test_unknown_param_filled_with_empty_string(self):
@@ -469,7 +523,10 @@ class TestBuildFunctionNodes:
             fn_input_params={ka: {"signal": "Raw"}, kb: {"signal": "Raw"}},
             fn_outputs={ka: {"Filtered"}, kb: {"Filtered"}},
             fn_constants={ka: {"hz"}, kb: {"hz"}},
-            fn_variants_map={ka: [{"constants": {"hz": 20}}], kb: [{"constants": {"hz": 50}}]},
+            fn_variants_map={
+                ka: [{"constants": {"hz": 20}}],
+                kb: [{"constants": {"hz": 50}}],
+            },
             fn_params_map={"bandpass": ["signal", "hz"]},
             run_states={
                 f"fn__bandpass__{cid_a}": "green",
@@ -489,6 +546,7 @@ class TestBuildFunctionNodes:
 # build_edges
 # ---------------------------------------------------------------------------
 
+
 class TestBuildEdges:
     F_CID = _cid("f-call")
     F_KEY = ("f", F_CID)
@@ -503,7 +561,9 @@ class TestBuildEdges:
             manual_edges=[],
             hidden_ids=set(),
         )
-        assert any(e["source"] == "var__Raw" and e["target"] == self.F_NODE for e in edges)
+        assert any(
+            e["source"] == "var__Raw" and e["target"] == self.F_NODE for e in edges
+        )
 
     def test_fn_to_var_edge(self):
         edges = build_edges(
@@ -514,7 +574,9 @@ class TestBuildEdges:
             manual_edges=[],
             hidden_ids=set(),
         )
-        assert any(e["source"] == self.F_NODE and e["target"] == "var__Out" for e in edges)
+        assert any(
+            e["source"] == self.F_NODE and e["target"] == "var__Out" for e in edges
+        )
 
     def test_const_to_fn_edge(self):
         edges = build_edges(
@@ -525,28 +587,49 @@ class TestBuildEdges:
             manual_edges=[],
             hidden_ids=set(),
         )
-        assert any(e["source"] == "const__hz" and e["target"] == self.F_NODE for e in edges)
+        assert any(
+            e["source"] == "const__hz" and e["target"] == self.F_NODE for e in edges
+        )
 
     def test_path_input_to_fn_edge(self):
         edges = build_edges(
             fn_input_params={},
             fn_outputs={},
             const_fns={},
-            path_inputs={"mypath": {"template": "", "root_folder": None, "functions": {self.F_KEY}}},
+            path_inputs={
+                "mypath": {
+                    "template": "",
+                    "root_folder": None,
+                    "functions": {self.F_KEY},
+                }
+            },
             manual_edges=[],
             hidden_ids=set(),
         )
-        assert any(e["source"] == "pathInput__mypath" and e["target"] == self.F_NODE for e in edges)
+        assert any(
+            e["source"] == "pathInput__mypath" and e["target"] == self.F_NODE
+            for e in edges
+        )
 
     def test_manual_edge_included(self):
-        me = {"id": "manual-1", "source": "uuid-var", "target": self.F_NODE,
-              "sourceHandle": "", "targetHandle": "in__x"}
+        me = {
+            "id": "manual-1",
+            "source": "uuid-var",
+            "target": self.F_NODE,
+            "sourceHandle": "",
+            "targetHandle": "in__x",
+        }
         edges = build_edges({}, {}, {}, {}, [me], set())
         assert any(e["id"] == "manual-1" for e in edges)
 
     def test_manual_edge_skipped_if_hidden(self):
-        me = {"id": "manual-1", "source": "uuid-var", "target": self.F_NODE,
-              "sourceHandle": "", "targetHandle": ""}
+        me = {
+            "id": "manual-1",
+            "source": "uuid-var",
+            "target": self.F_NODE,
+            "sourceHandle": "",
+            "targetHandle": "",
+        }
         edges = build_edges({}, {}, {}, {}, [me], hidden_ids={"uuid-var"})
         assert not any(e["id"] == "manual-1" for e in edges)
 
@@ -560,7 +643,9 @@ class TestBuildEdges:
             manual_edges=[],
             hidden_ids=set(),
         )
-        var_to_fn = [e for e in edges if e["source"] == "var__Raw" and e["target"] == self.F_NODE]
+        var_to_fn = [
+            e for e in edges if e["source"] == "var__Raw" and e["target"] == self.F_NODE
+        ]
         assert len(var_to_fn) == 1
 
     def test_manual_edge_not_duplicated_if_already_in_db_edges(self):
@@ -570,8 +655,15 @@ class TestBuildEdges:
             fn_outputs={},
             const_fns={},
             path_inputs={},
-            manual_edges=[{"id": edge_id, "source": "var__Raw", "target": self.F_NODE,
-                           "sourceHandle": "", "targetHandle": "in__signal"}],
+            manual_edges=[
+                {
+                    "id": edge_id,
+                    "source": "var__Raw",
+                    "target": self.F_NODE,
+                    "sourceHandle": "",
+                    "targetHandle": "in__signal",
+                }
+            ],
             hidden_ids=set(),
         )
         matching = [e for e in edges if e["id"] == edge_id]
@@ -588,8 +680,11 @@ class TestBuildEdges:
             manual_edges=[],
             hidden_ids=set(),
         )
-        targets = {e["target"] for e in edges
-                   if e["source"] == "var__Raw" and e["target"].startswith("fn__f__")}
+        targets = {
+            e["target"]
+            for e in edges
+            if e["source"] == "var__Raw" and e["target"].startswith("fn__f__")
+        }
         assert targets == {f"fn__f__{cid_a}", f"fn__f__{cid_b}"}
 
 
@@ -597,12 +692,16 @@ class TestBuildEdges:
 # build_manual_node
 # ---------------------------------------------------------------------------
 
+
 class TestBuildManualNode:
     def test_variable_node(self):
         n = build_manual_node(
-            "uuid-1", {"type": "variableNode", "label": "MyVar", "config": None},
-            pending_constants={}, manual_fn_state=None,
-            resolved_input_params=None, resolved_output_types=None,
+            "uuid-1",
+            {"type": "variableNode", "label": "MyVar", "config": None},
+            pending_constants={},
+            manual_fn_state=None,
+            resolved_input_params=None,
+            resolved_output_types=None,
             matlab_functions=set(),
         )
         assert n["id"] == "uuid-1"
@@ -612,10 +711,13 @@ class TestBuildManualNode:
 
     def test_constant_node_with_pending(self):
         n = build_manual_node(
-            "uuid-2", {"type": "constantNode", "label": "hz", "config": None},
+            "uuid-2",
+            {"type": "constantNode", "label": "hz", "config": None},
             pending_constants={"hz": {"42"}},
-            manual_fn_state=None, resolved_input_params=None,
-            resolved_output_types=None, matlab_functions=set(),
+            manual_fn_state=None,
+            resolved_input_params=None,
+            resolved_output_types=None,
+            matlab_functions=set(),
         )
         assert n["type"] == "constantNode"
         vals = {v["value"] for v in n["data"]["values"]}
@@ -623,8 +725,10 @@ class TestBuildManualNode:
 
     def test_function_node(self):
         n = build_manual_node(
-            "uuid-3", {"type": "functionNode", "label": "my_fn", "config": None},
-            pending_constants={}, manual_fn_state="pending",
+            "uuid-3",
+            {"type": "functionNode", "label": "my_fn", "config": None},
+            pending_constants={},
+            manual_fn_state="pending",
             resolved_input_params={"signal": "Raw"},
             resolved_output_types=["Filtered"],
             matlab_functions=set(),
@@ -636,18 +740,24 @@ class TestBuildManualNode:
 
     def test_function_node_matlab_language(self):
         n = build_manual_node(
-            "uuid-4", {"type": "functionNode", "label": "my_fn", "config": None},
-            pending_constants={}, manual_fn_state="red",
-            resolved_input_params={}, resolved_output_types=[],
+            "uuid-4",
+            {"type": "functionNode", "label": "my_fn", "config": None},
+            pending_constants={},
+            manual_fn_state="red",
+            resolved_input_params={},
+            resolved_output_types=[],
             matlab_functions={"my_fn"},
         )
         assert n["data"]["language"] == "matlab"
 
     def test_path_input_node(self):
         n = build_manual_node(
-            "uuid-5", {"type": "pathInputNode", "label": "mypath", "config": None},
-            pending_constants={}, manual_fn_state=None,
-            resolved_input_params=None, resolved_output_types=None,
+            "uuid-5",
+            {"type": "pathInputNode", "label": "mypath", "config": None},
+            pending_constants={},
+            manual_fn_state=None,
+            resolved_input_params=None,
+            resolved_output_types=None,
             matlab_functions=set(),
         )
         assert n["type"] == "pathInputNode"
@@ -655,9 +765,12 @@ class TestBuildManualNode:
 
     def test_function_node_default_state_red(self):
         n = build_manual_node(
-            "uuid-6", {"type": "functionNode", "label": "fn", "config": None},
-            pending_constants={}, manual_fn_state=None,
-            resolved_input_params={}, resolved_output_types=[],
+            "uuid-6",
+            {"type": "functionNode", "label": "fn", "config": None},
+            pending_constants={},
+            manual_fn_state=None,
+            resolved_input_params={},
+            resolved_output_types=[],
             matlab_functions=set(),
         )
         assert n["data"]["run_state"] == "red"
@@ -666,6 +779,7 @@ class TestBuildManualNode:
 # ---------------------------------------------------------------------------
 # merge_manual_nodes
 # ---------------------------------------------------------------------------
+
 
 class TestMergeManualNodes:
     def _db_node(self, node_id, ntype, label):
@@ -736,6 +850,7 @@ class TestMergeManualNodes:
 # MATLAB param-name handles (Fix B)
 # ---------------------------------------------------------------------------
 
+
 class TestMatlabParamNameHandles:
     """Exercises the path where MATLAB param names differ from Variable class
     names (e.g. ``output1 → Result``), to prove the graph_builder uses the
@@ -746,18 +861,18 @@ class TestMatlabParamNameHandles:
     EX_NODE = f"fn__fn_ex__{EX_CID}"
 
     def _make_nodes(self, **overrides):
-        defaults = dict(
-            fn_input_params={self.EX_KEY: {}},
-            fn_outputs={self.EX_KEY: {"Result"}},
-            fn_constants={self.EX_KEY: set()},
-            fn_variants_map={self.EX_KEY: []},
-            fn_params_map={"fn_ex": []},
-            run_states={},
-            matlab_functions={"fn_ex"},
-            saved_configs={"fn_ex": None},
-            matlab_output_order={"fn_ex": ["output1"]},
-            matlab_param_to_class={"fn_ex": {"output1": "Result"}},
-        )
+        defaults = {
+            "fn_input_params": {self.EX_KEY: {}},
+            "fn_outputs": {self.EX_KEY: {"Result"}},
+            "fn_constants": {self.EX_KEY: set()},
+            "fn_variants_map": {self.EX_KEY: []},
+            "fn_params_map": {"fn_ex": []},
+            "run_states": {},
+            "matlab_functions": {"fn_ex"},
+            "saved_configs": {"fn_ex": None},
+            "matlab_output_order": {"fn_ex": ["output1"]},
+            "matlab_param_to_class": {"fn_ex": {"output1": "Result"}},
+        }
         defaults.update(overrides)
         return build_function_nodes(**defaults)
 
@@ -793,11 +908,13 @@ class TestMatlabParamNameHandles:
             matlab_functions={"load_csv"},
             saved_configs={"load_csv": None},
             matlab_output_order={"load_csv": ["time", "force_left", "force_right"]},
-            matlab_param_to_class={"load_csv": {
-                "time": "Time",
-                "force_left": "Force_Left",
-                "force_right": "Force_Right",
-            }},
+            matlab_param_to_class={
+                "load_csv": {
+                    "time": "Time",
+                    "force_left": "Force_Left",
+                    "force_right": "Force_Right",
+                }
+            },
         )
         assert nodes[0]["data"]["output_types"] == ["time", "force_left", "force_right"]
 
@@ -874,11 +991,13 @@ class TestWiringId:
 class TestGroupCallSitesByWiring:
     def test_same_wiring_groups_to_one_key(self):
         agg, a, b = _two_site_agg()
-        states = {fn_node_id(*a): "green", fn_node_id(*b): "red",
-                  "var__Filtered": "red"}
+        states = {
+            fn_node_id(*a): "green",
+            fn_node_id(*b): "red",
+            "var__Filtered": "red",
+        }
 
-        grouped, node_states, member_map = group_call_sites_by_wiring(
-            agg, states)
+        grouped, node_states, member_map = group_call_sites_by_wiring(agg, states)
 
         wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
         gkey = ("bp", wid)
@@ -895,7 +1014,9 @@ class TestGroupCallSitesByWiring:
         assert grouped.const_fns["low_hz"] == {gkey}
         # member map records both legacy ids.
         assert set(member_map[fn_node_id("bp", wid)]) == {
-            fn_node_id(*a), fn_node_id(*b)}
+            fn_node_id(*a),
+            fn_node_id(*b),
+        }
 
     def test_different_wiring_stays_separate(self):
         agg = AggregatedData()
@@ -915,13 +1036,15 @@ class TestGroupCallSitesByWiring:
         states = {fn_node_id(*a): "green", fn_node_id(*b): "green"}
 
         grouped, node_states, _ = group_call_sites_by_wiring(
-            agg, states, pending_constants={"low_hz": {"99"}})
+            agg, states, pending_constants={"low_hz": {"99"}}
+        )
 
         wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
         rows = grouped.fn_variants_map[("bp", wid)]
         staged = [r for r in rows if r.get("staged")]
-        assert staged == [{"constants": {"low_hz": "99"},
-                           "state": "pending", "staged": True}]
+        assert staged == [
+            {"constants": {"low_hz": "99"}, "state": "pending", "staged": True}
+        ]
         # A green group with a staged value downgrades to pending, not red.
         assert node_states[fn_node_id("bp", wid)] == "pending"
 
@@ -933,13 +1056,13 @@ class TestLegacyMigrationHelpers:
 
     def test_first_member_position_adopted_others_dropped(self):
         member_map = {self.GROUP: [self.LEGACY_A, self.LEGACY_B]}
-        positions = {"main": {self.LEGACY_A: {"x": 1, "y": 2},
-                              self.LEGACY_B: {"x": 3, "y": 4}}}
+        positions = {
+            "main": {self.LEGACY_A: {"x": 1, "y": 2}, self.LEGACY_B: {"x": 3, "y": 4}}
+        }
 
         adoptions, drops = legacy_position_adoptions(member_map, positions)
 
-        assert adoptions == [{"new_id": self.GROUP, "scope": "main",
-                              "x": 1, "y": 2}]
+        assert adoptions == [{"new_id": self.GROUP, "scope": "main", "x": 1, "y": 2}]
         assert set(drops) == {self.LEGACY_A, self.LEGACY_B}
 
     def test_scope_of_adopted_position_is_kept(self):
@@ -952,8 +1075,9 @@ class TestLegacyMigrationHelpers:
 
     def test_already_placed_group_only_drops_legacy_keys(self):
         member_map = {self.GROUP: [self.LEGACY_A]}
-        positions = {"main": {self.GROUP: {"x": 9, "y": 9},
-                              self.LEGACY_A: {"x": 1, "y": 2}}}
+        positions = {
+            "main": {self.GROUP: {"x": 9, "y": 9}, self.LEGACY_A: {"x": 1, "y": 2}}
+        }
 
         adoptions, drops = legacy_position_adoptions(member_map, positions)
 

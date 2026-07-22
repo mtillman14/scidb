@@ -3,7 +3,6 @@
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -17,17 +16,25 @@ sys.path.insert(0, str(_root / "path-gen" / "src"))
 sys.path.insert(0, str(_root / "sciduckdb" / "src"))
 
 from httpx import ASGITransport
-from scidb.variable import BaseVariable
 from scidb.database import _local
-from scilineage import _clear_backend
-from scidbnet.server import create_app
+from scidb.variable import BaseVariable
 from scidbnet.client import RemoteDatabaseManager
+from scidbnet.server import create_app
 
+from scilineage import _clear_backend
 
 # Schema keys used across all tests
 TEST_SCHEMA_KEYS = [
-    "subject", "trial", "session", "channel", "experiment",
-    "name", "sensor", "condition", "category", "key",
+    "subject",
+    "trial",
+    "session",
+    "channel",
+    "experiment",
+    "name",
+    "sensor",
+    "condition",
+    "category",
+    "key",
 ]
 
 
@@ -35,23 +42,28 @@ TEST_SCHEMA_KEYS = [
 # Test variable classes
 # -------------------------------------------------------------------------
 
+
 class ScalarVar(BaseVariable):
     """Simple scalar — native SciDuck storage."""
+
     schema_version = 1
 
 
 class ArrayVar(BaseVariable):
     """1-D numpy array — native SciDuck storage."""
+
     schema_version = 1
 
 
 class MatrixVar(BaseVariable):
     """2-D numpy array — native SciDuck storage."""
+
     schema_version = 1
 
 
 class DFVar(BaseVariable):
     """DataFrame with custom serialization."""
+
     schema_version = 1
 
     def to_db(self) -> pd.DataFrame:
@@ -65,6 +77,7 @@ class DFVar(BaseVariable):
 # -------------------------------------------------------------------------
 # Fixtures
 # -------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _clear_global_state():
@@ -95,6 +108,7 @@ def client(server_app):
     """RemoteDatabaseManager wired to the test app via ASGI transport."""
     transport = ASGITransport(app=server_app)
     import httpx
+
     http_client = httpx.Client(transport=transport, base_url="http://testserver")
     rdb = RemoteDatabaseManager.__new__(RemoteDatabaseManager)
     rdb.base_url = "http://testserver"

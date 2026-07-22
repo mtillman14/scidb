@@ -49,11 +49,11 @@ def merge_to_dataframe(
     import pandas as pd
 
     from .foreach import (
-        _resolve_data_spec,
-        _apply_where_filter,
         _all_data_columns,
         _apply_exclusions,
+        _apply_where_filter,
         _excluded_columns,
+        _resolve_data_spec,
     )
     from .schema import get_schema
 
@@ -66,7 +66,7 @@ def merge_to_dataframe(
     schema_keys = get_schema()
     _log(f"merge: schema keys = {schema_keys or '(unset)'}")
 
-    parts: list[tuple[str, "pd.DataFrame"]] = []
+    parts: list[tuple[str, pd.DataFrame]] = []
     for i, spec in enumerate(merge.tables):
         label = f"merge[{i}]"
 
@@ -149,14 +149,17 @@ def export_merge_csv(
     df = merge_to_dataframe(merge, where=where, verbose=verbose, **metadata)
 
     _write_log = Log.info if verbose else Log.debug
-    _write_log("to_csv: writing %d row(s) x %d col(s) to %r",
-               df.shape[0], df.shape[1], filename, layer="scifor")
+    _write_log(
+        "to_csv: writing %d row(s) x %d col(s) to %r",
+        df.shape[0],
+        df.shape[1],
+        filename,
+        layer="scifor",
+    )
     df.to_csv(filename, index=False)
 
 
-def _filter_rows_by_metadata(
-    df: "Any", metadata: dict
-) -> "Any":
+def _filter_rows_by_metadata(df: "Any", metadata: dict) -> "Any":
     """Filter df rows by metadata for any matching column (scalar or list).
 
     Mirrors ``_filter_df_for_combo`` but accepts list/tuple/set values (matched

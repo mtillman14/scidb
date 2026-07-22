@@ -58,7 +58,7 @@ class QueryInterface:
             DataFrame with column names and types
         """
         rows = self.db._duck._fetchall(
-            f"""
+            """
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_name = ?
@@ -67,10 +67,9 @@ class QueryInterface:
             [table_name],
         )
 
-        return pd.DataFrame({
-            "column": [row[0] for row in rows],
-            "dtype": [row[1] for row in rows]
-        })
+        return pd.DataFrame(
+            {"column": [row[0] for row in rows], "dtype": [row[1] for row in rows]}
+        )
 
     def query(self, sql: str) -> pd.DataFrame:
         """

@@ -35,6 +35,7 @@ EMBED_SIZE_CAP = 2 * 1024 * 1024
 # Manifest dataclasses (ReportData is what --json emits)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FigureEntry:
     record_id: str
@@ -44,7 +45,7 @@ class FigureEntry:
     branch_params: dict
     artifact_path: str
     artifact_exists: bool
-    stamp_ok: bool | None      # None = no stamp found; False = record mismatch (STALE)
+    stamp_ok: bool | None  # None = no stamp found; False = record mismatch (STALE)
     timestamp: str | None
 
 
@@ -55,7 +56,7 @@ class StatEntry:
     variable: str
     schema: dict
     branch_params: dict
-    result: Any                # parsed JSON dict, or the raw string if unparseable
+    result: Any  # parsed JSON dict, or the raw string if unparseable
     result_parsed: bool
     report_path: str | None
     report_exists: bool | None
@@ -76,8 +77,13 @@ class ReportData:
 # Discovery
 # ---------------------------------------------------------------------------
 
-def collect_report(inspector, fn: str | None = None, variable: str | None = None,
-                   all_versions: bool = False) -> ReportData:
+
+def collect_report(
+    inspector,
+    fn: str | None = None,
+    variable: str | None = None,
+    all_versions: bool = False,
+) -> ReportData:
     """Collect every finalized endpoint record into a ReportData manifest.
 
     fn / variable narrow to one producing function / one output type.
@@ -97,9 +103,11 @@ def collect_report(inspector, fn: str | None = None, variable: str | None = None
     # outputs have a NULL schema_id and MUST still appear (the same trap the
     # skip gate hit in stage 2).
     schema_cols = "".join(f', s."{k}"' for k in schema_keys)
-    conds = ["(inv.function_name LIKE 'plot\\_%' ESCAPE '\\' "
-             "OR inv.function_name LIKE 'stat\\_%' ESCAPE '\\')",
-             "COALESCE(r.excluded, FALSE) = FALSE"]
+    conds = [
+        "(inv.function_name LIKE 'plot\\_%' ESCAPE '\\' "
+        "OR inv.function_name LIKE 'stat\\_%' ESCAPE '\\')",
+        "COALESCE(r.excluded, FALSE) = FALSE",
+    ]
     params: list = []
     if fn:
         conds.append("inv.function_name = ?")
@@ -131,11 +139,11 @@ def collect_report(inspector, fn: str | None = None, variable: str | None = None
     # Latest-per-variant collapse: records() / _find_record already implement
     # the authoritative rule per type; intersect with the endpoint rid set.
     seen_rids: set = set()
-    entries: list = []   # (rid, fn_name, type_name, timestamp, schema_dict)
+    entries: list = []  # (rid, fn_name, type_name, timestamp, schema_dict)
     for row in rows:
         rid, fn_name, type_name, ts = str(row[0]), str(row[1]), str(row[2]), row[3]
         if rid in seen_rids:
-            continue   # multiple _record_save rows: keep newest (ORDER BY)
+            continue  # multiple _record_save rows: keep newest (ORDER BY)
         seen_rids.add(rid)
         schema = {}
         for i, k in enumerate(schema_keys):
@@ -151,11 +159,13 @@ def collect_report(inspector, fn: str | None = None, variable: str | None = None
                 df = db._find_record(
                     type_name,
                     nested_metadata=db._split_metadata({}),
-                    version_id="latest")
+                    version_id="latest",
+                )
                 latest_rids |= {str(r) for r in df["record_id"]}
             except Exception as e:
                 data.warnings.append(
-                    f"latest-version collapse unavailable for {type_name}: {e}")
+                    f"latest-version collapse unavailable for {type_name}: {e}"
+                )
                 latest_rids |= {e2[0] for e2 in entries if e2[2] == type_name}
         entries = [e for e in entries if e[0] in latest_rids]
 
@@ -181,17 +191,27 @@ def collect_report(inspector, fn: str | None = None, variable: str | None = None
             if not exists:
                 data.warnings.append(
                     f"figure file not found: {apath or '<empty path>'} "
-                    f"(record {rid[:12]}, {fn_name})")
+                    f"(record {rid[:12]}, {fn_name})"
+                )
             elif stamp_ok is False:
                 data.warnings.append(
                     f"STALE ARTIFACT: {apath} carries a different record's "
                     f"stamp — the file was overwritten by another run since "
-                    f"record {rid[:12]} ({fn_name}) was saved")
-            data.figures.append(FigureEntry(
-                record_id=rid, fn=fn_name, variable=type_name, schema=schema,
-                branch_params=bp, artifact_path=apath, artifact_exists=exists,
-                stamp_ok=stamp_ok, timestamp=ts_str,
-            ))
+                    f"record {rid[:12]} ({fn_name}) was saved"
+                )
+            data.figures.append(
+                FigureEntry(
+                    record_id=rid,
+                    fn=fn_name,
+                    variable=type_name,
+                    schema=schema,
+                    branch_params=bp,
+                    artifact_path=apath,
+                    artifact_exists=exists,
+                    stamp_ok=stamp_ok,
+                    timestamp=ts_str,
+                )
+            )
         else:
             parsed: Any = value
             ok = False
@@ -204,21 +224,34 @@ def collect_report(inspector, fn: str | None = None, variable: str | None = None
             if not ok:
                 data.warnings.append(
                     f"stat result is not a JSON object (record {rid[:12]}, "
-                    f"{fn_name}) — rendered raw")
+                    f"{fn_name}) — rendered raw"
+                )
             rp = parsed.get("report_path") if ok else None
             rp_exists = Path(rp).is_file() if rp else None
             if rp and not rp_exists:
                 data.warnings.append(
-                    f"stat report file not found: {rp} (record {rid[:12]})")
-            data.stats.append(StatEntry(
-                record_id=rid, fn=fn_name, variable=type_name, schema=schema,
-                branch_params=bp, result=parsed, result_parsed=ok,
-                report_path=rp, report_exists=rp_exists, timestamp=ts_str,
-            ))
+                    f"stat report file not found: {rp} (record {rid[:12]})"
+                )
+            data.stats.append(
+                StatEntry(
+                    record_id=rid,
+                    fn=fn_name,
+                    variable=type_name,
+                    schema=schema,
+                    branch_params=bp,
+                    result=parsed,
+                    result_parsed=ok,
+                    report_path=rp,
+                    report_exists=rp_exists,
+                    timestamp=ts_str,
+                )
+            )
 
-    Log.info(f"[report] collected {len(data.figures)} figure(s), "
-             f"{len(data.stats)} stat(s), {len(data.warnings)} warning(s) "
-             f"from {data.db_name}")
+    Log.info(
+        f"[report] collected {len(data.figures)} figure(s), "
+        f"{len(data.stats)} stat(s), {len(data.warnings)} warning(s) "
+        f"from {data.db_name}"
+    )
     return data
 
 
@@ -231,7 +264,8 @@ def _stored_values(inspector, entries) -> dict:
     for type_name, rids in by_type.items():
         table = inspector._scalar(
             "SELECT table_name FROM _registered_types WHERE type_name = ?",
-            [type_name], default=type_name,
+            [type_name],
+            default=type_name,
         )
         if not inspector._duck._table_exists(table):
             continue
@@ -258,29 +292,43 @@ def _stored_values(inspector, entries) -> dict:
 # Writers
 # ---------------------------------------------------------------------------
 
-def write_report(inspector, out_dir: str | Path, fn: str | None = None,
-                 variable: str | None = None, all_versions: bool = False,
-                 copy_artifacts: bool = True, embed: bool = True) -> Path:
+
+def write_report(
+    inspector,
+    out_dir: str | Path,
+    fn: str | None = None,
+    variable: str | None = None,
+    all_versions: bool = False,
+    copy_artifacts: bool = True,
+    embed: bool = True,
+) -> Path:
     """Write index.html + manifest.json + stats.csv (+ artifacts/ copies).
 
     Returns the path to index.html. Missing/stale artifacts render their
     metadata with a warning banner rather than failing the report.
     """
-    data = collect_report(inspector, fn=fn, variable=variable,
-                          all_versions=all_versions)
+    data = collect_report(
+        inspector, fn=fn, variable=variable, all_versions=all_versions
+    )
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     # Copy artifacts (record_id-prefixed: collision-proof, portable folder).
     art_dir = out / "artifacts"
-    local_paths: dict = {}   # record_id -> relative path within out/
+    local_paths: dict = {}  # record_id -> relative path within out/
     if copy_artifacts:
         art_dir.mkdir(exist_ok=True)
         for entry in list(data.figures) + list(data.stats):
-            src = (entry.artifact_path if isinstance(entry, FigureEntry)
-                   else entry.report_path)
-            src_exists = (entry.artifact_exists if isinstance(entry, FigureEntry)
-                          else entry.report_exists)
+            src = (
+                entry.artifact_path
+                if isinstance(entry, FigureEntry)
+                else entry.report_path
+            )
+            src_exists = (
+                entry.artifact_exists
+                if isinstance(entry, FigureEntry)
+                else entry.report_exists
+            )
             if not src or not src_exists:
                 continue
             dest = art_dir / f"{entry.record_id[:12]}_{Path(src).name}"
@@ -290,13 +338,14 @@ def write_report(inspector, out_dir: str | Path, fn: str | None = None,
             except OSError as e:
                 data.warnings.append(f"could not copy {src}: {e}")
 
-    (out / "manifest.json").write_text(
-        json.dumps(asdict(data), indent=2, default=str))
+    (out / "manifest.json").write_text(json.dumps(asdict(data), indent=2, default=str))
     _write_stats_csv(data, out / "stats.csv")
     index = out / "index.html"
     index.write_text(_render_html(data, local_paths, embed=embed))
-    Log.info(f"[report] wrote {index} ({len(data.figures)} figure(s), "
-             f"{len(data.stats)} stat(s))")
+    Log.info(
+        f"[report] wrote {index} ({len(data.figures)} figure(s), "
+        f"{len(data.stats)} stat(s))"
+    )
     return index
 
 
@@ -307,8 +356,11 @@ def _write_stats_csv(data: ReportData, path: Path) -> None:
 
     rows = []
     for e in data.stats:
-        row: dict = {"test_family": e.fn, "variable": e.variable,
-                     "record_id": e.record_id}
+        row: dict = {
+            "test_family": e.fn,
+            "variable": e.variable,
+            "record_id": e.record_id,
+        }
         for k, v in e.schema.items():
             row[k] = v
         for k, v in sorted(e.branch_params.items()):
@@ -356,11 +408,11 @@ def _esc(v) -> str:
 def _identity_caption(entry) -> str:
     parts = []
     if entry.schema:
-        parts.append(", ".join(f"{_esc(k)}={_esc(v)}"
-                               for k, v in entry.schema.items()))
+        parts.append(", ".join(f"{_esc(k)}={_esc(v)}" for k, v in entry.schema.items()))
     if entry.branch_params:
-        bp = ", ".join(f"{_esc(k)}={_esc(v)}"
-                       for k, v in sorted(entry.branch_params.items()))
+        bp = ", ".join(
+            f"{_esc(k)}={_esc(v)}" for k, v in sorted(entry.branch_params.items())
+        )
         parts.append(f'<span class="bp">{bp}</span>')
     parts.append(f'<span class="rid">record {_esc(entry.record_id[:12])}</span>')
     return " · ".join(parts)
@@ -369,13 +421,17 @@ def _identity_caption(entry) -> str:
 def _figure_html(e: FigureEntry, local_paths: dict, embed: bool) -> str:
     body = ""
     if not e.artifact_exists:
-        body = (f'<div class="warn">figure file not found at '
-                f'<code>{_esc(e.artifact_path)}</code></div>')
+        body = (
+            f'<div class="warn">figure file not found at '
+            f"<code>{_esc(e.artifact_path)}</code></div>"
+        )
     else:
         if e.stamp_ok is False:
-            body += ('<div class="warn stale">STALE: this file carries a '
-                     'different record&#39;s provenance stamp — it was '
-                     'overwritten by another run</div>')
+            body += (
+                '<div class="warn stale">STALE: this file carries a '
+                "different record&#39;s provenance stamp — it was "
+                "overwritten by another run</div>"
+            )
         src = local_paths.get(e.record_id, e.artifact_path)
         suffix = Path(e.artifact_path).suffix.lower()
         size = Path(e.artifact_path).stat().st_size
@@ -387,10 +443,11 @@ def _figure_html(e: FigureEntry, local_paths: dict, embed: bool) -> str:
         elif suffix in (".png", ".svg", ".jpg", ".jpeg"):
             body += f'<img src="{_esc(src)}" alt="{_esc(e.fn)}">'
         else:
-            body += (f'<a href="{_esc(src)}">{_esc(Path(e.artifact_path).name)}'
-                     f'</a> ({suffix or "file"})')
-    return (f"<figure>{body}<figcaption>{_identity_caption(e)}"
-            f"</figcaption></figure>")
+            body += (
+                f'<a href="{_esc(src)}">{_esc(Path(e.artifact_path).name)}'
+                f"</a> ({suffix or 'file'})"
+            )
+    return f"<figure>{body}<figcaption>{_identity_caption(e)}</figcaption></figure>"
 
 
 def _stats_family_html(fn_name: str, entries: list) -> str:
@@ -398,9 +455,17 @@ def _stats_family_html(fn_name: str, entries: list) -> str:
     consistent with D5's no-universal-schema decision."""
     families: dict = {}
     for e in entries:
-        keys = (tuple(sorted(k for k, v in e.result.items()
-                             if isinstance(v, (int, float, str, bool))))
-                if e.result_parsed else ("<raw>",))
+        keys = (
+            tuple(
+                sorted(
+                    k
+                    for k, v in e.result.items()
+                    if isinstance(v, (int, float, str, bool))
+                )
+            )
+            if e.result_parsed
+            else ("<raw>",)
+        )
         families.setdefault(keys, []).append(e)
 
     chunks = [f"<h3>{_esc(fn_name)}</h3>"]
@@ -409,14 +474,16 @@ def _stats_family_html(fn_name: str, entries: list) -> str:
             for e in group:
                 chunks.append(
                     f'<div class="warn">unparseable result for record '
-                    f'{_esc(e.record_id[:12])}</div><details><summary>raw'
-                    f'</summary><pre>{_esc(e.result)}</pre></details>')
+                    f"{_esc(e.record_id[:12])}</div><details><summary>raw"
+                    f"</summary><pre>{_esc(e.result)}</pre></details>"
+                )
             continue
         schema_cols = sorted({k for e in group for k in e.schema})
         bp_cols = sorted({k for e in group for k in e.branch_params})
         scalar_cols = [k for k in keys if k != "report_path"]
-        header = "".join(f"<th>{_esc(c)}</th>"
-                         for c in schema_cols + bp_cols + scalar_cols)
+        header = "".join(
+            f"<th>{_esc(c)}</th>" for c in schema_cols + bp_cols + scalar_cols
+        )
         rows_html = []
         for e in group:
             cells = [e.schema.get(c, "") for c in schema_cols]
@@ -424,16 +491,19 @@ def _stats_family_html(fn_name: str, entries: list) -> str:
             cells += [e.result.get(c, "") for c in scalar_cols]
             row = "".join(f"<td>{_esc(c)}</td>" for c in cells)
             rows_html.append(f"<tr>{row}</tr>")
-            nested = {k: v for k, v in e.result.items()
-                      if not isinstance(v, (int, float, str, bool))
-                      and v is not None}
+            nested = {
+                k: v
+                for k, v in e.result.items()
+                if not isinstance(v, (int, float, str, bool)) and v is not None
+            }
             if nested:
                 pretty = _esc(json.dumps(nested, indent=2, default=str))
                 rows_html.append(
                     f'<tr><td colspan="{len(cells)}"><details>'
-                    f'<summary>nested fields (record '
-                    f'{_esc(e.record_id[:12])})</summary>'
-                    f'<pre>{pretty}</pre></details></td></tr>')
+                    f"<summary>nested fields (record "
+                    f"{_esc(e.record_id[:12])})</summary>"
+                    f"<pre>{pretty}</pre></details></td></tr>"
+                )
         chunks.append(f"<table><tr>{header}</tr>{''.join(rows_html)}</table>")
     return "\n".join(chunks)
 
@@ -447,18 +517,20 @@ def _render_html(data: ReportData, local_paths: dict, embed: bool) -> str:
         + f" · {len(data.figures)} figure(s), {len(data.stats)} stat result(s)."
         f" Drafts (finalized=False) leave no records and do not appear.</p>"
     )
-    warn_html = "".join(f'<div class="warn">{_esc(w)}</div>'
-                        for w in data.warnings)
+    warn_html = "".join(f'<div class="warn">{_esc(w)}</div>' for w in data.warnings)
 
     fig_chunks = []
     by_fn: dict = {}
     for e in data.figures:
         by_fn.setdefault(e.fn, []).append(e)
     for fn_name in sorted(by_fn):
-        group = sorted(by_fn[fn_name],
-                       key=lambda e: (tuple(sorted(e.schema.items())),
-                                      tuple(sorted(str(i) for i in
-                                                   e.branch_params.items()))))
+        group = sorted(
+            by_fn[fn_name],
+            key=lambda e: (
+                tuple(sorted(e.schema.items())),
+                tuple(sorted(str(i) for i in e.branch_params.items())),
+            ),
+        )
         fig_chunks.append(f"<h3>{_esc(fn_name)}</h3>")
         fig_chunks.extend(_figure_html(e, local_paths, embed) for e in group)
 
@@ -473,11 +545,15 @@ def _render_html(data: ReportData, local_paths: dict, embed: bool) -> str:
         "<!DOCTYPE html>\n<html><head><meta charset='utf-8'>"
         f"<title>scidb report — {_esc(data.db_name)}</title>"
         f"<style>{_CSS}</style></head><body>"
-        + head + warn_html
+        + head
+        + warn_html
         + ("<h2>Figures</h2>" + "".join(fig_chunks) if fig_chunks else "")
         + ("<h2>Statistics</h2>" + "".join(stat_chunks) if stat_chunks else "")
-        + ("<p class='meta'>No endpoint records found. Endpoint functions "
-           "(plot_*/stat_*) must run with finalized=True to record.</p>"
-           if not fig_chunks and not stat_chunks else "")
+        + (
+            "<p class='meta'>No endpoint records found. Endpoint functions "
+            "(plot_*/stat_*) must run with finalized=True to record.</p>"
+            if not fig_chunks and not stat_chunks
+            else ""
+        )
         + "</body></html>"
     )

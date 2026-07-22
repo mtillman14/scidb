@@ -5,11 +5,10 @@ keeps one copy of those columns, and writes one flat CSV. Non-schema columns
 are assumed not to overlap.
 """
 
-import pytest
 import pandas as pd
+import pytest
 
-import scifor
-from scifor import set_schema, Merge, ColumnSelection, Col
+from scifor import Col, ColumnSelection, Merge, set_schema
 
 
 def setup_function():
@@ -24,6 +23,7 @@ def _read(path):
 # ---------------------------------------------------------------------------
 # Basic inner join
 # ---------------------------------------------------------------------------
+
 
 def test_two_dataframes_inner_join_one_copy_of_schema(tmp_path):
     """Two constituents sharing a schema col → inner join, single schema copy."""
@@ -59,7 +59,7 @@ def test_inner_join_drops_non_matching_rows(tmp_path):
     Merge(step, speed).to_csv(str(out))
 
     df = _read(out)
-    keys = set(zip(df.subject, df.trial))
+    keys = set(zip(df.subject, df.trial, strict=False))
     assert keys == {(1, 1), (2, 1)}  # only the intersection
 
 
@@ -82,6 +82,7 @@ def test_partial_schema_overlap_joins_on_common_keys(tmp_path):
 # ---------------------------------------------------------------------------
 # Filtering
 # ---------------------------------------------------------------------------
+
 
 def test_where_filter(tmp_path):
     """where= filters constituent rows before the join."""
@@ -136,6 +137,7 @@ def test_metadata_list_filter(tmp_path):
 # ColumnSelection constituents
 # ---------------------------------------------------------------------------
 
+
 def test_column_selection_keeps_join_keys(tmp_path):
     """A ColumnSelection picks a subset of data cols but still joins on schema."""
     set_schema(["subject", "trial"])
@@ -147,9 +149,7 @@ def test_column_selection_keeps_join_keys(tmp_path):
             "Cadence": [100, 110],
         }
     )
-    speed = pd.DataFrame(
-        {"subject": [1, 1], "trial": [1, 2], "Speed": [1.1, 1.2]}
-    )
+    speed = pd.DataFrame({"subject": [1, 1], "trial": [1, 2], "Speed": [1.1, 1.2]})
     out = tmp_path / "sel.csv"
     Merge(ColumnSelection(gait, ["StepLength"]), speed).to_csv(str(out))
 
@@ -162,6 +162,7 @@ def test_column_selection_keeps_join_keys(tmp_path):
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
+
 
 def test_non_csv_filename_rejected(tmp_path):
     set_schema(["subject"])

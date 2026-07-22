@@ -15,20 +15,23 @@ import numpy as np
 from scidb import BaseVariable, scistack
 from scihist import for_each
 
-
 # --- Variable classes for testing ---
+
 
 class RawSignal(BaseVariable):
     """Raw input data."""
+
     schema_version = 1
 
 
 class Figure(BaseVariable):
     """Represents a generated file (plot, report, etc.)."""
+
     schema_version = 1
 
 
 # --- for_each integration tests ---
+
 
 class TestForEachIntegration:
     """Tests for_each with generates_file functions."""

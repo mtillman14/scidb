@@ -1,8 +1,5 @@
 """End-to-end integration tests for SciDuck."""
 
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -30,6 +27,7 @@ def file_duck(tmp_path):
 # ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
+
 
 class TestInit:
     """Test SciDuck initialization."""
@@ -79,6 +77,7 @@ class TestInit:
 # ---------------------------------------------------------------------------
 # Save / Load — Mode B (single entry via kwargs)
 # ---------------------------------------------------------------------------
+
 
 class TestSaveLoadModeB:
     """Test save/load with single entry via schema kwargs."""
@@ -157,17 +156,20 @@ class TestSaveLoadModeB:
 # Save / Load — Mode A (DataFrame with schema columns)
 # ---------------------------------------------------------------------------
 
+
 class TestSaveLoadModeA:
     """Test save/load with DataFrame containing schema columns."""
 
     def test_save_dataframe_with_schema_columns(self, duck):
         """Save a DataFrame that has subject/session/trial columns."""
-        df = pd.DataFrame({
-            "subject": ["S01", "S01", "S02", "S02"],
-            "session": ["A", "A", "A", "A"],
-            "trial": ["1", "2", "1", "2"],
-            "value": [10, 20, 30, 40],
-        })
+        df = pd.DataFrame(
+            {
+                "subject": ["S01", "S01", "S02", "S02"],
+                "session": ["A", "A", "A", "A"],
+                "trial": ["1", "2", "1", "2"],
+                "value": [10, 20, 30, 40],
+            }
+        )
         duck.save("df_var", df)
 
         # Load specific entry
@@ -176,13 +178,15 @@ class TestSaveLoadModeA:
 
     def test_save_multi_column_dataframe(self, duck):
         """Save DataFrame with multiple data columns."""
-        df = pd.DataFrame({
-            "subject": ["S01", "S02"],
-            "session": ["A", "A"],
-            "trial": ["1", "1"],
-            "x": [1.0, 2.0],
-            "y": [3.0, 4.0],
-        })
+        df = pd.DataFrame(
+            {
+                "subject": ["S01", "S02"],
+                "session": ["A", "A"],
+                "trial": ["1", "1"],
+                "x": [1.0, 2.0],
+                "y": [3.0, 4.0],
+            }
+        )
         duck.save("multi_col", df)
 
         loaded_df = duck.load("multi_col", raw=False)
@@ -195,6 +199,7 @@ class TestSaveLoadModeA:
 # Per-column storage: DataFrames as data, dicts (flat & nested)
 # ---------------------------------------------------------------------------
 
+
 class TestPerColumnStorage:
     """Test that DataFrames and dicts are stored as native DuckDB columns."""
 
@@ -202,18 +207,24 @@ class TestPerColumnStorage:
 
     def test_dataframe_data_roundtrip(self, duck):
         """A pd.DataFrame saved as Mode B data should load back as a DataFrame."""
-        original = pd.DataFrame({
-            "force": [1.0, 2.0, 3.0],
-            "velocity": [4.0, 5.0, 6.0],
-            "label": ["a", "b", "c"],
-        })
+        original = pd.DataFrame(
+            {
+                "force": [1.0, 2.0, 3.0],
+                "velocity": [4.0, 5.0, 6.0],
+                "label": ["a", "b", "c"],
+            }
+        )
         duck.save("gait_data", original, subject="S01", session="A", trial="1")
         loaded = duck.load("gait_data", subject="S01", session="A", trial="1")
 
         assert isinstance(loaded, pd.DataFrame)
         assert list(loaded.columns) == ["force", "velocity", "label"]
-        np.testing.assert_array_almost_equal(loaded["force"].to_numpy(), [1.0, 2.0, 3.0])
-        np.testing.assert_array_almost_equal(loaded["velocity"].to_numpy(), [4.0, 5.0, 6.0])
+        np.testing.assert_array_almost_equal(
+            loaded["force"].to_numpy(), [1.0, 2.0, 3.0]
+        )
+        np.testing.assert_array_almost_equal(
+            loaded["velocity"].to_numpy(), [4.0, 5.0, 6.0]
+        )
         assert list(loaded["label"]) == ["a", "b", "c"]
 
     def test_dataframe_stored_as_separate_columns(self, duck):
@@ -223,7 +234,8 @@ class TestPerColumnStorage:
 
         # Check the actual DuckDB table columns
         cols = [
-            row[0] for row in duck._fetchall(
+            row[0]
+            for row in duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'df_cols' ORDER BY ordinal_position"
             )
@@ -249,7 +261,8 @@ class TestPerColumnStorage:
 
         # Verify per-column layout in DuckDB
         cols = [
-            row[0] for row in duck._fetchall(
+            row[0]
+            for row in duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'params' ORDER BY ordinal_position"
             )
@@ -267,7 +280,8 @@ class TestPerColumnStorage:
         duck.save("mixed_dict", original, subject="S01", session="A", trial="1")
 
         cols = [
-            row[0] for row in duck._fetchall(
+            row[0]
+            for row in duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'mixed_dict' ORDER BY ordinal_position"
             )
@@ -309,7 +323,8 @@ class TestPerColumnStorage:
 
         # Verify per-column layout in DuckDB
         cols = [
-            row[0] for row in duck._fetchall(
+            row[0]
+            for row in duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'columnar' ORDER BY ordinal_position"
             )
@@ -338,7 +353,8 @@ class TestPerColumnStorage:
 
         # Verify per-column layout
         cols = [
-            row[0] for row in duck._fetchall(
+            row[0]
+            for row in duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'matlab_struct' ORDER BY ordinal_position"
             )
@@ -360,7 +376,8 @@ class TestPerColumnStorage:
         duck.save("nested_cols", original, subject="S01", session="A", trial="1")
 
         cols = [
-            row[0] for row in duck._fetchall(
+            row[0]
+            for row in duck._fetchall(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'nested_cols' ORDER BY ordinal_position"
             )
@@ -373,6 +390,7 @@ class TestPerColumnStorage:
 # ---------------------------------------------------------------------------
 # DuckDB storage type verification
 # ---------------------------------------------------------------------------
+
 
 def _col_types(duck, table_name):
     """Return {col_name: data_type} for a DuckDB table, excluding schema_id."""
@@ -529,10 +547,12 @@ class TestDataFrameDuckDBTypes:
 
     def test_float_columns(self, duck):
         """DataFrame float columns → DOUBLE (one row per DataFrame row)."""
-        original = pd.DataFrame({
-            "force": [1.0, 2.0, 3.0],
-            "velocity": [4.0, 5.0, 6.0],
-        })
+        original = pd.DataFrame(
+            {
+                "force": [1.0, 2.0, 3.0],
+                "velocity": [4.0, 5.0, 6.0],
+            }
+        )
         duck.save("df_float", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_float")
@@ -541,15 +561,21 @@ class TestDataFrameDuckDBTypes:
 
         loaded = duck.load("df_float", subject="S01", session="A", trial="1")
         assert isinstance(loaded, pd.DataFrame)
-        np.testing.assert_array_almost_equal(loaded["force"].to_numpy(), [1.0, 2.0, 3.0])
-        np.testing.assert_array_almost_equal(loaded["velocity"].to_numpy(), [4.0, 5.0, 6.0])
+        np.testing.assert_array_almost_equal(
+            loaded["force"].to_numpy(), [1.0, 2.0, 3.0]
+        )
+        np.testing.assert_array_almost_equal(
+            loaded["velocity"].to_numpy(), [4.0, 5.0, 6.0]
+        )
 
     def test_int_columns(self, duck):
         """DataFrame int columns → BIGINT (one row per DataFrame row)."""
-        original = pd.DataFrame({
-            "ids": [10, 20, 30],
-            "counts": [1, 2, 3],
-        })
+        original = pd.DataFrame(
+            {
+                "ids": [10, 20, 30],
+                "counts": [1, 2, 3],
+            }
+        )
         duck.save("df_int", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_int")
@@ -563,10 +589,12 @@ class TestDataFrameDuckDBTypes:
 
     def test_string_columns(self, duck):
         """DataFrame string columns → VARCHAR (one row per DataFrame row)."""
-        original = pd.DataFrame({
-            "name": ["alice", "bob", "carol"],
-            "group": ["A", "B", "A"],
-        })
+        original = pd.DataFrame(
+            {
+                "name": ["alice", "bob", "carol"],
+                "group": ["A", "B", "A"],
+            }
+        )
         duck.save("df_str", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_str")
@@ -580,11 +608,13 @@ class TestDataFrameDuckDBTypes:
 
     def test_mixed_columns(self, duck):
         """DataFrame with float, int, and string columns → correct scalar types."""
-        original = pd.DataFrame({
-            "score": [95.5, 87.3, 91.0],
-            "rank": np.array([1, 2, 3], dtype=np.int64),
-            "name": ["alice", "bob", "carol"],
-        })
+        original = pd.DataFrame(
+            {
+                "score": [95.5, 87.3, 91.0],
+                "rank": np.array([1, 2, 3], dtype=np.int64),
+                "name": ["alice", "bob", "carol"],
+            }
+        )
         duck.save("df_mixed", original, subject="S01", session="A", trial="1")
 
         types = _col_types(duck, "df_mixed")
@@ -595,7 +625,9 @@ class TestDataFrameDuckDBTypes:
         loaded = duck.load("df_mixed", subject="S01", session="A", trial="1")
         assert isinstance(loaded, pd.DataFrame)
         assert list(loaded.columns) == ["score", "rank", "name"]
-        np.testing.assert_array_almost_equal(loaded["score"].to_numpy(), [95.5, 87.3, 91.0])
+        np.testing.assert_array_almost_equal(
+            loaded["score"].to_numpy(), [95.5, 87.3, 91.0]
+        )
         np.testing.assert_array_equal(loaded["rank"].to_numpy(), [1, 2, 3])
         assert list(loaded["name"]) == ["alice", "bob", "carol"]
 
@@ -616,6 +648,7 @@ class TestDataFrameDuckDBTypes:
 # ---------------------------------------------------------------------------
 # Save / Load — Mode C (dict with tuple keys)
 # ---------------------------------------------------------------------------
+
 
 class TestSaveLoadModeC:
     """Test save/load with dict mapping tuples to values."""
@@ -639,6 +672,7 @@ class TestSaveLoadModeC:
 # ---------------------------------------------------------------------------
 # Versioning
 # ---------------------------------------------------------------------------
+
 
 class TestVersioning:
     """Test version management features."""
@@ -665,6 +699,7 @@ class TestVersioning:
 # Delete
 # ---------------------------------------------------------------------------
 
+
 class TestDelete:
     """Test delete functionality."""
 
@@ -684,6 +719,7 @@ class TestDelete:
 # ---------------------------------------------------------------------------
 # Groups
 # ---------------------------------------------------------------------------
+
 
 class TestGroups:
     """Test variable grouping functionality."""
@@ -736,6 +772,7 @@ class TestGroups:
 # List / Inspect
 # ---------------------------------------------------------------------------
 
+
 class TestListInspect:
     """Test listing and inspection features."""
 
@@ -755,6 +792,7 @@ class TestListInspect:
 # Error Handling
 # ---------------------------------------------------------------------------
 
+
 class TestErrorHandling:
     """Test error handling."""
 
@@ -770,7 +808,7 @@ class TestErrorHandling:
 
     def test_partial_schema_keys_saves_at_deepest_provided(self, duck):
         """Providing a subset of schema keys should save at the deepest provided level."""
-        pid = duck.save("partial", 42, subject="S01")
+        duck.save("partial", 42, subject="S01")
         loaded = duck.load("partial", subject="S01")
         assert loaded == 42
 
@@ -778,6 +816,7 @@ class TestErrorHandling:
 # ---------------------------------------------------------------------------
 # Dtype Preservation
 # ---------------------------------------------------------------------------
+
 
 class TestDtypePreservation:
     """Test that numpy dtypes are preserved through round-trip."""
@@ -802,22 +841,19 @@ class TestDtypePreservation:
 # Schema Levels
 # ---------------------------------------------------------------------------
 
+
 class TestSchemaLevels:
     """Test saving at different schema levels."""
 
     def test_save_at_higher_level(self, duck):
         """Should save at subject level (above default trial level)."""
-        duck.save(
-            "subject_var", 42, schema_level="subject", subject="S01"
-        )
+        duck.save("subject_var", 42, schema_level="subject", subject="S01")
         loaded = duck.load("subject_var", subject="S01")
         assert loaded == 42
 
     def test_save_at_middle_level(self, duck):
         """Should save at session level."""
-        duck.save(
-            "session_var", 99, schema_level="session", subject="S01", session="A"
-        )
+        duck.save("session_var", 99, schema_level="session", subject="S01", session="A")
         loaded = duck.load("session_var", subject="S01", session="A")
         assert loaded == 99
 
@@ -825,6 +861,7 @@ class TestSchemaLevels:
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
+
 
 class TestPersistence:
     """Test data persistence across connections."""
@@ -864,6 +901,7 @@ class TestPersistence:
 # Direct Query
 # ---------------------------------------------------------------------------
 
+
 class TestDirectQuery:
     """Test the query() method for arbitrary SQL."""
 
@@ -878,6 +916,7 @@ class TestDirectQuery:
 # ---------------------------------------------------------------------------
 # Non-Contiguous Schema Keys
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def wide_duck():
@@ -896,30 +935,41 @@ class TestNonContiguousSchemaKeys:
     def test_save_with_non_contiguous_keys(self, wide_duck):
         """Should save with keys that skip intermediate levels."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
 
     def test_load_non_contiguous_round_trip(self, wide_duck):
         """Should round-trip data saved with non-contiguous keys."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         loaded = wide_duck.load(
             "cohens_d",
-            subject="S01", intervention="RMT30", speed="SSV",
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         assert abs(loaded - 0.85) < 1e-10
 
     def test_schema_row_has_nulls_for_skipped_keys(self, wide_duck):
         """Skipped schema keys should be NULL in _schema table."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         row = wide_duck.query(
-            'SELECT * FROM _schema WHERE schema_level = ?',
+            "SELECT * FROM _schema WHERE schema_level = ?",
             params=["speed"],
         )
         # timepoint and trial should be NULL
@@ -933,8 +983,11 @@ class TestNonContiguousSchemaKeys:
     def test_schema_level_is_deepest_provided_key(self, wide_duck):
         """schema_level should be the deepest provided key in the hierarchy."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         row = wide_duck.query(
             "SELECT schema_level FROM _variables WHERE variable_name = 'cohens_d'"
@@ -944,24 +997,35 @@ class TestNonContiguousSchemaKeys:
     def test_contiguous_keys_still_work(self, wide_duck):
         """Contiguous prefix keys should still work identically."""
         wide_duck.save(
-            "contiguous_var", 99,
-            subject="S01", intervention="RMT30",
+            "contiguous_var",
+            99,
+            subject="S01",
+            intervention="RMT30",
         )
         loaded = wide_duck.load(
             "contiguous_var",
-            subject="S01", intervention="RMT30",
+            subject="S01",
+            intervention="RMT30",
         )
         assert loaded == 99
 
-    def test_multiple_non_contiguous_saves_create_distinct_schema_entries(self, wide_duck):
+    def test_multiple_non_contiguous_saves_create_distinct_schema_entries(
+        self, wide_duck
+    ):
         """Separate saves with different non-contiguous keys create distinct _schema rows."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         wide_duck.save(
-            "cohens_d", 0.92,
-            subject="S01", intervention="RMT30", speed="FV",
+            "cohens_d",
+            0.92,
+            subject="S01",
+            intervention="RMT30",
+            speed="FV",
         )
         # Verify two distinct _schema rows were created
         schema_rows = wide_duck.query(
@@ -974,12 +1038,18 @@ class TestNonContiguousSchemaKeys:
     def test_load_resolves_correct_schema_keys(self, wide_duck):
         """load() should return the value matching the given schema keys."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         wide_duck.save(
-            "cohens_d", 0.92,
-            subject="S01", intervention="RMT30", speed="FV",
+            "cohens_d",
+            0.92,
+            subject="S01",
+            intervention="RMT30",
+            speed="FV",
         )
         v1 = wide_duck.load("cohens_d", subject="S01", speed="SSV")
         v2 = wide_duck.load("cohens_d", subject="S01", speed="FV")
@@ -989,8 +1059,11 @@ class TestNonContiguousSchemaKeys:
     def test_partial_key_load_filtering(self, wide_duck):
         """Loading with a filter on a non-contiguous key should work."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         # Load filtering by subject
         loaded = wide_duck.load("cohens_d", subject="S01")
@@ -1002,12 +1075,18 @@ class TestNonContiguousSchemaKeys:
     def test_load_filter_on_non_contiguous_key(self, wide_duck):
         """Should filter on a non-contiguous key during load."""
         wide_duck.save(
-            "cohens_d", 0.85,
-            subject="S01", intervention="RMT30", speed="SSV",
+            "cohens_d",
+            0.85,
+            subject="S01",
+            intervention="RMT30",
+            speed="SSV",
         )
         wide_duck.save(
-            "cohens_d", 0.92,
-            subject="S01", intervention="RMT30", speed="FV",
+            "cohens_d",
+            0.92,
+            subject="S01",
+            intervention="RMT30",
+            speed="FV",
         )
         loaded = wide_duck.load("cohens_d", subject="S01", speed="FV")
         assert abs(loaded - 0.92) < 1e-10
@@ -1022,22 +1101,36 @@ class TestNonContiguousSchemaKeys:
         """
         # 1. Batch-create several schema entries at once
         combos = {
-            ("speed", ("S01", "RMT30", "SSV")): {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
-            ("speed", ("S01", "RMT30", "FV")):  {"subject": "S01", "intervention": "RMT30", "speed": "FV"},
-            ("speed", ("S02", "RMT30", "SSV")): {"subject": "S02", "intervention": "RMT30", "speed": "SSV"},
+            ("speed", ("S01", "RMT30", "SSV")): {
+                "subject": "S01",
+                "intervention": "RMT30",
+                "speed": "SSV",
+            },
+            ("speed", ("S01", "RMT30", "FV")): {
+                "subject": "S01",
+                "intervention": "RMT30",
+                "speed": "FV",
+            },
+            ("speed", ("S02", "RMT30", "SSV")): {
+                "subject": "S02",
+                "intervention": "RMT30",
+                "speed": "SSV",
+            },
         }
         batch_ids = wide_duck.batch_get_or_create_schema_ids(combos)
         assert len(batch_ids) == 3
 
         # 2. Single-row create for a NEW combination — must not collide
         new_id = wide_duck._get_or_create_schema_id(
-            "speed", {"subject": "S02", "intervention": "RMT30", "speed": "FV"},
+            "speed",
+            {"subject": "S02", "intervention": "RMT30", "speed": "FV"},
         )
         assert new_id not in batch_ids.values()
 
         # 3. Single-row lookup for an EXISTING combination — must return same ID
         existing_id = wide_duck._get_or_create_schema_id(
-            "speed", {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
+            "speed",
+            {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
         )
         assert existing_id == batch_ids[("speed", ("S01", "RMT30", "SSV"))]
 
@@ -1045,13 +1138,22 @@ class TestNonContiguousSchemaKeys:
         """Schema IDs must not collide when single-row creates precede a batch."""
         # 1. Single-row create
         id1 = wide_duck._get_or_create_schema_id(
-            "speed", {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
+            "speed",
+            {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
         )
 
         # 2. Batch-create including an overlapping and a new combination
         combos = {
-            ("speed", ("S01", "RMT30", "SSV")): {"subject": "S01", "intervention": "RMT30", "speed": "SSV"},
-            ("speed", ("S01", "RMT30", "FV")):  {"subject": "S01", "intervention": "RMT30", "speed": "FV"},
+            ("speed", ("S01", "RMT30", "SSV")): {
+                "subject": "S01",
+                "intervention": "RMT30",
+                "speed": "SSV",
+            },
+            ("speed", ("S01", "RMT30", "FV")): {
+                "subject": "S01",
+                "intervention": "RMT30",
+                "speed": "FV",
+            },
         }
         batch_ids = wide_duck.batch_get_or_create_schema_ids(combos)
 

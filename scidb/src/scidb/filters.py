@@ -48,11 +48,11 @@ def _add_schema_column_casts(sql: str, schema_keys: list[str]) -> str:
 
     # Build regex pattern to match schema columns followed by comparison operators
     # Match word boundaries to avoid partial matches
-    pattern = r'\b(' + '|'.join(re.escape(key) for key in schema_keys) + r')\b'
+    pattern = r"\b(" + "|".join(re.escape(key) for key in schema_keys) + r")\b"
 
     def replace_with_cast(match):
         col_name = match.group(1)
-        return f'TRY_CAST({col_name} AS INTEGER)'
+        return f"TRY_CAST({col_name} AS INTEGER)"
 
     return re.sub(pattern, replace_with_cast, sql)
 
@@ -64,13 +64,13 @@ class Filter(ABC):
     satisfy the filter condition.
     """
 
-    def __and__(self, other: "Filter") -> "CompoundFilter":
+    def __and__(self, other: Filter) -> CompoundFilter:
         return CompoundFilter(self, other, "AND")
 
-    def __or__(self, other: "Filter") -> "CompoundFilter":
+    def __or__(self, other: Filter) -> CompoundFilter:
         return CompoundFilter(self, other, "OR")
 
-    def __invert__(self) -> "NotFilter":
+    def __invert__(self) -> NotFilter:
         return NotFilter(self)
 
     @abstractmethod
@@ -87,7 +87,7 @@ class Filter(ABC):
     @abstractmethod
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
@@ -109,7 +109,7 @@ class Filter(ABC):
         """
         ...
 
-    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+    def resolve_native(self, db: DatabaseManager) -> set[int]:
         """Schema_ids where this filter holds at its OWN variable granularity.
 
         Unlike :meth:`resolve`, this takes no target: it neither expands a
@@ -147,7 +147,7 @@ def _op_to_sql(op: str) -> str:
 
 
 def _resolve_variable_schema_ids(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     filter_table_name: str,
     condition_sql: str,
     condition_params: list,
@@ -197,7 +197,7 @@ def _resolve_variable_schema_ids(
 
 
 def _get_all_schema_ids_for_variable(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     table_name: str,
 ) -> set[int]:
     """Return all schema_ids that have at least one record for this variable.
@@ -212,7 +212,7 @@ def _get_all_schema_ids_for_variable(
 
 
 def _validate_filter_schema_level(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     filter_class,
     target_class,
     filter_table_name: str,
@@ -281,8 +281,16 @@ def _validate_filter_schema_level(
 
             # Filter must be at same or coarser (earlier in hierarchy) level
             if filter_level_idx > target_level_idx:
-                filter_level = schema_keys[filter_level_idx] if filter_level_idx >= 0 else "unknown"
-                target_level = schema_keys[target_level_idx] if target_level_idx >= 0 else "unknown"
+                filter_level = (
+                    schema_keys[filter_level_idx]
+                    if filter_level_idx >= 0
+                    else "unknown"
+                )
+                target_level = (
+                    schema_keys[target_level_idx]
+                    if target_level_idx >= 0
+                    else "unknown"
+                )
                 raise ValueError(
                     f"Filter variable '{filter_class.__name__}' is stored at schema level "
                     f"'{filter_level}' which is finer than target '{target_class.__name__}' "
@@ -292,7 +300,7 @@ def _validate_filter_schema_level(
 
 
 def _expand_coarse_to_fine_schema_ids(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     coarse_schema_ids: set[int],
     target_table_name: str,
 ) -> set[int]:
@@ -360,7 +368,10 @@ def _expand_coarse_to_fine_schema_ids(
     # Find all target schema_ids whose coarse keys match
     expanded = set()
     for _, row in target_rows.iterrows():
-        t = tuple(str(row[k]) if k in row.index and row[k] is not None else None for k in coarse_key_names)
+        t = tuple(
+            str(row[k]) if k in row.index and row[k] is not None else None
+            for k in coarse_key_names
+        )
         if t in coarse_tuples:
             expanded.add(int(row["schema_id"]))
 
@@ -387,14 +398,16 @@ class VariableFilter(Filter):
         self.value = value
 
     def __repr__(self) -> str:
-        return f"VariableFilter({self.variable_class.__name__} {self.op} {self.value!r})"
+        return (
+            f"VariableFilter({self.variable_class.__name__} {self.op} {self.value!r})"
+        )
 
     def to_key(self) -> str:
         return f"{self.variable_class.__name__} {self.op} {self.value!r}"
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
@@ -412,8 +425,11 @@ class VariableFilter(Filter):
 
         # Validate schema level compatibility
         _validate_filter_schema_level(
-            db, self.variable_class, target_variable_class,
-            filter_table_name, target_table_name,
+            db,
+            self.variable_class,
+            target_variable_class,
+            filter_table_name,
+            target_table_name,
         )
 
         # Ensure the filter variable is registered
@@ -438,17 +454,24 @@ class VariableFilter(Filter):
 
         if validate_coverage:
             _validate_filter_coverage(
-                db, self.variable_class, target_variable_class,
-                filter_table_name, target_table_name, filter_level_idx, target_level_idx
+                db,
+                self.variable_class,
+                target_variable_class,
+                filter_table_name,
+                target_table_name,
+                filter_level_idx,
+                target_level_idx,
             )
 
         return matching_ids
 
-    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+    def resolve_native(self, db: DatabaseManager) -> set[int]:
         sql_op = _op_to_sql(self.op)
         return _resolve_variable_schema_ids(
-            db, self.variable_class.table_name(),
-            f'"value" {sql_op} ?', [self.value],
+            db,
+            self.variable_class.table_name(),
+            f'"value" {sql_op} ?',
+            [self.value],
         )
 
 
@@ -478,15 +501,17 @@ class ColumnFilter(Filter):
         )
 
     def to_key(self) -> str:
-        return f"{self.variable_class.__name__}['{self.column}'] {self.op} {self.value!r}"
+        return (
+            f"{self.variable_class.__name__}['{self.column}'] {self.op} {self.value!r}"
+        )
 
-    def isin(self, values) -> "InFilter":
+    def isin(self, values) -> InFilter:
         """Create an InFilter for set membership testing."""
         return InFilter(self.variable_class, self.column, list(values))
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
@@ -504,8 +529,11 @@ class ColumnFilter(Filter):
 
         # Validate schema level compatibility
         _validate_filter_schema_level(
-            db, self.variable_class, target_variable_class,
-            filter_table_name, target_table_name,
+            db,
+            self.variable_class,
+            target_variable_class,
+            filter_table_name,
+            target_table_name,
         )
 
         filter_schema_ids_all = _get_all_schema_ids_for_variable(db, filter_table_name)
@@ -529,17 +557,24 @@ class ColumnFilter(Filter):
 
         if validate_coverage:
             _validate_filter_coverage(
-                db, self.variable_class, target_variable_class,
-                filter_table_name, target_table_name, filter_level_idx, target_level_idx
+                db,
+                self.variable_class,
+                target_variable_class,
+                filter_table_name,
+                target_table_name,
+                filter_level_idx,
+                target_level_idx,
             )
 
         return matching_ids
 
-    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+    def resolve_native(self, db: DatabaseManager) -> set[int]:
         sql_op = _op_to_sql(self.op)
         return _resolve_variable_schema_ids(
-            db, self.variable_class.table_name(),
-            f'"{self.column}" {sql_op} ?', [self.value],
+            db,
+            self.variable_class.table_name(),
+            f'"{self.column}" {sql_op} ?',
+            [self.value],
         )
 
 
@@ -567,7 +602,7 @@ class InFilter(Filter):
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
@@ -583,8 +618,11 @@ class InFilter(Filter):
             return _get_all_schema_ids_for_variable(db, target_table_name)
 
         _validate_filter_schema_level(
-            db, self.variable_class, target_variable_class,
-            filter_table_name, target_table_name,
+            db,
+            self.variable_class,
+            target_variable_class,
+            filter_table_name,
+            target_table_name,
         )
 
         filter_schema_ids_all = _get_all_schema_ids_for_variable(db, filter_table_name)
@@ -613,20 +651,27 @@ class InFilter(Filter):
 
         if validate_coverage:
             _validate_filter_coverage(
-                db, self.variable_class, target_variable_class,
-                filter_table_name, target_table_name, filter_level_idx, target_level_idx
+                db,
+                self.variable_class,
+                target_variable_class,
+                filter_table_name,
+                target_table_name,
+                filter_level_idx,
+                target_level_idx,
             )
 
         return matching_ids
 
-    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+    def resolve_native(self, db: DatabaseManager) -> set[int]:
         col = self.column or "value"
         if not self.values:
             return set()
         placeholders = ", ".join(["?"] * len(self.values))
         return _resolve_variable_schema_ids(
-            db, self.variable_class.table_name(),
-            f'"{col}" IN ({placeholders})', list(self.values),
+            db,
+            self.variable_class.table_name(),
+            f'"{col}" IN ({placeholders})',
+            list(self.values),
         )
 
 
@@ -652,13 +697,17 @@ class CompoundFilter(Filter):
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
     ) -> set[int]:
-        left_ids = self.left.resolve(db, target_variable_class, target_table_name, validate_coverage)
-        right_ids = self.right.resolve(db, target_variable_class, target_table_name, validate_coverage)
+        left_ids = self.left.resolve(
+            db, target_variable_class, target_table_name, validate_coverage
+        )
+        right_ids = self.right.resolve(
+            db, target_variable_class, target_table_name, validate_coverage
+        )
 
         if self.op == "AND":
             return left_ids & right_ids
@@ -667,7 +716,7 @@ class CompoundFilter(Filter):
         else:
             raise ValueError(f"Unknown compound operator: {self.op!r}")
 
-    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+    def resolve_native(self, db: DatabaseManager) -> set[int]:
         left_ids = self.left.resolve_native(db)
         right_ids = self.right.resolve_native(db)
         if self.op == "AND":
@@ -696,16 +745,18 @@ class NotFilter(Filter):
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
     ) -> set[int]:
-        inner_ids = self.inner.resolve(db, target_variable_class, target_table_name, validate_coverage)
+        inner_ids = self.inner.resolve(
+            db, target_variable_class, target_table_name, validate_coverage
+        )
         all_ids = _get_all_schema_ids_for_variable(db, target_table_name)
         return all_ids - inner_ids
 
-    def resolve_native(self, db: "DatabaseManager") -> set[int]:
+    def resolve_native(self, db: DatabaseManager) -> set[int]:
         # Complement at the inner filter's OWN variable level. Requires the inner
         # to expose a single variable_class (the common leaf/NOT case); compound
         # inners have no single level → fall back via NotImplementedError.
@@ -743,7 +794,7 @@ class RawFilter(Filter):
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
@@ -790,6 +841,7 @@ class RawFilter(Filter):
 # Helper: raw_sql() factory
 # ---------------------------------------------------------------------------
 
+
 def raw_sql(sql: str) -> RawFilter:
     """Create a raw SQL filter for use in where= parameter.
 
@@ -807,6 +859,7 @@ def raw_sql(sql: str) -> RawFilter:
 # ---------------------------------------------------------------------------
 # Helper: schema_key() builder and SchemaKey filters
 # ---------------------------------------------------------------------------
+
 
 def _to_schema_str(value) -> str:
     """Convert a value to its VARCHAR representation as stored in _schema.
@@ -838,26 +891,26 @@ class SchemaKey:
     # SchemaKey is a builder, not a value type.
     __hash__ = None  # type: ignore[assignment]
 
-    def isin(self, values) -> "SchemaKeyInFilter":
+    def isin(self, values) -> SchemaKeyInFilter:
         """Return a filter matching records where key is in values."""
         return SchemaKeyInFilter(self.key, list(values))
 
-    def __eq__(self, other) -> "SchemaKeyCompareFilter":  # type: ignore[override]
+    def __eq__(self, other) -> SchemaKeyCompareFilter:  # type: ignore[override]
         return SchemaKeyCompareFilter(self.key, "==", other)
 
-    def __ne__(self, other) -> "SchemaKeyCompareFilter":  # type: ignore[override]
+    def __ne__(self, other) -> SchemaKeyCompareFilter:  # type: ignore[override]
         return SchemaKeyCompareFilter(self.key, "!=", other)
 
-    def __lt__(self, other) -> "SchemaKeyCompareFilter":
+    def __lt__(self, other) -> SchemaKeyCompareFilter:
         return SchemaKeyCompareFilter(self.key, "<", other)
 
-    def __le__(self, other) -> "SchemaKeyCompareFilter":
+    def __le__(self, other) -> SchemaKeyCompareFilter:
         return SchemaKeyCompareFilter(self.key, "<=", other)
 
-    def __gt__(self, other) -> "SchemaKeyCompareFilter":
+    def __gt__(self, other) -> SchemaKeyCompareFilter:
         return SchemaKeyCompareFilter(self.key, ">", other)
 
-    def __ge__(self, other) -> "SchemaKeyCompareFilter":
+    def __ge__(self, other) -> SchemaKeyCompareFilter:
         return SchemaKeyCompareFilter(self.key, ">=", other)
 
     def __repr__(self) -> str:
@@ -891,7 +944,7 @@ class SchemaKeyCompareFilter(Filter):
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
@@ -960,7 +1013,7 @@ class SchemaKeyInFilter(Filter):
 
     def resolve(
         self,
-        db: "DatabaseManager",
+        db: DatabaseManager,
         target_variable_class,
         target_table_name: str,
         validate_coverage: bool = True,
@@ -1010,9 +1063,7 @@ def schema_key(key: str) -> SchemaKey:
     return SchemaKey(key)
 
 
-def _combine_and(
-    a: "Filter | None", b: "Filter | None"
-) -> "Filter | None":
+def _combine_and(a: Filter | None, b: Filter | None) -> Filter | None:
     """Combine two nullable filters with AND; returns None when both are None."""
     if a is not None and b is not None:
         return CompoundFilter(a, b, "AND")
@@ -1020,8 +1071,8 @@ def _combine_and(
 
 
 def split_schema_key_filters(
-    filter_obj: "Filter",
-) -> "tuple[Filter | None, Filter | None]":
+    filter_obj: Filter,
+) -> tuple[Filter | None, Filter | None]:
     """Split a filter tree into (schema_key_part, variable_part).
 
     Recursively extracts SchemaKeyCompareFilter / SchemaKeyInFilter nodes
@@ -1044,7 +1095,8 @@ def split_schema_key_filters(
 # Internal helpers used by multiple filter types
 # ---------------------------------------------------------------------------
 
-def _get_variable_level_idx(db: "DatabaseManager", table_name: str) -> int:
+
+def _get_variable_level_idx(db: DatabaseManager, table_name: str) -> int:
     """Return the index of the deepest non-null schema key for this variable.
 
     Returns -1 when the variable has no records or no schema columns are populated.
@@ -1068,7 +1120,7 @@ def _get_variable_level_idx(db: "DatabaseManager", table_name: str) -> int:
 
 
 def _get_level_indices(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     filter_table_name: str,
     target_table_name: str,
 ) -> tuple[int, int]:
@@ -1083,14 +1135,14 @@ def _get_level_indices(
 
 
 def _validate_filter_coverage(
-    db: "DatabaseManager",
+    db: DatabaseManager,
     filter_class,
     target_class,
     filter_table_name: str,
     target_table_name: str,
     filter_level_idx: int,
     target_level_idx: int,
-    target_schema_ids_override: "set[int] | None" = None,
+    target_schema_ids_override: set[int] | None = None,
 ) -> None:
     """Validate that the filter covers all schema locations the target has data for.
 
@@ -1115,7 +1167,9 @@ def _validate_filter_coverage(
 
     filter_ids = _get_all_schema_ids_for_variable(db, filter_table_name)
 
-    target_name = target_class.__name__ if target_class is not None else "the Merge result"
+    target_name = (
+        target_class.__name__ if target_class is not None else "the Merge result"
+    )
 
     if filter_level_idx == target_level_idx:
         # Same level — every target schema_id must be in filter

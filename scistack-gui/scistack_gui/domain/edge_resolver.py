@@ -8,7 +8,7 @@ and node metadata. No I/O — works entirely on plain Python data structures.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +16,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ResolvedEdges:
     """Result of scanning edges for a function node."""
-    input_types: dict[str, list[str]]   # param_name → [variable type names]
-    output_types: list[str]             # ordered list of output variable labels
-    constant_names: set[str]            # constant param names wired to this fn
+
+    input_types: dict[str, list[str]]  # param_name → [variable type names]
+    output_types: list[str]  # ordered list of output variable labels
+    constant_names: set[str]  # constant param names wired to this fn
 
 
 def node_id_to_var_label(
@@ -84,8 +85,7 @@ def resolve_function_edges(
 
         if source in fn_node_ids:
             # Edge from this function → a variable node (output).
-            var_label = node_id_to_var_label(
-                target, existing_node_labels, manual_nodes)
+            var_label = node_id_to_var_label(target, existing_node_labels, manual_nodes)
             if var_label and var_label not in output_types:
                 output_types.append(var_label)
 
@@ -121,8 +121,7 @@ def resolve_function_edges(
                 continue
 
             # Not a constant — check if it's a variable input.
-            var_label = node_id_to_var_label(
-                source, existing_node_labels, manual_nodes)
+            var_label = node_id_to_var_label(source, existing_node_labels, manual_nodes)
             if var_label:
                 if th.startswith("in__"):
                     param = th.replace("in__", "")
@@ -135,14 +134,17 @@ def resolve_function_edges(
     # Match unmatched inputs to signature params by position.
     if unmatched_inputs:
         remaining_params = [p for p in sig_params if p not in input_types]
-        for param, var_type in zip(remaining_params, unmatched_inputs):
+        for param, var_type in zip(remaining_params, unmatched_inputs, strict=False):
             input_types.setdefault(param, [])
             if var_type not in input_types[param]:
                 input_types[param].append(var_type)
 
     logger.debug(
         "resolve_function_edges: inputs=%s outputs=%s constants=%s unmatched=%d",
-        list(input_types), output_types, constant_names, len(unmatched_inputs),
+        list(input_types),
+        output_types,
+        constant_names,
+        len(unmatched_inputs),
     )
     return ResolvedEdges(
         input_types=input_types,
@@ -165,7 +167,8 @@ def infer_manual_fn_output_types(
     for edge in manual_edges:
         if edge.get("source", "") in fn_node_ids:
             var_label = node_id_to_var_label(
-                edge.get("target", ""), existing_node_labels, manual_nodes)
+                edge.get("target", ""), existing_node_labels, manual_nodes
+            )
             if var_label and var_label not in output_types:
                 output_types.append(var_label)
     return output_types
@@ -194,11 +197,12 @@ def infer_manual_fn_param_to_class(
         sh = edge.get("sourceHandle") or ""
         if not sh.startswith("out__"):
             continue
-        param = sh[len("out__"):]
+        param = sh[len("out__") :]
         if not param or param in mapping:
             continue
         class_name = node_id_to_var_label(
-            edge.get("target", ""), existing_node_labels, manual_nodes)
+            edge.get("target", ""), existing_node_labels, manual_nodes
+        )
         if class_name:
             mapping[param] = class_name
     return mapping
