@@ -52,7 +52,7 @@ jobs:
         run: |
           pip install --upgrade pip
           bash dev-install.sh
-          pip install pytest pytest-cov
+          pip install pytest pytest-cov matplotlib
       - name: Run tests
         # scimatlab is skipped automatically by run_tests.sh when MATLAB is absent.
         run: bash run_tests.sh
