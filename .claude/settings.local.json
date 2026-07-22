@@ -96,7 +96,10 @@
       "Bash(ruff check *)",
       "Bash(awk '/^def / {print NR\": \"$0}' scistack-gui/scistack_gui/api/pipeline.py)",
       "Bash(awk 'NR<=512 && /^def /{name=$0; line=NR} END{print line\": \"name}' scistack-gui/scistack_gui/api/pipeline.py)",
-      "Bash(awk '{print $1, $4}')"
+      "Bash(awk '{print $1, $4}')",
+      "Bash(xargs -0 -I{} sh -c 'git show HEAD:\"{}\" 2>/dev/null | grep -qU $'\"'\"'\\\\r'\"'\"' && echo \"{}\"')",
+      "Bash(echo \"---exit code: $?---\")",
+      "Bash(awk '{print $1}')"
     ]
   }
 }
