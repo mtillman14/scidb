@@ -4,7 +4,10 @@ These operate directly on pandas DataFrames (no database required).
 For database-backed filtering, see scidb.filters.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 class ColFilter:

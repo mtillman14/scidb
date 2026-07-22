@@ -8,10 +8,14 @@ via print() — it is the requested result, not logging.
 """
 
 import time
+from collections.abc import Callable
 from itertools import product
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from scistacklog import Log
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from .colname import ColName
 from .column_selection import ColumnSelection
@@ -42,9 +46,13 @@ def _format_value_list(values) -> str:
     return f"{n} value{'s' if n != 1 else ''} [{', '.join(shown)}]"
 
 
-def _record_iteration_failure(failure_reasons: dict, warned_reasons: set,
-                              exc: Exception, metadata_str: str,
-                              context: str) -> None:
+def _record_iteration_failure(
+    failure_reasons: dict,
+    warned_reasons: set,
+    exc: Exception,
+    metadata_str: str,
+    context: str,
+) -> None:
     """Track a per-iteration failure for the end-of-run summary.
 
     Every failure logs a [skip] line at DEBUG with its traceback; the first
@@ -58,10 +66,10 @@ def _record_iteration_failure(failure_reasons: dict, warned_reasons: set,
         Log.warn(
             f"iteration failed: {metadata_str} — {context}: {exc} "
             f"(first occurrence; traceback follows)",
-            layer="scifor", exc_info=True,
+            layer="scifor",
+            exc_info=True,
         )
-    Log.debug(f"[skip] {metadata_str}: {context}: {exc}",
-              layer="scifor", exc_info=True)
+    Log.debug(f"[skip] {metadata_str}: {context}: {exc}", layer="scifor", exc_info=True)
 
 
 def for_each(
@@ -130,7 +138,8 @@ def for_each(
     # which inputs arrived this way to give a clearer error if they turn out to
     # lack a for_columns input to resolve against.
     bare_colname_params = [
-        name for name, v in inputs.items()
+        name
+        for name, v in inputs.items()
         if isinstance(v, type) and issubclass(v, ColName)
     ]
     if bare_colname_params:
@@ -143,28 +152,46 @@ def for_each(
     if output_names is None:
         resolved_output_names = ["output"]
     elif isinstance(output_names, int):
-        resolved_output_names = [f"output_{i+1}" for i in range(output_names)]
+        resolved_output_names = [f"output_{i + 1}" for i in range(output_names)]
     else:
         resolved_output_names = list(output_names)
     n_outputs = len(resolved_output_names)
-    Log.debug("resolve_output_names: %d output name(s): %s",
-              n_outputs, resolved_output_names, layer="scifor")
+    Log.debug(
+        "resolve_output_names: %d output name(s): %s",
+        n_outputs,
+        resolved_output_names,
+        layer="scifor",
+    )
 
     # Step 2: Resolve empty lists [] in standalone mode (scan DataFrame inputs)
     if _all_combos is None:
-        needs_resolve = [k for k, v in metadata_iterables.items()
-                         if isinstance(v, list) and len(v) == 0]
+        needs_resolve = [
+            k
+            for k, v in metadata_iterables.items()
+            if isinstance(v, list) and len(v) == 0
+        ]
         if needs_resolve:
-            Log.debug("resolve_empty_lists: scanning DataFrame inputs for %s",
-                      needs_resolve, layer="scifor")
+            Log.debug(
+                "resolve_empty_lists: scanning DataFrame inputs for %s",
+                needs_resolve,
+                layer="scifor",
+            )
             for key in needs_resolve:
                 values = _distinct_values_from_inputs(inputs, key)
                 if not values:
-                    Log.warn(f"no values found for '{key}' in input DataFrames, "
-                             f"0 iterations", layer="scifor")
+                    Log.warn(
+                        f"no values found for '{key}' in input DataFrames, "
+                        f"0 iterations",
+                        layer="scifor",
+                    )
                 else:
-                    Log.debug("resolved '%s' to %d values: %s",
-                              key, len(values), values, layer="scifor")
+                    Log.debug(
+                        "resolved '%s' to %d values: %s",
+                        key,
+                        len(values),
+                        values,
+                        layer="scifor",
+                    )
                 metadata_iterables[key] = values
 
     # Step 3: Validate distribute parameter and resolve target key.
@@ -176,8 +203,7 @@ def for_each(
     distribute_key = None
     if distribute:
         real_schema_keys = [
-            k for k in schema_keys
-            if "__rid_" not in str(k) and "__vsig_" not in str(k)
+            k for k in schema_keys if "__rid_" not in str(k) and "__vsig_" not in str(k)
         ]
         iter_keys_in_schema = [k for k in real_schema_keys if k in metadata_iterables]
         if not iter_keys_in_schema:
@@ -195,8 +221,12 @@ def for_each(
                 f"Schema order: {real_schema_keys}"
             )
         distribute_key = real_schema_keys[deepest_idx + 1]
-        Log.debug("resolve_distribute_target: '%s' (one level below '%s')",
-                  distribute_key, deepest_iterated, layer="scifor")
+        Log.debug(
+            "resolve_distribute_target: '%s' (one level below '%s')",
+            distribute_key,
+            deepest_iterated,
+            layer="scifor",
+        )
 
     # Capture input schema-key column dtypes for output round-trip: output
     # metadata columns must come back as EXACTLY the input column's dtype
@@ -204,10 +234,12 @@ def for_each(
     # categorical stays categorical with its categories and orderedness).
     # Restored in _results_to_output_dataframe; mirrors the MATLAB scifor
     # loop's capture_schema_column_types/restore_schema_column_types.
-    type_keys = list(dict.fromkeys(
-        [*schema_keys, *metadata_iterables.keys()]
-        + ([distribute_key] if distribute_key is not None else [])
-    ))
+    type_keys = list(
+        dict.fromkeys(
+            [*schema_keys, *metadata_iterables.keys()]
+            + ([distribute_key] if distribute_key is not None else [])
+        )
+    )
     schema_col_dtypes = _capture_schema_column_dtypes(inputs, type_keys)
 
     # Resolve static ColName(df) wrappers before the data/constant split.
@@ -223,7 +255,9 @@ def for_each(
         Log.debug(
             "resolve_colnames: %d static ColName(df) wrapper(s); deferring "
             "%d no-arg ColName() marker(s) to for_columns iteration",
-            static_count, deferred_count, layer="scifor",
+            static_count,
+            deferred_count,
+            layer="scifor",
         )
     inputs = _resolve_colnames(inputs, schema_keys)
 
@@ -235,8 +269,12 @@ def for_each(
             data_inputs[param_name] = var_spec
         else:
             constant_inputs[param_name] = var_spec
-    Log.debug("classify_inputs: %d data input(s), %d constant(s)",
-              len(data_inputs), len(constant_inputs), layer="scifor")
+    Log.debug(
+        "classify_inputs: %d data input(s), %d constant(s)",
+        len(data_inputs),
+        len(constant_inputs),
+        layer="scifor",
+    )
 
     # Check distribute doesn't conflict with a constant input name
     if distribute_key is not None and distribute_key in constant_inputs:
@@ -259,7 +297,8 @@ def for_each(
     # results are reassembled into one wide row per combo. All iterate inputs
     # share a single column axis (zipped by name).
     iterate_params = [
-        name for name, spec in data_inputs.items()
+        name
+        for name, spec in data_inputs.items()
         if getattr(_unwrap_column_selection(spec), "iterate", False)
     ]
 
@@ -267,7 +306,8 @@ def for_each(
     # require at least one for_columns input. (Static ColName(df) was already
     # resolved to a string at Step 4, so only no-arg markers remain here.)
     deferred_colname_params = [
-        name for name, v in constant_inputs.items()
+        name
+        for name, v in constant_inputs.items()
         if isinstance(v, ColName) and v.is_deferred
     ]
     if deferred_colname_params and not iterate_params:
@@ -294,7 +334,8 @@ def for_each(
     # needs an iterate input. (Metadata-only PathOutput templates are fine
     # without one — they resolve per-combo.)
     path_output_column_params = [
-        name for name, v in constant_inputs.items()
+        name
+        for name, v in constant_inputs.items()
         if isinstance(v, PathOutput) and v.has_column_token
     ]
     if path_output_column_params and not iterate_params:
@@ -329,7 +370,9 @@ def for_each(
         Log.debug(
             "resolve_iterate_columns: column iteration over %d column(s) %s "
             "for input(s) %s",
-            len(iterate_columns), iterate_columns, iterate_params,
+            len(iterate_columns),
+            iterate_columns,
+            iterate_params,
             layer="scifor",
         )
 
@@ -337,14 +380,23 @@ def for_each(
     if _all_combos is not None:
         all_combos = _all_combos
         keys = list(metadata_iterables.keys())
-        Log.debug("expand_combos: using %d pre-built combos (from DB wrapper)",
-                  len(all_combos), layer="scifor")
+        Log.debug(
+            "expand_combos: using %d pre-built combos (from DB wrapper)",
+            len(all_combos),
+            layer="scifor",
+        )
     else:
         keys = list(metadata_iterables.keys())
         value_lists = [metadata_iterables[k] for k in keys]
-        all_combos = [dict(zip(keys, combo)) for combo in product(*value_lists)]
-        Log.debug("expand_combos: built %d combos from Cartesian product of %s",
-                  len(all_combos), keys, layer="scifor")
+        all_combos = [
+            dict(zip(keys, combo, strict=False)) for combo in product(*value_lists)
+        ]
+        Log.debug(
+            "expand_combos: built %d combos from Cartesian product of %s",
+            len(all_combos),
+            keys,
+            layer="scifor",
+        )
 
     total = len(all_combos)
     fn_name = getattr(fn, "__name__", repr(fn))
@@ -361,7 +413,9 @@ def for_each(
         Log.debug(
             "compute_shared_limits: %s (fn accepts: %s)",
             list(shared_limits_map.keys()),
-            sorted(_limits_accepted) if _limits_accepted is not None else "any (**kwargs)",
+            sorted(_limits_accepted)
+            if _limits_accepted is not None
+            else "any (**kwargs)",
             layer="scifor",
         )
     else:
@@ -370,10 +424,13 @@ def for_each(
     # Run banner: one INFO line with a truncated per-key value preview; the
     # full value lists and input details follow at DEBUG.
     display_keys = [k for k in keys if not k.startswith("__")]
-    meta_summary = ", ".join(
-        f"{k}={_format_value_list(metadata_iterables[k])}"
-        for k in display_keys
-    ) if display_keys else "no metadata"
+    meta_summary = (
+        ", ".join(
+            f"{k}={_format_value_list(metadata_iterables[k])}" for k in display_keys
+        )
+        if display_keys
+        else "no metadata"
+    )
     Log.info(
         f"for_each({fn_name}) — {total} iteration{'s' if total != 1 else ''}: "
         f"{meta_summary}",
@@ -407,7 +464,9 @@ def for_each(
         print(f"[dry-run] {total} iterations over: {keys}")
         print(f"[dry-run] inputs: {_format_inputs(inputs)}")
         if distribute_key is not None:
-            print(f"[dry-run] distribute: '{distribute_key}' (split outputs by element/row, 1-based)")
+            print(
+                f"[dry-run] distribute: '{distribute_key}' (split outputs by element/row, 1-based)"
+            )
         print()
 
     completed = 0
@@ -422,9 +481,7 @@ def for_each(
     progress_key = display_keys[0] if display_keys else None
     if progress_key is not None:
         try:
-            progress_total = len(dict.fromkeys(
-                c.get(progress_key) for c in all_combos
-            ))
+            progress_total = len(dict.fromkeys(c.get(progress_key) for c in all_combos))
         except TypeError:  # unhashable values — fall back to declared list
             progress_total = len(metadata_iterables.get(progress_key, []))
     else:
@@ -445,13 +502,15 @@ def for_each(
                 layer="scifor",
             )
             if _progress_fn is not None:
-                _progress_fn({
-                    "event": "cancelled",
-                    "current": combo_idx + 1,
-                    "total": total,
-                    "completed": completed,
-                    "skipped": skipped,
-                })
+                _progress_fn(
+                    {
+                        "event": "cancelled",
+                        "current": combo_idx + 1,
+                        "total": total,
+                        "completed": completed,
+                        "skipped": skipped,
+                    }
+                )
             break
 
         metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items())
@@ -465,9 +524,11 @@ def for_each(
                 progress_last_value = progress_value
                 progress_seen += 1
                 elapsed_now = time.perf_counter() - loop_t0
-                if (progress_seen > 1
-                        and elapsed_now >= _PROGRESS_START_DELAY_S
-                        and elapsed_now - progress_last_emit >= _PROGRESS_MIN_INTERVAL_S):
+                if (
+                    progress_seen > 1
+                    and elapsed_now >= _PROGRESS_START_DELAY_S
+                    and elapsed_now - progress_last_emit >= _PROGRESS_MIN_INTERVAL_S
+                ):
                     progress_last_emit = elapsed_now
                     Log.info(
                         f"progress: {progress_key}={progress_value} "
@@ -480,14 +541,16 @@ def for_each(
                     )
 
         if _progress_fn is not None:
-            _progress_fn({
-                "event": "combo_start",
-                "current": combo_idx + 1,
-                "total": total,
-                "completed": completed,
-                "skipped": skipped,
-                "metadata": metadata,
-            })
+            _progress_fn(
+                {
+                    "event": "combo_start",
+                    "current": combo_idx + 1,
+                    "total": total,
+                    "completed": completed,
+                    "skipped": skipped,
+                    "metadata": metadata,
+                }
+            )
 
         if dry_run:
             _print_dry_run_iteration(inputs, metadata, constant_inputs, distribute_key)
@@ -513,7 +576,10 @@ def for_each(
                 )
             except Exception as e:
                 _record_iteration_failure(
-                    failure_reasons, warned_reasons, e, metadata_str,
+                    failure_reasons,
+                    warned_reasons,
+                    e,
+                    metadata_str,
                     f"failed to filter {param_name}",
                 )
                 filter_failed = True
@@ -522,15 +588,17 @@ def for_each(
         if filter_failed:
             skipped += 1
             if _progress_fn is not None:
-                _progress_fn({
-                    "event": "combo_skip",
-                    "current": combo_idx + 1,
-                    "total": total,
-                    "completed": completed,
-                    "skipped": skipped,
-                    "metadata": metadata,
-                    "error": "filter failed",
-                })
+                _progress_fn(
+                    {
+                        "event": "combo_skip",
+                        "current": combo_idx + 1,
+                        "total": total,
+                        "completed": completed,
+                        "skipped": skipped,
+                        "metadata": metadata,
+                        "error": "filter failed",
+                    }
+                )
             continue
 
         # Column drift is a hard error (not a per-combo skip): the iterate
@@ -538,7 +606,9 @@ def for_each(
         # columns means the stored data is inconsistent and must be surfaced.
         if iterate_params:
             for name in iterate_params:
-                missing = [c for c in iterate_columns if c not in iterate_dfs[name].columns]
+                missing = [
+                    c for c in iterate_columns if c not in iterate_dfs[name].columns
+                ]
                 if missing:
                     raise ValueError(
                         f"for_columns column drift: column(s) {missing} missing from "
@@ -551,14 +621,16 @@ def for_each(
         # for that input — the function is still called (it may handle empties),
         # but the emptiness must never be silent.
         _empty_inputs = [
-            name for name, val in
-            (list(filtered_inputs.items()) + list(iterate_dfs.items()))
+            name
+            for name, val in (list(filtered_inputs.items()) + list(iterate_dfs.items()))
             if _input_is_empty(val)
         ]
         if _empty_inputs:
             Log.debug(
                 "[empty-combo] %s: input(s) %s had 0 rows",
-                metadata_str, ", ".join(_empty_inputs), layer="scifor",
+                metadata_str,
+                ", ".join(_empty_inputs),
+                layer="scifor",
             )
 
         # Call the function
@@ -568,8 +640,10 @@ def for_each(
             + list(constant_inputs.keys())
         )
         if iterate_params:
-            msg = (f"[run] {metadata_str}: {fn_name} x {len(iterate_columns)} column(s) "
-                   f"({', '.join(all_param_names)})")
+            msg = (
+                f"[run] {metadata_str}: {fn_name} x {len(iterate_columns)} column(s) "
+                f"({', '.join(all_param_names)})"
+            )
         else:
             msg = f"[run] {metadata_str}: {fn_name}({', '.join(all_param_names)})"
         Log.debug(msg, layer="scifor")
@@ -590,25 +664,36 @@ def for_each(
         try:
             fn_t0 = time.perf_counter()
             if iterate_params:
-                result = (_run_column_iteration(
-                    fn, filtered_inputs, iterate_dfs, iterate_columns,
-                    schema_keys, as_table_set, metadata,
-                ),)
+                result = (
+                    _run_column_iteration(
+                        fn,
+                        filtered_inputs,
+                        iterate_dfs,
+                        iterate_columns,
+                        schema_keys,
+                        as_table_set,
+                        metadata,
+                    ),
+                )
             else:
                 # PathOutput constants resolve to a finished path from this
                 # combo's metadata (no column outside for_columns).
                 call_inputs = _resolve_path_outputs(filtered_inputs, metadata, None)
                 result = _call_fn(fn, call_inputs, n_outputs)
             fn_elapsed = time.perf_counter() - fn_t0
-            Log.debug("[done] %s: %s completed in %.3fs",
-                      metadata_str, fn_name, fn_elapsed, layer="scifor")
+            Log.debug(
+                "[done] %s: %s completed in %.3fs",
+                metadata_str,
+                fn_name,
+                fn_elapsed,
+                layer="scifor",
+            )
         except ColumnFunctionError as e:
             # The function failed on specific columns. This is deterministic
             # across combos (a bad column is bad everywhere), so surface it as a
             # hard error naming every offending column rather than silently
             # skipping the whole combo.
-            Log.error(f"[error] {metadata_str}: {e}",
-                      layer="scifor", exc_info=True)
+            Log.error(f"[error] {metadata_str}: {e}", layer="scifor", exc_info=True)
             raise
         except ForColumnsError:
             # Structural for_columns errors are deterministic across combos and
@@ -620,24 +705,28 @@ def for_each(
                 # higher layer (e.g. scidb's SchemaKeyTypeError) would fail
                 # every combo identically — abort the run instead of
                 # skipping through N copies of the same failure.
-                Log.error(f"[fatal] {metadata_str}: {e}",
-                          layer="scifor", exc_info=True)
+                Log.error(f"[fatal] {metadata_str}: {e}", layer="scifor", exc_info=True)
                 raise
             _record_iteration_failure(
-                failure_reasons, warned_reasons, e, metadata_str,
+                failure_reasons,
+                warned_reasons,
+                e,
+                metadata_str,
                 f"{fn_name} raised",
             )
             skipped += 1
             if _progress_fn is not None:
-                _progress_fn({
-                    "event": "combo_skip",
-                    "current": combo_idx + 1,
-                    "total": total,
-                    "completed": completed,
-                    "skipped": skipped,
-                    "metadata": metadata,
-                    "error": str(e),
-                })
+                _progress_fn(
+                    {
+                        "event": "combo_skip",
+                        "current": combo_idx + 1,
+                        "total": total,
+                        "completed": completed,
+                        "skipped": skipped,
+                        "metadata": metadata,
+                        "error": str(e),
+                    }
+                )
             continue
 
         # Normalize single output to tuple
@@ -650,8 +739,7 @@ def for_each(
                 try:
                     pieces = _split_for_distribute(output_value)
                 except TypeError as e:
-                    Log.warn(f"{metadata_str}: cannot distribute: {e}",
-                             layer="scifor")
+                    Log.warn(f"{metadata_str}: cannot distribute: {e}", layer="scifor")
                     continue
 
                 for i, piece in enumerate(pieces):
@@ -662,14 +750,16 @@ def for_each(
 
         completed += 1
         if _progress_fn is not None:
-            _progress_fn({
-                "event": "combo_done",
-                "current": combo_idx + 1,
-                "total": total,
-                "completed": completed,
-                "skipped": skipped,
-                "metadata": metadata,
-            })
+            _progress_fn(
+                {
+                    "event": "combo_done",
+                    "current": combo_idx + 1,
+                    "total": total,
+                    "completed": completed,
+                    "skipped": skipped,
+                    "metadata": metadata,
+                }
+            )
 
     # End-of-run summary
     if dry_run:
@@ -687,27 +777,35 @@ def for_each(
     # answers "what failed and why" without per-iteration lines.
     for reason, combos in failure_reasons.items():
         shown = combos[:_SUMMARY_COMBOS_MAX]
-        more = f" (+{len(combos) - len(shown)} more)" if len(combos) > len(shown) else ""
+        more = (
+            f" (+{len(combos) - len(shown)} more)" if len(combos) > len(shown) else ""
+        )
         Log.info(
             f'failed: {len(combos)} × "{reason}" — {"; ".join(shown)}{more}',
             layer="scifor",
         )
     if _progress_fn is not None:
-        _progress_fn({
-            "event": "summary",
-            "current": total,  # keeps positional consumers (GUI) safe
-            "total": total,
-            "completed": completed,
-            "failed": skipped,
-            "skipped": skipped,  # legacy key: consumers that tally every event
-            "cancelled": was_cancelled,
-            "failure_reasons": failure_reasons,
-        })
+        _progress_fn(
+            {
+                "event": "summary",
+                "current": total,  # keeps positional consumers (GUI) safe
+                "total": total,
+                "completed": completed,
+                "failed": skipped,
+                "skipped": skipped,  # legacy key: consumers that tally every event
+                "cancelled": was_cancelled,
+                "failure_reasons": failure_reasons,
+            }
+        )
 
-    Log.debug("building output DataFrame from %d result row(s)",
-              len(collected_rows), layer="scifor")
-    return _results_to_output_dataframe(collected_rows, resolved_output_names,
-                                        schema_col_dtypes)
+    Log.debug(
+        "building output DataFrame from %d result row(s)",
+        len(collected_rows),
+        layer="scifor",
+    )
+    return _results_to_output_dataframe(
+        collected_rows, resolved_output_names, schema_col_dtypes
+    )
 
 
 def _call_fn(fn, kwargs, n_outputs):
@@ -759,7 +857,12 @@ FOR_COLUMNS_OUTPUT_SEP = "__"
 
 
 def _run_column_iteration(
-    fn, base_kwargs, iterate_dfs, iterate_columns, schema_keys, as_table_set,
+    fn,
+    base_kwargs,
+    iterate_dfs,
+    iterate_columns,
+    schema_keys,
+    as_table_set,
     metadata,
 ):
     """Run fn once per column and reassemble into a single one-row DataFrame.
@@ -788,7 +891,8 @@ def _run_column_iteration(
     # Constant inputs that are deferred ColName() markers resolve to the name of
     # the column currently being iterated (recomputed each pass below).
     deferred_colname_params = [
-        name for name, v in base_kwargs.items()
+        name
+        for name, v in base_kwargs.items()
         if isinstance(v, ColName) and v.is_deferred
     ]
     # PathOutput constants resolve per-column (current combo metadata + column).
@@ -810,8 +914,7 @@ def _run_column_iteration(
                 # discriminators, which DB wrappers add to the schema for per-combo
                 # filtering). They've already done their filtering job upstream.
                 keep = [
-                    c for c in df.columns
-                    if c in schema_keys and not c.startswith("__")
+                    c for c in df.columns if c in schema_keys and not c.startswith("__")
                 ] + [col]
                 call_kwargs[name] = df[keep]
             else:
@@ -888,12 +991,14 @@ def _describe_result(val) -> str:
     """Compact description of a function result value."""
     try:
         import pandas as pd
+
         if isinstance(val, pd.DataFrame):
             return f"DataFrame {val.shape[0]}x{val.shape[1]}"
     except ImportError:
         pass
     try:
         import numpy as np
+
         if isinstance(val, np.ndarray):
             return f"ndarray shape={val.shape}"
     except ImportError:
@@ -909,6 +1014,7 @@ def _describe_result(val) -> str:
 # Input classification
 # ---------------------------------------------------------------------------
 
+
 def _is_data_input(var_spec: Any) -> bool:
     """Check if an input is a data input (DataFrame, Fixed, Merge, ColumnSelection)."""
     if _is_dataframe(var_spec):
@@ -922,6 +1028,7 @@ def _is_dataframe(value: Any) -> bool:
     """Return True if value is a pandas DataFrame."""
     try:
         import pandas as pd
+
         return isinstance(value, pd.DataFrame)
     except ImportError:
         return False
@@ -947,6 +1054,7 @@ def _input_is_empty(value: Any) -> bool:
 # ---------------------------------------------------------------------------
 # ColName resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_colnames(inputs: dict[str, Any], schema_keys: list[str]) -> dict[str, Any]:
     """Replace static ColName(df) wrappers with the resolved column name string.
@@ -997,6 +1105,7 @@ def _resolve_colnames(inputs: dict[str, Any], schema_keys: list[str]) -> dict[st
 # DataFrame filtering
 # ---------------------------------------------------------------------------
 
+
 def _is_per_combo_df(df: "pd.DataFrame", schema_keys: list[str]) -> bool:
     """True if df has at least one column that is a schema key."""
     return bool(set(df.columns) & set(schema_keys))
@@ -1010,6 +1119,7 @@ def _accepted_param_names(fn) -> "set[str] | None":
     the signature can't be introspected.
     """
     import inspect
+
     try:
         sig = inspect.signature(fn)
     except (ValueError, TypeError):
@@ -1019,8 +1129,10 @@ def _accepted_param_names(fn) -> "set[str] | None":
     for p in sig.parameters.values():
         if p.kind == inspect.Parameter.VAR_KEYWORD:
             return None  # **kwargs — accepts any keyword
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                      inspect.Parameter.KEYWORD_ONLY):
+        if p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
             names.add(p.name)
     return names
 
@@ -1032,12 +1144,16 @@ def _numeric_extent(df: "pd.DataFrame") -> "tuple[float, float] | tuple[None, No
     Returns (None, None) when no finite numeric values are present.
     """
     import numpy as np
+
     lo = None
     hi = None
     for col in df.columns:
         for val in df[col].to_numpy():
-            arr = np.asarray(val, dtype="float64").ravel() if not np.isscalar(val) \
+            arr = (
+                np.asarray(val, dtype="float64").ravel()
+                if not np.isscalar(val)
                 else np.asarray([val], dtype="float64")
+            )
             arr = arr[np.isfinite(arr)]
             if arr.size == 0:
                 continue
@@ -1071,7 +1187,8 @@ def _compute_shared_limits(
         if not isinstance(df, pd.DataFrame):
             continue
         data_cols = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if c not in schema_keys and not str(c).startswith("__")
         ]
         if column_selection:
@@ -1101,6 +1218,7 @@ def _filter_df_for_combo(
 ) -> "pd.DataFrame":
     """Filter df rows to match combo metadata for schema key columns present in df."""
     import pandas as pd
+
     mask = pd.Series([True] * len(df), index=df.index)
     for key in schema_keys:
         if key in df.columns and key in metadata:
@@ -1149,6 +1267,7 @@ def _extract_data(
 # Input preparation per combo
 # ---------------------------------------------------------------------------
 
+
 def _prepare_input(
     var_spec: Any,
     metadata: dict,
@@ -1193,7 +1312,8 @@ def _prepare_input(
             # surface internal tracking columns (e.g. scidb's ``__rid_*`` record-id
             # discriminators added to the schema for per-combo filtering).
             keep = [
-                c for c in filtered.columns
+                c
+                for c in filtered.columns
                 if c in schema_keys and not c.startswith("__")
             ] + cols
             return filtered[keep]
@@ -1256,8 +1376,7 @@ def _all_data_columns(df: "pd.DataFrame", schema_keys: list[str]) -> list[str]:
     or an internal ``__*`` column. Used to expand an empty (all-columns)
     ColumnSelection to a concrete list."""
     return [
-        c for c in df.columns
-        if c not in schema_keys and not str(c).startswith("__")
+        c for c in df.columns if c not in schema_keys and not str(c).startswith("__")
     ]
 
 
@@ -1310,8 +1429,7 @@ def _apply_column_selection(df: "pd.DataFrame", columns: list[str]) -> Any:
     missing = [c for c in columns if c not in df.columns]
     if missing:
         raise KeyError(
-            f"Column(s) {missing} not found. "
-            f"Available columns: {list(df.columns)}"
+            f"Column(s) {missing} not found. Available columns: {list(df.columns)}"
         )
     if len(columns) == 1:
         return df[columns[0]].values
@@ -1321,6 +1439,7 @@ def _apply_column_selection(df: "pd.DataFrame", columns: list[str]) -> Any:
 # ---------------------------------------------------------------------------
 # Merge handling
 # ---------------------------------------------------------------------------
+
 
 def _prepare_merge(
     merge_spec: Merge,
@@ -1358,7 +1477,9 @@ def _prepare_merge(
                     f"Available: {list(part_df.columns)}"
                 )
             if len(column_selection) == 1:
-                part_df = pd.DataFrame({column_selection[0]: part_df[column_selection[0]]})
+                part_df = pd.DataFrame(
+                    {column_selection[0]: part_df[column_selection[0]]}
+                )
             else:
                 part_df = part_df[column_selection]
 
@@ -1388,7 +1509,7 @@ def _merge_parts(parts: list["pd.DataFrame"]) -> "pd.DataFrame":
     # Check row count compatibility
     row_counts = [(len(df), df) for df in parts if len(df) > 1]
     if row_counts:
-        unique_counts = set(n for n, _ in row_counts)
+        unique_counts = {n for n, _ in row_counts}
         if len(unique_counts) > 1:
             detail = ", ".join(str(n) for n, _ in row_counts)
             raise ValueError(
@@ -1410,6 +1531,7 @@ def _merge_parts(parts: list["pd.DataFrame"]) -> "pd.DataFrame":
 # ---------------------------------------------------------------------------
 # Empty-list resolution from DataFrame inputs
 # ---------------------------------------------------------------------------
+
 
 def _distinct_values_from_inputs(inputs: dict, key: str) -> list:
     """Find distinct values for `key` by scanning DataFrame inputs."""
@@ -1462,8 +1584,13 @@ def _capture_schema_column_dtypes(inputs: dict, keys: list) -> dict:
             dt = df[key].dtype
             if key not in dtypes:
                 dtypes[key] = dt
-                Log.debug("schema key '%s' (input '%s'): input column dtype %s",
-                          key, param_name, dt, layer="scifor")
+                Log.debug(
+                    "schema key '%s' (input '%s'): input column dtype %s",
+                    key,
+                    param_name,
+                    dt,
+                    layer="scifor",
+                )
             elif dtypes[key] != dt:
                 conflicts.add(key)
     for key in conflicts:
@@ -1490,10 +1617,14 @@ def _restore_schema_column_dtypes(
         # Typically a function returning its input DataFrame with the
         # metadata columns still inside, so combo metadata gets appended a
         # second time under the same label.
-        Log.warn("output DataFrame has DUPLICATE column label(s) %s — the "
-                 "function's returned DataFrame likely already contains "
-                 "metadata column(s) that for_each appends per combo; dtype "
-                 "restore skips these columns", dup_labels, layer="scifor")
+        Log.warn(
+            "output DataFrame has DUPLICATE column label(s) %s — the "
+            "function's returned DataFrame likely already contains "
+            "metadata column(s) that for_each appends per combo; dtype "
+            "restore skips these columns",
+            dup_labels,
+            layer="scifor",
+        )
     for key, dtype in col_dtypes.items():
         if key not in result.columns:
             continue
@@ -1501,9 +1632,13 @@ def _restore_schema_column_dtypes(
         if isinstance(col, pd.DataFrame):  # duplicated label — warned above
             continue
         if dtype is None:
-            Log.warn("schema key '%s': input DataFrames disagree on column "
-                     "dtype — leaving the output column as %s",
-                     key, col.dtype, layer="scifor")
+            Log.warn(
+                "schema key '%s': input DataFrames disagree on column "
+                "dtype — leaving the output column as %s",
+                key,
+                col.dtype,
+                layer="scifor",
+            )
             continue
         if col.dtype == dtype:
             continue
@@ -1521,19 +1656,29 @@ def _restore_schema_column_dtypes(
             converted = col.astype("category")
             lossless = True
         if not lossless:
-            Log.warn("schema key '%s': cannot restore input column dtype %s "
-                     "losslessly — leaving as %s",
-                     key, dtype, col.dtype, layer="scifor")
+            Log.warn(
+                "schema key '%s': cannot restore input column dtype %s "
+                "losslessly — leaving as %s",
+                key,
+                dtype,
+                col.dtype,
+                layer="scifor",
+            )
             continue
         result[key] = converted
-        Log.debug("schema key '%s': output column restored to input dtype %s",
-                  key, dtype, layer="scifor")
+        Log.debug(
+            "schema key '%s': output column restored to input dtype %s",
+            key,
+            dtype,
+            layer="scifor",
+        )
     return result
 
 
 # ---------------------------------------------------------------------------
 # Result collection
 # ---------------------------------------------------------------------------
+
 
 def _results_to_output_dataframe(
     collected_rows: list[tuple[dict, tuple]],
@@ -1561,24 +1706,30 @@ def _results_to_output_dataframe(
             )
             nr = len(combined_data)
             meta_df = pd.DataFrame({k: [v] * nr for k, v in metadata.items()})
-            parts.append(pd.concat(
-                [meta_df.reset_index(drop=True), combined_data], axis=1
-            ))
+            parts.append(
+                pd.concat([meta_df.reset_index(drop=True), combined_data], axis=1)
+            )
         result = pd.concat(parts, ignore_index=True)
-        Log.debug("collect_results (flatten mode): DataFrame with %d row(s), "
-                  "%d column(s)", len(result), len(result.columns),
-                  layer="scifor")
+        Log.debug(
+            "collect_results (flatten mode): DataFrame with %d row(s), %d column(s)",
+            len(result),
+            len(result.columns),
+            layer="scifor",
+        )
     else:
         rows = []
         for metadata, result_tuple in collected_rows:
             row = dict(metadata)
-            for name, value in zip(output_names, result_tuple):
+            for name, value in zip(output_names, result_tuple, strict=False):
                 row[name] = value
             rows.append(row)
         result = pd.DataFrame(rows)
-        Log.debug("collect_results (scalar mode): DataFrame with %d row(s), "
-                  "%d column(s)", len(result), len(result.columns),
-                  layer="scifor")
+        Log.debug(
+            "collect_results (scalar mode): DataFrame with %d row(s), %d column(s)",
+            len(result),
+            len(result.columns),
+            layer="scifor",
+        )
 
     # Round-trip metadata column dtypes: cast each metadata column back to
     # the exact dtype of the input column it was resolved from.
@@ -1589,10 +1740,12 @@ def _results_to_output_dataframe(
 # Distribute
 # ---------------------------------------------------------------------------
 
+
 def _split_for_distribute(data: Any) -> list[Any]:
     """Split data into elements for distribute-style expansion."""
     try:
         import pandas as pd
+
         if isinstance(data, pd.DataFrame):
             return [data.iloc[[i]] for i in range(len(data))]
     except ImportError:
@@ -1600,6 +1753,7 @@ def _split_for_distribute(data: Any) -> list[Any]:
 
     try:
         import numpy as np
+
         if isinstance(data, np.ndarray):
             if data.ndim == 1:
                 return [data[i] for i in range(len(data))]
@@ -1626,6 +1780,7 @@ def _split_for_distribute(data: Any) -> list[Any]:
 # Display / dry-run
 # ---------------------------------------------------------------------------
 
+
 def _format_inputs(inputs: dict[str, Any]) -> str:
     """Format inputs dict for display."""
     parts = []
@@ -1633,7 +1788,9 @@ def _format_inputs(inputs: dict[str, Any]) -> str:
         if isinstance(var_spec, Merge):
             parts.append(f"{name}: {var_spec.__name__}")
         elif isinstance(var_spec, Fixed):
-            fixed_str = ", ".join(f"{k}={v}" for k, v in var_spec.fixed_metadata.items())
+            fixed_str = ", ".join(
+                f"{k}={v}" for k, v in var_spec.fixed_metadata.items()
+            )
             inner = var_spec.data
             if isinstance(inner, ColumnSelection):
                 inner_name = inner.__name__
@@ -1673,7 +1830,9 @@ def _print_dry_run_iteration(
             inner = var_spec.data
             if isinstance(inner, ColumnSelection):
                 col_str = ", ".join(inner.columns)
-                print(f"  filter {param_name} with {filter_metadata} -> columns: [{col_str}]")
+                print(
+                    f"  filter {param_name} with {filter_metadata} -> columns: [{col_str}]"
+                )
             elif _is_dataframe(inner):
                 print(f"  filter {param_name} = DataFrame with {filter_metadata}")
             else:
@@ -1699,7 +1858,9 @@ def _print_constituent_filter(spec: Any, metadata: dict[str, Any], index: int) -
         inner = spec.data
         if isinstance(inner, ColumnSelection):
             col_str = ", ".join(inner.columns)
-            print(f"    [{index}] filter with {filter_metadata} -> columns: [{col_str}]")
+            print(
+                f"    [{index}] filter with {filter_metadata} -> columns: [{col_str}]"
+            )
         else:
             print(f"    [{index}] filter with {filter_metadata}")
     elif isinstance(spec, ColumnSelection):

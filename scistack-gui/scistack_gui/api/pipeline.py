@@ -11,18 +11,19 @@ Positions are set to (0, 0) here; the layout endpoint overwrites them with
 saved positions, and the frontend assigns dagre positions for new nodes.
 """
 
+import inspect
 import logging
 import time
-import inspect
 
-logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends
 from scidb.database import DatabaseManager
-from scistack_gui.db import get_db
+
 from scistack_gui import layout as layout_store
 from scistack_gui import registry
 from scistack_gui.api import ws
+from scistack_gui.db import get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -32,6 +33,7 @@ def _parse_path_input(value: str) -> dict | None:
     Delegates to domain.graph_builder.parse_path_input.
     """
     from scistack_gui.domain.graph_builder import parse_path_input
+
     return parse_path_input(value)
 
 
@@ -44,13 +46,15 @@ def _fn_params_from_registry(fn_name: str) -> list[str]:
     if fn is not None:
         try:
             return [
-                name for name in inspect.signature(fn).parameters
-                if not name.startswith('_')
+                name
+                for name in inspect.signature(fn).parameters
+                if not name.startswith("_")
             ]
         except (ValueError, TypeError):
             return []
     # Check MATLAB registry.
     from scistack_gui import matlab_registry
+
     if matlab_registry.is_matlab_function(fn_name):
         return list(matlab_registry.get_matlab_function(fn_name).params)
     return []
@@ -68,6 +72,7 @@ def _node_id_to_var_label(
     builds the existing_node_labels dict from the nodes list.
     """
     from scistack_gui.domain.edge_resolver import node_id_to_var_label
+
     existing_node_labels = {n["id"]: n["data"]["label"] for n in nodes}
     return node_id_to_var_label(node_id, existing_node_labels, manual_nodes)
 
@@ -94,8 +99,9 @@ def _build_matlab_fn_proxy(fn_name: str):
     Uses the source hash from the MATLAB registry so the proxy's ``.hash``
     matches what was stored at save time.
     """
-    from scistack_gui import matlab_registry
     from scimatlab.bridge import MatlabLineageFcn
+
+    from scistack_gui import matlab_registry
 
     info = matlab_registry.get_matlab_function(fn_name)
     # unpack_output MUST match scimatlab/.../+scihist/for_each.m's default.
@@ -105,10 +111,75 @@ def _build_matlab_fn_proxy(fn_name: str):
     proxy = MatlabLineageFcn(info.source_hash, fn_name, unpack_output=False)
     logger.debug(
         "[pipeline] matlab proxy fn=%s source_hash=%s unpack=False hash=%s",
-        fn_name, info.source_hash[:12], proxy.hash[:12],
+        fn_name,
+        info.source_hash[:12],
+        proxy.hash[:12],
     )
     proxy.__name__ = fn_name
     return proxy
+
+
+def _own_state_for_function(
+    db: DatabaseManager,
+    fn_name: str,
+    fn_out_types: set[str],
+    call_id: str | None = None,
+) -> str:
+    """
+    Return the own run state ("green"/"grey"/"red") for a single function
+    by calling scihist.check_node_state.
+
+    When ``call_id`` is provided, restricts the state computation to records
+    produced by that specific for_each call site. Used for manual (not yet
+    graduated) function nodes, which fall outside the batched
+    ``_compute_run_states`` pass since they have no recorded call site yet.
+
+    Falls back to "red" for unregistered functions (never executed or not
+    importable in this session).
+    """
+    from scidb import BaseVariable
+    from scihist import check_node_state
+
+    fn_obj = registry._functions.get(fn_name)
+    if fn_obj is None:
+        # Try MATLAB registry — build a proxy with the right hash.
+        from scistack_gui import matlab_registry
+
+        if matlab_registry.is_matlab_function(fn_name):
+            fn_obj = _build_matlab_fn_proxy(fn_name)
+        else:
+            # Function not registered in this session — can't run state check.
+            return "red"
+
+    output_classes = [
+        BaseVariable._all_subclasses[t]
+        for t in fn_out_types
+        if t in BaseVariable._all_subclasses
+    ]
+    if not output_classes:
+        return "red"
+
+    try:
+        result = check_node_state(fn_obj, output_classes, db=db, call_id=call_id)
+        state = result["state"]
+        counts = result.get("counts", {})
+        logger.debug(
+            "state(%s call_id=%s): %s (up_to_date=%d, stale=%d, missing=%d)",
+            fn_name,
+            call_id,
+            state,
+            counts.get("up_to_date", 0),
+            counts.get("stale", 0),
+            counts.get("missing", 0),
+        )
+        return state
+    except Exception:
+        logger.exception(
+            "check_node_state failed for %s call_id=%s — falling back to red",
+            fn_name,
+            call_id,
+        )
+        return "red"
 
 
 def _compute_run_states(
@@ -134,9 +205,9 @@ def _compute_run_states(
     ("pending" is GUI-only: an unrun pending constant value staged in the
     GUI — scidb's own node state is binary green/red).
     """
-    from scistack_gui.domain.run_state import propagate_run_states
-    from scihist import check_multiple_nodes_state
     from scidb import BaseVariable
+    from scihist import check_multiple_nodes_state
+    from scistack_gui.domain.run_state import propagate_run_states
 
     t0 = time.monotonic()
 
@@ -145,9 +216,12 @@ def _compute_run_states(
     fn_registry = dict(registry._functions)  # Copy Python functions
 
     from scistack_gui import matlab_registry
+
     for fn_name in fn_input_params.keys():
         fn_name_str, _ = fn_name
-        if fn_name_str not in fn_registry and matlab_registry.is_matlab_function(fn_name_str):
+        if fn_name_str not in fn_registry and matlab_registry.is_matlab_function(
+            fn_name_str
+        ):
             fn_registry[fn_name_str] = _build_matlab_fn_proxy(fn_name_str)
 
     # Build nodes list for batched state checking
@@ -164,11 +238,13 @@ def _compute_run_states(
         ]
 
         if output_classes:  # Only add if we have valid output classes
-            nodes.append({
-                "fn_name": fn_name,
-                "call_id": cid,
-                "outputs": output_classes,
-            })
+            nodes.append(
+                {
+                    "fn_name": fn_name,
+                    "call_id": cid,
+                    "outputs": output_classes,
+                }
+            )
 
     # Batch call to check states for all nodes
     state_results = check_multiple_nodes_state(nodes, fn_registry=fn_registry, db=db)
@@ -183,7 +259,9 @@ def _compute_run_states(
             counts = state_results[node_id].get("counts", {})
             logger.debug(
                 "state(%s call_id=%s): %s (up_to_date=%d, stale=%d, missing=%d)",
-                fn_name, cid, fn_own_state[fkey],
+                fn_name,
+                cid,
+                fn_own_state[fkey],
                 counts.get("up_to_date", 0),
                 counts.get("stale", 0),
                 counts.get("missing", 0),
@@ -194,8 +272,11 @@ def _compute_run_states(
 
     # --- Pass 2: DAG propagation (pure) ---
     result = propagate_run_states(
-        fn_own_state, fn_input_params, fn_outputs,
-        fn_constants, pending_constants,
+        fn_own_state,
+        fn_input_params,
+        fn_outputs,
+        fn_constants,
+        pending_constants,
     )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
@@ -205,8 +286,11 @@ def _compute_run_states(
             counts[s] = counts.get(s, 0) + 1
     logger.debug(
         "run_states complete: %d call sites in %.1fms (%d green, %d pending, %d red)",
-        len([k for k in result if k.startswith("fn__")]), elapsed_ms,
-        counts["green"], counts["pending"], counts["red"],
+        len([k for k in result if k.startswith("fn__")]),
+        elapsed_ms,
+        counts["green"],
+        counts["pending"],
+        counts["red"],
     )
     return result
 
@@ -223,11 +307,10 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     is saved (unsaved -> root), edges by both-endpoints-kept. pipelineNode
     entries for the scope's use edges are appended last (scope_service).
     """
-    logger.info("[pipeline] Starting graph build orchestration (scope=%s)",
-                pipeline_id)
+    logger.info("[pipeline] Starting graph build orchestration (scope=%s)", pipeline_id)
 
-    from scistack_gui import pipeline_store as _ps
     from scistack_gui import matlab_registry as _mr
+    from scistack_gui import pipeline_store as _ps
     from scistack_gui.domain import graph_builder as gb
     from scistack_gui.domain.edge_resolver import resolve_function_edges
 
@@ -237,13 +320,16 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     # --- Fetch aggregated data from scidb (replaces steps 2-5) ---
     logger.info("[pipeline] Fetching aggregated variants from scidb")
     scidb_agg = db.get_aggregated_variants()
-    logger.info("[pipeline] fetched data for %d functions, %d variables, %d constants, %d path inputs",
-                len(scidb_agg["functions"]), len(scidb_agg["variables"]),
-                len(scidb_agg["constants"]), len(scidb_agg["path_inputs"]))
+    logger.info(
+        "[pipeline] fetched data for %d functions, %d variables, %d constants, %d path inputs",
+        len(scidb_agg["functions"]),
+        len(scidb_agg["variables"]),
+        len(scidb_agg["constants"]),
+        len(scidb_agg["path_inputs"]),
+    )
 
     # Convert scidb format to AggregatedData format for compatibility
     logger.info("[pipeline] Converting to AggregatedData format")
-    from collections import defaultdict
     agg = gb.AggregatedData()
 
     # Convert functions dict
@@ -275,30 +361,38 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         agg.path_inputs[param_name] = {
             "template": pi_data["template"],
             "root_folder": pi_data["root_folder"],
-            "functions": set(tuple(f) for f in pi_data["functions"]),
+            "functions": {tuple(f) for f in pi_data["functions"]},
         }
 
     logger.info("[pipeline] Filtering hidden nodes")
     gb.filter_hidden(agg, hidden_ids)
 
     logger.info("[pipeline] Using record counts from scidb")
-    record_counts = {vtype: vdata["record_count"]
-                     for vtype, vdata in scidb_agg["variables"].items()}
+    record_counts = {
+        vtype: vdata["record_count"] for vtype, vdata in scidb_agg["variables"].items()
+    }
 
     pending_constants = layout_store.get_pending_constants()
     logger.debug("[pipeline] loaded %d pending constant(s)", len(pending_constants))
     pending_constants, removals = gb.auto_clean_pending_constants(
-        pending_constants, agg.const_counts)
+        pending_constants, agg.const_counts
+    )
     for const_name, pval in removals:
         layout_store.remove_pending_constant(const_name, pval)
     if removals:
-        logger.debug("[pipeline] removed %d pending constant value(s) that are now in database", len(removals))
+        logger.debug(
+            "[pipeline] removed %d pending constant value(s) that are now in database",
+            len(removals),
+        )
 
     # --- Compute run states (per call site — state never blurs) ---
     logger.info("[pipeline] Computing run states (delegating to run_state)")
     run_states = _compute_run_states(
-        db, agg.fn_input_params, agg.fn_outputs,
-        agg.fn_constants, pending_constants,
+        db,
+        agg.fn_input_params,
+        agg.fn_outputs,
+        agg.fn_constants,
+        pending_constants,
     )
     logger.info("[pipeline] computed run states for %d nodes", len(run_states))
 
@@ -307,7 +401,8 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     # chips) inside one node; staged pending values get synthesized rows.
     logger.info("[pipeline] Grouping call sites by wiring")
     agg, run_states, wiring_member_map = gb.group_call_sites_by_wiring(
-        agg, run_states, pending_constants)
+        agg, run_states, pending_constants
+    )
     # Hidden-id filtering ran pre-grouping for LEGACY per-call-site ids;
     # run it again now so deletions of wiring-grouped nodes (hidden id =
     # fn__{fn}__{wiring_id}) also apply.
@@ -318,7 +413,9 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     # and saved settings don't vary across call sites).
     logger.info("[pipeline] Building function parameter maps and saved configs")
     fn_names = {fn for fn, _ in agg.fn_input_params.keys()}
-    logger.debug("[pipeline] building parameter maps for %d unique function(s)", len(fn_names))
+    logger.debug(
+        "[pipeline] building parameter maps for %d unique function(s)", len(fn_names)
+    )
     fn_params_map: dict[str, list[str]] = {}
     for fn in fn_names:
         if _mr.is_matlab_function(fn):
@@ -336,7 +433,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         # node for this fn_name as a fallback.
         cfg = manual_nodes.get(f"fn__{fn}", {}).get("config")
         if cfg is None:
-            for nid, meta in manual_nodes.items():
+            for _nid, meta in manual_nodes.items():
                 if (
                     meta.get("type") == "functionNode"
                     and meta.get("label") == fn
@@ -348,8 +445,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
 
     matlab_functions = set(_mr.get_all_function_names())
     matlab_output_order = {
-        name: _mr.get_matlab_function(name).output_names
-        for name in matlab_functions
+        name: _mr.get_matlab_function(name).output_names for name in matlab_functions
     }
 
     # Build matlab_param_to_class from DB variants' __output_num (written by
@@ -377,6 +473,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
             matlab_param_to_class.setdefault(fn, {})[names[int(onum)]] = out_type
     from scistack_gui.domain.edge_resolver import infer_manual_fn_param_to_class
     from scistack_gui.domain.graph_builder import fn_node_id
+
     manual_edges_for_fn_lookup = layout_store.read_manual_edges()
     existing_node_labels_pre = {f"var__{t}": t for t in agg.all_var_types}
     for fn in matlab_functions:
@@ -388,7 +485,8 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
             if fn_name == fn
         }
         fn_ids |= {
-            nid for nid, meta in manual_nodes.items()
+            nid
+            for nid, meta in manual_nodes.items()
             if meta.get("type") == "functionNode" and meta.get("label") == fn
         }
         edge_map = infer_manual_fn_param_to_class(
@@ -421,22 +519,39 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     nodes += gb.build_path_input_nodes(agg.path_inputs)
     path_input_node_count = len(nodes) - var_node_count - const_node_count
     nodes += gb.build_function_nodes(
-        agg.fn_input_params, agg.fn_outputs, agg.fn_constants,
-        agg.fn_variants_map, fn_params_map, run_states,
-        matlab_functions, saved_configs,
+        agg.fn_input_params,
+        agg.fn_outputs,
+        agg.fn_constants,
+        agg.fn_variants_map,
+        fn_params_map,
+        run_states,
+        matlab_functions,
+        saved_configs,
         matlab_output_order=matlab_output_order,
         matlab_param_to_class=matlab_param_to_class,
     )
-    fn_node_count = len(nodes) - var_node_count - const_node_count - path_input_node_count
-    logger.info("[pipeline] built %d nodes: %d variable, %d constant, %d path input, %d function",
-                len(nodes), var_node_count, const_node_count, path_input_node_count, fn_node_count)
+    fn_node_count = (
+        len(nodes) - var_node_count - const_node_count - path_input_node_count
+    )
+    logger.info(
+        "[pipeline] built %d nodes: %d variable, %d constant, %d path input, %d function",
+        len(nodes),
+        var_node_count,
+        const_node_count,
+        path_input_node_count,
+        fn_node_count,
+    )
 
     # --- Build edges (pure) ---
     logger.info("[pipeline] Building edges (delegating to graph_builder)")
     manual_edges_list = manual_edges_for_fn_lookup
     edges = gb.build_edges(
-        agg.fn_input_params, agg.fn_outputs, agg.const_fns,
-        agg.path_inputs, manual_edges_list, hidden_ids,
+        agg.fn_input_params,
+        agg.fn_outputs,
+        agg.const_fns,
+        agg.path_inputs,
+        manual_edges_list,
+        hidden_ids,
         matlab_param_to_class=matlab_param_to_class,
     )
     logger.info("[pipeline] built %d edges", len(edges))
@@ -449,20 +564,27 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     saved_positions: dict = {}
     for _scope_positions_map in positions_by_scope.values():
         saved_positions.update(_scope_positions_map)
-    logger.debug("[pipeline] loaded %d saved position(s) across %d scope(s)",
-                 len(saved_positions), len(positions_by_scope))
+    logger.debug(
+        "[pipeline] loaded %d saved position(s) across %d scope(s)",
+        len(saved_positions),
+        len(positions_by_scope),
+    )
     mergeable_manual_nodes = {
-        nid: meta for nid, meta in manual_nodes.items()
+        nid: meta
+        for nid, meta in manual_nodes.items()
         if meta.get("type") != "pipelineNode"
     }
     to_add, graduations = gb.merge_manual_nodes(
-        nodes, mergeable_manual_nodes, saved_positions)
+        nodes, mergeable_manual_nodes, saved_positions
+    )
 
     # Execute graduation side effects.
     logger.info("[pipeline] Executing %d graduation action(s)", len(graduations))
     for action in graduations:
         layout_store.graduate_manual_node(action.old_id, action.new_id)
-        logger.debug("[pipeline] graduated manual node: %s -> %s", action.old_id, action.new_id)
+        logger.debug(
+            "[pipeline] graduated manual node: %s -> %s", action.old_id, action.new_id
+        )
 
     # Build and append manual nodes that should be added.
     logger.info("[pipeline] Building %d manual node(s) to add", len(to_add))
@@ -483,9 +605,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
                 existing_node_labels=existing_node_labels,
                 sig_params=sig_params,
             )
-            inferred_inputs = {
-                p: ts[0] for p, ts in resolved.input_types.items() if ts
-            }
+            inferred_inputs = {p: ts[0] for p, ts in resolved.input_types.items() if ts}
             resolved_input_params = {p: inferred_inputs.get(p, "") for p in sig_params}
             for p, t in inferred_inputs.items():
                 if p not in resolved_input_params:
@@ -505,25 +625,42 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
                 logger.debug(
                     "manual fn %s (MATLAB): using declared output_names=%s, "
                     "edge-resolved output_types=%s",
-                    fn_label, resolved_output_types, state_output_types,
+                    fn_label,
+                    resolved_output_types,
+                    state_output_types,
                 )
             if state_output_types:
                 manual_fn_state = _own_state_for_function(
-                    db, fn_label, set(state_output_types))
-                logger.debug("manual fn %s: computed state=%s (outputs=%s)",
-                             fn_label, manual_fn_state, state_output_types)
+                    db, fn_label, set(state_output_types)
+                )
+                logger.debug(
+                    "manual fn %s: computed state=%s (outputs=%s)",
+                    fn_label,
+                    manual_fn_state,
+                    state_output_types,
+                )
             else:
                 manual_fn_state = "red"
-                logger.debug("manual fn %s: no inferred outputs, defaulting to red", fn_label)
+                logger.debug(
+                    "manual fn %s: no inferred outputs, defaulting to red", fn_label
+                )
 
         node = gb.build_manual_node(
-            node_id, meta, pending_constants,
-            manual_fn_state, resolved_input_params, resolved_output_types,
+            node_id,
+            meta,
+            pending_constants,
+            manual_fn_state,
+            resolved_input_params,
+            resolved_output_types,
             matlab_functions,
         )
         nodes.append(node)
-        logger.debug("[pipeline] built manual node: %s (type=%s, label=%s)",
-                     node_id, meta["type"], meta["label"])
+        logger.debug(
+            "[pipeline] built manual node: %s (type=%s, label=%s)",
+            node_id,
+            meta["type"],
+            meta["label"],
+        )
 
     # --- Scope filtering (nested pipelines) ---
     # Graduations above MOVE positions (the scope-membership record for
@@ -534,26 +671,31 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     if graduations:
         positions_by_scope = layout_store.read_positions_by_scope()
         manual_nodes = _ps.get_manual_nodes(db)
-        logger.debug("[pipeline] refreshed scope-membership inputs after "
-                     "%d graduation(s)", len(graduations))
+        logger.debug(
+            "[pipeline] refreshed scope-membership inputs after %d graduation(s)",
+            len(graduations),
+        )
 
     # --- One-time wiring migration ---
     # Pre-grouping documents keyed positions (= scope membership) and manual
     # edges by per-call-site node ids; adopt them onto the group node ids.
     # Idempotent: legacy keys are dropped after adoption.
     adoptions, drop_ids = gb.legacy_position_adoptions(
-        wiring_member_map, positions_by_scope)
+        wiring_member_map, positions_by_scope
+    )
     for action in adoptions:
         layout_store.write_node_position(
-            action["new_id"], action["x"], action["y"],
-            pipeline_id=action["scope"])
-        logger.info("[pipeline] wiring migration: adopted position of "
-                    "legacy call-site node into %s (scope=%s)",
-                    action["new_id"], action["scope"])
+            action["new_id"], action["x"], action["y"], pipeline_id=action["scope"]
+        )
+        logger.info(
+            "[pipeline] wiring migration: adopted position of "
+            "legacy call-site node into %s (scope=%s)",
+            action["new_id"],
+            action["scope"],
+        )
     for old_id in drop_ids:
         layout_store.drop_node_positions(old_id)
-    edge_rewrites = gb.legacy_edge_rewrites(
-        wiring_member_map, manual_edges_list)
+    edge_rewrites = gb.legacy_edge_rewrites(wiring_member_map, manual_edges_list)
     for rewritten in edge_rewrites:
         _ps.write_manual_edge(db, rewritten)
         # Patch the already-built in-memory edge too so THIS response is
@@ -562,22 +704,28 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
             if e["id"] == rewritten["id"]:
                 e["source"] = rewritten["source"]
                 e["target"] = rewritten["target"]
-        logger.info("[pipeline] wiring migration: rewrote manual edge %s "
-                    "endpoints to group node ids", rewritten["id"])
+        logger.info(
+            "[pipeline] wiring migration: rewrote manual edge %s "
+            "endpoints to group node ids",
+            rewritten["id"],
+        )
     if adoptions or drop_ids:
         positions_by_scope = layout_store.read_positions_by_scope()
 
     logger.info("[pipeline] Filtering graph to scope %s", pipeline_id)
     from scistack_gui.domain.scope_filter import filter_graph_to_scope
     from scistack_gui.services.scope_service import build_pipeline_nodes
+
     nodes, edges = filter_graph_to_scope(
-        nodes, edges, pipeline_id, manual_nodes, positions_by_scope)
+        nodes, edges, pipeline_id, manual_nodes, positions_by_scope
+    )
     nodes += build_pipeline_nodes(db, pipeline_id)
 
     # --- Endpoint classification (plot_/stat_ prefixes) ---
     # Detection lives in scidb (_endpoint_kind — same source of truth as
     # Pipeline.endpoints()/for_each's endpoint policy); the GUI only tags.
     from scidb.foreach import _endpoint_kind
+
     endpoint_count = 0
     for n in nodes:
         if n["type"] == "functionNode":
@@ -605,27 +753,32 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
 
 
 @router.get("/pipeline")
-def get_pipeline(pipeline_id: str = "main",
-                 db: DatabaseManager = Depends(get_db)):
+def get_pipeline(pipeline_id: str = "main", db: DatabaseManager = Depends(get_db)):
     from scistack_gui.services.pipeline_service import get_pipeline_graph
+
     return get_pipeline_graph(db, pipeline_id)
 
 
 @router.get("/function/{fn_name}/params")
 def get_function_params(fn_name: str):
     from scistack_gui.services.pipeline_service import get_function_full_info
+
     return get_function_full_info(fn_name)
 
 
 @router.get("/function/{fn_name}/source")
 def get_function_source(fn_name: str):
-    from scistack_gui.services.pipeline_service import get_function_source as _get_source
+    from scistack_gui.services.pipeline_service import (
+        get_function_source as _get_source,
+    )
+
     return _get_source(fn_name)
 
 
 @router.put("/constants/{name}/pending/{value}")
 async def add_pending_constant_value(name: str, value: str):
     from scistack_gui.services.layout_service import put_pending_constant
+
     put_pending_constant(name, value)
     await ws.broadcast({"type": "dag_updated"})
     return {"ok": True}
@@ -634,6 +787,7 @@ async def add_pending_constant_value(name: str, value: str):
 @router.delete("/constants/{name}/pending/{value}")
 async def remove_pending_constant_value(name: str, value: str):
     from scistack_gui.services.layout_service import delete_pending_constant
+
     delete_pending_constant(name, value)
     await ws.broadcast({"type": "dag_updated"})
     return {"ok": True}

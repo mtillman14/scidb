@@ -6,36 +6,41 @@ import os
 import re
 import time
 import warnings
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path as _Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
-from .log import Log
+from scifor.pathinput import PathInput
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 import scifor as _scifor
 from scifor import for_each as _scifor_for_each
-from scifor.pathinput import PathInput
 
+from .across_variants import AcrossVariants
 from .colname import ColName
 from .column_selection import ColumnSelection
-from .fixed import Fixed
-from .variant import Variant
-from .across_variants import AcrossVariants
 from .each_of import EachOf
+from .filters import Filter
+from .fixed import Fixed
 from .foreach_config import ForEachConfig
-from .pipeline import Pipeline as _Pipeline, Step, active_pipeline
+from .log import Log
+from .merge import Merge
+from .pipeline import Pipeline as _Pipeline
+from .pipeline import Step, active_pipeline
+from .provenance_save import GraphRecord as _GraphRecord
+from .variant import Variant
 
 # Sentinel: distinguishes "pipeline= omitted" (use the ambient active
 # pipeline, if any) from an explicit pipeline=None (force eager execution).
 _PIPELINE_UNSET = object()
-from .filters import Filter
-from .merge import Merge
-from .provenance_save import GraphRecord as _GraphRecord
-
 
 # ---------------------------------------------------------------------------
 # Sentinel classes for per-combo loading
 # ---------------------------------------------------------------------------
+
 
 class PerComboLoader:
     """Sentinel for inputs that need per-combo loading (class lacks bulk load support).
@@ -48,6 +53,7 @@ class PerComboLoader:
 
     ``for_each`` wraps fn so these are resolved per-combo via cls.load(**combo).
     """
+
     __slots__ = ("spec",)
 
     def __init__(self, spec: Any):
@@ -60,6 +66,7 @@ class PerComboLoaderMerge:
     Holds the original ``scidb.Merge`` spec; ``for_each`` wraps fn to
     resolve each constituent per-combo via cls.load(**combo_metadata).
     """
+
     __slots__ = ("merge_spec",)
 
     def __init__(self, merge_spec: "Merge"):
@@ -76,6 +83,7 @@ class _DryRunMerge(_scifor.Merge):
     def __init__(self, scidb_merge):
         # Do NOT call super().__init__ — bypass validation for display only
         import pandas as pd
+
         self._dry_name = scidb_merge.__name__
         # scifor loops over self.tables in _print_dry_run_iteration
         self.tables = [pd.DataFrame() for _ in scidb_merge.var_specs]
@@ -118,7 +126,9 @@ class _PreresolvedFilter(Filter):
         vf = self._variable_filter
         return vf.to_key() if vf is not None else ""
 
-    def resolve(self, db, target_variable_class, target_table_name, validate_coverage=True) -> set:
+    def resolve(
+        self, db, target_variable_class, target_table_name, validate_coverage=True
+    ) -> set:
         return self._schema_ids
 
 
@@ -184,6 +194,7 @@ class _ForEachState:
 # ---------------------------------------------------------------------------
 # Main for_each entry point
 # ---------------------------------------------------------------------------
+
 
 def for_each(
     fn: Callable,
@@ -304,32 +315,33 @@ def for_each(
             inputs=inputs,
             outputs=outputs,
             metadata_iterables=dict(metadata_iterables),
-            options=dict(
-                dry_run=dry_run,
-                save=save,
-                as_table=as_table,
-                db=db,
-                distribute=distribute,
-                where=where,
-                introspect=introspect,
-                track_lineage=track_lineage,
-                skip_computed=skip_computed,
-                schema_filter=schema_filter,
-                schema_level=schema_level,
-                share_limits=share_limits,
-                finalized=finalized,
-                _inject_combo_metadata=_inject_combo_metadata,
-                _pre_combo_hook=_pre_combo_hook,
-                _progress_fn=_progress_fn,
-                _cancel_check=_cancel_check,
-                _lineage_fixed_rids=_lineage_fixed_rids,
-            ),
+            options={
+                "dry_run": dry_run,
+                "save": save,
+                "as_table": as_table,
+                "db": db,
+                "distribute": distribute,
+                "where": where,
+                "introspect": introspect,
+                "track_lineage": track_lineage,
+                "skip_computed": skip_computed,
+                "schema_filter": schema_filter,
+                "schema_level": schema_level,
+                "share_limits": share_limits,
+                "finalized": finalized,
+                "_inject_combo_metadata": _inject_combo_metadata,
+                "_pre_combo_hook": _pre_combo_hook,
+                "_progress_fn": _progress_fn,
+                "_cancel_check": _cancel_check,
+                "_lineage_fixed_rids": _lineage_fixed_rids,
+            },
         )
 
     # --- Normalize where clause: convert string to RawFilter ---
     # (but not if it's an EachOf wrapper - those will be normalized in recursive calls)
     if isinstance(where, str):
         from .filters import raw_sql
+
         # Preserve original string for version_keys
         original_where_str = where
         # Convert Python-style == to SQL =
@@ -342,9 +354,12 @@ def for_each(
     #     from scihist.for_each). Builds metadata_iterables from the DB when the
     #     caller used schema_filter/schema_level instead of explicit iterables. ---
     active_db = db
-    if active_db is None and (skip_computed or schema_filter is not None or schema_level is not None):
+    if active_db is None and (
+        skip_computed or schema_filter is not None or schema_level is not None
+    ):
         try:
             from .database import get_database
+
             active_db = get_database()
         except Exception:
             active_db = None
@@ -361,7 +376,9 @@ def for_each(
                 "schema_filter/schema_level require a database connection, but no db "
                 "was provided and no global database is configured."
             )
-        iterate_keys = schema_level if schema_level is not None else active_db.dataset_schema_keys
+        iterate_keys = (
+            schema_level if schema_level is not None else active_db.dataset_schema_keys
+        )
         metadata_iterables = {}
         for key in iterate_keys:
             if schema_filter and key in schema_filter:
@@ -371,7 +388,9 @@ def for_each(
         # Resolved into metadata_iterables; don't re-resolve in EachOf recursion.
         schema_filter = None
         schema_level = None
-        Log.debug(f"built metadata_iterables from schema params: {list(metadata_iterables.keys())}")
+        Log.debug(
+            f"built metadata_iterables from schema params: {list(metadata_iterables.keys())}"
+        )
 
     # --- Step 1: EachOf expansion: must be first, before any other logic ---
     each_of_axes = []
@@ -382,20 +401,25 @@ def for_each(
         each_of_axes.append(("where", None, where.alternatives))
 
     if each_of_axes:
-        Log.debug(f"EachOf expansion detected - {len(each_of_axes)} axes, will make recursive calls")
+        Log.debug(
+            f"EachOf expansion detected - {len(each_of_axes)} axes, will make recursive calls"
+        )
         for kind, param, alts in each_of_axes:
             if kind == "input":
-                Log.debug(f"  EachOf axis: input '{param}' with {len(alts)} alternatives")
+                Log.debug(
+                    f"  EachOf axis: input '{param}' with {len(alts)} alternatives"
+                )
             else:
                 Log.debug(f"  EachOf axis: where with {len(alts)} alternatives")
-        import pandas as pd
         from itertools import product as _eachof_product
+
+        import pandas as pd
 
         results = []
         for combo in _eachof_product(*(axis[2] for axis in each_of_axes)):
             concrete_inputs = dict(inputs)
             concrete_where = where
-            for (kind, param, _alts), value in zip(each_of_axes, combo):
+            for (kind, param, _alts), value in zip(each_of_axes, combo, strict=False):
                 if kind == "input":
                     concrete_inputs[param] = value
                 elif kind == "where":
@@ -441,7 +465,8 @@ def for_each(
     # fn in +scidb/for_each.m. See docs/claude/endpoints-viz-and-stats-design.md.
     _orig_fn_name = getattr(fn, "__name__", "")
     _endpoint_kind, _path_param, as_table, _save_suppressed = _endpoint_policy(
-        _orig_fn_name, inputs, finalized, as_table)
+        _orig_fn_name, inputs, finalized, as_table
+    )
     if _endpoint_kind == "plot":
         fn = _make_plot_wrapper(fn, _path_param)
         _inject_combo_metadata = True
@@ -458,6 +483,7 @@ def for_each(
     # ``generates_file`` is read from the @scistack marker and drives combo-
     # metadata injection + a graph-native lineage-only save (see _save_results).
     from .pipeline import GENERATES_FILE_ATTR
+
     _is_generates_file = bool(getattr(fn, GENERATES_FILE_ATTR, None)) or bool(
         getattr(fn, "generates_file", False)
     )
@@ -511,8 +537,11 @@ def for_each(
     # --- Step 16: Wrap fn to resolve PerComboLoader/PerComboLoaderMerge inputs
     #     per-combo, normalize variable inputs to raw data, and/or inject combo
     #     metadata (for generates_file functions). ---
-    _per_combo = {k: v for k, v in state.loaded_inputs.items()
-                  if isinstance(v, (PerComboLoader, PerComboLoaderMerge))}
+    _per_combo = {
+        k: v
+        for k, v in state.loaded_inputs.items()
+        if isinstance(v, (PerComboLoader, PerComboLoaderMerge))
+    }
     _has_variable_inputs = any(_is_loadable(v) for v in inputs.values())
     if _per_combo or _inject_combo_metadata or _has_variable_inputs:
         wrap_reasons = []
@@ -535,21 +564,21 @@ def for_each(
         if _kt_db is None:
             try:
                 from scidb.database import get_database
+
                 _kt_db = get_database()
             except Exception:
                 _kt_db = None
-        _schema_key_types = getattr(_kt_db, 'dataset_schema_key_types', {}) or {}
-        _schema_keys_for_types = list(
-            getattr(_kt_db, 'dataset_schema_keys', []) or []
-        )
+        _schema_key_types = getattr(_kt_db, "dataset_schema_key_types", {}) or {}
+        _schema_keys_for_types = list(getattr(_kt_db, "dataset_schema_keys", []) or [])
 
         # Get function parameters to check which metadata keys it accepts.
         _fn_params = None
         if _inject_combo_metadata:
-            if hasattr(_orig_fn, '__scidb_params__'):
+            if hasattr(_orig_fn, "__scidb_params__"):
                 _fn_params = _orig_fn.__scidb_params__
             else:
                 import inspect
+
                 try:
                     sig = inspect.signature(_orig_fn)
                     _fn_params = set(sig.parameters.keys())
@@ -566,13 +595,17 @@ def for_each(
             # Exclude injected PathOutput placeholder keys: as load kwargs they
             # would act as branch_params FILTERS (with sanitized-string values)
             # and silently empty a PerComboLoader load.
-            load_kw = {k: v for k, v in current_combo.items()
-                       if not k.startswith("__") and k not in _path_extra}
+            load_kw = {
+                k: v
+                for k, v in current_combo.items()
+                if not k.startswith("__") and k not in _path_extra
+            }
             resolved = {}
             for k, v in kwargs.items():
                 if isinstance(v, PerComboLoader):
                     resolved[k] = _resolve_per_combo_loader(
-                        v, load_kw,
+                        v,
+                        load_kw,
                         key_types=_schema_key_types,
                         schema_keys=_schema_keys_for_types,
                     )
@@ -639,9 +672,7 @@ def for_each(
         _summary_parts.append(
             f"skipped={state.skip_computed_count} (skip_computed, up to date)"
         )
-    _summary_parts.append(
-        f"total={_run_summary['total'] + state.skip_computed_count}"
-    )
+    _summary_parts.append(f"total={_run_summary['total'] + state.skip_computed_count}")
     if _run_summary["cancelled"]:
         _summary_parts.append("cancelled")
     Log.info(f"for_each({fn_name}) run summary: {', '.join(_summary_parts)}")
@@ -670,6 +701,7 @@ def for_each(
 # Introspect helper
 # ---------------------------------------------------------------------------
 
+
 def _apply_introspect(result_tbl, state, where):
     """Append introspection columns to the for_each result DataFrame.
 
@@ -686,7 +718,7 @@ def _apply_introspect(result_tbl, state, where):
 
     # Append per-input record_id + branch_params pairs in input order.
     for rid_col in rid_cols:
-        param_name = rid_col[len("__rid_"):]
+        param_name = rid_col[len("__rid_") :]
         record_ids = result_tbl[rid_col]
         df[f"_record_id_{param_name}"] = record_ids.values
         df[f"_branch_params_{param_name}"] = [
@@ -696,7 +728,7 @@ def _apply_introspect(result_tbl, state, where):
     # Aggregation auto-split rows have no single record_id per input; surface
     # the variant group's branch_params (parsed from the signature) instead.
     for vsig_col in vsig_cols:
-        param_name = vsig_col[len("__vsig_"):]
+        param_name = vsig_col[len("__vsig_") :]
         df[f"_branch_params_{param_name}"] = [
             json.loads(s) if isinstance(s, str) and s else {}
             for s in result_tbl[vsig_col]
@@ -767,8 +799,9 @@ def _merge_group_bp(bp_dicts: "list[dict]") -> "tuple[dict, set]":
     return merged, conflicted
 
 
-def _resolve_bp_placeholder(name: str, merged_bp: dict, conflicted: set,
-                            signature_text: str) -> "str | None":
+def _resolve_bp_placeholder(
+    name: str, merged_bp: dict, conflicted: set, signature_text: str
+) -> "str | None":
     """Resolve one PathOutput placeholder from a variant group's branch_params.
 
     Bare names suffix-match namespaced keys (the Variant()/branch_param()
@@ -801,9 +834,14 @@ def _resolve_bp_placeholder(name: str, merged_bp: dict, conflicted: set,
     return _sanitize_path_value(merged_bp[key])
 
 
-def _inject_path_placeholders(fc: dict, names: set, merged_bp: dict,
-                              conflicted: set, signature_text: str,
-                              missing_out: set) -> None:
+def _inject_path_placeholders(
+    fc: dict,
+    names: set,
+    merged_bp: dict,
+    conflicted: set,
+    signature_text: str,
+    missing_out: set,
+) -> None:
     """Inject resolved placeholder values into an expanded combo dict."""
     for name in names:
         val = _resolve_bp_placeholder(name, merged_bp, conflicted, signature_text)
@@ -813,10 +851,13 @@ def _inject_path_placeholders(fc: dict, names: set, merged_bp: dict,
             fc[name] = val
 
 
-def _guard_pathoutput_collisions(path_outputs: list, full_combos: list,
-                                 colname_columns: "list | None",
-                                 rid_to_bp: dict,
-                                 placeholder_names: set) -> None:
+def _guard_pathoutput_collisions(
+    path_outputs: list,
+    full_combos: list,
+    colname_columns: "list | None",
+    rid_to_bp: dict,
+    placeholder_names: set,
+) -> None:
     """Hard-error when one resolved artifact path is shared by combos that
     agree on their SCHEMA/iterable identity but differ in VARIANT identity
     (``__vsig_*`` / ``__rid_*``) — silent file loss with a one-line fix to
@@ -830,15 +871,18 @@ def _guard_pathoutput_collisions(path_outputs: list, full_combos: list,
     combos × columns cross product. Injected placeholder keys are excluded
     from the base identity (they derive from variant identity).
     """
+
     def _base_identity(fc: dict) -> tuple:
-        return tuple(sorted(
-            (k, str(v)) for k, v in fc.items()
-            if not str(k).startswith("__") and k not in placeholder_names
-        ))
+        return tuple(
+            sorted(
+                (k, str(v))
+                for k, v in fc.items()
+                if not str(k).startswith("__") and k not in placeholder_names
+            )
+        )
 
     def _variant_keys(fc: dict) -> dict:
-        return {k: v for k, v in fc.items()
-                if str(k).startswith(("__vsig_", "__rid_"))}
+        return {k: v for k, v in fc.items() if str(k).startswith(("__vsig_", "__rid_"))}
 
     def _group_bp(fc: dict) -> dict:
         bp: dict = {}
@@ -853,8 +897,9 @@ def _guard_pathoutput_collisions(path_outputs: list, full_combos: list,
         return bp
 
     for po in path_outputs:
-        columns = colname_columns if (po.has_column_token and colname_columns) \
-            else [None]
+        columns = (
+            colname_columns if (po.has_column_token and colname_columns) else [None]
+        )
         seen: dict = {}
         for fc in full_combos:
             for col in columns:
@@ -872,8 +917,11 @@ def _guard_pathoutput_collisions(path_outputs: list, full_combos: list,
                 diff_keys = sorted(
                     k for k in set(bp_a) | set(bp_b) if bp_a.get(k) != bp_b.get(k)
                 )
-                suggestion = ("{" + str(diff_keys[0]).rsplit(".", 1)[-1] + "}"
-                              if diff_keys else "{variant}")
+                suggestion = (
+                    "{" + str(diff_keys[0]).rsplit(".", 1)[-1] + "}"
+                    if diff_keys
+                    else "{variant}"
+                )
                 raise ValueError(
                     f"PathOutput {str(po.template)!r} resolves to the SAME path "
                     f"{resolved!r} for multiple variant groups"
@@ -888,8 +936,16 @@ def _guard_pathoutput_collisions(path_outputs: list, full_combos: list,
 # skip_computed pre-combo hook (folded from scihist.for_each)
 # ---------------------------------------------------------------------------
 
-def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_hashes,
-                           expected_input_rids=None, fixed_rids=frozenset()):
+
+def _find_skip_gate_record(
+    db,
+    type_name,
+    schema_combo,
+    fn_name,
+    target_const_hashes,
+    expected_input_rids=None,
+    fixed_rids=frozenset(),
+):
     """Latest output record of ``type_name`` at ``schema_combo`` produced by an
     invocation of ``fn_name`` whose constants match ``target_const_hashes``
     (``{param: canonical_hash(value)}``), or None.
@@ -908,11 +964,15 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
     aggregation whose underlying record set grew, e.g. a new session) would
     cross-skip against another group's / the stale record.
     """
-    from .database import _schema_str
     from . import provenance_query
+    from .database import _schema_str
 
     schema_keys = set(db.dataset_schema_keys)
-    conds = ["inv.function_name = ?", "r.type = ?", "COALESCE(r.excluded, FALSE) = FALSE"]
+    conds = [
+        "inv.function_name = ?",
+        "r.type = ?",
+        "COALESCE(r.excluded, FALSE) = FALSE",
+    ]
     params: list = [fn_name, type_name]
     for k, v in schema_combo.items():
         if k in schema_keys:
@@ -946,7 +1006,8 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
             continue
         if expected_input_rids is not None:
             stored_rids = {
-                str(in_rid) for (in_rid, _sel) in sig.get("var_inputs", {}).values()
+                str(in_rid)
+                for (in_rid, _sel) in sig.get("var_inputs", {}).values()
                 if in_rid is not None
             }
             stored_rids -= {str(r) for r in fixed_rids}
@@ -978,7 +1039,12 @@ def _find_skip_gate_record(db, type_name, schema_combo, fn_name, target_const_ha
 
 
 def _build_skip_hook(
-    fn, outputs: list, db, inputs: dict, as_table=None, distribute: bool = False,
+    fn,
+    outputs: list,
+    db,
+    inputs: dict,
+    as_table=None,
+    distribute: bool = False,
     fn_hash: "str | None" = None,
     agg_binding_ref: "dict | None" = None,
 ) -> "Callable[[dict], bool]":
@@ -1027,13 +1093,19 @@ def _build_skip_hook(
     the variant group by its exact consumed-rid set (see
     ``_find_skip_gate_record``) instead of per-param rid comparison.
     """
-    from scicanonicalhash import canonical_hash as _chash
     from scilineage.hashing import compute_function_hash
+
+    from scicanonicalhash import canonical_hash as _chash
+
     from . import provenance_query
     from .provenance_save import compute_input_selectors
 
     if agg_binding_ref is None:
-        agg_binding_ref = {"combo_to_rids": None, "keys": None, "fixed_rids": frozenset()}
+        agg_binding_ref = {
+            "combo_to_rids": None,
+            "keys": None,
+            "fixed_rids": frozenset(),
+        }
 
     schema_keys: set = set(db.dataset_schema_keys)
 
@@ -1074,15 +1146,18 @@ def _build_skip_hook(
         Log.debug(f"[recompute] {combo_str} — {why}")
         return False
 
-    Log.debug(f"_build_skip_hook: constants={list(constant_values.keys())}, "
-              f"fn_hash={fn_hash[:12]}, selectors={ {k: v for k, v in selectors.items() if v} }")
+    Log.debug(
+        f"_build_skip_hook: constants={list(constant_values.keys())}, "
+        f"fn_hash={fn_hash[:12]}, selectors={ {k: v for k, v in selectors.items() if v} }"
+    )
 
     def _should_skip(combo: dict) -> bool:
         schema_combo = {k: v for k, v in combo.items() if k in schema_keys}
         combo_str = _combo_str(schema_combo)
         _vsig_bits = [
-            f"{k[len('__vsig_'):]} group {v}"
-            for k, v in sorted(combo.items()) if str(k).startswith("__vsig_")
+            f"{k[len('__vsig_') :]} group {v}"
+            for k, v in sorted(combo.items())
+            if str(k).startswith("__vsig_")
         ]
         if _vsig_bits:
             combo_str += " [" + "; ".join(_vsig_bits) + "]"
@@ -1115,11 +1190,18 @@ def _build_skip_hook(
         output_record_id = None
         for OutputCls in outputs:
             rid = _find_skip_gate_record(
-                db, OutputCls.__name__, schema_combo, fn_name, target_const_hashes,
-                expected_input_rids=expected_input_rids, fixed_rids=_fixed_rids,
+                db,
+                OutputCls.__name__,
+                schema_combo,
+                fn_name,
+                target_const_hashes,
+                expected_input_rids=expected_input_rids,
+                fixed_rids=_fixed_rids,
             )
             if rid is None:
-                Log.debug(f"missing: {combo_str} — no output record for {OutputCls.__name__}")
+                Log.debug(
+                    f"missing: {combo_str} — no output record for {OutputCls.__name__}"
+                )
                 return False
             output_record_id = rid
 
@@ -1131,11 +1213,11 @@ def _build_skip_hook(
         if sig["function_hash"] != fn_hash:
             return _recompute(combo_str, "function hash changed")
 
-        stored_var = sig["var_inputs"]   # param -> (record_id, selector)
+        stored_var = sig["var_inputs"]  # param -> (record_id, selector)
         for key, rid_val in combo.items():
             if not key.startswith("__rid_") or rid_val is None:
                 continue
-            param = key[len("__rid_"):]
+            param = key[len("__rid_") :]
             # Self-referential: the loaded input IS the output record. Stable.
             if str(rid_val) == str(output_record_id):
                 continue
@@ -1207,6 +1289,7 @@ def _for_each_prepare(
     ``None`` to signal the caller to stop. Otherwise returns the prepared
     state object the loop and save phases consume.
     """
+
     # Track which keys the user passed with explicit (non-empty) values.
     # Keys passed as an empty sequence ([], (), empty numpy array) are
     # about to be resolved from the DB (Step 2) or the filesystem
@@ -1225,8 +1308,10 @@ def _for_each_prepare(
             return len(v) == 0
         except TypeError:
             return False
-    user_explicit_keys = {k for k, v in metadata_iterables.items()
-                           if not _is_empty_sequence(v)}
+
+    user_explicit_keys = {
+        k for k, v in metadata_iterables.items() if not _is_empty_sequence(v)
+    }
     Log.debug(
         f"entry: metadata_iterables keys={list(metadata_iterables.keys())}, "
         f"types={[type(v).__name__ for v in metadata_iterables.values()]}, "
@@ -1235,15 +1320,19 @@ def _for_each_prepare(
     )
 
     # Step 2: Resolve empty lists to all distinct values from the database
-    needs_resolve = [k for k, v in metadata_iterables.items()
-                     if isinstance(v, list) and len(v) == 0]
+    needs_resolve = [
+        k for k, v in metadata_iterables.items() if isinstance(v, list) and len(v) == 0
+    ]
     resolved_db = None
     if needs_resolve:
-        Log.debug(f"resolving {len(needs_resolve)} empty list(s) from database: {needs_resolve}")
+        Log.debug(
+            f"resolving {len(needs_resolve)} empty list(s) from database: {needs_resolve}"
+        )
         resolved_db = db
         if resolved_db is None:
             try:
                 from scidb.database import get_database
+
                 resolved_db = get_database()
             except Exception:
                 raise ValueError(
@@ -1293,7 +1382,7 @@ def _for_each_prepare(
     # Step 4: Propagate schema keys to scifor so distribute and DataFrame detection work
     Log.debug("propagating schema keys to scifor")
     _propagate_schema(db, distribute)
-    if db and hasattr(db, 'dataset_schema_keys'):
+    if db and hasattr(db, "dataset_schema_keys"):
         Log.debug(f"schema keys propagated: {db.dataset_schema_keys}")
 
     # Step 5: Stringify metadata_iterables values for schema keys.
@@ -1304,13 +1393,17 @@ def _for_each_prepare(
     if _resolved_db_for_str is None:
         try:
             from scidb.database import get_database
+
             _resolved_db_for_str = get_database()
         except Exception:
             _resolved_db_for_str = None
-    if _resolved_db_for_str is not None and hasattr(_resolved_db_for_str, 'dataset_schema_keys'):
-        from scidb.database import _schema_str, _canonical_numeric_value
+    if _resolved_db_for_str is not None and hasattr(
+        _resolved_db_for_str, "dataset_schema_keys"
+    ):
+        from scidb.database import _canonical_numeric_value, _schema_str
+
         _sk_set = set(_resolved_db_for_str.dataset_schema_keys)
-        _sk_types = getattr(_resolved_db_for_str, 'dataset_schema_key_types', {}) or {}
+        _sk_types = getattr(_resolved_db_for_str, "dataset_schema_key_types", {}) or {}
         stringify_count = 0
         for key in list(metadata_iterables.keys()):
             if key in _sk_set:
@@ -1320,9 +1413,9 @@ def _for_each_prepare(
                     # every spelling of the same number ("001", 1, 1.0)
                     # collapses to one identity before stringification.
                     # dict.fromkeys dedupes spellings that collapsed.
-                    values = list(dict.fromkeys(
-                        _canonical_numeric_value(key, v) for v in values
-                    ))
+                    values = list(
+                        dict.fromkeys(_canonical_numeric_value(key, v) for v in values)
+                    )
                 metadata_iterables[key] = [_schema_str(v) for v in values]
                 stringify_count += 1
         Log.debug(f"stringified {stringify_count} schema key iterable(s)")
@@ -1335,9 +1428,7 @@ def _for_each_prepare(
             for combo in _discovered_combos:
                 for k in canon_keys:
                     if k in combo:
-                        combo[k] = _schema_str(
-                            _canonical_numeric_value(k, combo[k])
-                        )
+                        combo[k] = _schema_str(_canonical_numeric_value(k, combo[k]))
             if canon_keys:
                 # Canonicalization can collapse combos that differed only in
                 # spelling (both "6MWT-1.mat" and "6MWT-001.mat" on disk) —
@@ -1372,7 +1463,9 @@ def _for_each_prepare(
     # to non-dry runs so the printed iteration count reflects what would
     # actually be processed (combos missing from the DB are dropped). ---
     if dry_run:
-        Log.debug("dry_run=True, converting inputs for display and delegating to scifor")
+        Log.debug(
+            "dry_run=True, converting inputs for display and delegating to scifor"
+        )
         display_inputs = _convert_inputs_for_display(inputs)
 
         # Prefilter combos to existing schema combinations (mirrors Step 9
@@ -1381,22 +1474,25 @@ def _for_each_prepare(
         _dryrun_all_combos = None
         if needs_resolve and not _has_pathinput(inputs):
             from scidb.database import _schema_str
+
             filter_db = resolved_db
-            if filter_db is not None and hasattr(filter_db, 'dataset_schema_keys'):
+            if filter_db is not None and hasattr(filter_db, "dataset_schema_keys"):
                 schema_keys_set = set(filter_db.dataset_schema_keys)
                 keys = list(metadata_iterables.keys())
                 schema_indices = [i for i, k in enumerate(keys) if k in schema_keys_set]
                 filter_keys = [keys[i] for i in schema_indices]
                 if filter_keys:
                     from itertools import product
+
                     value_lists = [metadata_iterables[k] for k in keys]
                     raw_combos = list(product(*value_lists))
                     existing = filter_db.distinct_schema_combinations(filter_keys)
                     existing_set = set(existing)
                     _dryrun_all_combos = [
-                        dict(zip(keys, combo))
+                        dict(zip(keys, combo, strict=False))
                         for combo in raw_combos
-                        if tuple(_schema_str(combo[i]) for i in schema_indices) in existing_set
+                        if tuple(_schema_str(combo[i]) for i in schema_indices)
+                        in existing_set
                     ]
 
         # Apply schema exclusions to dry-run combos (mirrors Step 9.5)
@@ -1404,6 +1500,7 @@ def _for_each_prepare(
             _dry_excl_db = db or resolved_db
             if _dry_excl_db is not None:
                 from .exclusions import filter_excluded_combos
+
                 _dryrun_all_combos = filter_excluded_combos(
                     _dryrun_all_combos,
                     _dry_excl_db.dataset_schema_keys,
@@ -1436,13 +1533,16 @@ def _for_each_prepare(
     )
     config_keys = config.to_version_keys()
     call_id = config.to_call_id()
-    Log.debug(f"ForEachConfig: call_id={call_id}, version_keys={list(config_keys.keys())}")
+    Log.debug(
+        f"ForEachConfig: call_id={call_id}, version_keys={list(config_keys.keys())}"
+    )
 
     # Step 9: Pre-filter to only schema combinations that actually exist in the database.
     all_combos = None
     if needs_resolve and not _has_pathinput(inputs):
         Log.debug("pre-filtering combos to only existing schema combinations")
         from scidb.database import _schema_str
+
         filter_db = resolved_db
         schema_keys_set = set(filter_db.dataset_schema_keys)
         keys = list(metadata_iterables.keys())
@@ -1451,6 +1551,7 @@ def _for_each_prepare(
 
         if filter_keys:
             from itertools import product
+
             value_lists = [metadata_iterables[k] for k in keys]
             raw_combos = list(product(*value_lists))
 
@@ -1458,20 +1559,24 @@ def _for_each_prepare(
             existing_set = set(existing)
 
             filtered = [
-                dict(zip(keys, combo))
+                dict(zip(keys, combo, strict=False))
                 for combo in raw_combos
                 if tuple(_schema_str(combo[i]) for i in schema_indices) in existing_set
             ]
             removed = len(raw_combos) - len(filtered)
             if removed > 0:
                 # O(1) per run and changes what will execute — INFO.
-                Log.info(f"filtered {removed} non-existent schema combinations "
-                         f"(from {len(raw_combos)} to {len(filtered)})")
+                Log.info(
+                    f"filtered {removed} non-existent schema combinations "
+                    f"(from {len(raw_combos)} to {len(filtered)})"
+                )
             else:
                 Log.debug(f"all {len(raw_combos)} combos exist in database")
             all_combos = filtered
     else:
-        Log.debug("skipping combo pre-filtering (no empty list resolution or PathInput detected)")
+        Log.debug(
+            "skipping combo pre-filtering (no empty list resolution or PathInput detected)"
+        )
 
     # Step 9.5: Schema exclusions — filter out excluded combos.
     # (No override-hash cache key needed: the bipartite graph invalidates
@@ -1482,6 +1587,7 @@ def _for_each_prepare(
     if _exclusion_db is None:
         try:
             from scidb.database import get_database
+
             _exclusion_db = get_database()
         except Exception:
             _exclusion_db = None
@@ -1498,27 +1604,38 @@ def _for_each_prepare(
             )
             _after = len(all_combos)
             if _before != _after:
-                Log.info(f"schema exclusions removed {_before - _after} combo(s) "
-                         f"(from {_before} to {_after})")
+                Log.info(
+                    f"schema exclusions removed {_before - _after} combo(s) "
+                    f"(from {_before} to {_after})"
+                )
         else:
-            Log.debug("all_combos is None (explicit iterables); "
-                     "exclusion filtering will be skipped at combo level")
+            Log.debug(
+                "all_combos is None (explicit iterables); "
+                "exclusion filtering will be skipped at combo level"
+            )
     else:
         Log.debug("no database available, skipping schema exclusion filtering")
 
     # Step 10: Load all inputs into DataFrames (with __record_id and __branch_params)
     Log.debug(f"loading {len(inputs)} input(s) into DataFrames")
     loaded_inputs = _convert_inputs(inputs, db, where)
-    df_count = sum(1 for v in loaded_inputs.values() if isinstance(v, __import__('pandas').DataFrame))
-    Log.debug(f"loaded {df_count} DataFrame input(s), {len(loaded_inputs) - df_count} other(s)")
+    df_count = sum(
+        1
+        for v in loaded_inputs.values()
+        if isinstance(v, __import__("pandas").DataFrame)
+    )
+    Log.debug(
+        f"loaded {df_count} DataFrame input(s), {len(loaded_inputs) - df_count} other(s)"
+    )
 
     # --- Step 11: Variant tracking: build rid→bp mapping and __rid_{param} discriminator columns ---
-    import pandas as pd
     from itertools import product as _iproduct
 
+    import pandas as pd
+
     Log.debug("building variant tracking (rid->branch_params mapping)")
-    rid_to_bp: dict = {}   # {record_id: branch_params_dict}
-    rid_keys: list = []    # __rid_{param_name} column names added to this call's schema
+    rid_to_bp: dict = {}  # {record_id: branch_params_dict}
+    rid_keys: list = []  # __rid_{param_name} column names added to this call's schema
     fixed_rid_values: dict = {}  # {param_name: record_id} for Fixed inputs
     # ColumnSelection inputs participate in non-existent-combo PRUNING but NOT in
     # rid expansion / schema extension. Coupling them into rid_keys (as plain
@@ -1545,7 +1662,9 @@ def _for_each_prepare(
         elif isinstance(data, _scifor.Fixed) and isinstance(data.data, pd.DataFrame):
             df = data.data
             is_fixed = True
-        elif isinstance(data, _scifor.ColumnSelection) and isinstance(data.data, pd.DataFrame):
+        elif isinstance(data, _scifor.ColumnSelection) and isinstance(
+            data.data, pd.DataFrame
+        ):
             df = data.data
             is_colsel = True
 
@@ -1567,8 +1686,10 @@ def _for_each_prepare(
             if bp_col:
                 valid_bps = df.loc[valid_mask, bp_col]
                 # Use zip over columns instead of iterrows() - 10-100x faster
-                for rid, bp_raw in zip(valid_rids, valid_bps):
-                    rid_to_bp[rid] = json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+                for rid, bp_raw in zip(valid_rids, valid_bps, strict=False):
+                    rid_to_bp[rid] = (
+                        json.loads(bp_raw or "{}") if isinstance(bp_raw, str) else {}
+                    )
             else:
                 for rid in valid_rids:
                     rid_to_bp[rid] = {}
@@ -1608,9 +1729,11 @@ def _for_each_prepare(
                 f"({type(data).__name__}): registered rid key '{rid_col}'"
             )
 
-    Log.debug(f"variant tracking: {len(rid_to_bp)} record_id(s) mapped, "
-              f"{len(rid_keys)} rid key(s): {rid_keys}, "
-              f"{len(fixed_rid_values)} fixed input rid(s): {list(fixed_rid_values.keys())}")
+    Log.debug(
+        f"variant tracking: {len(rid_to_bp)} record_id(s) mapped, "
+        f"{len(rid_keys)} rid key(s): {rid_keys}, "
+        f"{len(fixed_rid_values)} fixed input rid(s): {list(fixed_rid_values.keys())}"
+    )
 
     # Strip __branch_params from all DataFrames (now tracked via rid_to_bp)
     for param_name, data in list(loaded_inputs.items()):
@@ -1633,16 +1756,22 @@ def _for_each_prepare(
     if base_combos is None:
         keys = list(metadata_iterables.keys())
         value_lists = [metadata_iterables[k] for k in keys]
-        base_combos = [dict(zip(keys, combo)) for combo in _iproduct(*value_lists)]
+        base_combos = [
+            dict(zip(keys, combo, strict=False)) for combo in _iproduct(*value_lists)
+        ]
         Log.debug(f"built {len(base_combos)} base combos from metadata iterables")
 
     # Detect aggregation mode: not all schema keys are being iterated, so
     # lower-level records should be aggregated into multi-row DataFrames
     # rather than being separated into individual combos via rid expansion.
     _iterated_schema_keys = set(metadata_iterables.keys()) & set(current_schema_keys)
-    _aggregation_mode = len(current_schema_keys) > 0 and len(_iterated_schema_keys) < len(current_schema_keys)
+    _aggregation_mode = len(current_schema_keys) > 0 and len(
+        _iterated_schema_keys
+    ) < len(current_schema_keys)
     if _aggregation_mode:
-        Log.debug(f"aggregation mode detected: iterating {len(_iterated_schema_keys)}/{len(current_schema_keys)} schema keys")
+        Log.debug(
+            f"aggregation mode detected: iterating {len(_iterated_schema_keys)}/{len(current_schema_keys)} schema keys"
+        )
     else:
         Log.debug("full iteration mode: all schema keys being iterated")
 
@@ -1650,32 +1779,37 @@ def _for_each_prepare(
     # iterable keys.  Using only schema keys misses non-schema iterables (e.g.
     # "session") that ARE present in the loaded DataFrame and should distinguish
     # which record belongs to which combo.
-    _lookup_keys = list(dict.fromkeys(
-        current_schema_keys +
-        [k for k in metadata_iterables if k not in set(current_schema_keys)]
-    ))
+    _lookup_keys = list(
+        dict.fromkeys(
+            current_schema_keys
+            + [k for k in metadata_iterables if k not in set(current_schema_keys)]
+        )
+    )
 
     # PathOutput variant placeholders: names referenced by templates that are
     # NOT combo-supplied — these resolve from each expanded combo's variant
     # group branch_params and are injected below (then stripped before save).
     _path_placeholder_names, _path_outputs = _pathoutput_placeholders(
-        inputs, set(current_schema_keys) | set(metadata_iterables))
+        inputs, set(current_schema_keys) | set(metadata_iterables)
+    )
     _path_missing_placeholders: set = set()
     if _path_placeholder_names:
-        Log.debug(f"PathOutput branch_param placeholder(s) detected: "
-                 f"{sorted(_path_placeholder_names)}")
+        Log.debug(
+            f"PathOutput branch_param placeholder(s) detected: "
+            f"{sorted(_path_placeholder_names)}"
+        )
 
     # For each rid_key, map combo_tuple → [rid_values at that combo]
     rid_per_combo: dict = {}
     for rid_col in rid_keys:
-        param_name = rid_col[len("__rid_"):]
+        param_name = rid_col[len("__rid_") :]
         data = loaded_inputs.get(param_name)
 
         # Extract DataFrame from Fixed wrapper if needed
         df = None
         if isinstance(data, pd.DataFrame):
             df = data
-        elif hasattr(data, 'data') and isinstance(data.data, pd.DataFrame):
+        elif hasattr(data, "data") and isinstance(data.data, pd.DataFrame):
             df = data.data
 
         if df is None or rid_col not in df.columns:
@@ -1701,8 +1835,10 @@ def _for_each_prepare(
             for combo_vals, group in df.groupby(schema_cols_in_df, sort=False):
                 raw_key = combo_vals if isinstance(combo_vals, tuple) else (combo_vals,)
                 # Expand to ALL _lookup_keys, filling missing cols with ""
-                col_val = {sk: ("" if v is None else str(v))
-                           for sk, v in zip(schema_cols_in_df, raw_key)}
+                col_val = {
+                    sk: ("" if v is None else str(v))
+                    for sk, v in zip(schema_cols_in_df, raw_key, strict=False)
+                }
                 key = tuple(col_val.get(sk, "") for sk in _lookup_keys)
                 mapping[key] = list(dict.fromkeys(group[rid_col].tolist()))
         else:
@@ -1719,7 +1855,11 @@ def _for_each_prepare(
     colsel_existence: dict = {}  # param_name -> set[tuple]
     for param_name in colsel_params:
         data = loaded_inputs.get(param_name)
-        df = data.data if (hasattr(data, "data") and isinstance(data.data, pd.DataFrame)) else None
+        df = (
+            data.data
+            if (hasattr(data, "data") and isinstance(data.data, pd.DataFrame))
+            else None
+        )
         if df is None:
             continue
         # Same all-NaN exclusion as rid_per_combo above: a coarser-level
@@ -1733,8 +1873,10 @@ def _for_each_prepare(
         if schema_cols_in_df:
             for combo_vals, _group in df.groupby(schema_cols_in_df, sort=False):
                 raw_key = combo_vals if isinstance(combo_vals, tuple) else (combo_vals,)
-                col_val = {sk: ("" if v is None else str(v))
-                           for sk, v in zip(schema_cols_in_df, raw_key)}
+                col_val = {
+                    sk: ("" if v is None else str(v))
+                    for sk, v in zip(schema_cols_in_df, raw_key, strict=False)
+                }
                 present.add(tuple(col_val.get(sk, "") for sk in _lookup_keys))
         else:
             present.add(tuple("" for _ in _lookup_keys))
@@ -1752,8 +1894,7 @@ def _for_each_prepare(
         if not present:
             continue
         populated_idx = tuple(
-            i for i in range(len(_lookup_keys))
-            if any(key[i] != "" for key in present)
+            i for i in range(len(_lookup_keys)) if any(key[i] != "" for key in present)
         )
         _colsel_coverage.append((present, populated_idx))
 
@@ -1781,9 +1922,18 @@ def _for_each_prepare(
     # explicit so it's obvious which is happening and what the variants are.
     _diag_inputs = []
     for _pn, _data in loaded_inputs.items():
-        _d = (_data if isinstance(_data, pd.DataFrame)
-              else (_data.data if (hasattr(_data, "data")
-                    and isinstance(getattr(_data, "data", None), pd.DataFrame)) else None))
+        _d = (
+            _data
+            if isinstance(_data, pd.DataFrame)
+            else (
+                _data.data
+                if (
+                    hasattr(_data, "data")
+                    and isinstance(getattr(_data, "data", None), pd.DataFrame)
+                )
+                else None
+            )
+        )
         if _d is not None:
             _diag_inputs.append((_pn, _d))
     for _pn, _d in _diag_inputs:
@@ -1799,7 +1949,13 @@ def _for_each_prepare(
         for _vals, _grp in _d.groupby(_scols, sort=False):
             _rids = list(dict.fromkeys(_grp[_rc].tolist()))
             if len(_rids) > 1 or len(_grp) > 1:
-                _loc = dict(zip(_scols, _vals if isinstance(_vals, tuple) else (_vals,)))
+                _loc = dict(
+                    zip(
+                        _scols,
+                        _vals if isinstance(_vals, tuple) else (_vals,),
+                        strict=False,
+                    )
+                )
                 if len(_rids) > 1:
                     _multi += 1
                 if len(_samples) < 5:
@@ -1845,13 +2001,10 @@ def _for_each_prepare(
         # on the MATLAB bridge, surfaces as an empty cell column the
         # caller has to special-case.
         iterated_indices = [
-            i for i, k in enumerate(current_schema_keys)
-            if k in _iterated_schema_keys
+            i for i, k in enumerate(current_schema_keys) if k in _iterated_schema_keys
         ]
         if iterated_indices:
-            below_iterated_keys = set(
-                current_schema_keys[max(iterated_indices) + 1:]
-            )
+            below_iterated_keys = set(current_schema_keys[max(iterated_indices) + 1 :])
         else:
             # No schema keys iterated — every schema key is "below"
             # (this is the no-iteration case; aggregate across everything).
@@ -1859,8 +2012,7 @@ def _for_each_prepare(
 
         # --- D1 auto-split bookkeeping (before __rid_* columns are stripped) ---
         _across_params = {
-            name for name, spec in inputs.items()
-            if isinstance(spec, AcrossVariants)
+            name for name, spec in inputs.items() if isinstance(spec, AcrossVariants)
         }
         _sig_cache: dict = {}
 
@@ -1881,13 +2033,13 @@ def _for_each_prepare(
         _iterated_keys_ordered = [k for k in _lookup_keys if k in _iterated_schema_keys]
         _iter_idx = [_lookup_keys.index(k) for k in _iterated_keys_ordered]
 
-        vsig_cols: list = []      # __vsig_{param} discriminators for split inputs
-        _vsig_values: dict = {}   # vsig_col -> ordered unique signature values
+        vsig_cols: list = []  # __vsig_{param} discriminators for split inputs
+        _vsig_values: dict = {}  # vsig_col -> ordered unique signature values
         # vsig_col -> {iterated_combo_key -> {sig -> [rids]}}
         _sig_rids_by_combo: dict = {}
 
         for rid_col in rid_keys:
-            param_name = rid_col[len("__rid_"):]
+            param_name = rid_col[len("__rid_") :]
             data = loaded_inputs.get(param_name)
             _df = data if isinstance(data, pd.DataFrame) else None
             if _df is None or rid_col not in _df.columns:
@@ -1897,16 +2049,21 @@ def _for_each_prepare(
                 # Opt-out: pool all variants, attaching each namespaced
                 # branch_param key as an ordinary column so the function can
                 # group by specification (variant identity is preserved).
-                bp_keys = sorted({
-                    k for rid in _df[rid_col].dropna().unique()
-                    for k in rid_to_bp.get(rid, {})
-                })
+                bp_keys = sorted(
+                    {
+                        k
+                        for rid in _df[rid_col].dropna().unique()
+                        for k in rid_to_bp.get(rid, {})
+                    }
+                )
                 _attached, _collided = [], []
                 for k in bp_keys:
                     if k in _df.columns:
                         _collided.append(k)
                         continue
-                    _df[k] = _df[rid_col].map(lambda r, _k=k: rid_to_bp.get(r, {}).get(_k))
+                    _df[k] = _df[rid_col].map(
+                        lambda r, _k=k: rid_to_bp.get(r, {}).get(_k)
+                    )
                     _attached.append(k)
                 if _collided:
                     _msg = (
@@ -1941,11 +2098,15 @@ def _for_each_prepare(
                 for rid in rids:
                     sig = _sig_of(rid)
                     per_combo_rids.setdefault(ck, {}).setdefault(sig, []).append(rid)
-                    per_combo_locs.setdefault(ck, {}).setdefault(sig, set()).add(full_key)
+                    per_combo_locs.setdefault(ck, {}).setdefault(sig, set()).add(
+                        full_key
+                    )
             _sig_rids_by_combo[vsig_col] = per_combo_rids
-            _vsig_values[vsig_col] = list(dict.fromkeys(
-                sig for sig_map in per_combo_rids.values() for sig in sig_map
-            ))
+            _vsig_values[vsig_col] = list(
+                dict.fromkeys(
+                    sig for sig_map in per_combo_rids.values() for sig in sig_map
+                )
+            )
 
             # Ragged variant groups: a group missing schema locations that other
             # groups cover aggregates a PARTIAL set of rows. Decided policy
@@ -1959,10 +2120,15 @@ def _for_each_prepare(
                     missing = union_locs - locs
                     if missing and len(_ragged_examples) < 5:
                         combo_disp = (
-                            dict(zip(_iterated_keys_ordered, ck)) or "(grand aggregation)"
+                            dict(zip(_iterated_keys_ordered, ck, strict=False))
+                            or "(grand aggregation)"
                         )
                         miss_disp = [
-                            {k: v for k, v in zip(_lookup_keys, m) if v != ""}
+                            {
+                                k: v
+                                for k, v in zip(_lookup_keys, m, strict=False)
+                                if v != ""
+                            }
                             for m in sorted(missing)[:3]
                         ]
                         _ragged_examples.append(
@@ -1987,13 +2153,16 @@ def _for_each_prepare(
             # since Step 11 registers a rid key for it).
             if isinstance(data, pd.DataFrame):
                 _df = data
-            elif isinstance(data, _scifor.ColumnSelection) and isinstance(data.data, pd.DataFrame):
+            elif isinstance(data, _scifor.ColumnSelection) and isinstance(
+                data.data, pd.DataFrame
+            ):
                 _df = data.data
             else:
                 continue
             rid_cols_in_df = [c for c in _df.columns if c.startswith("__rid_")]
             empty_schema_cols = [
-                c for c in _df.columns
+                c
+                for c in _df.columns
                 if c in below_iterated_keys and _df[c].isna().all()
             ]
             drop_cols = rid_cols_in_df + empty_schema_cols
@@ -2042,7 +2211,7 @@ def _for_each_prepare(
             for k, v in json.loads(sig).items():
                 if not str(k).startswith("__save__."):
                     continue
-                bare = k[len("__save__."):]
+                bare = k[len("__save__.") :]
                 if bare in combo and str(combo[bare]) != str(v):
                     return True
             return False
@@ -2053,14 +2222,14 @@ def _for_each_prepare(
             ck = tuple(str(combo.get(k, "")) for k in _iterated_keys_ordered)
             sig_options = []
             for c in vsig_cols:
-                sigs = (sorted(_sig_rids_by_combo.get(c, {}).get(ck, {}).keys())
-                        or [_EMPTY_SIG])
-                aligned = [s for s in sigs
-                           if not _sig_conflicts_with_combo(s, combo)]
+                sigs = sorted(_sig_rids_by_combo.get(c, {}).get(ck, {}).keys()) or [
+                    _EMPTY_SIG
+                ]
+                aligned = [s for s in sigs if not _sig_conflicts_with_combo(s, combo)]
                 if len(aligned) < len(sigs):
                     Log.debug(
                         f"aggregation auto-split: input "
-                        f"'{c[len('__vsig_'):]}' at combo {combo}: aligned "
+                        f"'{c[len('__vsig_') :]}' at combo {combo}: aligned "
                         f"__save__.* signature(s) to iterated value(s) — "
                         f"kept {len(aligned)}/{len(sigs)} group(s)"
                     )
@@ -2073,7 +2242,7 @@ def _for_each_prepare(
             # __vsig column) — identical for every group of this combo.
             pooled_by_param = {}
             for rid_col, mapping in rid_per_combo.items():
-                if f"__vsig_{rid_col[len('__rid_'):]}" in vsig_cols:
+                if f"__vsig_{rid_col[len('__rid_') :]}" in vsig_cols:
                     continue
                 param_rids = []
                 for full_key, rids in mapping.items():
@@ -2081,28 +2250,34 @@ def _for_each_prepare(
                         param_rids.extend(rids)
                 if param_rids:
                     pooled_by_param[rid_col] = param_rids
-            for sig_combo in (_iproduct(*sig_options) if sig_options else [()]):
+            for sig_combo in _iproduct(*sig_options) if sig_options else [()]:
                 fc = dict(combo)
                 rids_by_param = dict(pooled_by_param)
-                for c, s in zip(vsig_cols, sig_combo):
+                for c, s in zip(vsig_cols, sig_combo, strict=False):
                     fc[c] = s
                     group_rids = _sig_rids_by_combo.get(c, {}).get(ck, {}).get(s, [])
                     if group_rids:
-                        rids_by_param["__rid_" + c[len("__vsig_"):]] = group_rids
+                        rids_by_param["__rid_" + c[len("__vsig_") :]] = group_rids
                 if _path_placeholder_names:
                     # Group bp = the parsed split-input signatures + any Fixed
                     # inputs' bp; {variant} digests the signature tuple itself.
                     _bp_dicts = [json.loads(s) for s in sig_combo]
-                    _bp_dicts += [rid_to_bp.get(r, {})
-                                  for r in fixed_rid_values.values() if r]
+                    _bp_dicts += [
+                        rid_to_bp.get(r, {}) for r in fixed_rid_values.values() if r
+                    ]
                     _merged, _confl = _merge_group_bp(_bp_dicts)
                     _inject_path_placeholders(
-                        fc, _path_placeholder_names, _merged, _confl,
-                        "|".join(sig_combo), _path_missing_placeholders)
+                        fc,
+                        _path_placeholder_names,
+                        _merged,
+                        _confl,
+                        "|".join(sig_combo),
+                        _path_missing_placeholders,
+                    )
                 full_combos.append(fc)
-                _combo_to_rids[
-                    tuple(str(fc.get(k, "")) for k in _combo_key_cols)
-                ] = rids_by_param
+                _combo_to_rids[tuple(str(fc.get(k, "")) for k in _combo_key_cols)] = (
+                    rids_by_param
+                )
 
         # The __vsig_* keys extend the scifor schema (Step 15) so each call's
         # rows are filtered to its variant group; the save path keys
@@ -2110,16 +2285,21 @@ def _for_each_prepare(
         _iterated_keys_ordered = _combo_key_cols
         rid_keys_for_schema = list(vsig_cols)
 
-        total_rids = sum(len(rids) for rids_by_param in _combo_to_rids.values()
-                         for rids in rids_by_param.values())
-        Log.debug(f"aggregation mode (auto-split by branch_param signature): "
-                 f"iterating {sorted(_iterated_schema_keys) or '(none)'} "
-                 f"of schema {current_schema_keys}, "
-                 f"{len(base_combos)} base combo(s) -> {len(full_combos)} call(s), "
-                 f"variant groups per split input: "
-                 f"{ {c[len('__vsig_'):]: len(_vsig_values.get(c, [])) for c in vsig_cols} }, "
-                 f"pooled (AcrossVariants) inputs: {sorted(_across_params) or 'none'}, "
-                 f"{total_rids} contributing rids")
+        total_rids = sum(
+            len(rids)
+            for rids_by_param in _combo_to_rids.values()
+            for rids in rids_by_param.values()
+        )
+        Log.debug(
+            f"aggregation mode (auto-split by branch_param signature): "
+            f"iterating {sorted(_iterated_schema_keys) or '(none)'} "
+            f"of schema {current_schema_keys}, "
+            f"{len(base_combos)} base combo(s) -> {len(full_combos)} call(s), "
+            f"variant groups per split input: "
+            f"{ {c[len('__vsig_') :]: len(_vsig_values.get(c, [])) for c in vsig_cols} }, "
+            f"pooled (AcrossVariants) inputs: {sorted(_across_params) or 'none'}, "
+            f"{total_rids} contributing rids"
+        )
     else:
         # Full iteration mode: expand combos with rid variants.
         _combo_to_rids = None
@@ -2130,8 +2310,7 @@ def _for_each_prepare(
         # iteration every combo sees exactly one variant row (rid expansion),
         # so pooling is a no-op and the input behaves as if unwrapped.
         _across_noop = sorted(
-            name for name, spec in inputs.items()
-            if isinstance(spec, AcrossVariants)
+            name for name, spec in inputs.items() if isinstance(spec, AcrossVariants)
         )
         if _across_noop:
             _msg = (
@@ -2145,8 +2324,10 @@ def _for_each_prepare(
             Log.warn(_msg)
 
         # Expand each base combo with all valid rid-combos for that schema location
-        Log.debug(f"expanding combos: {len(base_combos)} base combos, "
-                  f"{len(rid_per_combo)} rid dimensions")
+        Log.debug(
+            f"expanding combos: {len(base_combos)} base combos, "
+            f"{len(rid_per_combo)} rid dimensions"
+        )
         full_combos: list = []
         _pruned_colsel = 0
         for combo in base_combos:
@@ -2178,7 +2359,7 @@ def _for_each_prepare(
             if rid_lists:
                 for rid_combo in _iproduct(*rid_lists):
                     full_combo = {**combo}
-                    for rc_name, rc_val in zip(rid_col_names, rid_combo):
+                    for rc_name, rc_val in zip(rid_col_names, rid_combo, strict=False):
                         full_combo[rc_name] = rc_val
                     # Add Fixed input record_ids to combo
                     for fixed_param, fixed_rid in fixed_rid_values.items():
@@ -2186,13 +2367,18 @@ def _for_each_prepare(
                     if _path_placeholder_names:
                         _bp_dicts = [
                             rid_to_bp.get(full_combo[k], {})
-                            for k in full_combo if str(k).startswith("__rid_")
+                            for k in full_combo
+                            if str(k).startswith("__rid_")
                         ]
                         _merged, _confl = _merge_group_bp(_bp_dicts)
                         _inject_path_placeholders(
-                            full_combo, _path_placeholder_names, _merged, _confl,
+                            full_combo,
+                            _path_placeholder_names,
+                            _merged,
+                            _confl,
                             json.dumps(_merged, sort_keys=True, default=str),
-                            _path_missing_placeholders)
+                            _path_missing_placeholders,
+                        )
                     full_combos.append(full_combo)
             else:
                 full_combo = {**combo}
@@ -2202,13 +2388,18 @@ def _for_each_prepare(
                 if _path_placeholder_names:
                     _bp_dicts = [
                         rid_to_bp.get(full_combo[k], {})
-                        for k in full_combo if str(k).startswith("__rid_")
+                        for k in full_combo
+                        if str(k).startswith("__rid_")
                     ]
                     _merged, _confl = _merge_group_bp(_bp_dicts)
                     _inject_path_placeholders(
-                        full_combo, _path_placeholder_names, _merged, _confl,
+                        full_combo,
+                        _path_placeholder_names,
+                        _merged,
+                        _confl,
                         json.dumps(_merged, sort_keys=True, default=str),
-                        _path_missing_placeholders)
+                        _path_missing_placeholders,
+                    )
                 full_combos.append(full_combo)
 
         if _pruned_colsel:
@@ -2217,8 +2408,10 @@ def _for_each_prepare(
                 f"via ColumnSelection coverage"
             )
         if len(full_combos) != len(base_combos):
-            Log.debug(f"expanded {len(base_combos)} base combos -> "
-                     f"{len(full_combos)} full combos (rid variants / pruning)")
+            Log.debug(
+                f"expanded {len(base_combos)} base combos -> "
+                f"{len(full_combos)} full combos (rid variants / pruning)"
+            )
         else:
             Log.debug(f"{len(full_combos)} combos (no rid expansion needed)")
 
@@ -2231,12 +2424,18 @@ def _for_each_prepare(
         # fails to register either a rid key or ColumnSelection coverage.
         _has_df_inputs = any(
             isinstance(v, pd.DataFrame)
-            or (isinstance(v, (_scifor.ColumnSelection, _scifor.Fixed))
-                and isinstance(getattr(v, "data", None), pd.DataFrame))
+            or (
+                isinstance(v, (_scifor.ColumnSelection, _scifor.Fixed))
+                and isinstance(getattr(v, "data", None), pd.DataFrame)
+            )
             for v in loaded_inputs.values()
         )
-        if (_has_df_inputs and not rid_per_combo and not colsel_existence
-                and len(full_combos) == len(base_combos)):
+        if (
+            _has_df_inputs
+            and not rid_per_combo
+            and not colsel_existence
+            and len(full_combos) == len(base_combos)
+        ):
             Log.warn(
                 "expand_combos: full iteration over all schema keys kept the "
                 f"ENTIRE Cartesian product ({len(full_combos)} combos) with no "
@@ -2270,8 +2469,12 @@ def _for_each_prepare(
                 _colname_columns = list(_cs.columns)
                 break
         _guard_pathoutput_collisions(
-            _path_outputs, full_combos, _colname_columns, rid_to_bp,
-            _path_placeholder_names)
+            _path_outputs,
+            full_combos,
+            _colname_columns,
+            rid_to_bp,
+            _path_placeholder_names,
+        )
 
     # Step 14: Apply pre-combo hook (e.g. skip_computed from scihist): filter out any
     # combos where the hook returns True.
@@ -2300,7 +2503,9 @@ def _for_each_prepare(
             # O(1) per run and part of the "what ran / what was skipped" story.
             Log.info(f"skip_computed: {skipped}/{pre_hook_count} combos skipped")
         else:
-            Log.debug(f"skip_computed: 0/{pre_hook_count} combos skipped (all will be computed)")
+            Log.debug(
+                f"skip_computed: 0/{pre_hook_count} combos skipped (all will be computed)"
+            )
     else:
         Log.debug("no pre-combo hook provided, skipping")
 
@@ -2310,7 +2515,9 @@ def _for_each_prepare(
     # branch-param signatures in aggregation (per-variant-group multi-row DFs).
     if rid_keys_for_schema:
         extended_schema = current_schema_keys + rid_keys_for_schema
-        Log.debug(f"extending scifor schema from {len(current_schema_keys)} to {len(extended_schema)} keys (added {len(rid_keys_for_schema)} {'variant-signature' if _aggregation_mode else 'rid'} keys)")
+        Log.debug(
+            f"extending scifor schema from {len(current_schema_keys)} to {len(extended_schema)} keys (added {len(rid_keys_for_schema)} {'variant-signature' if _aggregation_mode else 'rid'} keys)"
+        )
         _scifor.set_schema(extended_schema)
     else:
         Log.debug("not extending scifor schema (no discriminator keys)")
@@ -2323,15 +2530,19 @@ def _for_each_prepare(
     if rid_keys_for_schema:
         if _aggregation_mode:
             for vsig_col in rid_keys_for_schema:
-                extended_metadata_iterables[vsig_col] = list(dict.fromkeys(
-                    str(fc[vsig_col]) for fc in full_combos if vsig_col in fc
-                ))
+                extended_metadata_iterables[vsig_col] = list(
+                    dict.fromkeys(
+                        str(fc[vsig_col]) for fc in full_combos if vsig_col in fc
+                    )
+                )
         else:
             for rid_col, mapping in rid_per_combo.items():
                 all_rids: list = []
                 for rids in mapping.values():
                     all_rids.extend(rids)
-                extended_metadata_iterables[rid_col] = list(dict.fromkeys(all_rids))  # preserve order, dedupe
+                extended_metadata_iterables[rid_col] = list(
+                    dict.fromkeys(all_rids)
+                )  # preserve order, dedupe
 
     return _ForEachState(
         fn_name=fn_name,
@@ -2376,7 +2587,9 @@ def _for_each_save_resolved(
     """
     # Step 18: Restore scifor's schema
     if state.rid_keys_for_schema:
-        Log.debug(f"restoring scifor schema to {len(state.current_schema_keys)} keys (removing {len(state.rid_keys_for_schema)} rid keys)")
+        Log.debug(
+            f"restoring scifor schema to {len(state.current_schema_keys)} keys (removing {len(state.rid_keys_for_schema)} rid keys)"
+        )
         _scifor.set_schema(state.current_schema_keys)
     else:
         Log.debug("no schema restoration needed (wasn't extended)")
@@ -2393,28 +2606,39 @@ def _for_each_save_resolved(
         _extra_cols = [c for c in result_tbl.columns if c in state.path_extra_keys]
         if _extra_cols:
             result_tbl = result_tbl.drop(columns=_extra_cols)
-            Log.debug(f"stripped {len(_extra_cols)} PathOutput placeholder "
-                     f"column(s) from results: {_extra_cols}")
+            Log.debug(
+                f"stripped {len(_extra_cols)} PathOutput placeholder "
+                f"column(s) from results: {_extra_cols}"
+            )
 
     # Step 19: Save results
     if save and outputs and not result_tbl.empty:
-        Log.debug(f"saving {len(result_tbl)} result row(s) for {len(outputs)} output(s)")
+        Log.debug(
+            f"saving {len(result_tbl)} result row(s) for {len(outputs)} output(s)"
+        )
         # Compute Fixed input rids for the bipartite graph edges if not provided
         # (Fixed inputs contribute __graph_var_bindings just like variable inputs).
         fixed_rids_for_save = lineage_fixed_rids
         if fixed_rids_for_save is None:
             fixed_rids_for_save = _compute_fixed_input_rids(inputs, db)
             if fixed_rids_for_save:
-                Log.debug(f"computed {len(fixed_rids_for_save)} Fixed input rid(s) for graph: {list(fixed_rids_for_save.keys())}")
+                Log.debug(
+                    f"computed {len(fixed_rids_for_save)} Fixed input rid(s) for graph: {list(fixed_rids_for_save.keys())}"
+                )
 
         # Per-param identity selectors (ColumnSelection columns, etc.) for the
         # bipartite graph edges. Computed once from the inputs spec.
         from .provenance_save import compute_input_selectors
+
         input_selectors = compute_input_selectors(inputs)
 
         save_t0 = time.perf_counter()
         _save_results(
-            result_tbl, outputs, state.output_names, state.config_keys, db,
+            result_tbl,
+            outputs,
+            state.output_names,
+            state.config_keys,
+            db,
             rid_to_bp=state.rid_to_bp,
             rid_keys=[] if state.aggregation_mode else state.rid_keys,
             lineage_fixed_rids=fixed_rids_for_save,
@@ -2423,10 +2647,12 @@ def _for_each_save_resolved(
             input_selectors=input_selectors,
             generates_file=generates_file,
             endpoint_kind=endpoint_kind,
-            stamp_param_names=[rc[len("__rid_"):] for rc in (state.rid_keys or [])],
+            stamp_param_names=[rc[len("__rid_") :] for rc in (state.rid_keys or [])],
         )
         save_elapsed = time.perf_counter() - save_t0
-        Log.debug(f"save_results complete: saved {len(result_tbl)} result(s) in {save_elapsed:.3f}s")
+        Log.debug(
+            f"save_results complete: saved {len(result_tbl)} result(s) in {save_elapsed:.3f}s"
+        )
     elif not save:
         Log.debug("skipping save (save=False)")
     elif not outputs:
@@ -2470,6 +2696,7 @@ def _normalize_variable_inputs(
         Dict with normalized raw data for variable inputs, pass-through for others
     """
     import pandas as pd
+
     reconstructed = {}
 
     for param_name, raw_value in resolved.items():
@@ -2487,7 +2714,7 @@ def _normalize_variable_inputs(
         if isinstance(input_spec, type):
             # Simple variable type
             variable_class = input_spec
-        elif hasattr(input_spec, 'var_type') and isinstance(input_spec.var_type, type):
+        elif hasattr(input_spec, "var_type") and isinstance(input_spec.var_type, type):
             # Fixed wrapper - extract the variable class
             variable_class = input_spec.var_type
 
@@ -2519,9 +2746,12 @@ def _normalize_variable_inputs(
             if isinstance(df_input, pd.DataFrame):
                 rid_col = f"__rid_{param_name}"
                 # Columns that are NOT data: internal __ columns + schema/combo keys
-                schema_keys_in_combo = {k for k in current_combo if not k.startswith("__")}
+                schema_keys_in_combo = {
+                    k for k in current_combo if not k.startswith("__")
+                }
                 data_cols = [
-                    c for c in df_input.columns
+                    c
+                    for c in df_input.columns
                     if not c.startswith("__") and c not in schema_keys_in_combo
                 ]
                 view_name = (
@@ -2552,6 +2782,7 @@ def _normalize_variable_inputs(
 # Input loading and conversion
 # ---------------------------------------------------------------------------
 
+
 def _convert_inputs(
     inputs: dict[str, Any],
     db: Any | None,
@@ -2571,6 +2802,7 @@ def _convert_inputs(
                 # column name per-iteration (validated there against the
                 # presence of an iterate input).
                 from scifor import ColName as SciforColName
+
                 result[param_name] = SciforColName()
                 Log.debug(f"input '{param_name}': deferred ColName() -> scifor marker")
             else:
@@ -2590,17 +2822,23 @@ def _convert_inputs(
     return result
 
 
-def _log_loaded_input(param_name: str, var_spec: Any, loaded: Any, elapsed: float) -> None:
+def _log_loaded_input(
+    param_name: str, var_spec: Any, loaded: Any, elapsed: float
+) -> None:
     """Log details about a loaded input."""
     import pandas as pd
 
     type_name = _input_type_name(var_spec)
 
     if isinstance(loaded, pd.DataFrame):
-        Log.debug(f"input '{param_name}': loaded {type_name} -> "
-                 f"{len(loaded)} rows, {len(loaded.columns)} cols in {elapsed:.3f}s")
+        Log.debug(
+            f"input '{param_name}': loaded {type_name} -> "
+            f"{len(loaded)} rows, {len(loaded.columns)} cols in {elapsed:.3f}s"
+        )
     elif isinstance(loaded, (PerComboLoader, PerComboLoaderMerge)):
-        Log.debug(f"input '{param_name}': {type_name} (per-combo loader, will load during iteration)")
+        Log.debug(
+            f"input '{param_name}': {type_name} (per-combo loader, will load during iteration)"
+        )
     else:
         Log.debug(f"input '{param_name}': loaded {type_name} in {elapsed:.3f}s")
 
@@ -2616,7 +2854,9 @@ def _input_type_name(var_spec: Any) -> str:
         return f"Fixed({inner_name}, {fixed_str})"
     if isinstance(var_spec, Variant):
         inner_name = _input_type_name(var_spec.var_type)
-        bp_str = ", ".join(f"{k}={v}" for k, v in sorted(var_spec.branch_params.items()))
+        bp_str = ", ".join(
+            f"{k}={v}" for k, v in sorted(var_spec.branch_params.items())
+        )
         return f"Variant({inner_name}, {bp_str})"
     if isinstance(var_spec, AcrossVariants):
         return f"AcrossVariants({_input_type_name(var_spec.var_type)})"
@@ -2625,7 +2865,7 @@ def _input_type_name(var_spec: Any) -> str:
         return f"ColumnSelection({inner_name}, {var_spec.columns})"
     if isinstance(var_spec, type):
         return var_spec.__name__
-    if hasattr(var_spec, '__name__'):
+    if hasattr(var_spec, "__name__"):
         return var_spec.__name__
     return type(var_spec).__name__
 
@@ -2651,10 +2891,14 @@ def _convert_inputs_for_display(inputs: dict[str, Any]) -> dict[str, Any]:
             result[param_name] = _scifor.ColumnSelection(
                 dummy, var_spec.columns, iterate=var_spec.iterate
             )
-        elif isinstance(var_spec, Fixed) and isinstance(var_spec.var_type, ColumnSelection):
+        elif isinstance(var_spec, Fixed) and isinstance(
+            var_spec.var_type, ColumnSelection
+        ):
             inner = var_spec.var_type
             dummy = pd.DataFrame(columns=inner.columns or [])
-            dummy_cs = _scifor.ColumnSelection(dummy, inner.columns, iterate=inner.iterate)
+            dummy_cs = _scifor.ColumnSelection(
+                dummy, inner.columns, iterate=inner.iterate
+            )
             result[param_name] = _scifor.Fixed(dummy_cs, **var_spec.fixed_metadata)
         elif isinstance(var_spec, Fixed) and not isinstance(var_spec.var_type, Merge):
             dummy = pd.DataFrame()
@@ -2680,6 +2924,7 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
     if resolved_db is None:
         try:
             from scidb.database import get_database
+
             resolved_db = get_database()
         except Exception:
             raise ValueError(
@@ -2687,7 +2932,9 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
                 "Either pass db= to for_each or call configure_database() first."
             )
 
-    var_name = var_type.__name__ if isinstance(var_type, type) else type(var_type).__name__
+    var_name = (
+        var_type.__name__ if isinstance(var_type, type) else type(var_type).__name__
+    )
     schema_keys = list(resolved_db.dataset_schema_keys)
 
     # Query the _variables table for dtype metadata
@@ -2701,7 +2948,7 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
 
     if row is None:
         # Variable not yet saved — try using view_name for single-column mode
-        if hasattr(var_type, 'view_name'):
+        if hasattr(var_type, "view_name"):
             return var_type.view_name()
         return var_name
 
@@ -2713,13 +2960,15 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
         col_names = list(dtype_meta.get("columns", {}).keys())
         if col_names:
             return col_names[0]
-        if hasattr(var_type, 'view_name'):
+        if hasattr(var_type, "view_name"):
             return var_type.view_name()
         return var_name
 
     if mode == "dataframe":
         # DataFrame variables: subtract schema keys from df_columns
-        df_columns = dtype_meta.get("df_columns", list(dtype_meta.get("columns", {}).keys()))
+        df_columns = dtype_meta.get(
+            "df_columns", list(dtype_meta.get("columns", {}).keys())
+        )
         data_cols = [c for c in df_columns if c not in schema_keys]
         if len(data_cols) == 1:
             return data_cols[0]
@@ -2743,7 +2992,7 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
         )
 
     # Unknown mode — fall back to view_name
-    if hasattr(var_type, 'view_name'):
+    if hasattr(var_type, "view_name"):
         return var_type.view_name()
     return var_name
 
@@ -2772,8 +3021,9 @@ def _load_input(
     # foreach Step 12 (skip the aggregation auto-split, attach branch_param
     # columns), keyed off the original ``inputs`` spec, so here we just unwrap.
     if isinstance(var_spec, AcrossVariants):
-        return _load_input(var_spec.var_type, db, where,
-                           branch_params_filter=branch_params_filter)
+        return _load_input(
+            var_spec.var_type, db, where, branch_params_filter=branch_params_filter
+        )
 
     # Variant: inject/merge its branch_params into the inherited filter (error on
     # conflicting values) and recurse into the inner spec.  Composition with the
@@ -2789,8 +3039,7 @@ def _load_input(
                 )
             merged[k] = v
         Log.debug(
-            f"[Variant] {var_spec.__name__}: injecting branch_params_filter="
-            f"{merged}"
+            f"[Variant] {var_spec.__name__}: injecting branch_params_filter={merged}"
         )
         return _load_input(var_spec.var_type, db, where, branch_params_filter=merged)
 
@@ -2800,6 +3049,7 @@ def _load_input(
         if _merge_db is None:
             try:
                 from scidb.database import get_database
+
                 _merge_db = get_database()
             except Exception:
                 pass
@@ -2816,7 +3066,11 @@ def _load_input(
         # the Merge would eliminate anyway.
         loaded_tables = []
         _SCIDB_META = {"__record_id", "__branch_params", "version"}
-        _schema_keys = set(getattr(_merge_db, 'dataset_schema_keys', []) if _merge_db is not None else [])
+        _schema_keys = set(
+            getattr(_merge_db, "dataset_schema_keys", [])
+            if _merge_db is not None
+            else []
+        )
 
         if where is not None:
             merge_effective_ids = _compute_merge_effective_ids(_merge_db, var_spec)
@@ -2827,15 +3081,16 @@ def _load_input(
             # set) instead of returning every variant that shares the same schema keys.
             merge_var_filter = _merge_constituent_variable_filter(where)
             Log.debug(
-                f"[Merge] {var_spec.__name__}: variant filter="
-                f"{merge_var_filter!r}"
+                f"[Merge] {var_spec.__name__}: variant filter={merge_var_filter!r}"
             )
 
         for sub_spec in var_spec.var_specs:
             if where is not None:
                 cls = _get_loadable_class_from_spec(sub_spec)
                 matching_ids = where.resolve(
-                    _merge_db, cls, cls.table_name(),
+                    _merge_db,
+                    cls,
+                    cls.table_name(),
                     validate_coverage=False,  # coverage validated once above
                 )
                 constituent_where = _PreresolvedFilter(
@@ -2847,7 +3102,9 @@ def _load_input(
             # this recursion; the inherited filter (normally None — Variant(Merge)
             # is rejected at construction) is threaded for safety.
             loaded = _load_input(
-                sub_spec, db, where=constituent_where,
+                sub_spec,
+                db,
+                where=constituent_where,
                 branch_params_filter=branch_params_filter,
             )
             # Strip scidb metadata columns that would conflict when merged column-wise.
@@ -2861,19 +3118,29 @@ def _load_input(
             # cell arrays of empty doubles and crash when it attempts string conversion.
             # Dropping them lets the constituent broadcast across the missing dimension.
             if isinstance(loaded, pd.DataFrame):
-                drop_cols = [c for c in loaded.columns
-                             if c in _SCIDB_META or c.startswith("__")]
-                all_null_sk = [c for c in loaded.columns
-                               if c in _schema_keys and loaded[c].isna().all()]
+                drop_cols = [
+                    c for c in loaded.columns if c in _SCIDB_META or c.startswith("__")
+                ]
+                all_null_sk = [
+                    c
+                    for c in loaded.columns
+                    if c in _schema_keys and loaded[c].isna().all()
+                ]
                 drop_cols = list(dict.fromkeys(drop_cols + all_null_sk))
                 if drop_cols:
                     loaded = loaded.drop(columns=drop_cols)
-            elif hasattr(loaded, 'data') and isinstance(loaded.data, pd.DataFrame):
+            elif hasattr(loaded, "data") and isinstance(loaded.data, pd.DataFrame):
                 # _scifor.Fixed wrapping a DataFrame
-                drop_cols = [c for c in loaded.data.columns
-                             if c in _SCIDB_META or c.startswith("__")]
-                all_null_sk = [c for c in loaded.data.columns
-                               if c in _schema_keys and loaded.data[c].isna().all()]
+                drop_cols = [
+                    c
+                    for c in loaded.data.columns
+                    if c in _SCIDB_META or c.startswith("__")
+                ]
+                all_null_sk = [
+                    c
+                    for c in loaded.data.columns
+                    if c in _schema_keys and loaded.data[c].isna().all()
+                ]
                 drop_cols = list(dict.fromkeys(drop_cols + all_null_sk))
                 if drop_cols:
                     loaded.data = loaded.data.drop(columns=drop_cols)
@@ -2889,7 +3156,9 @@ def _load_input(
                 "Merge(Fixed(df1, ...), df2)"
             )
         inner_loaded = _load_input(
-            var_spec.var_type, db, where,
+            var_spec.var_type,
+            db,
+            where,
             branch_params_filter=branch_params_filter,
         )
         if isinstance(inner_loaded, PerComboLoader):
@@ -2898,6 +3167,7 @@ def _load_input(
         # Keep __record_id for variant tracking (needed for BaseVariable reconstruction)
         # but strip __branch_params which is redundant for Fixed inputs.
         import pandas as pd
+
         if isinstance(inner_loaded, pd.DataFrame):
             if "__branch_params" in inner_loaded.columns:
                 inner_loaded = inner_loaded.drop(columns=["__branch_params"])
@@ -2907,17 +3177,19 @@ def _load_input(
         _sk = _get_schema_keys(db)
         if _sk:
             from .database import _schema_str
+
             fixed_meta = {
-                k: _schema_str(v) if k in _sk else v
-                for k, v in fixed_meta.items()
+                k: _schema_str(v) if k in _sk else v for k, v in fixed_meta.items()
             }
         return _scifor.Fixed(inner_loaded, **fixed_meta)
 
     # ColumnSelection: load inner var_type if possible, else per-combo
     if isinstance(var_spec, ColumnSelection):
-        if hasattr(var_spec.var_type, 'load'):
+        if hasattr(var_spec.var_type, "load"):
             loaded_df = _load_var_type_as_spread(
-                var_spec.var_type, db, where,
+                var_spec.var_type,
+                db,
+                where,
                 branch_params_filter=branch_params_filter,
             )
             return _scifor.ColumnSelection(
@@ -2934,18 +3206,21 @@ def _load_input(
     # the slow-path cannot build a properly-keyed spread DataFrame (it only
     # calls load() once with version/db kwargs, not per combo metadata), so
     # fall back to per-combo loading — same logic as Merge above.
-    if isinstance(var_spec, type) or hasattr(var_spec, 'load'):
-        if hasattr(var_spec, 'load'):
+    if isinstance(var_spec, type) or hasattr(var_spec, "load"):
+        if hasattr(var_spec, "load"):
             _check_db = db
             if _check_db is None:
                 try:
                     from scidb.database import get_database
+
                     _check_db = get_database()
                 except Exception:
                     pass
-            if _check_db is not None and hasattr(_check_db, 'load_all_as_df'):
+            if _check_db is not None and hasattr(_check_db, "load_all_as_df"):
                 return _load_var_type_as_spread(
-                    var_spec, db, where,
+                    var_spec,
+                    db,
+                    where,
                     branch_params_filter=branch_params_filter,
                 )
             return PerComboLoader(var_spec)
@@ -2977,14 +3252,14 @@ def _compute_fixed_input_rids(inputs: dict, db) -> dict:
 
     for name, value in inputs.items():
         # Detect Fixed wrapper
-        if not hasattr(value, 'fixed_metadata'):
+        if not hasattr(value, "fixed_metadata"):
             continue
 
         # Unwrap to get inner variable type
-        inner = value.var_type if hasattr(value, 'var_type') else value
+        inner = value.var_type if hasattr(value, "var_type") else value
 
         # Unwrap ColumnSelection if present
-        if hasattr(inner, 'var_type'):
+        if hasattr(inner, "var_type"):
             inner = inner.var_type
 
         # Must be a variable type (class)
@@ -3030,7 +3305,10 @@ def _compute_merge_effective_ids(db, merge_spec: "Merge") -> set:
     would survive the Merge inner join — used to validate filter coverage once
     against the right target rather than per-constituent.
     """
-    from .filters import _get_all_schema_ids_for_variable, _expand_coarse_to_fine_schema_ids
+    from .filters import (
+        _expand_coarse_to_fine_schema_ids,
+        _get_all_schema_ids_for_variable,
+    )
 
     # Collect (table_name, schema_ids) for each constituent
     constituent_data = []
@@ -3064,7 +3342,9 @@ def _compute_merge_effective_ids(db, merge_spec: "Merge") -> set:
         if lv == max_level:
             effective_sets.append(schema_ids)
         else:
-            expanded = _expand_coarse_to_fine_schema_ids(db, schema_ids, fine_table_name)
+            expanded = _expand_coarse_to_fine_schema_ids(
+                db, schema_ids, fine_table_name
+            )
             effective_sets.append(expanded)
 
     # Intersection = Merge inner join result
@@ -3087,9 +3367,13 @@ def _check_merge_filter_coverage(db, where, merge_effective_ids: set) -> None:
             genuinely survives the Merge inner join.
     """
     from .filters import (
-        VariableFilter, ColumnFilter, InFilter,
-        CompoundFilter, NotFilter,
-        _validate_filter_coverage, _get_all_schema_ids_for_variable,
+        ColumnFilter,
+        CompoundFilter,
+        InFilter,
+        NotFilter,
+        VariableFilter,
+        _get_all_schema_ids_for_variable,
+        _validate_filter_coverage,
     )
 
     if where is None or not merge_effective_ids:
@@ -3102,9 +3386,13 @@ def _check_merge_filter_coverage(db, where, merge_effective_ids: set) -> None:
         target_level_idx = _get_schema_level_idx(db, merge_effective_ids)
 
         _validate_filter_coverage(
-            db, where.variable_class, None,
-            filter_table_name, None,
-            filter_level_idx, target_level_idx,
+            db,
+            where.variable_class,
+            None,
+            filter_table_name,
+            None,
+            filter_level_idx,
+            target_level_idx,
             target_schema_ids_override=merge_effective_ids,
         )
 
@@ -3122,7 +3410,7 @@ def _merge_needs_per_combo(merge_spec: "Merge") -> bool:
     """Return True if any Merge constituent lacks load."""
     for spec in merge_spec.var_specs:
         cls = _get_loadable_class_from_spec(spec)
-        if cls is not None and not hasattr(cls, 'load'):
+        if cls is not None and not hasattr(cls, "load"):
             return True
     return False
 
@@ -3139,7 +3427,7 @@ def _get_loadable_class_from_spec(spec: Any) -> Any:
         spec = spec.var_type
     if isinstance(spec, ColumnSelection):
         spec = spec.var_type
-    if isinstance(spec, type) or hasattr(spec, 'load'):
+    if isinstance(spec, type) or hasattr(spec, "load"):
         return spec
     return None
 
@@ -3178,6 +3466,7 @@ def _make_plot_wrapper(fn: Any, path_param: str) -> Any:
             result.savefig(str(path))
             try:
                 import matplotlib.pyplot as _plt
+
                 _plt.close(result)
             except Exception:
                 pass  # closing is best-effort memory hygiene
@@ -3196,8 +3485,13 @@ def _endpoint_kind(fn_name: str) -> "str | None":
     Side-effect-free subset of :func:`_endpoint_policy` for callers that
     need classification without the contract checks (Pipeline.endpoints()).
     """
-    return ("plot" if fn_name.startswith("plot_")
-            else "stat" if fn_name.startswith("stat_") else None)
+    return (
+        "plot"
+        if fn_name.startswith("plot_")
+        else "stat"
+        if fn_name.startswith("stat_")
+        else None
+    )
 
 
 def _endpoint_policy(fn_name: str, inputs: dict, finalized: bool, as_table):
@@ -3240,15 +3534,23 @@ def _endpoint_policy(fn_name: str, inputs: dict, finalized: bool, as_table):
         # as_table (including False) is respected.
         if as_table is None:
             as_table = True
-            Log.debug("as_table defaulted to True for stat_ function "
-                     "(schema columns delivered for grouping)")
+            Log.debug(
+                "as_table defaulted to True for stat_ function "
+                "(schema columns delivered for grouping)"
+            )
         Log.info(
             f"'{fn_name}' detected as statistics function; "
-            + ("result JSON stored as record" if finalized
-               else "draft: result printed, not recorded")
-            + (f"; PathOutput input '{path_param}'"
-               + (" resolved normally" if finalized else " resolved to None")
-               if path_param else "")
+            + (
+                "result JSON stored as record"
+                if finalized
+                else "draft: result printed, not recorded"
+            )
+            + (
+                f"; PathOutput input '{path_param}'"
+                + (" resolved normally" if finalized else " resolved to None")
+                if path_param
+                else ""
+            )
         )
 
     save_suppressed = endpoint_kind is not None and not finalized
@@ -3328,12 +3630,16 @@ def _make_stat_wrapper(fn: Any, path_param: "str | None", finalized: bool) -> An
             kwargs[path_param] = None
         result = fn(**kwargs)
 
-        report_path = (str(kwargs[path_param])
-                       if finalized and path_param is not None
-                       and kwargs.get(path_param) is not None else None)
+        report_path = (
+            str(kwargs[path_param])
+            if finalized
+            and path_param is not None
+            and kwargs.get(path_param) is not None
+            else None
+        )
         payload = normalize_stat_payload(
-            result, report_path, finalized,
-            fn_name=getattr(fn, "__name__", "stat_fn"))
+            result, report_path, finalized, fn_name=getattr(fn, "__name__", "stat_fn")
+        )
         if not finalized:
             pretty = json.dumps(json.loads(payload), indent=2, sort_keys=True)
             print(f"[stat draft] {getattr(fn, '__name__', 'stat_fn')}:\n{pretty}")
@@ -3342,8 +3648,9 @@ def _make_stat_wrapper(fn: Any, path_param: "str | None", finalized: bool) -> An
     return wrapped
 
 
-def normalize_stat_payload(result: Any, report_path: "str | None",
-                           finalized: bool, fn_name: str = "stat_fn") -> str:
+def normalize_stat_payload(
+    result: Any, report_path: "str | None", finalized: bool, fn_name: str = "stat_fn"
+) -> str:
     """Canonicalize a stat_ result into the stored JSON payload string.
 
     Shared by the Python stat_ wrapper and the MATLAB bridge
@@ -3388,7 +3695,10 @@ def normalize_stat_payload(result: Any, report_path: "str | None",
 # Endpoint artifact provenance stamping (D4)
 # ---------------------------------------------------------------------------
 
-def _endpoint_artifact_path(endpoint_kind: "str | None", data_value: Any) -> "str | None":
+
+def _endpoint_artifact_path(
+    endpoint_kind: "str | None", data_value: Any
+) -> "str | None":
     """The artifact file a result row points at, or None.
 
     plot_: the output value IS the path string. stat_: the output value is the
@@ -3413,6 +3723,7 @@ def _stamp_db_name(db: Any) -> "str | None":
     if db is None:
         try:
             from .database import get_database
+
             db = get_database()
         except Exception:
             return None
@@ -3426,17 +3737,18 @@ def _collapse_upstream_param(key: str, param_names: "list[str]") -> str:
     Aggregation stores multiple rids per param as indexed keys
     (``__rid_df_0``, ``__rid_df_1``, …); the blob groups them under ``df``.
     """
-    k = key[len("__rid_"):] if str(key).startswith("__rid_") else str(key)
+    k = key[len("__rid_") :] if str(key).startswith("__rid_") else str(key)
     if k in param_names:
         return k
     for p in sorted(param_names, key=len, reverse=True):
-        if k.startswith(p + "_") and k[len(p) + 1:].isdigit():
+        if k.startswith(p + "_") and k[len(p) + 1 :].isdigit():
             return p
     return k
 
 
-def _build_stamp_blob(*, fn_name: str, inputs_map: dict, schema: dict, db: Any,
-                      record_id: "str | None") -> dict:
+def _build_stamp_blob(
+    *, fn_name: str, inputs_map: dict, schema: dict, db: Any, record_id: "str | None"
+) -> dict:
     """The provenance blob embedded in endpoint artifacts (D4).
 
     ``record_id`` is the primary key (the bipartite graph reaches everything
@@ -3478,24 +3790,28 @@ def _stamp_inputs_from_meta(meta: dict, param_names: "list[str]") -> dict:
     for key, rid in upstream.items():
         if rid is None:
             continue
-        inputs_map.setdefault(_collapse_upstream_param(key, param_names), []).append(str(rid))
+        inputs_map.setdefault(_collapse_upstream_param(key, param_names), []).append(
+            str(rid)
+        )
     return inputs_map
 
 
-def _stamp_draft_endpoint_artifacts(endpoint_kind: str, result_tbl,
-                                    state: "_ForEachState", db: Any) -> None:
+def _stamp_draft_endpoint_artifacts(
+    endpoint_kind: str, result_tbl, state: "_ForEachState", db: Any
+) -> None:
     """Draft-mode stamping pass: the save phase is suppressed, but draft
     artifacts get the SAME blob a finalized run would embed (decided
     2026-07-06), with ``draft: true`` in place of the record_id. Runs from
     ``_for_each_save_resolved``, which executes in both modes.
     """
     import pandas as pd
+
     from .artifact_stamp import stamp_artifact
 
     if not state.output_names:
         return
     out_name = state.output_names[0]
-    param_names = [rc[len("__rid_"):] for rc in (state.rid_keys or [])]
+    param_names = [rc[len("__rid_") :] for rc in (state.rid_keys or [])]
     schema_keys = list(state.current_schema_keys or [])
     stamped = 0
     for row in result_tbl.to_dict("records"):
@@ -3508,33 +3824,48 @@ def _stamp_draft_endpoint_artifacts(endpoint_kind: str, result_tbl,
                 continue
             if val is None or (isinstance(val, float) and pd.isna(val)):
                 continue
-            inputs_map.setdefault(col[len("__rid_"):], []).append(str(val))
-        if not inputs_map and state.combo_to_rids is not None \
-                and state.iterated_keys_ordered is not None:
+            inputs_map.setdefault(col[len("__rid_") :], []).append(str(val))
+        if (
+            not inputs_map
+            and state.combo_to_rids is not None
+            and state.iterated_keys_ordered is not None
+        ):
             key = tuple(str(row.get(k, "")) for k in state.iterated_keys_ordered)
             for rid_col, rids in state.combo_to_rids.get(key, {}).items():
                 param = _collapse_upstream_param(rid_col, param_names)
                 inputs_map[param] = [str(r) for r in rids]
         schema = {
-            k: row[k] for k in schema_keys
-            if k in row and row[k] is not None
+            k: row[k]
+            for k in schema_keys
+            if k in row
+            and row[k] is not None
             and not (isinstance(row[k], float) and pd.isna(row[k]))
         }
-        blob = _build_stamp_blob(fn_name=state.fn_name, inputs_map=inputs_map,
-                                 schema=schema, db=db, record_id=None)
+        blob = _build_stamp_blob(
+            fn_name=state.fn_name,
+            inputs_map=inputs_map,
+            schema=schema,
+            db=db,
+            record_id=None,
+        )
         stamp_artifact(apath, blob)
         stamped += 1
     if stamped:
-        Log.info(f"[artifact-stamp] draft: stamped {stamped} artifact(s) "
-                 f"for {state.fn_name} (full provenance, no record)")
+        Log.info(
+            f"[artifact-stamp] draft: stamped {stamped} artifact(s) "
+            f"for {state.fn_name} (full provenance, no record)"
+        )
 
 
 def _iterate_column_selection(spec: Any) -> "ColumnSelection | None":
     """Return the iterate-mode ColumnSelection inside a spec (bare or Fixed), else None."""
     if isinstance(spec, ColumnSelection) and spec.iterate:
         return spec
-    if isinstance(spec, Fixed) and isinstance(spec.var_type, ColumnSelection) \
-            and spec.var_type.iterate:
+    if (
+        isinstance(spec, Fixed)
+        and isinstance(spec.var_type, ColumnSelection)
+        and spec.var_type.iterate
+    ):
         return spec.var_type
     return None
 
@@ -3557,7 +3888,8 @@ def _resolve_all_columns(var_type: Any, db: Any | None) -> list[str]:
         )
     schema_keys = _get_schema_keys(db)
     cols = [
-        c for c in loaded.columns
+        c
+        for c in loaded.columns
         if c not in schema_keys and not str(c).startswith("__")
     ]
     if not cols:
@@ -3577,21 +3909,20 @@ def _resolve_for_columns(inputs: dict, db: Any | None) -> dict:
     Inputs without any iterate selection are returned unchanged.
     """
     iterate_params = {
-        name: cs for name, spec in inputs.items()
+        name: cs
+        for name, spec in inputs.items()
         if (cs := _iterate_column_selection(spec)) is not None
     }
     if not iterate_params:
         return inputs
 
-    Log.debug(
-        f"resolving for_columns iteration for input(s) "
-        f"{list(iterate_params)}"
-    )
+    Log.debug(f"resolving for_columns iteration for input(s) {list(iterate_params)}")
 
     resolved_db = db
     if resolved_db is None:
         try:
             from scidb.database import get_database
+
             resolved_db = get_database()
         except Exception:
             resolved_db = None
@@ -3601,8 +3932,7 @@ def _resolve_for_columns(inputs: dict, db: Any | None) -> dict:
         if not cs.columns:  # empty [] (or legacy None) -> all data columns
             cols = _resolve_all_columns(cs.var_type, resolved_db)
             Log.debug(
-                f"for_columns: resolved '{name}' to all {len(cols)} "
-                f"column(s): {cols}"
+                f"for_columns: resolved '{name}' to all {len(cols)} column(s): {cols}"
             )
         else:
             cols = list(cs.columns)
@@ -3648,7 +3978,7 @@ def _load_var_type_as_spread(
     """
     import pandas as pd
 
-    _vt_name = getattr(var_type, '__name__', type(var_type).__name__)
+    _vt_name = getattr(var_type, "__name__", type(var_type).__name__)
     _t0 = time.perf_counter()
 
     # Resolve the database instance.
@@ -3656,16 +3986,18 @@ def _load_var_type_as_spread(
     if resolved_db is None:
         try:
             from scidb.database import get_database
+
             resolved_db = get_database()
         except Exception:
             pass
 
-    if resolved_db is not None and hasattr(resolved_db, 'load_all_as_df'):
+    if resolved_db is not None and hasattr(resolved_db, "load_all_as_df"):
         # Fast path: bulk engine with spread layout.
         where_kw = {"where": where} if where is not None else {}
         bp_kw = (
             {"branch_params_filter": branch_params_filter}
-            if branch_params_filter else {}
+            if branch_params_filter
+            else {}
         )
         if branch_params_filter:
             Log.debug(
@@ -3703,7 +4035,7 @@ def _load_var_type_as_spread(
         return pd.DataFrame()
 
     _schema_keys: set = set()
-    if resolved_db is not None and hasattr(resolved_db, 'dataset_schema_keys'):
+    if resolved_db is not None and hasattr(resolved_db, "dataset_schema_keys"):
         _schema_keys = set(resolved_db.dataset_schema_keys)
 
     def _stringify_meta(meta: dict) -> dict:
@@ -3717,21 +4049,27 @@ def _load_var_type_as_spread(
                     const_keys = set(json.loads(constants_val).keys())
             except Exception:
                 pass
-        return {k: str(v) if k in _schema_keys and v is not None else v
-                for k, v in meta.items()
-                if not k.startswith("__") and k not in const_keys}
+        return {
+            k: str(v) if k in _schema_keys and v is not None else v
+            for k, v in meta.items()
+            if not k.startswith("__") and k not in const_keys
+        }
 
     first = loaded[0]
-    all_have_data = all(hasattr(v, 'data') for v in loaded)
+    all_have_data = all(hasattr(v, "data") for v in loaded)
 
     if all_have_data and isinstance(first.data, pd.DataFrame):
         all_data = []
         all_meta_rows = []
         for var in loaded:
             data_df = var.data
-            meta = _stringify_meta(dict(var.metadata) if hasattr(var, 'metadata') and var.metadata else {})
-            meta["__record_id"] = getattr(var, 'record_id', None)
-            meta["__branch_params"] = json.dumps(getattr(var, 'branch_params', None) or {})
+            meta = _stringify_meta(
+                dict(var.metadata) if hasattr(var, "metadata") and var.metadata else {}
+            )
+            meta["__record_id"] = getattr(var, "record_id", None)
+            meta["__branch_params"] = json.dumps(
+                getattr(var, "branch_params", None) or {}
+            )
             nr = len(data_df)
             for _ in range(nr):
                 all_meta_rows.append(meta)
@@ -3740,21 +4078,34 @@ def _load_var_type_as_spread(
         if all_meta_rows:
             combined_meta_df = pd.DataFrame(all_meta_rows)
             combined_data_df = pd.concat(all_data, ignore_index=True)
-            result = pd.concat([combined_meta_df.reset_index(drop=True),
-                                combined_data_df.reset_index(drop=True)], axis=1)
+            result = pd.concat(
+                [
+                    combined_meta_df.reset_index(drop=True),
+                    combined_data_df.reset_index(drop=True),
+                ],
+                axis=1,
+            )
         else:
             result = pd.DataFrame()
     elif all_have_data:
-        view_name = var_type.view_name() if hasattr(var_type, 'view_name') else getattr(var_type, '__name__', type(var_type).__name__)
+        view_name = (
+            var_type.view_name()
+            if hasattr(var_type, "view_name")
+            else getattr(var_type, "__name__", type(var_type).__name__)
+        )
         all_data = []
         all_meta_rows = []
         for var in loaded:
             # Use _to_dataframe so scalars/arrays/lists expand into proper rows
             # (consistent with PerComboLoaderMerge and the DataFrame branch above)
             part_df = _to_dataframe(var.data, view_name)
-            meta = _stringify_meta(dict(var.metadata) if hasattr(var, 'metadata') and var.metadata else {})
-            meta["__record_id"] = getattr(var, 'record_id', None)
-            meta["__branch_params"] = json.dumps(getattr(var, 'branch_params', None) or {})
+            meta = _stringify_meta(
+                dict(var.metadata) if hasattr(var, "metadata") and var.metadata else {}
+            )
+            meta["__record_id"] = getattr(var, "record_id", None)
+            meta["__branch_params"] = json.dumps(
+                getattr(var, "branch_params", None) or {}
+            )
             nr = len(part_df)
             for _ in range(nr):
                 all_meta_rows.append(dict(meta))
@@ -3762,15 +4113,26 @@ def _load_var_type_as_spread(
         if all_meta_rows:
             combined_meta_df = pd.DataFrame(all_meta_rows)
             combined_data_df = pd.concat(all_data, ignore_index=True)
-            result = pd.concat([combined_meta_df.reset_index(drop=True),
-                                combined_data_df.reset_index(drop=True)], axis=1)
+            result = pd.concat(
+                [
+                    combined_meta_df.reset_index(drop=True),
+                    combined_data_df.reset_index(drop=True),
+                ],
+                axis=1,
+            )
         else:
             result = pd.DataFrame()
     else:
-        var_name = getattr(var_type, '__name__', type(var_type).__name__)
+        var_name = getattr(var_type, "__name__", type(var_type).__name__)
         rows = []
         for var in loaded:
-            rows.append({var_name: var, "__record_id": getattr(var, 'record_id', None), "__branch_params": "{}"})
+            rows.append(
+                {
+                    var_name: var,
+                    "__record_id": getattr(var, "record_id", None),
+                    "__branch_params": "{}",
+                }
+            )
         result = pd.DataFrame(rows)
 
     Log.info(
@@ -3784,8 +4146,12 @@ def _load_var_type_as_spread(
 # Per-combo resolution helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_pathinput_checked(
-    pi: "PathInput", load_kw: dict, key_types: dict, schema_keys: "list | set",
+    pi: "PathInput",
+    load_kw: dict,
+    key_types: dict,
+    schema_keys: "list | set",
 ):
     """Per-combo PathInput load enforcing declared schema-key types.
 
@@ -3807,7 +4173,8 @@ def _load_pathinput_checked(
     if resolutions:
         numeric_keys = {k for k, t in key_types.items() if t == "numeric"}
         offending = {
-            k: spelling for k, spelling in resolutions.items()
+            k: spelling
+            for k, spelling in resolutions.items()
             if k in set(schema_keys or []) and k not in numeric_keys
         }
         if offending:
@@ -3827,8 +4194,10 @@ def _load_pathinput_checked(
 
 
 def _resolve_per_combo_loader(
-    pcl: "PerComboLoader", load_kw: dict,
-    key_types: "dict | None" = None, schema_keys: "list | None" = None,
+    pcl: "PerComboLoader",
+    load_kw: dict,
+    key_types: "dict | None" = None,
+    schema_keys: "list | None" = None,
 ) -> Any:
     """Resolve a PerComboLoader per-combo by calling spec.load(**effective_kw)."""
     spec = pcl.spec
@@ -3845,16 +4214,16 @@ def _resolve_per_combo_loader(
                 inner, effective_kw, key_types or {}, schema_keys or []
             )
         lv = inner.load(**effective_kw)
-        raw = lv.data if hasattr(lv, 'data') else lv
+        raw = lv.data if hasattr(lv, "data") else lv
         if columns:
-            cls_name = getattr(inner, '__name__', type(inner).__name__)
+            cls_name = getattr(inner, "__name__", type(inner).__name__)
             raw = _apply_per_combo_col_selection(raw, columns, cls_name)
         return raw
 
     if isinstance(spec, ColumnSelection):
         lv = spec.var_type.load(**load_kw)
-        raw = lv.data if hasattr(lv, 'data') else lv
-        cls_name = getattr(spec.var_type, '__name__', type(spec.var_type).__name__)
+        raw = lv.data if hasattr(lv, "data") else lv
+        cls_name = getattr(spec.var_type, "__name__", type(spec.var_type).__name__)
         return _apply_per_combo_col_selection(raw, spec.columns, cls_name)
 
     if isinstance(spec, PathInput):
@@ -3864,10 +4233,12 @@ def _resolve_per_combo_loader(
 
     # Plain class
     lv = spec.load(**load_kw)
-    return lv.data if hasattr(lv, 'data') else lv
+    return lv.data if hasattr(lv, "data") else lv
 
 
-def _resolve_per_combo_merge(pcl_merge: "PerComboLoaderMerge", load_kw: dict) -> "pd.DataFrame":
+def _resolve_per_combo_merge(
+    pcl_merge: "PerComboLoaderMerge", load_kw: dict
+) -> "pd.DataFrame":
     """Resolve a PerComboLoaderMerge per-combo by loading each constituent."""
     from scifor.foreach import _merge_parts as _scifor_merge_parts
 
@@ -3889,12 +4260,12 @@ def _resolve_per_combo_merge(pcl_merge: "PerComboLoaderMerge", load_kw: dict) ->
 
         # Load the variable
         lv = actual_spec.load(**effective_kw)
-        cls_name = getattr(actual_spec, '__name__', type(actual_spec).__name__)
+        cls_name = getattr(actual_spec, "__name__", type(actual_spec).__name__)
         if isinstance(lv, list):
             raise ValueError(
                 f"{cls_name}.load() returned multiple results (list), expected exactly 1."
             )
-        raw = lv.data if hasattr(lv, 'data') else lv
+        raw = lv.data if hasattr(lv, "data") else lv
 
         # Convert to DataFrame
         part_df = _to_dataframe(raw, cls_name)
@@ -3919,8 +4290,8 @@ def _resolve_per_combo_merge(pcl_merge: "PerComboLoaderMerge", load_kw: dict) ->
 
 def _to_dataframe(data: Any, cls_name: str) -> "pd.DataFrame":
     """Convert raw data (scalar, array, list, DataFrame) to a named DataFrame."""
-    import pandas as pd
     import numpy as np
+    import pandas as pd
 
     if isinstance(data, pd.DataFrame):
         return data.reset_index(drop=True)
@@ -3931,7 +4302,9 @@ def _to_dataframe(data: Any, cls_name: str) -> "pd.DataFrame":
             cols = [f"{cls_name}_{i}" for i in range(data.shape[1])]
             return pd.DataFrame(data, columns=cols)
         else:
-            raise ValueError(f"Cannot convert {data.ndim}D array from {cls_name} to DataFrame")
+            raise ValueError(
+                f"Cannot convert {data.ndim}D array from {cls_name} to DataFrame"
+            )
     if isinstance(data, (list, tuple)):
         return pd.DataFrame({cls_name: list(data)})
     # Scalar
@@ -3940,11 +4313,12 @@ def _to_dataframe(data: Any, cls_name: str) -> "pd.DataFrame":
 
 def _apply_per_combo_col_selection(raw: Any, columns: list, cls_name: str) -> Any:
     """Apply column selection to raw data, returning array (1 col) or DataFrame (multi-col)."""
-    import pandas as pd
     df = _to_dataframe(raw, cls_name)
     missing = [c for c in columns if c not in df.columns]
     if missing:
-        raise KeyError(f"Columns {missing} not found in {cls_name}. Available: {list(df.columns)}")
+        raise KeyError(
+            f"Columns {missing} not found in {cls_name}. Available: {list(df.columns)}"
+        )
     if len(columns) == 1:
         return df[columns[0]].values
     return df[columns]
@@ -3953,6 +4327,7 @@ def _apply_per_combo_col_selection(raw: Any, columns: list, cls_name: str) -> An
 # ---------------------------------------------------------------------------
 # Saving results
 # ---------------------------------------------------------------------------
+
 
 def _save_results(
     result_tbl: "pd.DataFrame",
@@ -3981,11 +4356,10 @@ def _save_results(
     import pandas as pd
 
     batch_start_time = time.perf_counter()
-    db_kwargs = {"db": db} if db is not None else {}
 
     # Get schema keys for dynamic discriminator detection
     schema_keys_set: set = set()
-    if db is not None and hasattr(db, 'dataset_schema_keys'):
+    if db is not None and hasattr(db, "dataset_schema_keys"):
         schema_keys_set = set(db.dataset_schema_keys)
     else:
         try:
@@ -4056,8 +4430,8 @@ def _save_results(
     Log.info(f"[batch_save] Preparing {len(result_tbl)} result row(s) for batch save")
 
     # Convert DataFrame to list of dicts for 10-100x faster iteration than iterrows()
-    rows = result_tbl.to_dict('records')
-    for row_idx, row in enumerate(rows):
+    rows = result_tbl.to_dict("records")
+    for _row_idx, row in enumerate(rows):
         # 1. Collect upstream branch_params via __rid_* columns → rid_to_bp lookup
         merged_bp: dict = {}
         if combo_to_rids is not None and combo_to_rids_keys is not None:
@@ -4074,7 +4448,8 @@ def _save_results(
                                     f"branch_params key '{k}' overwritten: "
                                     f"{merged_bp[k]!r} → {v!r}. "
                                     f"Use version= for precise selection.",
-                                    UserWarning, stacklevel=4,
+                                    UserWarning,
+                                    stacklevel=4,
                                 )
                             merged_bp[k] = v
         elif rid_to_bp and rid_keys:
@@ -4090,7 +4465,8 @@ def _save_results(
                                 f"branch_params key '{k}' overwritten: "
                                 f"{merged_bp[k]!r} → {v!r}. "
                                 f"Use version= for precise selection.",
-                                UserWarning, stacklevel=4,
+                                UserWarning,
+                                stacklevel=4,
                             )
                         merged_bp[k] = v
 
@@ -4117,15 +4493,14 @@ def _save_results(
                     f"branch_params key '{col}' overwritten: "
                     f"{merged_bp[col]!r} → {val!r}. "
                     f"Use version= for precise selection.",
-                    UserWarning, stacklevel=4,
+                    UserWarning,
+                    stacklevel=4,
                 )
             merged_bp[col] = val
 
         # Build save metadata: non-__ cols (schema keys etc.) + config_keys + __branch_params
         # Exclude __rid_* and other internal __ columns from version keys.
-        save_metadata = {
-            col: row[col] for col in meta_cols if not col.startswith("__")
-        }
+        save_metadata = {col: row[col] for col in meta_cols if not col.startswith("__")}
         save_metadata.update(config_keys)
 
         # Unpack constants as direct keys so downstream consumers (e.g. scihist's
@@ -4152,13 +4527,13 @@ def _save_results(
                 continue
             if _val is None or (isinstance(_val, float) and pd.isna(_val)):
                 continue
-            _param = _col[len("__rid_"):]
+            _param = _col[len("__rid_") :]
             _row_bindings[_param] = str(_val)
         if lineage_fixed_rids:
             for _k, _v in lineage_fixed_rids.items():
                 if _v is None:
                     continue
-                _param = _k[len("__rid_"):] if _k.startswith("__rid_") else _k
+                _param = _k[len("__rid_") :] if _k.startswith("__rid_") else _k
                 _row_bindings.setdefault(_param, str(_v))
         if _row_bindings:
             save_metadata["__graph_var_bindings"] = [
@@ -4194,33 +4569,43 @@ def _save_results(
             for rid_col in rid_keys:
                 if rid_col in row:
                     rid_val = row[rid_col]
-                    if rid_val is not None and not (isinstance(rid_val, float) and pd.isna(rid_val)):
+                    if rid_val is not None and not (
+                        isinstance(rid_val, float) and pd.isna(rid_val)
+                    ):
                         upstream[rid_col] = rid_val
             if upstream:
                 save_metadata["__upstream"] = upstream
 
-        for output_idx, (output_obj, output_name) in enumerate(zip(outputs, output_names)):
+        for output_idx, (output_obj, output_name) in enumerate(
+            zip(outputs, output_names, strict=False)
+        ):
             if output_name not in row:
                 # Flatten/distribute mode: fn returned a DataFrame whose columns are
                 # spread directly in result_tbl (scifor all_dataframes flatten mode).
                 # Build a 1-row DataFrame from non-schema, non-__ data columns.
-                data_cols = [c for c in meta_cols
-                             if not c.startswith("__") and c not in schema_keys_set]
+                data_cols = [
+                    c
+                    for c in meta_cols
+                    if not c.startswith("__") and c not in schema_keys_set
+                ]
                 if not data_cols:
                     continue
                 output_value = pd.DataFrame({c: [row[c]] for c in data_cols})
-                save_meta_for_output = {k: v for k, v in save_metadata.items()
-                                        if k not in set(data_cols)}
+                save_meta_for_output = {
+                    k: v for k, v in save_metadata.items() if k not in set(data_cols)
+                }
 
                 # Collect for batch save - need deep copy to avoid shared dict references
-                key = (output_idx, 'flatten')
+                key = (output_idx, "flatten")
                 if key not in batch_items:
                     batch_items[key] = []
                 # Deep copy metadata to avoid sharing __branch_params dict across rows
                 meta_copy = dict(save_meta_for_output)
                 if "__branch_params" in meta_copy:
                     meta_copy["__branch_params"] = dict(meta_copy["__branch_params"])
-                if "__upstream" in meta_copy and isinstance(meta_copy["__upstream"], dict):
+                if "__upstream" in meta_copy and isinstance(
+                    meta_copy["__upstream"], dict
+                ):
                     meta_copy["__upstream"] = dict(meta_copy["__upstream"])
                 batch_items[key].append((output_value, meta_copy))
                 continue
@@ -4235,13 +4620,15 @@ def _save_results(
                 gen_meta = dict(save_metadata)
                 if "__branch_params" in gen_meta:
                     gen_meta["__branch_params"] = dict(gen_meta["__branch_params"])
-                if "__upstream" in gen_meta and isinstance(gen_meta["__upstream"], dict):
+                if "__upstream" in gen_meta and isinstance(
+                    gen_meta["__upstream"], dict
+                ):
                     gen_meta["__upstream"] = dict(gen_meta["__upstream"])
                 generated_items.append((output_obj, output_idx, gen_meta))
                 continue
 
             # Normal save path - collect for batch save - need deep copy to avoid shared dict references
-            key = (output_idx, 'normal')
+            key = (output_idx, "normal")
             if key not in batch_items:
                 batch_items[key] = []
             # Deep copy metadata to avoid sharing __branch_params dict across rows
@@ -4253,13 +4640,15 @@ def _save_results(
             batch_items[key].append((output_value, meta_copy))
 
     prep_elapsed = time.perf_counter() - prep_start
-    Log.info(f"[batch_save] Preparation complete in {prep_elapsed:.3f}s: "
-             f"{len(batch_items)} batch group(s), {len(generated_items)} generates_file item(s)")
+    Log.info(
+        f"[batch_save] Preparation complete in {prep_elapsed:.3f}s: "
+        f"{len(batch_items)} batch group(s), {len(generated_items)} generates_file item(s)"
+    )
 
     # ===========================================================================
     # PHASE 2: Execute batch saves
     # ===========================================================================
-    batch_save_start = time.perf_counter()
+    time.perf_counter()
     total_saved = 0
 
     for (output_idx, save_path), items in batch_items.items():
@@ -4268,21 +4657,30 @@ def _save_results(
         if len(items) == 0:
             continue
 
-        Log.info(f"[batch_save] Saving {len(items)} record(s) for {_output_name(output_obj)} ({save_path} path)")
+        Log.info(
+            f"[batch_save] Saving {len(items)} record(s) for {_output_name(output_obj)} ({save_path} path)"
+        )
 
         try:
             save_t0 = time.perf_counter()
 
             # Use save_batch for efficiency
             if db is not None:
-                record_ids = db.save_batch(type(output_obj) if not isinstance(output_obj, type) else output_obj,
-                                          items,
-                                          profile=False)
+                record_ids = db.save_batch(
+                    type(output_obj)
+                    if not isinstance(output_obj, type)
+                    else output_obj,
+                    items,
+                    profile=False,
+                )
             else:
                 from .database import get_database
+
                 _db = get_database()
                 record_ids = _db.save_batch(
-                    type(output_obj) if not isinstance(output_obj, type) else output_obj,
+                    type(output_obj)
+                    if not isinstance(output_obj, type)
+                    else output_obj,
                     items,
                     profile=False,
                 )
@@ -4304,13 +4702,21 @@ def _save_results(
 
             # Collect for the bipartite provenance graph. output_idx is the
             # output slot (output_num); items align with record_ids in order.
-            _out_cls = type(output_obj) if not isinstance(output_obj, type) else output_obj
+            _out_cls = (
+                type(output_obj) if not isinstance(output_obj, type) else output_obj
+            )
             _out_sv = getattr(_out_cls, "schema_version", 1)
-            for (_data, _meta), _rid in zip(items, record_ids):
+            for (_data, _meta), _rid in zip(items, record_ids, strict=False):
                 if isinstance(_rid, str):
-                    graph_records.append(_GraphRecord(
-                        _out_cls.__name__, _out_sv, output_idx, _rid, _meta,
-                    ))
+                    graph_records.append(
+                        _GraphRecord(
+                            _out_cls.__name__,
+                            _out_sv,
+                            output_idx,
+                            _rid,
+                            _meta,
+                        )
+                    )
                     # Endpoint artifact stamping (D4, record mode): the one
                     # point where the artifact path (in _data), the consumed
                     # rids (in _meta), and the saved record_id all coexist.
@@ -4318,13 +4724,17 @@ def _save_results(
                         _apath = _endpoint_artifact_path(endpoint_kind, _data)
                         if _apath:
                             from .artifact_stamp import stamp_artifact
+
                             _blob = _build_stamp_blob(
                                 fn_name=fn_name,
                                 inputs_map=_stamp_inputs_from_meta(
-                                    _meta, stamp_param_names or []),
+                                    _meta, stamp_param_names or []
+                                ),
                                 schema={
-                                    k: v for k, v in _meta.items()
-                                    if k in schema_keys_set and v is not None
+                                    k: v
+                                    for k, v in _meta.items()
+                                    if k in schema_keys_set
+                                    and v is not None
                                     and not str(k).startswith("__")
                                 },
                                 db=db,
@@ -4333,23 +4743,29 @@ def _save_results(
                             stamp_artifact(_apath, _blob)
 
             # Log summary (first few records)
-            for i, ((data, meta), rid) in enumerate(zip(items[:3], record_ids[:3])):
-                meta_str = ", ".join(f"{k}={v}" for k, v in meta.items()
-                                     if not k.startswith("__"))
+            for _i, ((data, meta), rid) in enumerate(
+                zip(items[:3], record_ids[:3], strict=False)
+            ):
+                meta_str = ", ".join(
+                    f"{k}={v}" for k, v in meta.items() if not k.startswith("__")
+                )
                 data_desc = _describe_save_data(data)
                 rid_short = rid[:12] if isinstance(rid, str) else str(rid)
-                suffix = " [flatten]" if save_path == 'flatten' else ""
+                suffix = " [flatten]" if save_path == "flatten" else ""
                 msg = f"[save] {meta_str}: {_output_name(output_obj)} -> record_id={rid_short} ({data_desc}){suffix}"
                 Log.info(msg)
 
             if len(items) > 3:
                 Log.info(f"[save] ... and {len(items) - 3} more record(s)")
 
-            Log.info(f"[batch_save] Completed {len(items)} save(s) for {_output_name(output_obj)} in {save_elapsed:.3f}s "
-                     f"({len(items)/save_elapsed:.1f} records/s)")
+            Log.info(
+                f"[batch_save] Completed {len(items)} save(s) for {_output_name(output_obj)} in {save_elapsed:.3f}s "
+                f"({len(items) / save_elapsed:.1f} records/s)"
+            )
 
         except Exception as e:
             import traceback
+
             Log.error(
                 f"[batch_save] Failed to save batch for "
                 f"{_output_name(output_obj)} ({len(items)} record(s)): "
@@ -4363,13 +4779,17 @@ def _save_results(
             # necessarily the row that raised. A batch insert fails atomically,
             # so the offending record is not identifiable from the exception
             # alone; rely on the SKIPPED warnings above to find bad records.
-            Log.error(f"failed to save {_output_name(output_obj)}: "
-                      f"{type(e).__name__}: {e}")
+            Log.error(
+                f"failed to save {_output_name(output_obj)}: {type(e).__name__}: {e}"
+            )
             for data, meta in items[:3]:
-                meta_str = ", ".join(f"{k}={v}" for k, v in meta.items()
-                                     if not k.startswith("__"))
-                Log.error(f"[error] (first batch rows, not necessarily the "
-                          f"culprit) {meta_str}: {_output_name(output_obj)}")
+                meta_str = ", ".join(
+                    f"{k}={v}" for k, v in meta.items() if not k.startswith("__")
+                )
+                Log.error(
+                    f"[error] (first batch rows, not necessarily the "
+                    f"culprit) {meta_str}: {_output_name(output_obj)}"
+                )
 
     # ===========================================================================
     # PHASE 3: generates_file outputs — lineage-only save (graph + metadata, no
@@ -4378,46 +4798,67 @@ def _save_results(
     # ===========================================================================
     if generated_items:
         from datetime import datetime
-        from .provenance_save import invocation_id_for_meta
-        from .provenance import insert_record_entity
+
         from .database import get_user_id
+        from .provenance import insert_record_entity
+        from .provenance_save import invocation_id_for_meta
 
         _db = db
         if _db is None:
             from .database import get_database
+
             _db = get_database()
         _user = get_user_id()
-        Log.info(f"[batch_save] Saving {len(generated_items)} generates_file item(s) (lineage-only)")
+        Log.info(
+            f"[batch_save] Saving {len(generated_items)} generates_file item(s) (lineage-only)"
+        )
         for output_obj, output_idx, gen_meta in generated_items:
             try:
                 cls = output_obj if isinstance(output_obj, type) else type(output_obj)
                 out_name = cls.__name__
                 sv = getattr(cls, "schema_version", 1)
                 generated_id = f"generated:{invocation_id_for_meta(gen_meta)}"
-                schema_keys = {k: v for k, v in gen_meta.items() if k in schema_keys_set}
+                schema_keys = {
+                    k: v for k, v in gen_meta.items() if k in schema_keys_set
+                }
                 schema_level = _db._infer_schema_level(schema_keys)
                 schema_id = (
                     _db._duck._get_or_create_schema_id(schema_level, schema_keys)
-                    if schema_level is not None and schema_keys else 0
+                    if schema_level is not None and schema_keys
+                    else 0
                 )
                 ts = datetime.now().isoformat()
                 # The generated record's producing invocation (written by record_run
                 # in PHASE 4) carries the function identity, so the graph-based
                 # skip_computed gate finds it — no version_keys needed.
                 _db._save_record_event(
-                    record_id=generated_id, timestamp=ts, user_id=_user,
+                    record_id=generated_id,
+                    timestamp=ts,
+                    user_id=_user,
                 )
                 insert_record_entity(
-                    _db._duck, record_id=generated_id, created_at=ts,
-                    type_name=out_name, schema_id=schema_id,
-                    content_hash=None, schema_version=sv,
+                    _db._duck,
+                    record_id=generated_id,
+                    created_at=ts,
+                    type_name=out_name,
+                    schema_id=schema_id,
+                    content_hash=None,
+                    schema_version=sv,
                 )
-                graph_records.append(_GraphRecord(out_name, sv, output_idx, generated_id, gen_meta))
+                graph_records.append(
+                    _GraphRecord(out_name, sv, output_idx, generated_id, gen_meta)
+                )
                 total_saved += 1
-                meta_str = ", ".join(f"{k}={v}" for k, v in gen_meta.items() if not k.startswith("__"))
-                Log.info(f"[save] {meta_str}: {out_name} -> {generated_id[:20]} [generates_file]")
+                meta_str = ", ".join(
+                    f"{k}={v}" for k, v in gen_meta.items() if not k.startswith("__")
+                )
+                Log.info(
+                    f"[save] {meta_str}: {out_name} -> {generated_id[:20]} [generates_file]"
+                )
             except Exception as e:
-                Log.error(f"[error] failed generates_file save for {_output_name(output_obj)}: {e}")
+                Log.error(
+                    f"[error] failed generates_file save for {_output_name(output_obj)}: {e}"
+                )
 
     # ===========================================================================
     # PHASE 4: Write the bipartite provenance graph + append-only _run audit.
@@ -4428,11 +4869,13 @@ def _save_results(
     # ===========================================================================
     if graph_records:
         try:
-            from .provenance_save import record_run
             from .database import get_user_id
+            from .provenance_save import record_run
+
             active_db = db
             if active_db is None:
                 from .database import get_database
+
                 active_db = get_database()
             where_clause = config_keys.get("__where")
             run_id = record_run(
@@ -4454,33 +4897,41 @@ def _save_results(
     # Summary
     # ===========================================================================
     batch_total_elapsed = time.perf_counter() - batch_start_time
-    Log.info(f"[batch_save] Total: saved {total_saved} record(s) in {batch_total_elapsed:.3f}s "
-             f"({total_saved/batch_total_elapsed:.1f} records/s)")
+    Log.info(
+        f"[batch_save] Total: saved {total_saved} record(s) in {batch_total_elapsed:.3f}s "
+        f"({total_saved / batch_total_elapsed:.1f} records/s)"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_loadable(var_spec: Any) -> bool:
     """Check if an input spec is loadable (var type, Fixed, Merge, ColumnSelection, etc.)."""
     try:
         import pandas as pd
+
         if isinstance(var_spec, pd.DataFrame):
             return True
     except ImportError:
         pass
-    return isinstance(var_spec, (type, Fixed, Variant, AcrossVariants, ColumnSelection, Merge, PathInput)) or hasattr(var_spec, 'load')
+    return isinstance(
+        var_spec,
+        (type, Fixed, Variant, AcrossVariants, ColumnSelection, Merge, PathInput),
+    ) or hasattr(var_spec, "load")
 
 
 def _get_schema_keys(db: Any | None) -> set:
     """Return the set of dataset_schema_keys from db or the global database."""
-    if db is not None and hasattr(db, 'dataset_schema_keys'):
+    if db is not None and hasattr(db, "dataset_schema_keys"):
         return set(db.dataset_schema_keys)
     try:
         from .database import get_database
+
         _db = get_database()
-        if hasattr(_db, 'dataset_schema_keys'):
+        if hasattr(_db, "dataset_schema_keys"):
             return set(_db.dataset_schema_keys)
     except Exception:
         pass
@@ -4509,8 +4960,9 @@ def _find_pathinput(inputs: dict) -> PathInput | None:
 
 def _describe_save_data(val) -> str:
     """Compact description of data being saved."""
-    import pandas as pd
     import numpy as np
+    import pandas as pd
+
     if isinstance(val, pd.DataFrame):
         return f"DataFrame {val.shape[0]}x{val.shape[1]}"
     if isinstance(val, np.ndarray):
@@ -4524,17 +4976,17 @@ def _describe_save_data(val) -> str:
 
 def _output_name(output_obj: Any) -> str:
     """Get display name for an output object."""
-    if hasattr(output_obj, 'view_name'):
+    if hasattr(output_obj, "view_name"):
         return output_obj.view_name()
     if isinstance(output_obj, type):
         return output_obj.__name__
-    return getattr(output_obj, '__name__', type(output_obj).__name__)
+    return getattr(output_obj, "__name__", type(output_obj).__name__)
 
 
 def _propagate_schema(db, distribute: bool) -> None:
     """Propagate dataset_schema_keys from the db into scifor.set_schema()."""
     # If a db was passed explicitly and has schema keys, use them.
-    if db is not None and hasattr(db, 'dataset_schema_keys'):
+    if db is not None and hasattr(db, "dataset_schema_keys"):
         _scifor.set_schema(list(db.dataset_schema_keys))
         return
 
@@ -4542,11 +4994,12 @@ def _propagate_schema(db, distribute: bool) -> None:
     _global_db = None
     try:
         from scidb.database import get_database
+
         _global_db = get_database()
     except Exception:
         pass
 
-    if _global_db is not None and hasattr(_global_db, 'dataset_schema_keys'):
+    if _global_db is not None and hasattr(_global_db, "dataset_schema_keys"):
         _scifor.set_schema(list(_global_db.dataset_schema_keys))
     elif distribute:
         raise ValueError(

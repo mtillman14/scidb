@@ -1,9 +1,12 @@
 """Base class for database-storable variables."""
 
 import itertools
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .column_selection import ColumnSelection
 
 
 class VariableMeta(type):
@@ -22,28 +25,34 @@ class VariableMeta(type):
         if isinstance(other, type):
             return type.__eq__(cls, other)
         from .filters import VariableFilter
+
         return VariableFilter(cls, "==", other)
 
     def __ne__(cls, other):
         if isinstance(other, type):
             return type.__ne__(cls, other)
         from .filters import VariableFilter
+
         return VariableFilter(cls, "!=", other)
 
     def __lt__(cls, other):
         from .filters import VariableFilter
+
         return VariableFilter(cls, "<", other)
 
     def __le__(cls, other):
         from .filters import VariableFilter
+
         return VariableFilter(cls, "<=", other)
 
     def __gt__(cls, other):
         from .filters import VariableFilter
+
         return VariableFilter(cls, ">", other)
 
     def __ge__(cls, other):
         from .filters import VariableFilter
+
         return VariableFilter(cls, ">=", other)
 
     def __hash__(cls):
@@ -84,7 +93,7 @@ class BaseVariable(metaclass=VariableMeta):
                 return values.reshape(3, 3)
     """
 
-    schema_version: int = 1 # Default schema version. Change whenever the structure of a variable changes.
+    schema_version: int = 1  # Default schema version. Change whenever the structure of a variable changes.
 
     # Reserved metadata keys that users cannot use
     _reserved_keys = frozenset(
@@ -130,7 +139,7 @@ class BaseVariable(metaclass=VariableMeta):
         )
 
     @classmethod
-    def for_columns(cls, columns: "list[str] | None" = []) -> "ColumnSelection":
+    def for_columns(cls, columns: "list[str] | None" = None) -> "ColumnSelection":
         """
         Iterate a for_each() function over each column of this table variable.
 
@@ -167,6 +176,8 @@ class BaseVariable(metaclass=VariableMeta):
         """
         from scidb.column_selection import ColumnSelection
 
+        if columns is None:
+            columns = []
         if isinstance(columns, str):
             columns = [columns]
         # ColumnSelection normalizes the empty/None all-columns sentinel.
@@ -188,6 +199,7 @@ class BaseVariable(metaclass=VariableMeta):
         # DuckDB/pandas sometimes returns numpy arrays as memoryviews for efficiency
         if isinstance(data, memoryview):
             import numpy as np
+
             self.data = np.asarray(data)
         else:
             self.data = data
@@ -322,6 +334,7 @@ class BaseVariable(metaclass=VariableMeta):
             )
 
         from .database import get_database
+
         _db = db or get_database()
 
         # Auto-detect DataFrame-distribute: if data is a DataFrame with columns
@@ -337,15 +350,20 @@ class BaseVariable(metaclass=VariableMeta):
                         f"DataFrame has no data columns (all columns are schema keys: {meta_cols})."
                     )
                 if len(data_cols) == 1:
-                    return cls.save_from_dataframe(data, data_cols[0], meta_cols, db=_db, **metadata)
+                    return cls.save_from_dataframe(
+                        data, data_cols[0], meta_cols, db=_db, **metadata
+                    )
                 else:
                     # Multiple data columns: save each row's sub-DataFrame as data
                     sub_df = data[data_cols].reset_index(drop=True)
                     aug = data[meta_cols].copy().reset_index(drop=True)
                     aug["__scidb_row_data__"] = [
-                        sub_df.iloc[[i]].reset_index(drop=True) for i in range(len(data))
+                        sub_df.iloc[[i]].reset_index(drop=True)
+                        for i in range(len(data))
                     ]
-                    return cls.save_from_dataframe(aug, "__scidb_row_data__", meta_cols, db=_db, **metadata)
+                    return cls.save_from_dataframe(
+                        aug, "__scidb_row_data__", meta_cols, db=_db, **metadata
+                    )
             # No schema-key columns in DataFrame → fall through and save as one record.
 
         return _db.save_variable(cls, data, index=index, **metadata)
@@ -429,8 +447,11 @@ class BaseVariable(metaclass=VariableMeta):
                 var.where = where
                 var.version_mode = version
             if as_df:
-                return _build_introspect_df([var], where, version) if introspect \
+                return (
+                    _build_introspect_df([var], where, version)
+                    if introspect
                     else _build_packed_df([var])
+                )
             return var
 
         if as_df:
@@ -442,7 +463,8 @@ class BaseVariable(metaclass=VariableMeta):
                     )
                 return _build_introspect_df(instances, where, version)
             df = _db.load_all_as_df(
-                cls, metadata,
+                cls,
+                metadata,
                 layout="packed",
                 include_rid=False,
                 version_id=version,
@@ -457,13 +479,21 @@ class BaseVariable(metaclass=VariableMeta):
         # Generator path: "latest" or "all"
         if version == "latest":
             schema_keys_set = set(_db.dataset_schema_keys)
-            schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
-            branch_params_filter = {k: v for k, v in metadata.items()
-                                    if k not in schema_keys_set} or None
-            results = list(_db.load(
-                cls, schema_metadata, version_id="latest", where=where,
-                branch_params_filter=branch_params_filter,
-            ))
+            schema_metadata = {
+                k: v for k, v in metadata.items() if k in schema_keys_set
+            }
+            branch_params_filter = {
+                k: v for k, v in metadata.items() if k not in schema_keys_set
+            } or None
+            results = list(
+                _db.load(
+                    cls,
+                    schema_metadata,
+                    version_id="latest",
+                    where=where,
+                    branch_params_filter=branch_params_filter,
+                )
+            )
         else:  # version == "all"
             results = list(_db.load(cls, metadata, version_id="all", where=where))
 
@@ -474,8 +504,11 @@ class BaseVariable(metaclass=VariableMeta):
 
         if version == "latest" and len(results) > 1:
             schema_keys_set = set(_db.dataset_schema_keys)
-            first_schema = {k: v for k, v in (results[0].metadata or {}).items()
-                            if k in schema_keys_set}
+            first_schema = {
+                k: v
+                for k, v in (results[0].metadata or {}).items()
+                if k in schema_keys_set
+            }
             same_schema = all(
                 {k: v for k, v in (r.metadata or {}).items() if k in schema_keys_set}
                 == first_schema
@@ -488,10 +521,12 @@ class BaseVariable(metaclass=VariableMeta):
                     "Specify branch parameters to select one:",
                 ]
                 for r in results:
-                    bp = getattr(r, 'branch_params', {}) or {}
+                    bp = getattr(r, "branch_params", {}) or {}
                     bp_str = ", ".join(f"{k}={v!r}" for k, v in bp.items())
-                    lines.append(f"  {bp_str or '(no branch params)'}  "
-                                 f"(record_id: {r.record_id!r})")
+                    lines.append(
+                        f"  {bp_str or '(no branch params)'}  "
+                        f"(record_id: {r.record_id!r})"
+                    )
                 raise AmbiguousVersionError("\n".join(lines))
 
         if introspect:
@@ -589,6 +624,7 @@ class BaseVariable(metaclass=VariableMeta):
             )
 
         from .database import get_database
+
         _db = db or get_database()
 
         # Build data_items list: [(data_value, flat_metadata_dict), ...]
@@ -597,13 +633,23 @@ class BaseVariable(metaclass=VariableMeta):
         for col in metadata_columns:
             series = df[col]
             # Convert numpy scalars to Python natives in bulk
-            if hasattr(series.dtype, 'kind') and series.dtype.kind in ('i', 'u', 'f', 'b'):
+            if hasattr(series.dtype, "kind") and series.dtype.kind in (
+                "i",
+                "u",
+                "f",
+                "b",
+            ):
                 meta_lists[col] = series.tolist()
             else:
                 meta_lists[col] = list(series)
 
         data_series = df[data_column]
-        if hasattr(data_series.dtype, 'kind') and data_series.dtype.kind in ('i', 'u', 'f', 'b'):
+        if hasattr(data_series.dtype, "kind") and data_series.dtype.kind in (
+            "i",
+            "u",
+            "f",
+            "b",
+        ):
             data_list = data_series.tolist()
         else:
             data_list = list(data_series)
@@ -643,9 +689,9 @@ class BaseVariable(metaclass=VariableMeta):
         from .database import get_database
 
         _db = db or get_database()
-        results = list(itertools.islice(
-            _db.load(cls, metadata, version_id="latest"), n
-        ))
+        results = list(
+            itertools.islice(_db.load(cls, metadata, version_id="latest"), n)
+        )
         if not results:
             return pd.DataFrame()
         rows = []
@@ -717,17 +763,24 @@ class BaseVariable(metaclass=VariableMeta):
 # load() helpers (module-level so they stay out of the class namespace)
 # ---------------------------------------------------------------------------
 
+
 def _load_instances(cls, metadata, version, where, _db):
     """Return a list of BaseVariable instances for the given version/metadata."""
     if version == "latest":
         schema_keys_set = set(_db.dataset_schema_keys)
         schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
-        branch_params_filter = {k: v for k, v in metadata.items()
-                                if k not in schema_keys_set} or None
-        return list(_db.load(
-            cls, schema_metadata, version_id="latest", where=where,
-            branch_params_filter=branch_params_filter,
-        ))
+        branch_params_filter = {
+            k: v for k, v in metadata.items() if k not in schema_keys_set
+        } or None
+        return list(
+            _db.load(
+                cls,
+                schema_metadata,
+                version_id="latest",
+                where=where,
+                branch_params_filter=branch_params_filter,
+            )
+        )
     return list(_db.load(cls, metadata, version_id="all", where=where))
 
 

@@ -2,16 +2,27 @@
 
 import json
 import os
-import random
 import threading
 import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Type, Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+
+from sciduckdb import (
+    SciDuck,
+    _bulk_df_to_storage_rows,
+    _dataframe_to_storage_rows,
+    _infer_data_columns,
+    _record_schema_mismatch,
+    _storage_to_python,
+    _storage_to_python_column,
+    _unflatten_dict,
+    _value_to_storage_row,
+)
 
 from .exceptions import (
     AmbiguousParamError,
@@ -20,9 +31,12 @@ from .exceptions import (
     NotFoundError,
     NotRegisteredError,
 )
-from .hashing import generate_record_id, canonical_hash
+from .hashing import canonical_hash, generate_record_id
 from .log import Log
 from .variable import BaseVariable
+
+if TYPE_CHECKING:
+    from .pipeline import Pipeline
 
 
 def _describe_data(val):
@@ -80,8 +94,7 @@ def _canonical_numeric_value(key, value):
         except ValueError:
             pass
     raise SchemaKeyTypeError(
-        f"Schema key '{key}' is declared numeric but got a non-numeric "
-        f"value: {value!r}"
+        f"Schema key '{key}' is declared numeric but got a non-numeric value: {value!r}"
     )
 
 
@@ -117,17 +130,6 @@ def _from_schema_str(value):
     return value
 
 
-from sciduckdb import (
-    SciDuck,
-    _infer_duckdb_type, _python_to_storage, _storage_to_python,
-    _storage_to_python_column,
-    _infer_data_columns, _value_to_storage_row, _dataframe_to_storage_rows,
-    _record_schema_mismatch,
-    _bulk_df_to_storage_rows,
-    _flatten_dict, _unflatten_dict,
-)
-
-
 def _match_branch_param(branch_params_dict: dict, key: str, value: Any) -> bool:
     """Match a single branch_params filter key/value against a branch_params dict.
 
@@ -137,6 +139,7 @@ def _match_branch_param(branch_params_dict: dict, key: str, value: Any) -> bool:
     A list/tuple ``value`` means membership (``stored in value``). Raises
     AmbiguousParamError if the bare name matches multiple namespaced keys.
     """
+
     def _vmatch(stored) -> bool:
         if isinstance(value, (list, tuple)):
             return stored in value
@@ -180,15 +183,18 @@ def _filter_records_by_branch_params(df, branch_params_filter: dict | None, duck
     # closure build (instead of a per-record ancestry walk).
     bp_cache: dict = (
         provenance_query.branch_params_batch(duck, df["record_id"].tolist())
-        if duck is not None else {}
+        if duck is not None
+        else {}
     )
 
     def _bp_for(record_id):
         return bp_cache.get(record_id, {})
 
     for key, value in branch_params_filter.items():
+
         def _match_row(row, k=key, v=value):
             return _match_branch_param(_bp_for(row["record_id"]), k, v)
+
         df = df[df.apply(_match_row, axis=1)]
     return df
 
@@ -202,7 +208,7 @@ def _is_tabular_dict(data):
     if not isinstance(data, dict) or len(data) == 0:
         return False
     lengths = set()
-    for k, v in data.items():
+    for _k, v in data.items():
         if not isinstance(v, np.ndarray):
             return False
         # Accept 1D arrays, Nx1 column vectors, and 1xN row vectors (from MATLAB)
@@ -301,7 +307,9 @@ def _flatten_struct_columns(df):
             flat_col_name = f"{col}.{dot_path}"
             values = []
             for row_val in df[col]:
-                if row_val is None or (isinstance(row_val, float) and np.isnan(row_val)):
+                if row_val is None or (
+                    isinstance(row_val, float) and np.isnan(row_val)
+                ):
                     values.append(None)
                     continue
                 try:
@@ -388,7 +396,7 @@ def _unflatten_struct_columns(df, struct_info):
 
         for row_idx in range(n_rows):
             row_dict = {}
-            for path, flat_col in zip(paths, flat_col_names):
+            for path, flat_col in zip(paths, flat_col_names, strict=False):
                 if flat_col not in result.columns:
                     continue
                 val = result[flat_col].iloc[row_idx]
@@ -406,8 +414,11 @@ def _unflatten_struct_columns(df, struct_info):
                     else:
                         val = np.array(parsed, dtype=np.dtype(arr_meta["dtype"]))
                         expected_shape = arr_meta.get("shape")
-                        if (expected_shape and list(val.shape) != expected_shape
-                                and val.size == np.prod(expected_shape)):
+                        if (
+                            expected_shape
+                            and list(val.shape) != expected_shape
+                            and val.size == np.prod(expected_shape)
+                        ):
                             val = val.reshape(expected_shape)
 
                 _set_nested_value(row_dict, path, val)
@@ -428,8 +439,11 @@ def _unflatten_struct_columns(df, struct_info):
         if result[col].dtype != object:
             continue
         first_val = next(
-            (v for v in result[col]
-             if v is not None and not (isinstance(v, float) and np.isnan(v))),
+            (
+                v
+                for v in result[col]
+                if v is not None and not (isinstance(v, float) and np.isnan(v))
+            ),
             None,
         )
         if first_val is None:
@@ -438,8 +452,9 @@ def _unflatten_struct_columns(df, struct_info):
         if isinstance(first_val, (list, np.ndarray)):
             # DuckDB DOUBLE[] returns as lists or numpy arrays — ensure numpy
             result[col] = result[col].apply(
-                lambda v: np.array(v, dtype=float) if isinstance(v, list) else v)
-        elif isinstance(first_val, str) and first_val.strip().startswith('['):
+                lambda v: np.array(v, dtype=float) if isinstance(v, list) else v
+            )
+        elif isinstance(first_val, str) and first_val.strip().startswith("["):
             # Backwards compat: parse VARCHAR strings from old saves
             def _parse_list_str(v):
                 if not isinstance(v, str):
@@ -451,6 +466,7 @@ def _unflatten_struct_columns(df, struct_info):
                 except (json.JSONDecodeError, ValueError, TypeError):
                     pass
                 return v
+
             result[col] = result[col].apply(_parse_list_str)
 
     return result
@@ -513,12 +529,14 @@ def configure_database(
     # distribute=True work identically in DB-backed and standalone modes.
     try:
         import scifor
+
         scifor.set_schema(list(dataset_schema_keys))
     except ImportError:
         pass
 
     # Set log file path next to the database file
     from .log import Log
+
     log_path = Path(dataset_db_path).parent / "scidb.log"
     Log.set_path(str(log_path))
     # Run-context header: makes every log file self-describing (which
@@ -544,9 +562,8 @@ def _run_context() -> str:
             versions.append(f"{pkg}={metadata.version(pkg)}")
         except Exception:
             pass
-    return (
-        f"python={platform.python_version()}, pid={os.getpid()}"
-        + (", " + ", ".join(versions) if versions else "")
+    return f"python={platform.python_version()}, pid={os.getpid()}" + (
+        ", " + ", ".join(versions) if versions else ""
     )
 
 
@@ -618,8 +635,9 @@ class DatabaseManager:
                 f"schema_key_types declares keys that are not schema keys: "
                 f"{sorted(unknown_keys)}. Schema keys: {self.dataset_schema_keys}"
             )
-        bad_types = {k: t for k, t in key_types.items()
-                     if t not in _VALID_SCHEMA_KEY_TYPES}
+        bad_types = {
+            k: t for k, t in key_types.items() if t not in _VALID_SCHEMA_KEY_TYPES
+        }
         if bad_types:
             raise ValueError(
                 f"schema_key_types values must be one of "
@@ -628,7 +646,7 @@ class DatabaseManager:
         self.dataset_schema_key_types = key_types
 
         self.read_only = bool(read_only)
-        self._registered_types: dict[str, Type[BaseVariable]] = {}
+        self._registered_types: dict[str, type[BaseVariable]] = {}
 
         # Initialize SciDuck backend for data storage and lineage (all in DuckDB)
         self._duck = SciDuck(
@@ -646,7 +664,7 @@ class DatabaseManager:
             self._ensure_schema_overrides_table()
             self._ensure_provenance_tables()
 
-        self._closed = False # Track connection open/closed state
+        self._closed = False  # Track connection open/closed state
         self._inspector = None  # lazy scidb.inspect.Inspector (see .inspect)
 
     def canonicalize_metadata(self, metadata: dict) -> dict:
@@ -706,18 +724,19 @@ class DatabaseManager:
             )
         """)
 
-
     def _ensure_schema_overrides_table(self):
         """Create __scidb_schema_overrides for persistent schema-level exclusions."""
         from .exclusions import ensure_overrides_table
+
         ensure_overrides_table(self)
 
     def _ensure_provenance_tables(self):
         """Create the seven bipartite provenance tables (see scidb.provenance)."""
         from .provenance import ensure_provenance_tables
+
         ensure_provenance_tables(self._duck)
 
-    def _create_variable_view(self, variable_class: Type[BaseVariable]):
+    def _create_variable_view(self, variable_class: type[BaseVariable]):
         """Create a view joining a variable table with _schema via _record.
 
         ``schema_id`` and the mutable ``excluded`` flag now come straight from the
@@ -782,7 +801,9 @@ class DatabaseManager:
         The record's type/schema/content metadata is carried by the ``_record``
         entity row (written alongside by the caller), not here.
         """
-        Log.debug(f"_save_record_event: record_id={record_id[:12]}, timestamp={timestamp}")
+        Log.debug(
+            f"_save_record_event: record_id={record_id[:12]}, timestamp={timestamp}"
+        )
         self._duck._execute(
             """
             INSERT INTO _record_save (record_id, timestamp, user_id)
@@ -796,7 +817,7 @@ class DatabaseManager:
         self,
         record_id: str,
         table_name: str,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         df: pd.DataFrame,
         schema_level: str | None,
         schema_keys: dict,
@@ -821,9 +842,7 @@ class DatabaseManager:
         )
 
         # Ensure table exists
-        table_created = False
         if not self._duck._table_exists(table_name):
-            table_created = True
             col_defs = []
             for col in df.columns:
                 dtype = df[col].dtype
@@ -835,14 +854,23 @@ class DatabaseManager:
                     ddb_type = "BOOLEAN"
                 elif dtype == object:
                     first_val = next(
-                        (v for v in df[col]
-                         if v is not None and not (isinstance(v, float) and np.isnan(v))),
+                        (
+                            v
+                            for v in df[col]
+                            if v is not None
+                            and not (isinstance(v, float) and np.isnan(v))
+                        ),
                         None,
                     )
-                    if isinstance(first_val, np.ndarray) and np.issubdtype(first_val.dtype, np.number):
+                    if isinstance(first_val, np.ndarray) and np.issubdtype(
+                        first_val.dtype, np.number
+                    ):
                         ddb_type = "DOUBLE[]"
-                    elif (isinstance(first_val, list) and len(first_val) > 0
-                          and all(isinstance(x, (int, float)) for x in first_val)):
+                    elif (
+                        isinstance(first_val, list)
+                        and len(first_val) > 0
+                        and all(isinstance(x, (int, float)) for x in first_val)
+                    ):
                         ddb_type = "DOUBLE[]"
                     else:
                         ddb_type = "VARCHAR"
@@ -873,23 +901,31 @@ class DatabaseManager:
             self._duck.con.execute(
                 f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM insert_df'
             )
-            Log.debug(f"_save_columnar: inserted {len(df)} rows into '{table_name}', record_id={record_id[:12]}")
+            Log.debug(
+                f"_save_columnar: inserted {len(df)} rows into '{table_name}', record_id={record_id[:12]}"
+            )
         else:
-            Log.debug(f"_save_columnar: record_id={record_id[:12]} already exists in '{table_name}', skipped")
+            Log.debug(
+                f"_save_columnar: record_id={record_id[:12]} already exists in '{table_name}', skipped"
+            )
 
         # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
         if dict_of_arrays:
-            dtype_json = json.dumps({
-                "custom": True,
-                "dict_of_arrays": True,
-                "ndarray_keys": ndarray_keys or {},
-            })
+            dtype_json = json.dumps(
+                {
+                    "custom": True,
+                    "dict_of_arrays": True,
+                    "ndarray_keys": ndarray_keys or {},
+                }
+            )
         elif struct_columns:
-            dtype_json = json.dumps({
-                "custom": True,
-                "struct_columns": struct_columns,
-            })
+            dtype_json = json.dumps(
+                {
+                    "custom": True,
+                    "struct_columns": struct_columns,
+                }
+            )
         else:
             dtype_json = json.dumps({"custom": True})
         self._duck._execute(
@@ -905,7 +941,7 @@ class DatabaseManager:
         self,
         record_id: str,
         table_name: str,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         data: Any,
         content_hash: str,
         schema_level: str | None = None,
@@ -934,7 +970,9 @@ class DatabaseManager:
 
         # Ensure table exists
         if not self._duck._table_exists(table_name):
-            data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
+            data_cols_sql = ", ".join(
+                f'"{col}" {dtype}' for col, dtype in data_col_types.items()
+            )
             if is_dataframe:
                 # One DuckDB row per table row: record_id is not unique per row.
                 record_id_col = "record_id VARCHAR NOT NULL"
@@ -964,9 +1002,13 @@ class DatabaseManager:
                         f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders})',
                         [record_id] + storage_row,
                     )
-                Log.debug(f"_save_native: inserted {len(data)} rows (dataframe) into '{table_name}', record_id={record_id[:12]}")
+                Log.debug(
+                    f"_save_native: inserted {len(data)} rows (dataframe) into '{table_name}', record_id={record_id[:12]}"
+                )
             else:
-                Log.debug(f"_save_native: record_id={record_id[:12]} already exists in '{table_name}', skipped")
+                Log.debug(
+                    f"_save_native: record_id={record_id[:12]} already exists in '{table_name}', skipped"
+                )
         else:
             storage_values = _value_to_storage_row(data, dtype_meta)
             col_names = ["record_id"] + list(data_col_types.keys())
@@ -974,10 +1016,12 @@ class DatabaseManager:
             placeholders = ", ".join(["?"] * len(col_names))
             self._duck._execute(
                 f'INSERT INTO "{table_name}" ({col_str}) VALUES ({placeholders}) '
-                f'ON CONFLICT (record_id) DO NOTHING',
+                f"ON CONFLICT (record_id) DO NOTHING",
                 [record_id] + storage_values,
             )
-            Log.debug(f"_save_native: inserted single record into '{table_name}', record_id={record_id[:12]}")
+            Log.debug(
+                f"_save_native: inserted single record into '{table_name}', record_id={record_id[:12]}"
+            )
 
         # Upsert into _variables (one row per variable)
         effective_level = schema_level or self.dataset_schema_keys[-1]
@@ -992,7 +1036,7 @@ class DatabaseManager:
 
     def save_batch(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         data_items: list[tuple[Any, dict]],
         profile: bool = False,
     ) -> list[str]:
@@ -1020,9 +1064,7 @@ class DatabaseManager:
         # this covers the MATLAB bridge (save_batch_bridge) as well as the
         # Python for_each save path with one seam.
         if self.dataset_schema_key_types:
-            data_items = [
-                (d, self.canonicalize_metadata(m)) for d, m in data_items
-            ]
+            data_items = [(d, self.canonicalize_metadata(m)) for d, m in data_items]
 
         timings = {}
         t0 = time.perf_counter()
@@ -1062,10 +1104,12 @@ class DatabaseManager:
             return [None] * len(data_items)
 
         col_types_str = ", ".join(f"{c}: {t}" for c, t in data_col_types.items())
-        Log.debug(f"save_batch({type_name}): {len(data_items)} items, "
-                  f"mode={dtype_meta.get('mode', 'single_column')}, "
-                  f"data: {_describe_data(first_data)}, "
-                  f"DuckDB columns: [{col_types_str}]")
+        Log.debug(
+            f"save_batch({type_name}): {len(data_items)} items, "
+            f"mode={dtype_meta.get('mode', 'single_column')}, "
+            f"data: {_describe_data(first_data)}, "
+            f"DuckDB columns: [{col_types_str}]"
+        )
 
         # --- Validate each record against the reference schema ---
         # A single record whose value doesn't fit the batch's columns (empty
@@ -1092,10 +1136,14 @@ class DatabaseManager:
                     valid_orig_idx.append(_idx)
                     continue
                 skipped_slots[_idx] = None
-                _meta_str = ", ".join(
-                    f"{k}={v}" for k, v in _fm.items()
-                    if not str(k).startswith("__")
-                ) or f"item #{_idx}"
+                _meta_str = (
+                    ", ".join(
+                        f"{k}={v}"
+                        for k, v in _fm.items()
+                        if not str(k).startswith("__")
+                    )
+                    or f"item #{_idx}"
+                )
                 Log.warn(
                     f"[batch_save] {type_name}: SKIPPED record ({_meta_str}) — "
                     f"incompatible with batch schema and NOT saved: {_reason}"
@@ -1111,7 +1159,9 @@ class DatabaseManager:
             valid_orig_idx = list(range(n_original))
 
         if not self._duck._table_exists(table_name):
-            data_cols_sql = ", ".join(f'"{col}" {dtype}' for col, dtype in data_col_types.items())
+            data_cols_sql = ", ".join(
+                f'"{col}" {dtype}' for col, dtype in data_col_types.items()
+            )
             if is_dataframe:
                 record_id_col = "record_id VARCHAR NOT NULL"
             else:
@@ -1137,6 +1187,7 @@ class DatabaseManager:
         if not is_dataframe and dtype_meta.get("mode") == "multi_column":
             try:
                 import pyarrow as pa
+
                 col_metas = dtype_meta.get("columns", {})
                 _use_arrow = all(
                     m.get("python_type") == "ndarray" and m.get("ndim", 1) == 1
@@ -1157,7 +1208,8 @@ class DatabaseManager:
             # keys: __branch_params (now derived from the graph) and
             # __graph_var_bindings (the bipartite edge list consumed by record_run).
             flat_meta_cleaned = {
-                k: v for k, v in flat_meta.items()
+                k: v
+                for k, v in flat_meta.items()
                 if k not in ("__branch_params", "__graph_var_bindings")
             }
             nested = self._split_metadata(flat_meta_cleaned)
@@ -1166,7 +1218,8 @@ class DatabaseManager:
             schema_level = self._infer_schema_level(schema_keys)
             if schema_level is not None and schema_keys:
                 key_tuple = tuple(
-                    _schema_str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    _schema_str(schema_keys.get(k, ""))
+                    for k in self.dataset_schema_keys
                     if k in schema_keys
                 )
                 combo_key = (schema_level, key_tuple)
@@ -1178,8 +1231,10 @@ class DatabaseManager:
         # Resolve schema_ids for all unique combos (batch)
         t2 = time.perf_counter()
         schema_id_cache = self._duck.batch_get_or_create_schema_ids(
-            {k: {col: _schema_str(v) for col, v in vals.items()}
-             for k, vals in unique_schema_combos.items()}
+            {
+                k: {col: _schema_str(v) for col, v in vals.items()}
+                for k, vals in unique_schema_combos.items()
+            }
         )
         timings["schema_resolution"] = time.perf_counter() - t2
 
@@ -1187,8 +1242,8 @@ class DatabaseManager:
         t4 = time.perf_counter()
         timestamp = datetime.now().isoformat()
         record_ids = []
-        data_table_rows = []   # (record_id, ...data_cols)
-        metadata_rows = []     # (rid,ts,type,schema_id,content_hash,sv,user) → _record_save + _record
+        data_table_rows = []  # (record_id, ...data_cols)
+        metadata_rows = []  # (rid,ts,type,schema_id,content_hash,sv,user) → _record_save + _record
 
         t4_hash = 0.0
         t4_record_id = 0.0
@@ -1208,7 +1263,8 @@ class DatabaseManager:
 
             if schema_level is not None and schema_keys:
                 key_tuple = tuple(
-                    _schema_str(schema_keys.get(k, "")) for k in self.dataset_schema_keys
+                    _schema_str(schema_keys.get(k, ""))
+                    for k in self.dataset_schema_keys
                     if k in schema_keys
                 )
                 schema_id = schema_id_cache[(schema_level, key_tuple)]
@@ -1227,6 +1283,7 @@ class DatabaseManager:
             if i == 0:
                 try:
                     import pandas as _pd_diag
+
                     if isinstance(data_val, _pd_diag.DataFrame):
                         Log.debug(
                             f"[content_hash] {type_name}: first-record input is "
@@ -1270,16 +1327,25 @@ class DatabaseManager:
             t4_storage += time.perf_counter() - _t
 
             _t = time.perf_counter()
-            metadata_rows.append((
-                record_id, timestamp, type_name, schema_id,
-                content_hash, schema_version, user_id,
-            ))
+            metadata_rows.append(
+                (
+                    record_id,
+                    timestamp,
+                    type_name,
+                    schema_id,
+                    content_hash,
+                    schema_version,
+                    user_id,
+                )
+            )
             t4_meta += time.perf_counter() - _t
 
         # --- Bulk DataFrame → storage rows (replaces 7k per-row iloc calls) ---
         if _df_bulk:
             _t = time.perf_counter()
-            data_table_rows = _bulk_df_to_storage_rows(_df_bulk, _df_bulk_rids, dtype_meta)
+            data_table_rows = _bulk_df_to_storage_rows(
+                _df_bulk, _df_bulk_rids, dtype_meta
+            )
             t4_storage += time.perf_counter() - _t
 
         timings["per_row_hashing"] = time.perf_counter() - t4
@@ -1298,14 +1364,19 @@ class DatabaseManager:
             all_new_rids = list({row[0] for row in data_table_rows})
             if all_new_rids:
                 placeholders_rids = ", ".join(["?"] * len(all_new_rids))
-                existing_rids = {r[0] for r in self._duck._fetchall(
-                    f'SELECT DISTINCT record_id FROM "{table_name}" '
-                    f'WHERE record_id IN ({placeholders_rids})',
-                    all_new_rids,
-                )}
+                existing_rids = {
+                    r[0]
+                    for r in self._duck._fetchall(
+                        f'SELECT DISTINCT record_id FROM "{table_name}" '
+                        f"WHERE record_id IN ({placeholders_rids})",
+                        all_new_rids,
+                    )
+                }
             else:
                 existing_rids = set()
-            new_data_rows = [row for row in data_table_rows if row[0] not in existing_rids]
+            new_data_rows = [
+                row for row in data_table_rows if row[0] not in existing_rids
+            ]
         else:
             # PRIMARY KEY: ON CONFLICT DO NOTHING handles dedup in the INSERT.
             new_data_rows = data_table_rows
@@ -1320,20 +1391,27 @@ class DatabaseManager:
             if _use_arrow and _arrow_record_ids:
                 # PyArrow fast path: numpy arrays → Arrow buffers → DuckDB (no Python list conversion)
                 _NUMPY_TO_ARROW = {
-                    'float64': pa.float64(), 'float32': pa.float32(),
-                    'int64': pa.int64(), 'int32': pa.int32(),
-                    'int16': pa.int16(), 'int8': pa.int8(),
-                    'uint64': pa.uint64(), 'uint32': pa.uint32(),
-                    'uint16': pa.uint16(), 'uint8': pa.uint8(),
-                    'bool': pa.bool_(),
+                    "float64": pa.float64(),
+                    "float32": pa.float32(),
+                    "int64": pa.int64(),
+                    "int32": pa.int32(),
+                    "int16": pa.int16(),
+                    "int8": pa.int8(),
+                    "uint64": pa.uint64(),
+                    "uint32": pa.uint32(),
+                    "uint16": pa.uint16(),
+                    "uint8": pa.uint8(),
+                    "bool": pa.bool_(),
                 }
-                arrow_data = {'record_id': pa.array(_arrow_record_ids, type=pa.string())}
+                arrow_data = {
+                    "record_id": pa.array(_arrow_record_ids, type=pa.string())
+                }
                 for col_name, np_list in _arrow_col_arrays.items():
                     col_meta = dtype_meta["columns"][col_name]
                     numpy_dtype = col_meta.get("numpy_dtype", "float64")
                     arrow_inner = _NUMPY_TO_ARROW.get(numpy_dtype, pa.float64())
                     arrow_data[col_name] = pa.array(np_list, type=pa.list_(arrow_inner))
-                arrow_table = pa.table(arrow_data)
+                pa.table(arrow_data)
                 all_columns = list(arrow_data.keys())
                 col_str = ", ".join(f'"{c}"' for c in all_columns)
                 timings["data_df_create"] = time.perf_counter() - t6a
@@ -1341,12 +1419,12 @@ class DatabaseManager:
                 t6b = time.perf_counter()
                 self._duck.con.execute(
                     f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM arrow_table '
-                    f'ON CONFLICT (record_id) DO NOTHING'
+                    f"ON CONFLICT (record_id) DO NOTHING"
                 )
                 timings["data_insert"] = time.perf_counter() - t6b
             elif new_data_rows:
                 all_columns = ["record_id"] + list(data_col_types.keys())
-                data_df = pd.DataFrame(new_data_rows, columns=all_columns)
+                pd.DataFrame(new_data_rows, columns=all_columns)
                 col_str = ", ".join(f'"{c}"' for c in all_columns)
                 timings["data_df_create"] = time.perf_counter() - t6a
 
@@ -1358,7 +1436,7 @@ class DatabaseManager:
                 else:
                     self._duck.con.execute(
                         f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df '
-                        f'ON CONFLICT (record_id) DO NOTHING'
+                        f"ON CONFLICT (record_id) DO NOTHING"
                     )
                 timings["data_insert"] = time.perf_counter() - t6b
             else:
@@ -1370,7 +1448,7 @@ class DatabaseManager:
             # content_hash, schema_version, user_id); _record_save keeps only the
             # (record_id, timestamp, user_id) save-event columns.
             t6c = time.perf_counter()
-            save_df = pd.DataFrame(
+            pd.DataFrame(
                 [(r[0], r[1], r[6]) for r in metadata_rows],
                 columns=["record_id", "timestamp", "user_id"],
             )
@@ -1384,6 +1462,7 @@ class DatabaseManager:
             # (_record); map metadata_rows to the _record column order.
             t6c2 = time.perf_counter()
             from .provenance import insert_record_entities
+
             insert_record_entities(
                 self._duck,
                 [(r[0], r[1], r[2], r[3], r[4], r[5], False) for r in metadata_rows],
@@ -1430,8 +1509,10 @@ class DatabaseManager:
             Log.debug(f"  save_batch {phase:30s} {elapsed:.3f}s")
 
         if profile:
-            print(f"\n--- save_batch() profile ({n} items, "
-                  f"{len(unique_schema_combos)} unique schemas) ---")
+            print(
+                f"\n--- save_batch() profile ({n} items, "
+                f"{len(unique_schema_combos)} unique schemas) ---"
+            )
             for phase, elapsed in timings.items():
                 print(f"  {phase:30s} {elapsed:8.3f}s")
             print()
@@ -1450,7 +1531,9 @@ class DatabaseManager:
     @staticmethod
     def _has_custom_serialization(variable_class: type) -> bool:
         """Check if a BaseVariable subclass overrides to_db or from_db."""
-        return "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
+        return (
+            "to_db" in variable_class.__dict__ or "from_db" in variable_class.__dict__
+        )
 
     def _sort_by_schema_keys(self, df: pd.DataFrame) -> pd.DataFrame:
         """Sort DataFrame by schema keys with numeric sorting for numeric-only columns.
@@ -1494,7 +1577,7 @@ class DatabaseManager:
 
             if is_numeric and len(non_null_values) > 0:
                 # Numeric-only: convert to float for numeric sorting
-                df[temp_col_name] = pd.to_numeric(col, errors='coerce')
+                df[temp_col_name] = pd.to_numeric(col, errors="coerce")
             else:
                 # Contains non-numeric: use string sorting
                 df[temp_col_name] = col.astype(str)
@@ -1503,8 +1586,8 @@ class DatabaseManager:
             sort_ascending.append(True)
 
         # Add timestamp as final tiebreaker (descending)
-        if 'timestamp' in df.columns:
-            sort_cols.append('timestamp')
+        if "timestamp" in df.columns:
+            sort_cols.append("timestamp")
             sort_ascending.append(False)
 
         # Sort by all columns
@@ -1512,7 +1595,7 @@ class DatabaseManager:
             df = df.sort_values(sort_cols, ascending=sort_ascending)
 
         # Drop temporary sort columns
-        df = df.drop(columns=temp_col_names, errors='ignore')
+        df = df.drop(columns=temp_col_names, errors="ignore")
 
         return df
 
@@ -1558,9 +1641,7 @@ class DatabaseManager:
         Returns a DataFrame of matching rows including schema columns.
         """
         # Build schema column SELECT list
-        schema_col_select = ", ".join(
-            f's."{col}"' for col in self.dataset_schema_keys
-        )
+        schema_col_select = ", ".join(f's."{col}"' for col in self.dataset_schema_keys)
 
         # The save-event log (_record_save, one row per (record_id, timestamp))
         # joined to the _record entity (one row per record_id) for the
@@ -1577,7 +1658,9 @@ class DatabaseManager:
             "LEFT JOIN _schema s ON r.schema_id = s.schema_id "
         )
 
-        excluded_clause = "" if include_excluded else " AND COALESCE(r.excluded, FALSE) = FALSE"
+        excluded_clause = (
+            "" if include_excluded else " AND COALESCE(r.excluded, FALSE) = FALSE"
+        )
 
         if record_id is not None:
             sql = (
@@ -1590,7 +1673,9 @@ class DatabaseManager:
 
         # Unrecognized version_id → treat as record_id lookup
         if version_id not in ("latest", "all"):
-            Log.debug(f"_find_record({type_name}): treating version_id={version_id!r} as record_id")
+            Log.debug(
+                f"_find_record({type_name}): treating version_id={version_id!r} as record_id"
+            )
             sql = (
                 f"SELECT {meta_select}, {schema_col_select} "
                 f"{meta_from}"
@@ -1627,7 +1712,6 @@ class DatabaseManager:
         # 2. Suffix matching (e.g. "low_hz" → "bandpass.low_hz") cannot be expressed
         #    in SQL without fetching all records anyway.
         # The Python _match_row already checks version_keys first, then branch_params.
-        sql_branch_params_filter = None
 
         where = " AND ".join(conditions)
 
@@ -1652,7 +1736,9 @@ class DatabaseManager:
         _t_sql = time.perf_counter()
         df = self._duck._fetchdf(sql, params)
         t_sql = time.perf_counter() - _t_sql
-        Log.debug(f"_find_record({type_name}): SQL returned {len(df)} records, version_id={version_id}")
+        Log.debug(
+            f"_find_record({type_name}): SQL returned {len(df)} records, version_id={version_id}"
+        )
 
         # Collapse to the latest record per *variant* when version_id="latest".
         # Variant identity is derived from the bipartite graph: the producing
@@ -1671,7 +1757,9 @@ class DatabaseManager:
         if version_id == "latest" and len(df) > 0:
             _t_collapse = time.perf_counter()
             from collections import defaultdict
+
             from . import provenance_query
+
             # Consumed input *schema locations* per record (schema-edit-stable:
             # a re-save keeps the same schema_id, a genuinely different input
             # location changes it). Part of the variant key so two for_each runs
@@ -1699,7 +1787,12 @@ class DatabaseManager:
                     # and collapse to the newest.
                     onum = onum_map.get(row.record_id)
                     consumed = tuple(sorted(consumed_map.get(row.record_id, ())))
-                    variant_key = (inv[1], json.dumps(bp, sort_keys=True), onum, consumed)
+                    variant_key = (
+                        inv[1],
+                        json.dumps(bp, sort_keys=True),
+                        onum,
+                        consumed,
+                    )
                 else:
                     # No producing invocation → a plain raw save. (Any non-schema
                     # save kwargs are anchored on a synthetic __save__ invocation,
@@ -1713,7 +1806,9 @@ class DatabaseManager:
             keep_indices = [max(group)[1] for group in groups.values()]
             collapsed_count = len(df) - len(keep_indices)
             if collapsed_count > 0:
-                Log.debug(f"_find_record: collapsed {collapsed_count} non-latest variant row(s)")
+                Log.debug(
+                    f"_find_record: collapsed {collapsed_count} non-latest variant row(s)"
+                )
             df = df.loc[keep_indices]
 
             # --- Diagnostic: why do some locations still have >1 record? ---
@@ -1742,16 +1837,26 @@ class DatabaseManager:
                             for _r in _rids:
                                 _inv = inv_map.get(_r)
                                 if _inv is not None:
-                                    _vks.append((
-                                        _inv[1],
-                                        json.dumps(bp_map.get(_r, {}), sort_keys=True),
-                                        onum_map.get(_r),
-                                        tuple(sorted(consumed_map.get(_r, ()))),
-                                    ))
+                                    _vks.append(
+                                        (
+                                            _inv[1],
+                                            json.dumps(
+                                                bp_map.get(_r, {}), sort_keys=True
+                                            ),
+                                            onum_map.get(_r),
+                                            tuple(sorted(consumed_map.get(_r, ()))),
+                                        )
+                                    )
                                 else:
                                     _vks.append(("__raw__", None))
                             _kind = f"same schema_id {_sids[0]}, DISTINCT variant_keys={_vks}"
-                        _loc = dict(zip(_sk, _vals if isinstance(_vals, tuple) else (_vals,)))
+                        _loc = dict(
+                            zip(
+                                _sk,
+                                _vals if isinstance(_vals, tuple) else (_vals,),
+                                strict=False,
+                            )
+                        )
                         _samples.append(
                             f"{_loc}: {len(_g)} records, record_ids={_rids[:4]} -> {_kind}"
                         )
@@ -1819,9 +1924,10 @@ class DatabaseManager:
         rid = row.get("record_id")
         if rid is not None:
             from . import provenance_query
+
             for k, v in provenance_query.derived_branch_params(self._duck, rid).items():
                 if k.startswith("__save__."):
-                    version[k[len("__save__."):]] = v
+                    version[k[len("__save__.") :]] = v
 
         nested_metadata = {"schema": schema, "version": version}
         flat_metadata = {}
@@ -1901,9 +2007,7 @@ class DatabaseManager:
         )
 
         if not dtype_rows:
-            raise NotFoundError(
-                f"No dtype found for {type_name} in _variables"
-            )
+            raise NotFoundError(f"No dtype found for {type_name} in _variables")
 
         dtype_meta = json.loads(dtype_rows[0][0])
         is_custom = dtype_meta.get("custom", False)
@@ -1943,8 +2047,10 @@ class DatabaseManager:
                 result = {}
                 for c, meta in columns_meta.items():
                     if c in row_df.columns:
-                        result[c] = [_storage_to_python(row_df[c].iloc[i], meta)
-                                     for i in range(len(row_df))]
+                        result[c] = [
+                            _storage_to_python(row_df[c].iloc[i], meta)
+                            for i in range(len(row_df))
+                        ]
                 df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
                 data = pd.DataFrame(result, columns=df_columns)
             else:
@@ -1974,13 +2080,16 @@ class DatabaseManager:
         # the bipartite graph rather than read from a stored column.
         try:
             from . import provenance_query
-            instance.branch_params = provenance_query.derived_branch_params(self._duck, record_id)
+
+            instance.branch_params = provenance_query.derived_branch_params(
+                self._duck, record_id
+            )
         except Exception:
             instance.branch_params = {}
 
         return instance
 
-    def register(self, variable_class: Type[BaseVariable]) -> None:
+    def register(self, variable_class: type[BaseVariable]) -> None:
         """
         Register a variable type for storage.
 
@@ -2009,7 +2118,7 @@ class DatabaseManager:
         self._registered_types[type_name] = variable_class
 
     def _ensure_registered(
-        self, variable_class: Type[BaseVariable], auto_register: bool = True
+        self, variable_class: type[BaseVariable], auto_register: bool = True
     ) -> str:
         """
         Ensure a variable type is registered.
@@ -2043,7 +2152,7 @@ class DatabaseManager:
 
     def save_variable(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         data: Any,
         index: Any = None,
         **metadata,
@@ -2104,7 +2213,8 @@ class DatabaseManager:
         # __graph_var_bindings (the bipartite edge list consumed by record_run).
         if isinstance(metadata, dict):
             metadata = {
-                k: v for k, v in metadata.items()
+                k: v
+                for k, v in metadata.items()
                 if k not in ("__branch_params", "__graph_var_bindings")
             }
 
@@ -2124,6 +2234,7 @@ class DatabaseManager:
 
         # Normalize array.array values to numpy arrays (MATLAB bridge can produce these)
         import array as _array_mod
+
         if isinstance(variable.data, dict):
             for k, v in variable.data.items():
                 if isinstance(v, _array_mod.array):
@@ -2140,8 +2251,12 @@ class DatabaseManager:
             metadata=nested_metadata,
         )
 
-        serialization = "custom" if self._has_custom_serialization(type(variable)) else "native"
-        Log.debug(f"save({type_name}): record_id={record_id[:12]}, content_hash={content_hash[:12]}, serialization={serialization}")
+        serialization = (
+            "custom" if self._has_custom_serialization(type(variable)) else "native"
+        )
+        Log.debug(
+            f"save({type_name}): record_id={record_id[:12]}, content_hash={content_hash[:12]}, serialization={serialization}"
+        )
 
         # Wrap all writes in a single transaction to avoid repeated
         # WAL checkpoints (each auto-committed statement can trigger a
@@ -2168,16 +2283,26 @@ class DatabaseManager:
                     df.index = index
 
                 schema_id = self._save_columnar(
-                    record_id, table_name, type(variable), df,
-                    schema_level, schema_keys, content_hash,
+                    record_id,
+                    table_name,
+                    type(variable),
+                    df,
+                    schema_level,
+                    schema_keys,
+                    content_hash,
                 )
             else:
                 # ALL other data: scalars, arrays, lists, dicts, dict-of-arrays,
                 # and native DataFrames (stored as a single record with array-typed
                 # columns, e.g. DOUBLE[], BIGINT[], VARCHAR[]).
                 schema_id = self._save_native(
-                    record_id, table_name, type(variable), variable.data, content_hash,
-                    schema_level=schema_level, schema_keys=schema_keys,
+                    record_id,
+                    table_name,
+                    type(variable),
+                    variable.data,
+                    content_hash,
+                    schema_level=schema_level,
+                    schema_keys=schema_keys,
                 )
 
             self._save_record_event(
@@ -2189,6 +2314,7 @@ class DatabaseManager:
             # Mirror into the bipartite entities table (_record). Covers raw /
             # manually saved records, which have no producing invocation.
             from .provenance import insert_record_entity
+
             insert_record_entity(
                 self._duck,
                 record_id=record_id,
@@ -2204,11 +2330,11 @@ class DatabaseManager:
             # params (the variant role formerly held by the version_keys column).
             if version_keys:
                 save_kwargs = {
-                    k: v for k, v in version_keys.items()
-                    if not str(k).startswith("__")
+                    k: v for k, v in version_keys.items() if not str(k).startswith("__")
                 }
                 if save_kwargs:
                     from .provenance_save import record_direct_save
+
                     record_direct_save(self._duck, record_id, save_kwargs, created_at)
 
             self._duck._commit()
@@ -2226,7 +2352,7 @@ class DatabaseManager:
 
     def _load_with_where(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         metadata: dict,
         table_name: str,
         where,
@@ -2258,8 +2384,8 @@ class DatabaseManager:
         """
         type_name = variable_class.__name__
 
-        from .filters import Filter, split_schema_key_filters
         from . import provenance_query
+        from .filters import Filter, split_schema_key_filters
 
         # Separate the variant role (variable-level filter → S_var) from the row
         # role (SchemaKey portion, or a Merge constituent's pre-resolved id set).
@@ -2276,7 +2402,8 @@ class DatabaseManager:
             sk_filter, var_filter = split_schema_key_filters(where)
             row_ids = (
                 sk_filter.resolve(self, variable_class, table_name)
-                if sk_filter is not None else None
+                if sk_filter is not None
+                else None
             )
         elif where is None or hasattr(where, "resolve"):
             var_filter, row_ids = where, None
@@ -2287,7 +2414,9 @@ class DatabaseManager:
             )
 
         nested_base = self._split_metadata(metadata)
-        records_all = self._find_record(type_name, nested_metadata=nested_base, version_id=version_id)
+        records_all = self._find_record(
+            type_name, nested_metadata=nested_base, version_id=version_id
+        )
         if len(records_all) == 0:
             raise NotFoundError(f"No {type_name} found matching metadata: {metadata}")
 
@@ -2295,10 +2424,14 @@ class DatabaseManager:
 
         # --- Variant match (semantic) on the variable-level portion ---
         if var_filter is not None:
-            s_var = frozenset(var_filter.resolve(
-                self, variable_class, table_name,
-                validate_coverage=variant_validate_coverage,
-            ))
+            s_var = frozenset(
+                var_filter.resolve(
+                    self,
+                    variable_class,
+                    table_name,
+                    validate_coverage=variant_validate_coverage,
+                )
+            )
             # The consumed-input subset test runs at the INPUT variable's level,
             # which the target-resolved ``s_var`` does not capture when the output
             # is coarser than the filter (cross-level where=): there ``resolve``
@@ -2317,8 +2450,10 @@ class DatabaseManager:
             def _variant_match(row, _s=s_var, _sn=s_var_native, _c=consumed_map):
                 consumed = _c.get(row["record_id"])
                 if consumed is not None:
-                    return consumed <= _sn           # subset: every consumed loc ∈ S_var (native level)
-                return row["schema_id"] in _s        # raw/direct-save fallback (target level)
+                    return (
+                        consumed <= _sn
+                    )  # subset: every consumed loc ∈ S_var (native level)
+                return row["schema_id"] in _s  # raw/direct-save fallback (target level)
 
             records = records_all[records_all.apply(_variant_match, axis=1)]
             Log.debug(
@@ -2342,14 +2477,13 @@ class DatabaseManager:
             )
         return records
 
-
     # -------------------------------------------------------------------------
     # Bulk DataFrame loading engine
     # -------------------------------------------------------------------------
 
     def _load_as_df_via_iterator(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         metadata: dict,
         *,
         layout: str,
@@ -2374,8 +2508,10 @@ class DatabaseManager:
 
         loaded = list(
             self.load(
-                variable_class, metadata,
-                version_id=version_id, where=where,
+                variable_class,
+                metadata,
+                version_id=version_id,
+                where=where,
                 branch_params_filter=branch_params_filter,
             )
         )
@@ -2398,13 +2534,17 @@ class DatabaseManager:
                 for k, v in meta.items():
                     if k.startswith("__") or k in const_keys:
                         continue
-                    result[k] = str(v) if (k in schema_keys_set and stringify_schema and v is not None) else v
+                    result[k] = (
+                        str(v)
+                        if (k in schema_keys_set and stringify_schema and v is not None)
+                        else v
+                    )
                 return result
             else:
                 # Packed: include all metadata (current BaseVariable.load(as_df=True) behaviour).
                 return meta
 
-        is_spread = (layout == "spread")
+        is_spread = layout == "spread"
         first = loaded[0]
 
         if hasattr(first, "data") and isinstance(first.data, pd.DataFrame):
@@ -2428,8 +2568,10 @@ class DatabaseManager:
                 combined_meta = pd.DataFrame(all_meta_rows)
                 combined_data = pd.concat(all_data, ignore_index=True)
                 return pd.concat(
-                    [combined_meta.reset_index(drop=True),
-                     combined_data.reset_index(drop=True)],
+                    [
+                        combined_meta.reset_index(drop=True),
+                        combined_data.reset_index(drop=True),
+                    ],
                     axis=1,
                 )
             else:  # packed
@@ -2451,7 +2593,9 @@ class DatabaseManager:
                 row = _process_meta(var, spread=is_spread)
                 row[col_name] = var.data if hasattr(var, "data") else var
                 if include_rid:
-                    row["__record_id"] = var.record_id if hasattr(var, "record_id") else None
+                    row["__record_id"] = (
+                        var.record_id if hasattr(var, "record_id") else None
+                    )
                 if include_bp:
                     row["__branch_params"] = json.dumps(
                         var.branch_params if hasattr(var, "branch_params") else {}
@@ -2464,7 +2608,7 @@ class DatabaseManager:
         records: pd.DataFrame,
         data_df: pd.DataFrame,
         dtype_meta: dict,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         *,
         layout: str,
         include_rid: bool,
@@ -2506,9 +2650,12 @@ class DatabaseManager:
                     meta_dict[key] = col_series.values
                 else:
                     meta_dict[key] = col_series.apply(
-                        lambda v: _from_schema_str(v)
-                        if v is not None and not (isinstance(v, float) and pd.isna(v))
-                        else None
+                        lambda v: (
+                            _from_schema_str(v)
+                            if v is not None
+                            and not (isinstance(v, float) and pd.isna(v))
+                            else None
+                        )
                     ).values
 
         # Non-schema metadata columns: a record's direct-save kwargs, derived
@@ -2516,6 +2663,7 @@ class DatabaseManager:
         # Internal pipeline markers (__fn etc.) and fn sweep-constants are not
         # exposed here — the latter appear in the ``__branch_params`` column below.
         from . import provenance_query as _pq
+
         # Batched: derive every record's branch params in one closure build,
         # reused for both the __save__ kwarg columns and the __branch_params
         # column (previously two per-record ancestry walks each — the dominant
@@ -2526,7 +2674,7 @@ class DatabaseManager:
         kwarg_col_names: dict[str, list] = {}
         for rid in rec_id_values:
             kw = {
-                k[len("__save__."):]: v
+                k[len("__save__.") :]: v
                 for k, v in bp_map.get(rid, {}).items()
                 if k.startswith("__save__.")
             }
@@ -2592,7 +2740,9 @@ class DatabaseManager:
                 grouped = data_df.groupby("record_id", sort=False)
                 packed_map: dict = {}
                 for rid, group in grouped:
-                    g = group.drop(columns=["record_id"], errors="ignore").reset_index(drop=True)
+                    g = group.drop(columns=["record_id"], errors="ignore").reset_index(
+                        drop=True
+                    )
                     cols_present = [c for c in df_columns if c in g.columns]
                     packed_map[rid] = g[cols_present] if cols_present else g
                 meta_df["data"] = meta_df["__record_id"].map(packed_map)
@@ -2623,7 +2773,7 @@ class DatabaseManager:
             if layout == "packed":
                 data_only = data_df.drop(columns=["record_id"], errors="ignore")
                 data_dicts = data_only.to_dict("records")
-                data_map = dict(zip(data_df["record_id"], data_dicts))
+                data_map = dict(zip(data_df["record_id"], data_dicts, strict=False))
                 meta_df["data"] = meta_df["__record_id"].map(data_map)
                 if not include_rid:
                     meta_df = meta_df.drop(columns=["__record_id"], errors="ignore")
@@ -2644,7 +2794,7 @@ class DatabaseManager:
 
     def load_all_as_df(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         metadata: dict | None = None,
         *,
         layout: str = "packed",
@@ -2725,31 +2875,51 @@ class DatabaseManager:
         # Class-introspection bailouts
         if variable_class.__init__ is not BaseVariable.__init__:
             return self._load_as_df_via_iterator(
-                variable_class, metadata, layout=layout, include_rid=include_rid,
-                include_bp=include_bp, stringify_schema=stringify_schema,
-                version_id=version_id, where=where,
+                variable_class,
+                metadata,
+                layout=layout,
+                include_rid=include_rid,
+                include_bp=include_bp,
+                stringify_schema=stringify_schema,
+                version_id=version_id,
+                where=where,
                 branch_params_filter=branch_params_filter,
             )
         if self._has_custom_serialization(variable_class):
             return self._load_as_df_via_iterator(
-                variable_class, metadata, layout=layout, include_rid=include_rid,
-                include_bp=include_bp, stringify_schema=stringify_schema,
-                version_id=version_id, where=where,
+                variable_class,
+                metadata,
+                layout=layout,
+                include_rid=include_rid,
+                include_bp=include_bp,
+                stringify_schema=stringify_schema,
+                version_id=version_id,
+                where=where,
                 branch_params_filter=branch_params_filter,
             )
         # Storage-mode bailouts
         if dtype_meta.get("custom"):
             return self._load_as_df_via_iterator(
-                variable_class, metadata, layout=layout, include_rid=include_rid,
-                include_bp=include_bp, stringify_schema=stringify_schema,
-                version_id=version_id, where=where,
+                variable_class,
+                metadata,
+                layout=layout,
+                include_rid=include_rid,
+                include_bp=include_bp,
+                stringify_schema=stringify_schema,
+                version_id=version_id,
+                where=where,
                 branch_params_filter=branch_params_filter,
             )
         if dtype_meta.get("nested"):
             return self._load_as_df_via_iterator(
-                variable_class, metadata, layout=layout, include_rid=include_rid,
-                include_bp=include_bp, stringify_schema=stringify_schema,
-                version_id=version_id, where=where,
+                variable_class,
+                metadata,
+                layout=layout,
+                include_rid=include_rid,
+                include_bp=include_bp,
+                stringify_schema=stringify_schema,
+                version_id=version_id,
+                where=where,
                 branch_params_filter=branch_params_filter,
             )
 
@@ -2758,7 +2928,10 @@ class DatabaseManager:
         if where is not None:
             try:
                 records = self._load_with_where(
-                    variable_class, metadata, table_name, where,
+                    variable_class,
+                    metadata,
+                    table_name,
+                    where,
                     version_id=version_id,
                 )
             except Exception as _exc:
@@ -2771,7 +2944,9 @@ class DatabaseManager:
             # branch_params filter as a post-step on the where-matched records.
             if branch_params_filter:
                 _n_before = len(records)
-                records = _filter_records_by_branch_params(records, branch_params_filter, self._duck)
+                records = _filter_records_by_branch_params(
+                    records, branch_params_filter, self._duck
+                )
                 Log.debug(
                     f"[load_all_as_df] {type_name}: branch_params_filter "
                     f"{branch_params_filter} kept {len(records)}/{_n_before} records"
@@ -2779,7 +2954,8 @@ class DatabaseManager:
         else:
             nested_metadata = self._split_metadata(metadata)
             records = self._find_record(
-                type_name, nested_metadata=nested_metadata,
+                type_name,
+                nested_metadata=nested_metadata,
                 version_id=version_id,
                 branch_params_filter=branch_params_filter,
             )
@@ -2814,12 +2990,19 @@ class DatabaseManager:
             return pd.DataFrame()
 
         data_df = (
-            pd.concat(chunks, ignore_index=True) if len(chunks) > 1 else chunks[0].copy()
+            pd.concat(chunks, ignore_index=True)
+            if len(chunks) > 1
+            else chunks[0].copy()
         )
 
         result = self._assemble_df_from_records_and_data(
-            records, data_df, dtype_meta, variable_class,
-            layout=layout, include_rid=include_rid, include_bp=include_bp,
+            records,
+            data_df,
+            dtype_meta,
+            variable_class,
+            layout=layout,
+            include_rid=include_rid,
+            include_bp=include_bp,
             stringify_schema=stringify_schema,
         )
         t_total = time.perf_counter() - t0
@@ -2831,7 +3014,7 @@ class DatabaseManager:
 
     def load(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         metadata: dict,
         version_id: str = "all",
         where=None,
@@ -2868,7 +3051,9 @@ class DatabaseManager:
         # Specific record_id: bypass normal filtering
         if version_id not in ("all", "latest") and version_id is not None:
             records = self._find_record(
-                variable_class.__name__, record_id=version_id, include_excluded=True,
+                variable_class.__name__,
+                record_id=version_id,
+                include_excluded=True,
             )
             if len(records) == 0:
                 raise NotFoundError(f"No data found with record_id '{version_id}'")
@@ -2876,7 +3061,10 @@ class DatabaseManager:
             # where= specified: semantic variant match + row restriction
             try:
                 records = self._load_with_where(
-                    variable_class, metadata, table_name, where,
+                    variable_class,
+                    metadata,
+                    table_name,
+                    where,
                     version_id=version_id,
                 )
             except NotFoundError:
@@ -2890,7 +3078,9 @@ class DatabaseManager:
             # branch_params filter as a post-step on the where-matched records.
             if branch_params_filter:
                 _n_before = len(records)
-                records = _filter_records_by_branch_params(records, branch_params_filter, self._duck)
+                records = _filter_records_by_branch_params(
+                    records, branch_params_filter, self._duck
+                )
                 Log.debug(
                     f"load({type_name}): branch_params_filter {branch_params_filter} "
                     f"kept {len(records)}/{_n_before} records"
@@ -2901,7 +3091,8 @@ class DatabaseManager:
             nested_metadata = self._split_metadata(metadata)
             try:
                 records = self._find_record(
-                    variable_class.__name__, nested_metadata=nested_metadata,
+                    variable_class.__name__,
+                    nested_metadata=nested_metadata,
                     version_id=version_id,
                     branch_params_filter=branch_params_filter,
                 )
@@ -2947,12 +3138,14 @@ class DatabaseManager:
         t_chunk_deserialize = 0.0
         _t_chunks_total = time.perf_counter()
         for start in range(0, len(all_record_ids), chunk_size):
-            chunk = all_record_ids[start:start + chunk_size]
+            chunk = all_record_ids[start : start + chunk_size]
             placeholders = ", ".join(["?"] * len(chunk))
 
             if is_custom:
                 # Custom (columnar) path: fetch all rows for this chunk
-                sql = f'SELECT * FROM "{table_name}" WHERE record_id IN ({placeholders})'
+                sql = (
+                    f'SELECT * FROM "{table_name}" WHERE record_id IN ({placeholders})'
+                )
                 _t = time.perf_counter()
                 chunk_df = self._duck._fetchdf(sql, chunk)
                 t_chunk_sql += time.perf_counter() - _t
@@ -2965,7 +3158,9 @@ class DatabaseManager:
                             columns=["record_id"], errors="ignore"
                         ).reset_index(drop=True)
                         data_lookup[rid] = self._deserialize_custom_subdf(
-                            variable_class, sub_df, dtype_meta,
+                            variable_class,
+                            sub_df,
+                            dtype_meta,
                         )
                     t_chunk_deserialize += time.perf_counter() - _t
             else:
@@ -2974,7 +3169,7 @@ class DatabaseManager:
                 data_select = ", ".join(f'"{c}"' for c in data_cols)
                 sql = (
                     f'SELECT record_id, {data_select} FROM "{table_name}" '
-                    f'WHERE record_id IN ({placeholders})'
+                    f"WHERE record_id IN ({placeholders})"
                 )
                 _t = time.perf_counter()
                 chunk_df = self._duck._fetchdf(sql, chunk)
@@ -2987,7 +3182,9 @@ class DatabaseManager:
 
                     if mode == "dataframe":
                         # One DuckDB row per DataFrame row: group by record_id.
-                        df_columns = dtype_meta.get("df_columns", list(columns_meta.keys()))
+                        df_columns = dtype_meta.get(
+                            "df_columns", list(columns_meta.keys())
+                        )
                         for rid, group_df in chunk_df.groupby("record_id", sort=False):
                             group_df = group_df.drop(
                                 columns=["record_id"], errors="ignore"
@@ -2996,8 +3193,10 @@ class DatabaseManager:
                             for c, meta in columns_meta.items():
                                 if c in group_df.columns:
                                     # Optimized: use tolist() instead of iloc[i] (5-10x faster)
-                                    result[c] = [_storage_to_python(val, meta)
-                                                 for val in group_df[c].tolist()]
+                                    result[c] = [
+                                        _storage_to_python(val, meta)
+                                        for val in group_df[c].tolist()
+                                    ]
                             data_lookup[rid] = pd.DataFrame(result, columns=df_columns)
                     else:
                         # Non-DataFrame: restore types, then one value per record_id row.
@@ -3012,20 +3211,26 @@ class DatabaseManager:
                             for i, rid in enumerate(chunk_df["record_id"].tolist()):
                                 result = {}
                                 for c, meta in columns_meta.items():
-                                    result[c] = _storage_to_python(restored[c].iloc[i], meta)
+                                    result[c] = _storage_to_python(
+                                        restored[c].iloc[i], meta
+                                    )
                                 if dtype_meta.get("nested"):
-                                    data_lookup[rid] = _unflatten_dict(result, dtype_meta["path_map"])
+                                    data_lookup[rid] = _unflatten_dict(
+                                        result, dtype_meta["path_map"]
+                                    )
                                 else:
                                     data_lookup[rid] = result
                         else:
                             col_names = list(columns_meta.keys())
                             for i, rid in enumerate(chunk_df["record_id"].tolist()):
-                                data_lookup[rid] = {c: restored[c].iloc[i] for c in col_names}
+                                data_lookup[rid] = {
+                                    c: restored[c].iloc[i] for c in col_names
+                                }
                     t_chunk_deserialize += time.perf_counter() - _t
 
         t_chunks_total = time.perf_counter() - _t_chunks_total
         n_chunks = (len(all_record_ids) + chunk_size - 1) // chunk_size
-        _mode_str = 'custom' if is_custom else dtype_meta.get('mode', 'single_column')
+        _mode_str = "custom" if is_custom else dtype_meta.get("mode", "single_column")
         Log.info(
             f"[timing] load({type_name}): pre-yield setup: "
             f"find={t_find:.3f}s, dtype_lookup={t_dtype:.3f}s, "
@@ -3062,12 +3267,13 @@ class DatabaseManager:
             # non-schema save metadata.
             try:
                 from . import provenance_query
+
                 bp = provenance_query.derived_branch_params(self._duck, record_id)
             except Exception:
                 bp = {}
             for k, v in bp.items():
                 if k.startswith("__save__."):
-                    flat_metadata[k[len("__save__."):]] = v
+                    flat_metadata[k[len("__save__.") :]] = v
 
             instance = variable_class(data_value)
             instance.record_id = record_id
@@ -3090,7 +3296,7 @@ class DatabaseManager:
 
     def list_versions(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         include_excluded: bool = False,
         **metadata,
     ) -> list[dict]:
@@ -3111,7 +3317,9 @@ class DatabaseManager:
 
         schema_keys_set = set(self.dataset_schema_keys)
         schema_metadata = {k: v for k, v in metadata.items() if k in schema_keys_set}
-        branch_params_filter = {k: v for k, v in metadata.items() if k not in schema_keys_set} or None
+        branch_params_filter = {
+            k: v for k, v in metadata.items() if k not in schema_keys_set
+        } or None
 
         nested_metadata = self._split_metadata(schema_metadata)
 
@@ -3127,6 +3335,7 @@ class DatabaseManager:
             return []
 
         from . import provenance_query
+
         results = []
         for _, row in records.iterrows():
             _, nested = self._reconstruct_metadata_from_row(row)
@@ -3139,7 +3348,7 @@ class DatabaseManager:
                 "timestamp": row["timestamp"],
             }
             if include_excluded:
-                exc = row.get("excluded") if hasattr(row, 'get') else row["excluded"]
+                exc = row.get("excluded") if hasattr(row, "get") else row["excluded"]
                 entry["excluded"] = bool(exc) if exc is not None else False
             results.append(entry)
 
@@ -3149,7 +3358,7 @@ class DatabaseManager:
 
     def _resolve_record_id(
         self,
-        record_id_or_type: "str | Type[BaseVariable]",
+        record_id_or_type: "str | type[BaseVariable]",
         **kwargs,
     ) -> str:
         """Resolve a record_id string or (variable_class, **kwargs) to a single record_id.
@@ -3163,7 +3372,9 @@ class DatabaseManager:
         variable_class = record_id_or_type
         schema_keys_set = set(self.dataset_schema_keys)
         schema_metadata = {k: v for k, v in kwargs.items() if k in schema_keys_set}
-        branch_params_filter = {k: v for k, v in kwargs.items() if k not in schema_keys_set} or None
+        branch_params_filter = {
+            k: v for k, v in kwargs.items() if k not in schema_keys_set
+        } or None
 
         nested_metadata = self._split_metadata(schema_metadata)
         records = self._find_record(
@@ -3190,7 +3401,7 @@ class DatabaseManager:
 
     def exclude_variant(
         self,
-        record_id_or_type: "str | Type[BaseVariable]",
+        record_id_or_type: "str | type[BaseVariable]",
         **kwargs,
     ) -> int:
         """Mark variant(s) as excluded from automatic inclusion in for_each and load().
@@ -3218,7 +3429,9 @@ class DatabaseManager:
         variable_class = record_id_or_type
         schema_keys_set = set(self.dataset_schema_keys)
         schema_metadata = {k: v for k, v in kwargs.items() if k in schema_keys_set}
-        branch_params_filter = {k: v for k, v in kwargs.items() if k not in schema_keys_set} or None
+        branch_params_filter = {
+            k: v for k, v in kwargs.items() if k not in schema_keys_set
+        } or None
 
         nested_metadata = self._split_metadata(schema_metadata)
         records = self._find_record(
@@ -3251,7 +3464,7 @@ class DatabaseManager:
 
     def include_variant(
         self,
-        record_id_or_type: "str | Type[BaseVariable]",
+        record_id_or_type: "str | type[BaseVariable]",
         **kwargs,
     ) -> int:
         """Re-include previously excluded variant(s).
@@ -3279,7 +3492,9 @@ class DatabaseManager:
         variable_class = record_id_or_type
         schema_keys_set = set(self.dataset_schema_keys)
         schema_metadata = {k: v for k, v in kwargs.items() if k in schema_keys_set}
-        branch_params_filter = {k: v for k, v in kwargs.items() if k not in schema_keys_set} or None
+        branch_params_filter = {
+            k: v for k, v in kwargs.items() if k not in schema_keys_set
+        } or None
 
         nested_metadata = self._split_metadata(schema_metadata)
         records = self._find_record(
@@ -3312,7 +3527,7 @@ class DatabaseManager:
 
     def get_provenance(
         self,
-        variable_class: Type[BaseVariable] | None,
+        variable_class: type[BaseVariable] | None,
         version: str | None = None,
         **metadata,
     ) -> dict | None:
@@ -3330,6 +3545,7 @@ class DatabaseManager:
             record_id = var.record_id
 
         from . import provenance_query
+
         return provenance_query.provenance(self._duck, record_id)
 
     def get_provenance_by_schema(self, **schema_keys) -> list[dict]:
@@ -3369,14 +3585,16 @@ class DatabaseManager:
             prov = provenance_query.provenance(self._duck, record_id)
             if prov is None:
                 continue
-            results.append({
-                "output_record_id": record_id,
-                "output_type": variable_name,
-                "function_name": prov["function_name"],
-                "function_hash": prov["function_hash"],
-                "inputs": prov["inputs"],
-                "constants": prov["constants"],
-            })
+            results.append(
+                {
+                    "output_record_id": record_id,
+                    "output_type": variable_name,
+                    "function_name": prov["function_name"],
+                    "function_hash": prov["function_hash"],
+                    "inputs": prov["inputs"],
+                    "constants": prov["constants"],
+                }
+            )
         return results
 
     def get_pipeline_structure(self) -> list[dict]:
@@ -3392,6 +3610,7 @@ class DatabaseManager:
             input_types (list of type names)
         """
         from . import provenance_query
+
         return provenance_query.pipeline_structure(self._duck)
 
     def list_pipeline_variants(
@@ -3424,6 +3643,7 @@ class DatabaseManager:
                 record_count  (int: distinct records for this variant)
         """
         from . import provenance_query
+
         return provenance_query.pipeline_variants(self._duck, output_type)
 
     def get_aggregated_variants(
@@ -3511,7 +3731,8 @@ class DatabaseManager:
                 if m:
                     template = m.group(1)
                     root_match = re.search(
-                        r"root_folder=(?:Posix|Windows|Pure\w*)?Path\('([^']*)'\)", value
+                        r"root_folder=(?:Posix|Windows|Pure\w*)?Path\('([^']*)'\)",
+                        value,
                     )
                     root = root_match.group(1) if root_match else None
                     return {"template": template, "root_folder": root}
@@ -3528,13 +3749,15 @@ class DatabaseManager:
             variants = [v for v in variants if v.get("call_id") == call_id]
 
         # Initialize result structure
-        functions = defaultdict(lambda: {
-            "input_params": {},
-            "outputs": [],
-            "constants": defaultdict(list),
-            "variant_count": 0,
-            "variants": [],
-        })
+        functions = defaultdict(
+            lambda: {
+                "input_params": {},
+                "outputs": [],
+                "constants": defaultdict(list),
+                "variant_count": 0,
+                "variants": [],
+            }
+        )
         all_var_types = set()
         const_counts = defaultdict(lambda: defaultdict(int))
         const_fns = defaultdict(set)
@@ -3585,12 +3808,14 @@ class DatabaseManager:
                     functions[fkey]["constants"][k].append(val)
 
             # Track variant
-            functions[fkey]["variants"].append({
-                "input_types": inputs,
-                "constants": constants,
-                "output_type": out,
-                "record_count": count,
-            })
+            functions[fkey]["variants"].append(
+                {
+                    "input_types": inputs,
+                    "constants": constants,
+                    "output_type": out,
+                    "record_count": count,
+                }
+            )
             functions[fkey]["variant_count"] += 1
 
         # Get variable record counts
@@ -3629,7 +3854,9 @@ class DatabaseManager:
 
         # Convert path_inputs functions to lists
         for param_name in path_inputs:
-            path_inputs[param_name]["functions"] = list(path_inputs[param_name]["functions"])
+            path_inputs[param_name]["functions"] = list(
+                path_inputs[param_name]["functions"]
+            )
 
         return {
             "functions": functions_result,
@@ -3690,7 +3917,8 @@ class DatabaseManager:
         # Get all variants for this function and call_id
         all_variants = self.list_pipeline_variants()
         fn_variants = [
-            v for v in all_variants
+            v
+            for v in all_variants
             if v["function_name"] == fn_name and v.get("call_id") == call_id
         ]
 
@@ -3770,6 +3998,7 @@ class DatabaseManager:
         stored fact); the old branch_params-subset heuristic is gone.
         """
         from . import provenance_query
+
         return provenance_query.upstream_provenance(self, record_id, max_depth)
 
     def get_pipeline(self, record_id: str, max_depth: int = 20) -> dict:
@@ -3781,6 +4010,7 @@ class DatabaseManager:
         every edge is a stored fact, terminating at raw data / constants.
         """
         from . import provenance_query
+
         return provenance_query.pipeline(self, record_id, max_depth)
 
     def get_derived_branch_params(self, record_id: str, max_depth: int = 20) -> dict:
@@ -3790,6 +4020,7 @@ class DatabaseManager:
         the exact map the old ``branch_params`` column stored, now derived.
         """
         from . import provenance_query
+
         return provenance_query.derived_branch_params(self._duck, record_id, max_depth)
 
     def get_execution_audit(self, record_id: str) -> list[dict]:
@@ -3800,6 +4031,7 @@ class DatabaseManager:
         preserved rather than lost to first-wins.
         """
         from . import provenance_query
+
         return provenance_query.execution_audit(self._duck, record_id)
 
     def invocation_exists(self, invocation_id: str) -> bool:
@@ -3823,6 +4055,7 @@ class DatabaseManager:
         now write an invocation). Raw / manually saved records return False.
         """
         from . import provenance_query
+
         return provenance_query.has_producing_invocation(self._duck, record_id)
 
     def find_record_id(
@@ -3878,7 +4111,9 @@ class DatabaseManager:
             return None
         vn, sid = rows[0][0], rows[0][1]
 
-        target_variant = provenance_query._producing_variant_key(self._duck, used_record_id)
+        target_variant = provenance_query._producing_variant_key(
+            self._duck, used_record_id
+        )
 
         # Candidates at the same (variable_name, schema_id), newest first. Recency
         # comes from the save-event log; type/schema/excluded from the _record entity.
@@ -3891,7 +4126,10 @@ class DatabaseManager:
             [vn, sid],
         )
         for (rid,) in candidates:
-            if provenance_query._producing_variant_key(self._duck, rid) == target_variant:
+            if (
+                provenance_query._producing_variant_key(self._duck, rid)
+                == target_variant
+            ):
                 return rid
         return None
 
@@ -3901,7 +4139,7 @@ class DatabaseManager:
 
     def export_to_csv(
         self,
-        variable_class: Type[BaseVariable],
+        variable_class: type[BaseVariable],
         path: str,
         **metadata,
     ) -> int:
@@ -3987,9 +4225,7 @@ class DatabaseManager:
         s = str(v)
         if s:
             return s
-        raise TypeError(
-            f"Expected a string or BaseVariable subclass, got {type(v)}"
-        )
+        raise TypeError(f"Expected a string or BaseVariable subclass, got {type(v)}")
 
     @staticmethod
     def _resolve_var_names(variables) -> list:
@@ -4082,6 +4318,7 @@ class DatabaseManager:
         """Lazy read-side observability facade (scidb.inspect.Inspector)."""
         if self._inspector is None:
             from .inspect.api import Inspector
+
             self._inspector = Inspector(self)
         return self._inspector
 
@@ -4094,6 +4331,7 @@ class DatabaseManager:
         Pipelines as dependencies: their steps join this pipeline's graph.
         """
         from .pipeline import Pipeline
+
         return Pipeline(name, db=self, uses=uses).activate()
 
     def set_current_db(self):

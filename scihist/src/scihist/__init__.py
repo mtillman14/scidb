@@ -13,6 +13,23 @@ Behavioral nuances preserved by the shim:
 
 import warnings as _warnings
 
+# Core batch execution + lineage-aware save (shimmed to preserve scihist defaults)
+# Re-export DB wrappers from scidb
+# Re-export the step-function marker (replaces the removed @lineage_fcn).
+from scidb import ColumnSelection, Fixed, ForEachConfig, Merge, scistack
+
+# Re-export scifor helpers
+from scifor import Col, PathInput, get_schema, set_schema
+
+from .database import configure_database
+from .foreach import for_each, save
+from .state import (
+    check_combo_state,
+    check_multiple_nodes_state,
+    check_node_state,
+    check_pathinput_node_state,
+)
+
 _warnings.warn(
     "scihist is deprecated; its functionality has moved to scidb. "
     "Import from scidb instead (e.g. `from scidb import for_each, save, "
@@ -20,25 +37,6 @@ _warnings.warn(
     DeprecationWarning,
     stacklevel=2,
 )
-
-# Core batch execution + lineage-aware save (shimmed to preserve scihist defaults)
-from .foreach import for_each, save
-from .database import configure_database
-from .state import (
-    check_combo_state,
-    check_node_state,
-    check_multiple_nodes_state,
-    check_pathinput_node_state,
-)
-
-# Re-export DB wrappers from scidb
-from scidb import Fixed, Merge, ColumnSelection, ForEachConfig
-
-# Re-export scifor helpers
-from scifor import Col, set_schema, get_schema, PathInput
-
-# Re-export the step-function marker (replaces the removed @lineage_fcn).
-from scidb import scistack
 
 __version__ = "0.1.0"
 

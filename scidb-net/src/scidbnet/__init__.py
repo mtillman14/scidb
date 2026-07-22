@@ -6,8 +6,6 @@ Provides:
     - ``configure_remote_database()`` — one-call setup that swaps in the client
 """
 
-import threading
-
 from .client import RemoteDatabaseManager
 from .server import create_app
 
@@ -20,7 +18,9 @@ __all__ = [
 ]
 
 
-def configure_remote_database(base_url: str, timeout: float = 30.0) -> RemoteDatabaseManager:
+def configure_remote_database(
+    base_url: str, timeout: float = 30.0
+) -> RemoteDatabaseManager:
     """Configure SciStack to use a remote server.
 
     Registers a ``RemoteDatabaseManager`` as the lineage cache backend and sets
@@ -37,6 +37,7 @@ def configure_remote_database(base_url: str, timeout: float = 30.0) -> RemoteDat
     """
     from scidb.database import _local
     from scidb.variable import BaseVariable
+
     from scilineage import configure_backend
 
     client = RemoteDatabaseManager(base_url, timeout=timeout)
