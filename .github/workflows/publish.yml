@@ -39,6 +39,15 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      - name: Diagnose git state (hatch-vcs derives the version from this)
+        run: |
+          echo "-- git describe --tags --dirty --always --long --"
+          git describe --tags --dirty --always --long
+          echo "-- git status --porcelain (non-empty means hatch-vcs sees a dirty tree) --"
+          git status --porcelain
+          echo "-- HEAD vs expected tag --"
+          git log -1 --format="%H %D"
+
       - name: Build all libraries into dist/
         run: |
           set -euo pipefail

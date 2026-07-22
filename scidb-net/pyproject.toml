@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
-raw-options = { search_parent_directories = true }
+raw-options = { search_parent_directories = true, local_scheme = "no-local-version" }
 
 [project]
 name = "scidb-net"
