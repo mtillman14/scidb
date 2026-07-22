@@ -1411,32 +1411,34 @@ class DatabaseManager:
                     numpy_dtype = col_meta.get("numpy_dtype", "float64")
                     arrow_inner = _NUMPY_TO_ARROW.get(numpy_dtype, pa.float64())
                     arrow_data[col_name] = pa.array(np_list, type=pa.list_(arrow_inner))
-                pa.table(arrow_data)
+                arrow_table = pa.table(arrow_data)
                 all_columns = list(arrow_data.keys())
                 col_str = ", ".join(f'"{c}"' for c in all_columns)
                 timings["data_df_create"] = time.perf_counter() - t6a
 
                 t6b = time.perf_counter()
-                self._duck.con.execute(
-                    f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM arrow_table '
-                    f"ON CONFLICT (record_id) DO NOTHING"
-                )
+                self._duck.con.register("arrow_table", arrow_table)
+                try:
+                    self._duck.con.execute(
+                        f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM arrow_table '
+                        f"ON CONFLICT (record_id) DO NOTHING"
+                    )
+                finally:
+                    self._duck.con.unregister("arrow_table")
                 timings["data_insert"] = time.perf_counter() - t6b
             elif new_data_rows:
                 all_columns = ["record_id"] + list(data_col_types.keys())
-                pd.DataFrame(new_data_rows, columns=all_columns)
-                col_str = ", ".join(f'"{c}"' for c in all_columns)
                 timings["data_df_create"] = time.perf_counter() - t6a
 
                 t6b = time.perf_counter()
                 if is_dataframe:
-                    self._duck.con.execute(
-                        f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df'
-                    )
+                    self._duck._bulk_insert(table_name, all_columns, new_data_rows)
                 else:
-                    self._duck.con.execute(
-                        f'INSERT INTO "{table_name}" ({col_str}) SELECT * FROM data_df '
-                        f"ON CONFLICT (record_id) DO NOTHING"
+                    self._duck._bulk_insert(
+                        table_name,
+                        all_columns,
+                        new_data_rows,
+                        conflict_cols=["record_id"],
                     )
                 timings["data_insert"] = time.perf_counter() - t6b
             else:
@@ -1448,14 +1450,11 @@ class DatabaseManager:
             # content_hash, schema_version, user_id); _record_save keeps only the
             # (record_id, timestamp, user_id) save-event columns.
             t6c = time.perf_counter()
-            pd.DataFrame(
+            self._duck._bulk_insert(
+                "_record_save",
+                ["record_id", "timestamp", "user_id"],
                 [(r[0], r[1], r[6]) for r in metadata_rows],
-                columns=["record_id", "timestamp", "user_id"],
-            )
-            self._duck.con.execute(
-                "INSERT INTO _record_save (record_id, timestamp, user_id) "
-                "SELECT * FROM save_df "
-                "ON CONFLICT (record_id, timestamp) DO NOTHING"
+                conflict_cols=["record_id", "timestamp"],
             )
             timings["record_save_insert"] = time.perf_counter() - t6c
             # The type/schema/content metadata lives on the bipartite entities table

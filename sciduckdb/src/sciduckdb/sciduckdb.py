@@ -977,7 +977,6 @@ class SciDuck:
                 first_id = max_row[0][0] + 1
 
                 col_names = ["schema_id", "schema_level"] + key_cols
-                col_str = ", ".join(f'"{c}"' for c in col_names)
 
                 insert_rows = []
                 for idx, (combo_key, key_values, _) in enumerate(missing):
@@ -988,11 +987,7 @@ class SciDuck:
                     insert_rows.append(row)
                     result[combo_key] = new_id
 
-                # Use DataFrame-based insert for speed
-                pd.DataFrame(insert_rows, columns=col_names)
-                self.con.execute(
-                    f"INSERT INTO _schema ({col_str}) SELECT * FROM insert_df"
-                )
+                self._bulk_insert("_schema", col_names, insert_rows)
 
         return result
 

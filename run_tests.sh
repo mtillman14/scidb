@@ -17,7 +17,6 @@ PACKAGES=(
     scilineage
     scidb
     scihist
-    scidb-net
 )
 
 # scimatlab requires a MATLAB licence; skip unless MATLAB is available.
