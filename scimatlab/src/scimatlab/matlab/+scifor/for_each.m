@@ -171,7 +171,7 @@ function varargout = for_each(fn, inputs, varargin)
             placeholder_keys = string(pi.placeholder_keys());
             if ~isempty(discovered_combos) && all(ismember(meta_keys, placeholder_keys))
                 opts.all_combos = project_combos(discovered_combos, meta_keys);
-                scidb.Log.debug('pathinput_discovery: using %d disk combos', ...
+                scifor.Log.debug('pathinput_discovery: using %d disk combos', ...
                     numel(opts.all_combos));
             end
         end
@@ -181,7 +181,7 @@ function varargout = for_each(fn, inputs, varargin)
         for i = 1:numel(meta_values)
             if isempty(meta_values{i})
                 if key_has_source(inputs, meta_keys(i), pi)
-                    scidb.Log.warn('no values found for ''%s'' in inputs, 0 iterations', ...
+                    scifor.Log.warn('no values found for ''%s'' in inputs, 0 iterations', ...
                         meta_keys(i));
                 else
                     error('scifor:for_each', ...
@@ -423,16 +423,16 @@ function varargout = for_each(fn, inputs, varargin)
     else
         iter_str = sprintf('for_each(%s) — %d iterations', fn_name, total);
     end
-    scidb.Log.info('%s: %s', iter_str, meta_summary);
+    scifor.Log.info('%s: %s', iter_str, meta_summary);
 
     % --- Detailed config: inputs ---
     inputs_str = format_inputs(inputs, input_names, data_idx);
-    scidb.Log.info('inputs: %s', inputs_str);
+    scifor.Log.info('inputs: %s', inputs_str);
 
     % --- Detailed config: metadata actual values ---
     for mk2 = 1:numel(meta_keys)
         if ~startsWith(meta_keys(mk2), "__")
-            scidb.Log.debug('%s=%s', meta_keys(mk2), format_meta_values(meta_values{mk2}));
+            scifor.Log.debug('%s=%s', meta_keys(mk2), format_meta_values(meta_values{mk2}));
         end
     end
 
@@ -455,7 +455,7 @@ function varargout = for_each(fn, inputs, varargin)
         opt_parts{end+1} = sprintf('where=%s', class(where_filter));
     end
     if ~isempty(opt_parts)
-        scidb.Log.info('options: %s', strjoin(opt_parts, ', '));
+        scifor.Log.info('options: %s', strjoin(opt_parts, ', '));
     end
 
     % --- Dry-run header ---
@@ -561,7 +561,7 @@ function varargout = for_each(fn, inputs, varargin)
                         && elapsed_now >= PROGRESS_START_DELAY_S ...
                         && (elapsed_now - progress_last_emit) >= PROGRESS_MIN_INTERVAL_S
                     progress_last_emit = elapsed_now;
-                    scidb.Log.info(['progress: %s=%s (%d/%d) — %d/%d combos ' ...
+                    scifor.Log.info(['progress: %s=%s (%d/%d) — %d/%d combos ' ...
                         '(%.1f%%), completed=%d, failed=%d, elapsed=%.1fs'], ...
                         progress_key, char(string(pv)), progress_seen, ...
                         progress_total, c - 1, total, ...
@@ -702,7 +702,7 @@ function varargout = for_each(fn, inputs, varargin)
             run_msg = sprintf('[run] %s: %s(%s)', metadata_str, fn_name, ...
                 strjoin(string(input_names'), ', '));
         end
-        scidb.Log.debug('%s', run_msg);
+        scifor.Log.debug('%s', run_msg);
 
         % share_limits injection: append each named input's group limits as
         % trailing positional args (Python injects named kwargs; MATLAB has
@@ -802,7 +802,7 @@ function varargout = for_each(fn, inputs, varargin)
                         end
                     end
                 catch err2
-                    scidb.Log.warn('%s: cannot distribute output %d: %s', ...
+                    scifor.Log.warn('%s: cannot distribute output %d: %s', ...
                         metadata_str, o, err2.message);
                     continue;
                 end
@@ -827,7 +827,7 @@ function varargout = for_each(fn, inputs, varargin)
             varargout{1} = [];
         end
     else
-        scidb.Log.info('for_each(%s) done in %.1fs: completed=%d, failed=%d, total=%d', ...
+        scifor.Log.info('for_each(%s) done in %.1fs: completed=%d, failed=%d, total=%d', ...
             fn_name, toc(loop_t0), completed, skipped, total);
         % One line per distinct failure reason (combos capped at 5), so the
         % default (INFO) log answers "what failed and why".
@@ -841,7 +841,7 @@ function varargout = for_each(fn, inputs, varargin)
                 shown = sprintf('%s (+%d more)', shown, ...
                     numel(combos_for_reason) - n_shown);
             end
-            scidb.Log.info('failed: %d × "%s" — %s', ...
+            scifor.Log.info('failed: %d × "%s" — %s', ...
                 numel(combos_for_reason), reason, shown);
         end
         if n_outputs == 0
@@ -1561,11 +1561,11 @@ function values = decategorize_schema_column(col_data, key, input_name)
         && all(~isnan(nums)) && all(string(nums) == labels);
     if lossless
         values = nums;
-        scidb.Log.debug(['schema key ''%s'' (input ''%s''): categorical ' ...
+        scifor.Log.debug(['schema key ''%s'' (input ''%s''): categorical ' ...
             'column recovered as numeric'], key, input_name);
     else
         values = labels;
-        scidb.Log.debug(['schema key ''%s'' (input ''%s''): categorical ' ...
+        scifor.Log.debug(['schema key ''%s'' (input ''%s''): categorical ' ...
             'column kept as strings (labels are not canonical numeric ' ...
             'spellings)'], key, input_name);
     end
@@ -1600,7 +1600,7 @@ function types = capture_schema_column_types(inputs, keys)
             end
             if ~isfield(types, key)
                 types.(key) = info;
-                scidb.Log.debug(['schema key ''%s'' (input ''%s''): input ' ...
+                scifor.Log.debug(['schema key ''%s'' (input ''%s''): input ' ...
                     'column type %s'], key, input_names{p}, info.class);
             elseif ~strcmp(types.(key).class, info.class)
                 types.(key).conflict = true;
@@ -1625,7 +1625,7 @@ function tbl = restore_schema_column_types(tbl, col_types)
         end
         info = col_types.(key);
         if info.conflict
-            scidb.Log.warn(['schema key ''%s'': input tables disagree on ' ...
+            scifor.Log.warn(['schema key ''%s'': input tables disagree on ' ...
                 'column type — leaving the output column as %s'], ...
                 key, class(tbl.(key)));
             continue;
@@ -1636,10 +1636,10 @@ function tbl = restore_schema_column_types(tbl, col_types)
         end
         try
             tbl.(key) = cast_schema_column(col, info);
-            scidb.Log.debug(['schema key ''%s'': output column restored ' ...
+            scifor.Log.debug(['schema key ''%s'': output column restored ' ...
                 'to input type %s'], key, info.class);
         catch err
-            scidb.Log.warn(['schema key ''%s'': cannot restore input ' ...
+            scifor.Log.warn(['schema key ''%s'': cannot restore input ' ...
                 'column type %s (%s) — leaving as %s'], ...
                 key, info.class, err.message, class(col));
         end
@@ -2104,7 +2104,7 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2;
                     continue;
                 case "_log_fn"
-                    % Deprecated — ignored. scifor logs through scidb.Log
+                    % Deprecated — ignored. scifor logs through scifor.Log
                     % (scistacklog facade) directly; accepted so existing
                     % call sites don't break.
                     i = i + 2;
@@ -2334,12 +2334,12 @@ function [failure_reasons, failure_order] = record_iteration_failure( ...
     else
         failure_reasons(reason) = {metadata_str};
         failure_order{end+1} = reason;
-        scidb.Log.warn(['iteration failed: %s — %s: %s ' ...
+        scifor.Log.warn(['iteration failed: %s — %s: %s ' ...
             '(first occurrence; report follows)\n%s'], ...
             metadata_str, context, err.message, ...
             getReport(err, 'extended', 'hyperlinks', 'off'));
     end
-    scidb.Log.debug('[skip] %s: %s: %s', metadata_str, context, err.message);
+    scifor.Log.debug('[skip] %s: %s: %s', metadata_str, context, err.message);
 end
 
 
