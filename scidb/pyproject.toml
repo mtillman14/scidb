@@ -7,7 +7,7 @@ source = "vcs"
 raw-options = { search_parent_directories = true, local_scheme = "no-local-version" }
 
 [project]
-name = "scidb"
+name = "scistack-db"
 dynamic = ["version"]
 description = "A lightweight database framework for scientific computing with versioning and provenance tracking"
 readme = "README.md"

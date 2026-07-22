@@ -8,7 +8,7 @@ packages=(
   scistack-gui
   sciduckdb
   scilineage
-  scidb
+  scistack-db
   scicanonicalhash
   scimatlab
   scistack

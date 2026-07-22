@@ -17,7 +17,7 @@ dependencies = [
     # rejects /ws upgrades ("Unsupported upgrade request") and the GUI
     # silently never receives run_output/run_done/dag_updated pushes.
     "uvicorn[standard]>=0.20.0",
-    "scidb",
+    "scistack-db",
     "scihist",
     "jupyter_client>=8.0.0",
     "ipykernel>=6.0.0",

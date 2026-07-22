@@ -38,7 +38,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "scidb>=0.1.0",
+    "scistack-db>=0.1.0",
     "scilineage>=0.1.0",
 ]
 
