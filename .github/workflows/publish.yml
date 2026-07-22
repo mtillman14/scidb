@@ -65,6 +65,23 @@ jobs:
           done
           ls -la dist
 
+      - name: Refuse to publish non-release versions
+        run: |
+          set -euo pipefail
+          # hatch-vcs only emits .dev/.post/+local segments when the tree is
+          # dirty or HEAD isn't exactly on the tag (see git-state diagnostics
+          # above). A lockstep release must ship a clean version for every
+          # package, so scan the actual built artifacts rather than trusting
+          # the earlier git-state check alone — it only reflects the state at
+          # checkout, before the per-package build loop ran.
+          bad=$(ls dist | grep -E '\.dev[0-9]|[0-9](a|b|rc)[0-9]|\+' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Refusing to publish non-clean-release build(s):"
+            echo "$bad"
+            exit 1
+          fi
+          echo "All artifacts are clean release versions."
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
