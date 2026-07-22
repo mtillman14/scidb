@@ -13,7 +13,6 @@ packages=(
   scimatlab
   scistack
   scipathgen
-  scidb-net
   scihist
 )
 

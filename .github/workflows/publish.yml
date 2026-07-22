@@ -55,10 +55,11 @@ jobs:
           # Dependency order is irrelevant for building (each uses only its
           # build backend), but listed by layer for readability.
           # scistack-gui is intentionally excluded — it needs a JS frontend
-          # build before it can ship a correct wheel.
+          # build before it can ship a correct wheel. scidb-net is excluded —
+          # outdated, slated for removal, not shipped to PyPI.
           for pkg in scicanonicalhash path-gen scistacklog sciduckdb \
                      scifor scilineage scidb \
-                     scimatlab scihist scidb-net scistack; do
+                     scimatlab scihist scistack; do
             echo "== build $pkg =="
             python -m build --outdir dist "$pkg"
           done
