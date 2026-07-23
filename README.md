@@ -69,7 +69,11 @@ Each layer can be used independently. `scifor` is useful when your data is alrea
 pip install scistack
 ```
 
-This pulls in all core dependencies (`sciduckdb`, `scipathgen`, `scicanonicalhash`, `scihist`).
+This installs `scistack-db` (the `scidb` package) and `scimatlab` directly, which in turn pull in `sciduckdb`, `scipathgen`, `scicanonicalhash`, `scifor`, and `scistacklog`. `scihist` is a separate, higher-level package (it depends on `scidb` + `scilineage`) and is not installed automatically — install it explicitly if you want its `for_each()` with automatic lineage tracking:
+
+```bash
+pip install scihist
+```
 
 For development (editable installs of all packages):
 
