@@ -1031,6 +1031,45 @@ class TestBinding:
         # Source spec untouched.
         assert list(foreign.steps[0].metadata_iterables) == ["session", "trial"]
 
+    def test_key_map_rewrites_pathinput_root_folder_regex_and_aliases(self, db):
+        # Regression guard: _rewrite_input used to drop PathInput.aliases
+        # entirely on key_map rewrite (only root_folder/regex were carried
+        # over), silently losing folder-name alias declarations for any
+        # PathInput reused across a bound pipeline composition.
+        from pathlib import Path
+
+        from scidb import PathInput
+
+        foreign = Pipeline("foreign")
+        for_each(
+            halve,
+            {
+                "signal": PathInput(
+                    "raw/{session}_{trial}.mat",
+                    root_folder="/data",
+                    aliases={"session": {"BL": ["Baseline"]}},
+                )
+            },
+            [Filtered],
+            session=SUBJECTS,
+            trial=TRIALS,
+            pipeline=foreign,
+        )
+
+        analysis = Pipeline(
+            "analysis", db=db, uses=[foreign.bind(key_map={"session": "subject"})]
+        )
+        (spec,) = [s for (o, s) in analysis._composed_steps() if o is foreign]
+
+        rewritten = spec.inputs["signal"]
+        assert str(rewritten.path_template) == "raw/{subject}_{trial}.mat"
+        assert rewritten.root_folder == Path("/data")
+        assert rewritten.aliases == {"subject": {"BL": ["Baseline"]}}
+        # Source spec untouched — key stays "session".
+        assert foreign.steps[0].inputs["signal"].aliases == {
+            "session": {"BL": ["Baseline"]}
+        }
+
     def test_key_map_rewrites_fixed_and_structured_where(self, db):
         from scidb.filters import schema_key
 

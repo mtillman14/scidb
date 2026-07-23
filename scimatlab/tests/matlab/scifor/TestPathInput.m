@@ -32,6 +32,13 @@ classdef TestPathInput < matlab.unittest.TestCase
             exact_dir = fullfile(testCase.tmp_dir, 'exact');
             mkdir(exact_dir);
             fclose(fopen(fullfile(exact_dir, 'report.txt'), 'w'));
+            % Alias-spelling folders for the folder-name alias tests
+            baseline_dir = fullfile(testCase.tmp_dir, 'alias', 'sub1', 'Baseline');
+            mkdir(baseline_dir);
+            fclose(fopen(fullfile(baseline_dir, 'data.mat'), 'w'));
+            bl_dir = fullfile(testCase.tmp_dir, 'alias', 'sub2', 'BL');
+            mkdir(bl_dir);
+            fclose(fopen(fullfile(bl_dir, 'data.mat'), 'w'));
         end
     end
 
@@ -242,6 +249,54 @@ classdef TestPathInput < matlab.unittest.TestCase
             path = pi.load('subject', 1, 'trial', 99);
             expected = string(fullfile(testCase.tmp_dir, '1', '6mwt-99.xlsx'));
             testCase.verifyEqual(path, expected);
+        end
+
+        %% Folder-name aliases (match-only)
+
+        function test_alias_resolves_on_disk_spelling(testCase)
+            % session="BL" finds the on-disk "Baseline" folder.
+            pi = scifor.PathInput("alias/sub1/{session}/data.mat", ...
+                'root_folder', testCase.tmp_dir, ...
+                'aliases', struct('session', struct('BL', ["Baseline", "1. Baseline"])));
+            path = pi.load('session', 'BL');
+            expected = string(fullfile(testCase.tmp_dir, 'alias', 'sub1', 'Baseline', 'data.mat'));
+            testCase.verifyEqual(path, expected);
+        end
+
+        function test_alias_canonical_folder_is_literal_hit(testCase)
+            % session="BL" finds a folder literally named "BL" too.
+            pi = scifor.PathInput("alias/sub2/{session}/data.mat", ...
+                'root_folder', testCase.tmp_dir, ...
+                'aliases', struct('session', struct('BL', "Baseline")));
+            path = pi.load('session', 'BL');
+            expected = string(fullfile(testCase.tmp_dir, 'alias', 'sub2', 'BL', 'data.mat'));
+            testCase.verifyEqual(path, expected);
+        end
+
+        function test_alias_ambiguous_errors(testCase)
+            % Both "Baseline" and "1. Baseline" present under the same
+            % canonical -> the fallback scan finds two matches.
+            alt_dir = fullfile(testCase.tmp_dir, 'alias', 'sub1', '1. Baseline');
+            mkdir(alt_dir);
+            fclose(fopen(fullfile(alt_dir, 'data.mat'), 'w'));
+            pi = scifor.PathInput("alias/sub1/{session}/data.mat", ...
+                'root_folder', testCase.tmp_dir, ...
+                'aliases', struct('session', struct('BL', ["Baseline", "1. Baseline"])));
+            testCase.verifyError(@() pi.load('session', 'BL'), ...
+                'scifor:PathInput:MultipleMatches');
+        end
+
+        function test_discover_canonicalizes_alias_spelling(testCase)
+            pi = scifor.PathInput("alias/{subject}/{session}/data.mat", ...
+                'root_folder', testCase.tmp_dir, ...
+                'aliases', struct('session', struct('BL', "Baseline")));
+            combos = pi.discover();
+            sessions = containers.Map();
+            for i = 1:numel(combos)
+                sessions(combos{i}.subject) = combos{i}.session;
+            end
+            testCase.verifyEqual(sessions('sub1'), 'BL');  % on disk: "Baseline"
+            testCase.verifyEqual(sessions('sub2'), 'BL');  % on disk: "BL" itself
         end
 
         %% placeholder_keys tests

@@ -19,7 +19,9 @@ fallback** — no template syntax, no format specs, nothing to remember.
    least one metadata value is *numeric-like*: `int`, integral `float`
    (MATLAB doubles arrive as `1.0`), or a digit string (`num2str` marshaling
    sends `"1"`). Bools are excluded. The template is walked segment by
-   segment (`_numeric_fallback_scan`): numeric-bound `{key}` matches `(\d+)`
+   segment (`_fallback_scan`, generalized 2026-07-23 to also carry the
+   alias fallback — see `docs/claude/pathinput-folder-aliases.md`):
+   numeric-bound `{key}` matches `(\d+)`
    with an `int(capture) == int(value)` check, other keys substitute
    literally. Padded *directory* segments work, not just the filename.
 4. **Outcome** — exactly one match: return it and learn each key's pad width
@@ -73,7 +75,7 @@ equality matching subsumes it).
 
 | File | Role |
 |------|------|
-| `scifor/src/scifor/pathinput.py` | `load()` fallback, `_numeric_fallback_scan`, `_pad_width`/`_dir_cache` |
+| `scifor/src/scifor/pathinput.py` | `load()` fallback, `_fallback_scan`, `_pad_width`/`_dir_cache` |
 | `scifor/tests/test_pathinput_padded.py` | Python coverage (literal-first, fallback, ambiguity, boundaries) |
 | `scimatlab/tests/matlab/scifor/TestPathInput.m` | `test_padded_fallback_*` MATLAB cases |
 

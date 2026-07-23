@@ -11,6 +11,7 @@ classdef PathInput < handle
 %   PI = scifor.PathInput(TEMPLATE)
 %   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER)
 %   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER, regex=true)
+%   PI = scifor.PathInput(TEMPLATE, aliases=ALIASES)
 %
 %   The template uses {key} placeholders that are replaced by the
 %   metadata values supplied by for_each on each iteration.
@@ -19,6 +20,14 @@ classdef PathInput < handle
 %   expression and matched against filenames in the parent directory.
 %   Exactly one file must match; zero or multiple matches produce an
 %   error.
+%
+%   ALIASES lets a template key have several on-disk spellings that all
+%   mean one canonical value (match-only — never affects what gets
+%   written). Nested struct: ALIASES.(key).(canonical) = [spelling, ...].
+%   E.g. a {session} folder spelled "Baseline" resolving as "BL":
+%
+%       scifor.PathInput("{subject}/{session}/data.mat", ...
+%           aliases=struct('session', struct('BL', ["Baseline", "1. Baseline"])))
 %
 %   Example:
 %       scifor.for_each(@process_file, ...
@@ -32,6 +41,7 @@ classdef PathInput < handle
         path_template  string   % Format string with {key} placeholders
         root_folder    string   % Optional root directory
         regex          logical  % Whether to use regex matching on the last segment
+        aliases        struct   % key -> canonical -> [spellings] (see class help)
         py_obj                  % Python scifor.pathinput.PathInput instance
     end
 
@@ -42,16 +52,19 @@ classdef PathInput < handle
         %   PI = scifor.PathInput(TEMPLATE)
         %   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER)
         %   PI = scifor.PathInput(TEMPLATE, regex=true)
+        %   PI = scifor.PathInput(TEMPLATE, aliases=ALIASES)
 
             arguments
                 path_template  string
                 options.root_folder  string = ""
                 options.regex        logical = false
+                options.aliases      struct = struct()
             end
 
             obj.path_template = path_template;
             obj.root_folder = options.root_folder;
             obj.regex = options.regex;
+            obj.aliases = options.aliases;
 
             % Construct the Python instance once and reuse for load/discover.
             if strlength(options.root_folder) > 0
@@ -62,7 +75,8 @@ classdef PathInput < handle
             obj.py_obj = py.scifor.pathinput.PathInput( ...
                 char(path_template), ...
                 pyargs('root_folder', py_root, ...
-                       'regex', logical(options.regex)));
+                       'regex', logical(options.regex), ...
+                       'aliases', scifor.PathInput.aliases_to_py(options.aliases)));
         end
 
         function filepath = load(obj, varargin)
@@ -305,7 +319,37 @@ classdef PathInput < handle
             if obj.regex
                 opts = opts + ", regex=true";
             end
+            if ~isempty(fieldnames(obj.aliases))
+                opts = opts + sprintf(', aliases=<%d key(s)>', numel(fieldnames(obj.aliases)));
+            end
             fprintf('  scifor.PathInput("%s"%s)\n', obj.path_template, opts);
+        end
+    end
+
+    methods (Static, Access = private)
+        function py_aliases = aliases_to_py(aliases)
+        %ALIASES_TO_PY  Marshal the nested ALIASES struct into a py.dict of
+        %   py.dict of py.list(str), matching Python's
+        %   ``{key: {canonical: [spelling, ...]}}`` shape.
+
+            py_aliases = py.dict();
+            keys = fieldnames(aliases);
+            for i = 1:numel(keys)
+                key = keys{i};
+                canon_struct = aliases.(key);
+                if ~isstruct(canon_struct)
+                    error('scifor:PathInput', ...
+                        'aliases.%s must be a struct mapping canonical -> spellings.', key);
+                end
+                py_canon = py.dict();
+                canonicals = fieldnames(canon_struct);
+                for j = 1:numel(canonicals)
+                    canonical = canonicals{j};
+                    spellings = cellstr(string(canon_struct.(canonical)));
+                    py_canon.update(pyargs(canonical, py.list(spellings)));
+                end
+                py_aliases.update(pyargs(key, py_canon));
+            end
         end
     end
 end

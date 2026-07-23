@@ -63,6 +63,13 @@ class PathInput:
                     containing ``pyproject.toml`` or ``scistack.toml`` is
                     used; falls back to the current working directory when
                     neither file is found.
+        aliases: Optional ``{key: {canonical: [spelling, ...]}}`` map so a
+                schema key can have multiple on-disk spellings that all mean
+                one canonical value, e.g.
+                ``{"session": {"BL": ["Baseline", "1. Baseline"]}}`` — a
+                ``{session}`` folder spelled "Baseline" resolves as "BL" and
+                vice versa. Match-only: never affects how a path is written,
+                only how it's found (``load()``) or reported (``discover()``).
 
     Example:
         for_each(
@@ -82,6 +89,7 @@ class PathInput:
         path_template: str,
         root_folder: str | Path | None = None,
         regex: bool = False,
+        aliases: "dict[str, dict[str, list[str]]] | None" = None,
     ):
         self.path_template = path_template
         self.root_folder = Path(root_folder) if root_folder is not None else None
@@ -91,13 +99,48 @@ class PathInput:
         # placeholder key, and per-directory listings validated by mtime.
         self._pad_width: dict[str, int] = {}
         self._dir_cache: dict[str, tuple[int, list[str]]] = {}
+        self.aliases = aliases or {}
+        self._alias_reverse = self._build_alias_reverse(self.aliases)
+
+    def _build_alias_reverse(
+        self, aliases: "dict[str, dict[str, list[str]]]"
+    ) -> "dict[str, dict[str, str]]":
+        """Validate and flatten ``aliases`` into ``key -> {spelling: canonical}``.
+
+        The canonical value is always an implicit valid spelling of itself
+        (no need to list it in its own alias list). Raises ``ValueError`` for
+        an alias key that isn't a template placeholder, or a spelling
+        (including a canonical acting as its own spelling) claimed by two
+        different canonicals for the same key.
+        """
+        placeholder_set = set(self.placeholder_keys())
+        reverse: dict[str, dict[str, str]] = {}
+        for key, canon_map in aliases.items():
+            if key not in placeholder_set:
+                raise ValueError(
+                    f"PathInput aliases key {key!r} is not a placeholder in "
+                    f"template {self.path_template!r}"
+                )
+            key_reverse: dict[str, str] = {}
+            for canonical, spellings in canon_map.items():
+                for spelling in (canonical, *spellings):
+                    existing = key_reverse.get(spelling)
+                    if existing is not None and existing != canonical:
+                        raise ValueError(
+                            f"PathInput aliases for key {key!r}: spelling "
+                            f"{spelling!r} is ambiguous between canonical "
+                            f"values {existing!r} and {canonical!r}"
+                        )
+                    key_reverse[spelling] = canonical
+            reverse[key] = key_reverse
+        return reverse
 
     def to_key(self) -> str:
         """Return a structured JSON string for version_keys serialization.
 
-        ``regex`` is only included when ``True`` so existing non-regex
-        version keys remain byte-identical to records saved before this
-        flag existed.
+        ``regex`` and ``aliases`` are only included when non-default so
+        existing version keys remain byte-identical to records saved before
+        those fields existed.
         """
         payload: dict = {
             "__type": "PathInput",
@@ -108,6 +151,8 @@ class PathInput:
         }
         if self.regex:
             payload["regex"] = True
+        if self.aliases:
+            payload["aliases"] = self.aliases
         return json.dumps(payload)
 
     def load(self, db=None, **metadata: Any) -> Path:
@@ -153,9 +198,12 @@ class PathInput:
 
         Returns ``(path, resolutions)`` where *resolutions* maps each
         metadata key whose on-disk spelling differs from ``str(value)`` —
-        i.e. the numeric fallback bridged spellings, e.g. ``trial=1``
-        matching ``6MWT-001.mat`` yields ``{"trial": "001"}``.  Empty when
-        the literal path resolved, no match was found, or in regex mode.
+        i.e. the numeric or alias fallback bridged spellings, e.g.
+        ``trial=1`` matching ``6MWT-001.mat`` yields ``{"trial": "001"}``,
+        and ``session="BL"`` matching a ``Baseline`` folder (declared via
+        ``aliases={"session": {"BL": ["Baseline"]}}``) yields
+        ``{"session": "Baseline"}``.  Empty when the literal path resolved,
+        no match was found, or in regex mode.
 
         Args:
             metadata: Template substitution values (dict form of load()'s
@@ -183,11 +231,21 @@ class PathInput:
                 for k, v in metadata.items()
                 if _numeric_like(v) and (numeric_match is None or k in numeric_match)
             }
-            if not numeric_keys:
+            alias_keys: "dict[str, tuple[dict[str, str], str]]" = {}
+            for k, v in metadata.items():
+                key_reverse = self._alias_reverse.get(k)
+                if key_reverse is None:
+                    continue
+                canonical = key_reverse.get(str(v))
+                if canonical is not None:
+                    alias_keys[k] = (key_reverse, canonical)
+            if not numeric_keys and not alias_keys:
                 return literal, {}
 
             # Shortcut: re-render with previously learned pad widths and
-            # try a single stat before scanning any directory.
+            # try a single stat before scanning any directory.  Aliases have
+            # no width cache, so this only ever short-circuits the numeric
+            # side.
             padded, spellings = self._padded_literal(metadata, numeric_keys)
             if padded is not None and padded != literal and padded.exists():
                 resolutions = {
@@ -203,21 +261,22 @@ class PathInput:
                 return padded, resolutions
 
             Log.debug(
-                "pathinput_numeric_fallback: literal path missing, scanning "
-                "for numeric-equivalent match: %s",
+                "pathinput_fallback: literal path missing, scanning for a "
+                "numeric- or alias-equivalent match: %s",
                 literal,
                 layer="scifor",
             )
-            matches = self._numeric_fallback_scan(metadata, numeric_keys)
+            matches = self._fallback_scan(metadata, numeric_keys, alias_keys)
             if len(matches) == 1:
                 path, bindings = matches[0]
                 for key, captured in bindings.items():
-                    self._pad_width[key] = len(captured)
+                    if key in numeric_keys:
+                        self._pad_width[key] = len(captured)
                 resolutions = {
                     k: cap for k, cap in bindings.items() if cap != str(metadata[k])
                 }
                 Log.debug(
-                    "pathinput_numeric_fallback: matched %s (captures: %s)",
+                    "pathinput_fallback: matched %s (captures: %s)",
                     path,
                     bindings,
                     layer="scifor",
@@ -226,12 +285,12 @@ class PathInput:
             if len(matches) > 1:
                 names = ", ".join(sorted(str(p) for p, _ in matches))
                 raise RuntimeError(
-                    f"PathInput numeric fallback matched {len(matches)} files "
+                    f"PathInput fallback matched {len(matches)} files "
                     f"for template {self.path_template!r} with metadata "
                     f"{metadata!r}: {names}"
                 )
             Log.debug(
-                "pathinput_numeric_fallback: no numeric-equivalent match, "
+                "pathinput_fallback: no numeric- or alias-equivalent match, "
                 "returning literal path %s",
                 literal,
                 layer="scifor",
@@ -308,7 +367,7 @@ class PathInput:
     def _root_and_segments(self) -> "tuple[Path, list[str]]":
         """Split the template into a walk root and relative segments.
 
-        Shared by ``discover()`` and the numeric-fallback scan, mirroring
+        Shared by ``discover()`` and the fallback scan, mirroring
         the literal resolution's anchoring: an absolute template wins
         (POSIX ``/``, Windows drive ``Y:``, or UNC ``\\\\server\\share``),
         then ``root_folder``, then the project root.
@@ -328,14 +387,21 @@ class PathInput:
         return _find_project_root(), segments
 
     def _fallback_segment_regex(
-        self, segment: str, metadata: dict, numeric_keys: dict
+        self,
+        segment: str,
+        metadata: dict,
+        numeric_keys: dict,
+        alias_keys: "dict[str, tuple[dict[str, str], str]]",
     ) -> "tuple[str, list, bool] | None":
-        """Compile one template segment for the numeric fallback.
+        """Compile one template segment for the numeric/alias fallback scan.
 
-        Returns ``(regex, checks, has_numeric)`` where *checks* is a list of
-        ``(group_name, key, int_value)`` equality constraints, or ``None``
-        when the segment cannot be Formatter-parsed (caller substitutes it
-        literally, matching load()'s tolerance of regex-ish braces).
+        Returns ``(regex, checks, has_fallback)`` where *checks* is a list of
+        ``(group_name, key, kind, param)`` constraints — ``kind="numeric"``
+        with ``param`` the required int value, or ``kind="alias"`` with
+        ``param`` a ``(reverse_map, canonical)`` pair the captured text must
+        resolve to — or ``None`` when the segment cannot be Formatter-parsed
+        (caller substitutes it literally, matching load()'s tolerance of
+        regex-ish braces).
         """
         try:
             parts = list(_string.Formatter().parse(segment))
@@ -343,7 +409,7 @@ class PathInput:
             return None
         regex = ""
         checks: list = []
-        has_numeric = False
+        has_fallback = False
         key_counts: dict[str, int] = {}
         for literal, field_name, _, _ in parts:
             if literal:
@@ -355,14 +421,21 @@ class PathInput:
                 count = key_counts[field_name]
                 group = field_name if count == 1 else f"{field_name}_{count}"
                 regex += f"(?P<{group}>\\d+)"
-                checks.append((group, field_name, numeric_keys[field_name]))
-                has_numeric = True
+                checks.append((group, field_name, "numeric", numeric_keys[field_name]))
+                has_fallback = True
+            elif field_name in alias_keys:
+                key_counts[field_name] = key_counts.get(field_name, 0) + 1
+                count = key_counts[field_name]
+                group = field_name if count == 1 else f"{field_name}_{count}"
+                regex += f"(?P<{group}>[^/\\\\]+)"
+                checks.append((group, field_name, "alias", alias_keys[field_name]))
+                has_fallback = True
             elif field_name in metadata:
                 regex += re.escape(str(metadata[field_name]))
             else:
                 # Unknown key: literal-resolution leaves "{key}" untouched.
                 regex += re.escape("{" + field_name + "}")
-        return regex, checks, has_numeric
+        return regex, checks, has_fallback
 
     def _list_dir(self, directory: Path) -> list[str]:
         """Directory listing memoized per instance, invalidated by mtime."""
@@ -381,13 +454,18 @@ class PathInput:
         self._dir_cache[key] = (mtime, entries)
         return entries
 
-    def _numeric_fallback_scan(
-        self, metadata: dict, numeric_keys: dict
+    def _fallback_scan(
+        self,
+        metadata: dict,
+        numeric_keys: dict,
+        alias_keys: "dict[str, tuple[dict[str, str], str]]",
     ) -> "list[tuple[Path, dict[str, str]]]":
         """Walk the template segments matching numeric placeholders by
-        integer value.  Returns complete matches as ``(path, captures)``
-        where *captures* maps each numeric key to the digit string found on
-        disk (used to learn pad widths)."""
+        integer-equivalence and alias placeholders by declared spelling.
+        Returns complete matches as ``(path, captures)`` where *captures*
+        maps each fallback key to the raw text found on disk (numeric
+        captures are used to learn pad widths; alias captures are the
+        resolved on-disk spelling)."""
         root, segments = self._root_and_segments()
         if not segments:
             return []
@@ -401,10 +479,12 @@ class PathInput:
         def _walk(current_dir: Path, seg_idx: int, captures: dict) -> None:
             segment = segments[seg_idx]
             is_last = seg_idx == len(segments) - 1
-            compiled = self._fallback_segment_regex(segment, metadata, numeric_keys)
+            compiled = self._fallback_segment_regex(
+                segment, metadata, numeric_keys, alias_keys
+            )
 
             if compiled is None or not compiled[2]:
-                # No numeric placeholder in this segment: descend literally.
+                # No fallback placeholder in this segment: descend literally.
                 candidate = current_dir / _substitute_literal(segment)
                 if is_last:
                     if candidate.exists():
@@ -418,11 +498,22 @@ class PathInput:
                 m = re.fullmatch(regex, entry)
                 if m is None:
                     continue
-                if any(int(m.group(g)) != v for g, _, v in checks):
-                    continue
+                ok = True
                 new_captures = dict(captures)
-                for g, key, _ in checks:
-                    new_captures[key] = m.group(g)
+                for group, key, kind, param in checks:
+                    text = m.group(group)
+                    if kind == "numeric":
+                        if int(text) != param:
+                            ok = False
+                            break
+                    else:  # "alias"
+                        reverse_map, canonical = param
+                        if reverse_map.get(text) != canonical:
+                            ok = False
+                            break
+                    new_captures[key] = text
+                if not ok:
+                    continue
                 entry_path = current_dir / entry
                 if is_last:
                     results.append((entry_path, new_captures))
@@ -548,7 +639,10 @@ class PathInput:
         with named capture groups.
 
         Returns a list of dicts (one per valid complete path), where each dict
-        maps placeholder keys to their string values.
+        maps placeholder keys to their string values. Keys declared in
+        ``aliases`` are canonicalized (e.g. an on-disk ``Baseline`` folder
+        comes back as ``"BL"``); an unrecognized on-disk spelling under an
+        aliased key passes through unchanged (fail-open, logged at debug).
 
         Absolute templates (POSIX ``/``, Windows drive ``Y:``, UNC
         ``\\\\server\\share``) anchor the walk at their own root, matching
@@ -618,6 +712,30 @@ class PathInput:
                 # Keys are like "key" or "key_2", "key_3" etc.
                 key = re.sub(r"_\d+$", "", raw_key)
                 clean_captured[key] = val
+
+            # Canonicalize aliased keys (e.g. "Baseline" -> "BL") before the
+            # consistency check, so two segments binding the same key via
+            # different on-disk spellings of one canonical don't spuriously
+            # conflict.  Match-only: an on-disk value that isn't recognized
+            # under a declared alias key is passed through unchanged rather
+            # than rejected — surfaced via debug log so a typo'd folder name
+            # is observable instead of silently producing a stray value.
+            for key, raw_val in list(clean_captured.items()):
+                key_reverse = self._alias_reverse.get(key)
+                if key_reverse is None:
+                    continue
+                canonical = key_reverse.get(raw_val)
+                if canonical is not None:
+                    clean_captured[key] = canonical
+                else:
+                    Log.debug(
+                        "pathinput_alias_unresolved: key=%r on-disk value=%r "
+                        "has no matching alias/canonical entry; passing "
+                        "through unchanged",
+                        key,
+                        raw_val,
+                        layer="scifor",
+                    )
 
             consistent = True
             for key, val in clean_captured.items():
