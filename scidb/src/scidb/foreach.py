@@ -210,7 +210,7 @@ def for_each(
     track_lineage: bool = True,
     skip_computed: bool = False,
     schema_filter: "dict[str, list] | None" = None,
-    schema_level: "list[str] | None" = None,
+    schema_keys: "list[str] | None" = None,
     share_limits: "dict[str, list[str]] | None" = None,
     finalized: bool = False,
     pipeline: Any = _PIPELINE_UNSET,
@@ -258,11 +258,20 @@ def for_each(
                     full upstream provenance graph is unchanged (function hash,
                     input record_ids, constant hashes). Default False. Requires a
                     database and ``track_lineage``.
-        schema_filter: Optional ``{schema_key: [values]}`` to build the iteration
-                    set from the database instead of **metadata_iterables. Cannot
-                    be combined with explicit **metadata_iterables.
-        schema_level: Optional list of schema keys to iterate when using
-                    schema_filter. Defaults to all schema keys.
+        schema_filter: Optional ``{schema_key: [values]}`` value overrides.
+                    Cannot be combined with explicit **metadata_iterables.
+                    For a key also named in schema_keys (or, if schema_keys
+                    is omitted, any schema key at all), the given values
+                    replace auto-resolution from the database. For a key
+                    NOT being iterated, the values instead constrain which
+                    records are loaded (ANDed into where= via
+                    SchemaKeyInFilter) without adding an iteration dimension.
+        schema_keys: Optional list of schema key names to iterate — structural
+                    sugar for passing ``key=[]`` for each one by hand (each
+                    auto-resolves to every distinct value in the database).
+                    Defaults to all schema keys. Cannot be combined with
+                    explicit **metadata_iterables. Implemented via scifor's
+                    ``expand_schema_keys()``, shared with scifor.for_each().
         finalized: Endpoint (``plot_``/``stat_``) functions only. Default False
                     = DRAFT mode: nothing is written to the database — a
                     ``plot_`` figure is still rendered to its PathOutput path,
@@ -326,7 +335,7 @@ def for_each(
                 "track_lineage": track_lineage,
                 "skip_computed": skip_computed,
                 "schema_filter": schema_filter,
-                "schema_level": schema_level,
+                "schema_keys": schema_keys,
                 "share_limits": share_limits,
                 "finalized": finalized,
                 "_inject_combo_metadata": _inject_combo_metadata,
@@ -350,12 +359,15 @@ def for_each(
         # Store original for version_keys serialization
         where._original_str = original_where_str
 
-    # --- Step 0: Resolve active database + schema_filter/schema_level (folded
-    #     from scihist.for_each). Builds metadata_iterables from the DB when the
-    #     caller used schema_filter/schema_level instead of explicit iterables. ---
+    # --- Step 0: Resolve active database + schema_filter/schema_keys (folded
+    #     from scihist.for_each). Seeds metadata_iterables from schema_keys
+    #     when the caller used schema_keys/schema_filter instead of explicit
+    #     iterables; actual DB resolution of the resulting [] placeholders
+    #     happens later, in _for_each_prepare's existing generic empty-list
+    #     resolver — Step 0 itself does no DB querying. ---
     active_db = db
     if active_db is None and (
-        skip_computed or schema_filter is not None or schema_level is not None
+        skip_computed or schema_filter is not None or schema_keys is not None
     ):
         try:
             from .database import get_database
@@ -364,32 +376,39 @@ def for_each(
         except Exception:
             active_db = None
 
-    if schema_filter is not None or schema_level is not None:
-        if metadata_iterables:
-            raise ValueError(
-                "Cannot use both schema_filter/schema_level and **metadata_iterables. "
-                "Use schema_filter/schema_level for automatic iteration, or "
-                "**metadata_iterables for manual control."
-            )
+    if schema_filter is not None or schema_keys is not None:
         if active_db is None:
             raise ValueError(
-                "schema_filter/schema_level require a database connection, but no db "
+                "schema_filter/schema_keys require a database connection, but no db "
                 "was provided and no global database is configured."
             )
         iterate_keys = (
-            schema_level if schema_level is not None else active_db.dataset_schema_keys
+            schema_keys if schema_keys is not None else active_db.dataset_schema_keys
         )
-        metadata_iterables = {}
-        for key in iterate_keys:
-            if schema_filter and key in schema_filter:
-                metadata_iterables[key] = schema_filter[key]
-            else:
-                metadata_iterables[key] = active_db.distinct_schema_values(key)
-        # Resolved into metadata_iterables; don't re-resolve in EachOf recursion.
+        # Shared with scifor.for_each(): seeds {key: []} for each iterated key,
+        # and raises if metadata_iterables is already populated (mutual
+        # exclusivity with explicit **metadata_iterables, unchanged from before).
+        metadata_iterables = _scifor.expand_schema_keys(iterate_keys, metadata_iterables)
+
+        # schema_filter overrides: an iterated key gets its values directly
+        # (skipping DB auto-resolution for that key); a key NOT being
+        # iterated instead constrains which records are loaded, via a
+        # SchemaKeyInFilter ANDed into where= (previously silently ignored —
+        # see docs/claude/scidb-for-each-internals.md).
+        if schema_filter:
+            from .filters import SchemaKeyInFilter
+
+            for key, values in schema_filter.items():
+                if key in metadata_iterables:
+                    metadata_iterables[key] = values
+                else:
+                    constraint = SchemaKeyInFilter(key, values)
+                    where = constraint if where is None else (where & constraint)
+        # Resolved into metadata_iterables/where; don't re-resolve in EachOf recursion.
         schema_filter = None
-        schema_level = None
+        schema_keys = None
         Log.debug(
-            f"built metadata_iterables from schema params: {list(metadata_iterables.keys())}"
+            f"expand_schema_keys: seeded metadata_iterables for {list(metadata_iterables.keys())}"
         )
 
     # --- Step 1: EachOf expansion: must be first, before any other logic ---

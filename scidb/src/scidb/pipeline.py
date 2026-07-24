@@ -316,7 +316,7 @@ class PipelineBinding:
 
     - ``key_map``: native schema key → project schema key. Rewrites the
       declaration surface (iteration kwargs, Path templates, Fixed kwargs,
-      structured where= filters, schema_filter/schema_level, share_limits
+      structured where= filters, schema_filter/schema_keys, share_limits
       values); records save under the PROJECT's keys.
     - ``params``: constant-input overrides → a different computation
       identity by construction (constants are version keys), i.e. distinct
@@ -481,9 +481,9 @@ class PipelineBinding:
                 new_options["schema_filter"] = _rename_keys(
                     new_options["schema_filter"], km
                 )
-            if new_options.get("schema_level") is not None:
-                new_options["schema_level"] = [
-                    km.get(k, k) for k in new_options["schema_level"]
+            if new_options.get("schema_keys") is not None:
+                new_options["schema_keys"] = [
+                    km.get(k, k) for k in new_options["schema_keys"]
                 ]
             if new_options.get("share_limits") is not None:
                 new_options["share_limits"] = {

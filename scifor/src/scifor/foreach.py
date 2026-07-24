@@ -22,7 +22,7 @@ from .column_selection import ColumnSelection
 from .fixed import Fixed
 from .merge import Merge
 from .pathoutput import PathOutput
-from .schema import get_schema
+from .schema import expand_schema_keys, get_schema
 
 # Periodic progress guards (module-level so tests can monkeypatch).
 # A progress line is emitted when the outermost iterated key's value changes,
@@ -81,6 +81,7 @@ def for_each(
     where=None,
     output_names: list[str] | int | None = None,
     share_limits: "dict[str, list[str]] | None" = None,
+    schema_keys: "list[str] | None" = None,
     _all_combos: list[dict] | None = None,
     _log_fn: "Callable[[str], None] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
@@ -119,6 +120,10 @@ def for_each(
                       (or ``**kwargs``). Used so e.g. every per-trial plot within
                       a subject shares one y-axis range
                       (``share_limits={"signal": ["subject"]}``).
+        schema_keys: Optional list of schema key names to iterate, structural
+                    sugar for passing ``key=[]`` for each one by hand (each
+                    still auto-resolves via a DataFrame scan of the inputs).
+                    Mutually exclusive with explicit **metadata_iterables.
         _all_combos: Pre-built list of metadata dicts; skips itertools.product().
                      Used by DB wrappers that pre-filter schema combinations.
         _log_fn: Deprecated — ignored. scifor now logs through the
@@ -129,7 +134,7 @@ def for_each(
     Returns:
         A pandas DataFrame of results, or None when dry_run=True.
     """
-    schema_keys = get_schema()
+    full_schema_keys = get_schema()
 
     # Step 0: Forgive a bare ColName class passed without parentheses.
     # `scifor.ColName` (uninstantiated) can only mean the no-arg deferred form,
@@ -162,6 +167,17 @@ def for_each(
         resolved_output_names,
         layer="scifor",
     )
+
+    # Step 1.5: schema_keys= structural sugar — seed metadata_iterables with
+    # an empty list per requested key, before the empty-list resolver below
+    # (Step 2) runs. Shared with scidb.for_each() via expand_schema_keys().
+    if schema_keys is not None:
+        metadata_iterables = expand_schema_keys(schema_keys, metadata_iterables)
+        Log.debug(
+            "expand_schema_keys: seeded metadata_iterables for %s",
+            schema_keys,
+            layer="scifor",
+        )
 
     # Step 2: Resolve empty lists [] in standalone mode (scan DataFrame inputs)
     if _all_combos is None:
@@ -203,7 +219,9 @@ def for_each(
     distribute_key = None
     if distribute:
         real_schema_keys = [
-            k for k in schema_keys if "__rid_" not in str(k) and "__vsig_" not in str(k)
+            k
+            for k in full_schema_keys
+            if "__rid_" not in str(k) and "__vsig_" not in str(k)
         ]
         iter_keys_in_schema = [k for k in real_schema_keys if k in metadata_iterables]
         if not iter_keys_in_schema:
@@ -236,7 +254,7 @@ def for_each(
     # loop's capture_schema_column_types/restore_schema_column_types.
     type_keys = list(
         dict.fromkeys(
-            [*schema_keys, *metadata_iterables.keys()]
+            [*full_schema_keys, *metadata_iterables.keys()]
             + ([distribute_key] if distribute_key is not None else [])
         )
     )
@@ -259,7 +277,7 @@ def for_each(
             deferred_count,
             layer="scifor",
         )
-    inputs = _resolve_colnames(inputs, schema_keys)
+    inputs = _resolve_colnames(inputs, full_schema_keys)
 
     # Step 5: Separate data inputs from constants
     data_inputs = {}
@@ -349,7 +367,7 @@ def for_each(
     iterate_columns: list[str] | None = None
     if iterate_params:
         col_sets = {
-            name: _resolve_iterate_columns(data_inputs[name], schema_keys)
+            name: _resolve_iterate_columns(data_inputs[name], full_schema_keys)
             for name in iterate_params
         }
         iterate_columns = col_sets[iterate_params[0]]
@@ -406,7 +424,7 @@ def for_each(
     shared_limits_map: dict = {}
     if share_limits:
         shared_limits_map = _compute_shared_limits(
-            share_limits, data_inputs, schema_keys
+            share_limits, data_inputs, full_schema_keys
         )
         # Param names the function will accept the *_limits kwargs under.
         _limits_accepted = _accepted_param_names(fn)
@@ -567,12 +585,12 @@ def for_each(
                 if param_name in iterate_params:
                     # Keep the full per-combo DataFrame; slice per column below.
                     iterate_dfs[param_name] = _prepare_iterate_df(
-                        var_spec, metadata, schema_keys, where
+                        var_spec, metadata, full_schema_keys, where
                     )
                     continue
                 wants_table = param_name in as_table_set
                 filtered_inputs[param_name] = _prepare_input(
-                    var_spec, metadata, schema_keys, wants_table, where
+                    var_spec, metadata, full_schema_keys, wants_table, where
                 )
             except Exception as e:
                 _record_iteration_failure(
@@ -670,7 +688,7 @@ def for_each(
                         filtered_inputs,
                         iterate_dfs,
                         iterate_columns,
-                        schema_keys,
+                        full_schema_keys,
                         as_table_set,
                         metadata,
                     ),

@@ -412,6 +412,8 @@ def for_each_prepare(
     dry_run: bool = False,
     skip_computed: bool = False,
     finalized: bool = False,
+    schema_keys=None,
+    schema_filter=None,
 ):
     """Bridge entry: run scidb.for_each's prepare phase in Python.
 
@@ -439,6 +441,17 @@ def for_each_prepare(
     distribute : bool
     as_table : bool, list, or None
     db : DatabaseManager or None
+    schema_keys : list[str] or None
+        Schema key names to iterate — structural sugar for seeding
+        ``metadata_iterables`` with ``key: []`` for each one, via the same
+        ``scifor.expand_schema_keys()`` scidb.for_each's pure-Python path
+        uses. Mutually exclusive with an already-populated
+        ``metadata_iterables``.
+    schema_filter : dict[str, list] or None
+        ``{schema_key: [values]}`` overrides. A key also in schema_keys (or,
+        if schema_keys is None, any schema key) gets these values instead of
+        DB auto-resolution. A key NOT being iterated instead constrains
+        which records load, via a SchemaKeyInFilter ANDed into ``where``.
     skip_computed : bool
         If True, build scidb's pre-combo skip hook (the same one
         ``scidb.for_each`` builds in its Step 1.6) and apply it during
@@ -554,6 +567,46 @@ def for_each_prepare(
     # arrives from MATLAB when no filter was supplied; treat it as None.)
     where_arg = where if where not in ("", None) else None
 
+    # schema_keys/schema_filter: same Step-0-equivalent logic as
+    # scidb.foreach.py's pure-Python path (foreach.py:~379), reused here so
+    # MATLAB needs no DB-querying code of its own — the resulting []
+    # placeholders resolve via _for_each_prepare's existing generic
+    # empty-list-from-DB resolver, identical to the pure-Python path.
+    py_schema_keys = None if isinstance(schema_keys, type(None)) else schema_keys
+    py_schema_filter = None if isinstance(schema_filter, type(None)) else schema_filter
+    if py_schema_filter is not None or py_schema_keys is not None:
+        schema_db = resolved_db
+        if schema_db is None:
+            try:
+                from scidb.database import get_database
+
+                schema_db = get_database()
+            except Exception:
+                schema_db = None
+        if schema_db is None:
+            raise ValueError(
+                "schema_filter/schema_keys require a database connection, but no db "
+                "was provided and no global database is configured."
+            )
+        import scifor as _scifor
+
+        iterate_keys = (
+            list(py_schema_keys)
+            if py_schema_keys is not None
+            else schema_db.dataset_schema_keys
+        )
+        meta = _scifor.expand_schema_keys(iterate_keys, meta)
+
+        if py_schema_filter:
+            from scidb.filters import SchemaKeyInFilter
+
+            for key, values in dict(py_schema_filter).items():
+                if key in meta:
+                    meta[key] = list(values)
+                else:
+                    constraint = SchemaKeyInFilter(key, list(values))
+                    where_arg = constraint if where_arg is None else (where_arg & constraint)
+
     # On dry_run=True, Python's _for_each_prepare runs the dry-run
     # scifor.for_each call and returns None. The MATLAB caller likewise
     # returns early (no save phase). The scifor dry-run output prints
@@ -570,7 +623,7 @@ def for_each_prepare(
                 as_table=as_table_arg,
                 db=db if db is not None and not isinstance(db, type(None)) else None,
                 distribute=bool(distribute),
-                where=where if where not in ("", None) else None,
+                where=where_arg,
                 _pre_combo_hook=None,
                 _cancel_check=None,
                 metadata_iterables=meta,
@@ -2081,6 +2134,8 @@ def pipeline_register_step(
     save: bool = True,
     finalized: bool = False,
     skip_computed: bool = False,
+    schema_keys=None,
+    schema_filter=None,
 ) -> int:
     """Register one MATLAB for_each call as a deferred step; returns the
     step's index in the pipeline's own step list (MATLAB stores the fn
@@ -2093,6 +2148,12 @@ def pipeline_register_step(
     outputs = [get_surrogate_class(n) for n in list(output_class_names)]
     sentinel = _make_matlab_fn_sentinel(fn_name)
     meta = {k: list(v) for k, v in dict(metadata_iterables).items()}
+    schema_keys_arg = list(schema_keys) if schema_keys is not None else None
+    schema_filter_arg = (
+        {k: list(v) for k, v in dict(schema_filter).items()}
+        if schema_filter is not None
+        else None
+    )
     pipe.register_call(
         fn=sentinel,
         inputs=inputs,
@@ -2105,6 +2166,8 @@ def pipeline_register_step(
             "save": bool(save),
             "finalized": bool(finalized),
             "skip_computed": bool(skip_computed),
+            "schema_keys": schema_keys_arg,
+            "schema_filter": schema_filter_arg,
             "__matlab__": True,
             "__matlab_fn_hash__": fn_hash,
         },

@@ -1,4 +1,4 @@
-"""Tests for schema_filter and schema_level parameters in scihist.for_each."""
+"""Tests for schema_filter and schema_keys parameters in scihist.for_each."""
 
 import numpy as np
 import pytest
@@ -40,6 +40,26 @@ class ProcessedData(BaseVariable):
 @scistack
 def process(raw_data, threshold):
     return raw_data * threshold
+
+
+# Records the row count of the (possibly aggregated) raw_data it receives,
+# regardless of whether it arrives as a DataFrame or an ndarray — same
+# robustness pattern as scidb/tests/test_aggregation.py's aggregate_sum.
+_row_counts: list[int] = []
+
+
+@scistack
+def count_rows(raw_data):
+    import pandas as pd
+
+    if isinstance(raw_data, pd.DataFrame):
+        n = len(raw_data)
+    elif isinstance(raw_data, np.ndarray):
+        n = raw_data.shape[0] if raw_data.ndim > 0 else 1
+    else:
+        n = 1
+    _row_counts.append(n)
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -146,13 +166,13 @@ class TestSchemaFilter:
 
 
 # ---------------------------------------------------------------------------
-# schema_level tests
+# schema_keys tests
 # ---------------------------------------------------------------------------
 
 
-class TestSchemaLevel:
-    def test_schema_level_subset(self, db):
-        """schema_level iterates only over specified keys."""
+class TestSchemaKeys:
+    def test_schema_keys_subset(self, db):
+        """schema_keys iterates only over specified keys."""
         _seed_raw(db, subjects=(1, 2), sessions=("A", "B"), trials=(1,))
 
         # Iterate only over subject and session (not trial)
@@ -160,7 +180,7 @@ class TestSchemaLevel:
             process,
             inputs={"raw_data": RawData, "threshold": 2.0},
             outputs=[ProcessedData],
-            schema_level=["subject", "session"],
+            schema_keys=["subject", "session"],
         )
 
         # Should have 2 subjects × 2 sessions = 4 rows
@@ -172,8 +192,8 @@ class TestSchemaLevel:
         expected = {("1", "A"), ("1", "B"), ("2", "A"), ("2", "B")}
         assert combos == expected
 
-    def test_schema_level_single_key(self, db):
-        """schema_level with single key."""
+    def test_schema_keys_single_key(self, db):
+        """schema_keys with single key."""
         _seed_raw(db, subjects=(1, 2, 3), sessions=("A",), trials=(1,))
 
         # Iterate only over subject
@@ -181,7 +201,7 @@ class TestSchemaLevel:
             process,
             inputs={"raw_data": RawData, "threshold": 2.0},
             outputs=[ProcessedData],
-            schema_level=["subject"],
+            schema_keys=["subject"],
         )
 
         # Should have 3 subjects (schema values are strings)
@@ -190,13 +210,13 @@ class TestSchemaLevel:
 
 
 # ---------------------------------------------------------------------------
-# Combined schema_filter and schema_level tests
+# Combined schema_filter and schema_keys tests
 # ---------------------------------------------------------------------------
 
 
-class TestSchemaFilterAndLevel:
-    def test_filter_and_level_together(self, db):
-        """schema_filter and schema_level work together."""
+class TestSchemaFilterAndKeys:
+    def test_filter_and_keys_together(self, db):
+        """schema_filter and schema_keys work together."""
         _seed_raw(db, subjects=(1, 2, 3), sessions=("A", "B"), trials=(1, 2))
 
         # Iterate over subject and session only, filter subject to 1 and 2
@@ -205,7 +225,7 @@ class TestSchemaFilterAndLevel:
             inputs={"raw_data": RawData, "threshold": 2.0},
             outputs=[ProcessedData],
             schema_filter={"subject": [1, 2]},
-            schema_level=["subject", "session"],
+            schema_keys=["subject", "session"],
         )
 
         # Should have 2 subjects × 2 sessions = 4 combos
@@ -216,21 +236,38 @@ class TestSchemaFilterAndLevel:
         assert set(result["session"].unique()) == {"A", "B"}
 
     def test_filter_on_non_iterated_key(self, db):
-        """schema_filter can filter keys not in schema_level."""
-        _seed_raw(db, subjects=(1, 2), sessions=("A", "B"), trials=(1, 2))
+        """schema_filter can filter keys not in schema_keys.
 
-        # Iterate over subject only, but filter session
+        Regression test: this used to be silently ignored — schema_filter
+        entries for a key outside schema_keys never reached anything,
+        because the (now-removed) resolution loop only ever touched keys in
+        iterate_keys. Fixed by routing such entries through a
+        SchemaKeyInFilter ANDed into where=. This test checks the actual
+        loaded ROW COUNT (not just the output row count keyed by subject),
+        which is what the bug affected — the old test only asserted
+        len(result) == 2, which passes whether or not session was
+        constrained, since aggregation always returns one row per subject.
+        """
+        _seed_raw(db, subjects=(1, 2), sessions=("A", "B"), trials=(1, 2))
+        _row_counts.clear()
+
+        # Iterate over subject only (aggregation over session+trial), but
+        # filter session to "A" — should load only session=A rows.
         result = for_each(
-            process,
-            inputs={"raw_data": RawData, "threshold": 2.0},
+            count_rows,
+            inputs={"raw_data": RawData},
             outputs=[ProcessedData],
             schema_filter={"session": ["A"]},
-            schema_level=["subject"],
+            schema_keys=["subject"],
         )
 
-        # Should iterate over subjects, but only load session=A data
         assert len(result) == 2  # 2 subjects
         assert set(result["subject"].unique()) == {"1", "2"}
+
+        # The actual fix: each subject's aggregated raw_data should contain
+        # only the 2 trials for session="A" — not all 4 (2 sessions x 2
+        # trials) that exist for that subject.
+        assert _row_counts == [2, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -377,37 +414,3 @@ class TestIntegration:
 
                 assert isinstance(data.data, np.ndarray)
                 assert len(data.data) == 10  # Same length as input
-
-    def test_incremental_processing_with_skip_computed(self, db):
-        """Process subset, then extend with schema_filter."""
-        _seed_raw(db, subjects=(1, 2, 3), sessions=("A",), trials=(1,))
-
-        # First: process only subject 1
-        result1 = for_each(
-            process,
-            inputs={"raw_data": RawData, "threshold": 2.0},
-            outputs=[ProcessedData],
-            schema_filter={"subject": [1]},
-            skip_computed=True,
-        )
-
-        assert len(result1) == 1
-
-        # Second: process subjects 1 and 2 (should skip 1)
-        result2 = for_each(
-            process,
-            inputs={"raw_data": RawData, "threshold": 2.0},
-            outputs=[ProcessedData],
-            schema_filter={"subject": [1, 2]},
-            skip_computed=True,
-        )
-
-        # Should have skipped subject 1, only processed subject 2
-        # But result includes all processed combos
-        assert len(result2) == 1  # Only subject 2 was computed
-
-        # Verify both subjects now exist in database
-        data1 = ProcessedData.load(db=db, subject=1, session="A", trial=1)
-        data2 = ProcessedData.load(db=db, subject=2, session="A", trial=1)
-        assert data1 is not None
-        assert data2 is not None

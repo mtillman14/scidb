@@ -30,7 +30,7 @@ from .foreach import ColumnFunctionError, ForColumnsError, for_each
 from .merge import Merge
 from .pathinput import PathInput
 from .pathoutput import PathOutput
-from .schema import get_schema, set_schema
+from .schema import expand_schema_keys, get_schema, set_schema
 
 __version__ = "0.1.0"
 
@@ -38,6 +38,7 @@ __all__ = [
     # Schema
     "set_schema",
     "get_schema",
+    "expand_schema_keys",
     # Batch execution
     "for_each",
     "ColumnFunctionError",

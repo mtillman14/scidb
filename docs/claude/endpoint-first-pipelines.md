@@ -374,7 +374,7 @@ A pipeline written against schema `[session, trial]` reused in a
 `[subject, trial]` project must be adapted **without touching its
 source**. Schema keys leak into a declaration in a bounded set of places:
 iteration kwargs, `PathOutput`/`PathInput` templates, `Fixed(...)` kwargs,
-`where=` filters, `schema_filter`/`schema_level` — and, only in
+`where=` filters, `schema_filter`/`schema_keys` — and, only in
 aggregation mode, inside user functions (`df["session"]`; full-iteration
 functions receive bare data and never see key names).
 
@@ -405,8 +405,13 @@ analysis = db.pipeline("gait", uses=[
   subtree; chained key_maps compose.
 
 Convention worth documenting for NEW pipelines: declare iteration
-structurally (`schema_level` position, empty-list resolution) rather than
-by key name — a portably-written pipeline needs no `key_map` at all.
+structurally (`schema_keys=`, empty-list resolution) rather than by key
+name — a portably-written pipeline needs no `key_map` at all. `schema_keys`
+(renamed from `schema_level` — the old name read as numeric/positional but
+the value is a list of key names) is implemented once, in scifor
+(`expand_schema_keys()` in `scifor/src/scifor/schema.py`), and reused by
+scidb's DB-backed resolution (`scidb/src/scidb/foreach.py`) — in both
+Python and MATLAB (`+scifor/for_each.m`, `+scidb/for_each.m`).
 
 ## Elevating endpoints: the thin surface (2026-07-16)
 

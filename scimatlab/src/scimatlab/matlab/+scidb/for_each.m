@@ -165,6 +165,25 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         py_db = opts.db;
     end
 
+    % --- schema_keys: string array -> py.list, or py.None ---
+    if isempty(opts.schema_keys)
+        py_schema_keys = py.None;
+    else
+        py_schema_keys = py.list(cellstr(opts.schema_keys(:)'));
+    end
+
+    % --- schema_filter: struct (field -> value list) -> py.dict, or py.None ---
+    schema_filter_fields = fieldnames(opts.schema_filter);
+    if isempty(schema_filter_fields)
+        py_schema_filter = py.None;
+    else
+        py_schema_filter = py.dict();
+        for sf_i = 1:numel(schema_filter_fields)
+            sf_key = schema_filter_fields{sf_i};
+            py_schema_filter{sf_key} = scidb.internal.to_python(opts.schema_filter.(sf_key));
+        end
+    end
+
     % --- Pipeline registration seam (deferred execution, stage 4) ---
     % Reuses the marshalled py objects above; registration must have zero
     % side effects, so this runs BEFORE prepare (no loads, no DB writes).
@@ -189,7 +208,9 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
                        'as_table', py_as_table, ...
                        'save', logical(do_save), ...
                        'finalized', logical(opts.finalized), ...
-                       'skip_computed', logical(opts.skip_computed))));
+                       'skip_computed', logical(opts.skip_computed), ...
+                       'schema_keys', py_schema_keys, ...
+                       'schema_filter', py_schema_filter)));
             target_pipe.store_step(step_index, fn, inputs, outputs, opts);
             scidb.Log.info(['pipeline_step_registered (MATLAB): %s -> ' ...
                 'pipeline %s (deferred)'], fn_name, target_pipe.name);
@@ -211,7 +232,9 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
                'db', py_db, ...
                'dry_run', logical(dry_run), ...
                'skip_computed', logical(opts.skip_computed), ...
-               'finalized', logical(opts.finalized)));
+               'finalized', logical(opts.finalized), ...
+               'schema_keys', py_schema_keys, ...
+               'schema_filter', py_schema_filter));
     scidb.Log.info('for_each_prepare returned in %.3fs', toc(prep_t0));
 
     % Dry-run: Python ran the scifor.for_each(dry_run=true) call itself
@@ -1212,6 +1235,8 @@ function [meta_args, opts] = split_options(varargin)
     opts.skip_computed = false;
     opts.finalized = false;
     opts.share_limits = struct();
+    opts.schema_keys = string.empty;
+    opts.schema_filter = struct();
     opts.fn_name_override = '';
     opts.fn_hash_override = '';
     % Deferred pipeline registration: '' = ambient (register into the
@@ -1225,6 +1250,7 @@ function [meta_args, opts] = split_options(varargin)
     reserved_opts = ["dryrun", "save", "preload", "astable", "db", ...
                      "parallel", "distribute", "where", "introspect", ...
                      "skipcomputed", "finalized", "sharelimits", ...
+                     "schemakeys", "schemafilter", ...
                      "fnname", "fnhash", "pipeline"];
 
     meta_args = {};
@@ -1281,6 +1307,19 @@ function [meta_args, opts] = split_options(varargin)
                     i = i + 2; continue;
                 case "share_limits"
                     opts.share_limits = varargin{i+1};
+                    i = i + 2; continue;
+                case "schema_keys"
+                    % Schema key names to iterate — structural sugar for
+                    % key=[] on each. Forwarded to for_each_prepare, which
+                    % seeds metadata_iterables via scifor.expand_schema_keys
+                    % (same function scidb.for_each's Python path uses).
+                    opts.schema_keys = string(varargin{i+1});
+                    i = i + 2; continue;
+                case "schema_filter"
+                    % struct: schema key -> explicit value list, overriding
+                    % auto-resolution (or constraining a non-iterated key
+                    % via where=). See Python scidb.for_each's schema_filter.
+                    opts.schema_filter = varargin{i+1};
                     i = i + 2; continue;
                 case "pipeline"
                     opts.pipeline = varargin{i+1};

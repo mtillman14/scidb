@@ -82,7 +82,7 @@ function varargout = for_each(fn, inputs, varargin)
     end
 
     % Get schema keys
-    schema_keys = scifor.get_schema();
+    full_schema_keys = scifor.get_schema();
 
     % --- Resolve output_names ---
     if isempty(opts.output_names)
@@ -128,6 +128,25 @@ function varargout = for_each(fn, inputs, varargin)
             meta_values{end+1} = v; %#ok<AGROW>
         else
             meta_values{end+1} = {v}; %#ok<AGROW>
+        end
+    end
+
+    % --- schema_keys= structural sugar ---
+    %   Seed meta_keys/meta_values with an empty entry per requested key —
+    %   "iterate over these keys" without spelling out key=[] by hand. Each
+    %   still auto-resolves via the existing empty-array resolution below.
+    %   Mirrors Python scifor's expand_schema_keys(); mutually exclusive
+    %   with explicit metadata name-value pairs.
+    if ~isempty(opts.schema_keys)
+        if ~isempty(meta_keys)
+            error('scifor:for_each', ['Cannot use both schema_keys and ' ...
+                'explicit metadata name-value pairs. Use schema_keys for ' ...
+                'automatic iteration, or explicit key=value pairs for ' ...
+                'manual control.']);
+        end
+        for i = 1:numel(opts.schema_keys)
+            meta_keys(end+1) = string(opts.schema_keys(i)); %#ok<AGROW>
+            meta_values{end+1} = {}; %#ok<AGROW>
         end
     end
 
@@ -199,10 +218,10 @@ function varargout = for_each(fn, inputs, varargin)
     % --- Determine effective keys for filtering/extraction ---
     %   No schema set → iteration keys are the source of truth.
     %   Schema set    → schema keys are the source of truth.
-    if isempty(schema_keys)
+    if isempty(full_schema_keys)
         effective_keys = meta_keys;
     else
-        effective_keys = schema_keys;
+        effective_keys = full_schema_keys;
     end
 
     % --- Validate distribute parameter and resolve target key ---
@@ -213,8 +232,8 @@ function varargout = for_each(fn, inputs, varargin)
     % the discriminator as the deepest key and refuse to distribute.
     distribute_key = '';
     if distribute
-        real_schema_keys = schema_keys( ...
-            ~contains(schema_keys, "__rid_") & ~contains(schema_keys, "__vsig_"));
+        real_schema_keys = full_schema_keys( ...
+            ~contains(full_schema_keys, "__rid_") & ~contains(full_schema_keys, "__vsig_"));
         if isempty(real_schema_keys)
             error('scifor:for_each', ...
                 'distribute=true requires schema keys. Call set_schema() first.');
@@ -272,17 +291,17 @@ function varargout = for_each(fn, inputs, varargin)
                     input_names{p}, class(inner_tbl));
             end
             tbl_cols = string(inner_tbl.Properties.VariableNames);
-            data_cols = setdiff(tbl_cols, schema_keys, 'stable');
+            data_cols = setdiff(tbl_cols, full_schema_keys, 'stable');
             if numel(data_cols) == 1
                 inputs.(input_names{p}) = char(data_cols(1));
             elseif isempty(data_cols)
                 error('scifor:ColName', ...
                     'ColName(%s): table has no data columns (all columns are schema keys). Columns: %s, schema keys: %s', ...
-                    input_names{p}, strjoin(tbl_cols, ', '), strjoin(schema_keys, ', '));
+                    input_names{p}, strjoin(tbl_cols, ', '), strjoin(full_schema_keys, ', '));
             else
                 error('scifor:ColName', ...
                     'ColName(%s): table has %d data columns (%s), expected exactly 1. Schema keys: %s', ...
-                    input_names{p}, numel(data_cols), strjoin(data_cols, ', '), strjoin(schema_keys, ', '));
+                    input_names{p}, numel(data_cols), strjoin(data_cols, ', '), strjoin(full_schema_keys, ', '));
             end
         end
     end
@@ -363,13 +382,13 @@ function varargout = for_each(fn, inputs, varargin)
             if isempty(cols)
                 % Empty selection (the all-columns sentinel) -> resolve to
                 % every data column of the underlying table.
-                cols = all_data_columns(cs.data, schema_keys);
+                cols = all_data_columns(cs.data, full_schema_keys);
                 if isempty(cols)
                     error('scifor:for_each', ...
                         ['for_columns(): no data columns found to iterate over ' ...
                          '(columns: [%s], schema keys: [%s]).'], ...
                         strjoin(string(cs.data.Properties.VariableNames), ', '), ...
-                        strjoin(schema_keys, ', '));
+                        strjoin(full_schema_keys, ', '));
                 end
             end
             if first_set
@@ -508,7 +527,7 @@ function varargout = for_each(fn, inputs, varargin)
     shared_limits_map = struct();
     if ~isempty(fieldnames(opts.share_limits))
         shared_limits_map = compute_shared_limits( ...
-            opts.share_limits, inputs, input_names, data_idx, schema_keys);
+            opts.share_limits, inputs, input_names, data_idx, full_schema_keys);
     end
 
     for c = 1:numel(combos)
@@ -720,7 +739,7 @@ function varargout = for_each(fn, inputs, varargin)
                 % for_columns: run fn once per column and reassemble into a
                 % single 1xN-wide table (one output, validated at Step 6.5).
                 result = {run_column_iteration(fn, loaded, iterate_pos, ...
-                    iterate_tables, iterate_columns, schema_keys, ...
+                    iterate_tables, iterate_columns, full_schema_keys, ...
                     as_table_set, input_names)};
             elseif n_outputs == 0
                 % Zero-output function (e.g. plotting side-effects only)
@@ -2025,6 +2044,7 @@ function [meta_args, opts] = split_options(varargin)
     opts.log_fn = [];  % deprecated, ignored (kept so parsing stays stable)
     opts.resolved_path_outputs = struct();
     opts.share_limits = struct();
+    opts.schema_keys = string.empty;
 
     meta_args = {};
     i = 1;
@@ -2101,6 +2121,12 @@ function [meta_args, opts] = split_options(varargin)
                     % hold fixed (MATLAB port of Python scifor's
                     % _compute_shared_limits prepass).
                     opts.share_limits = varargin{i+1};
+                    i = i + 2;
+                    continue;
+                case "schema_keys"
+                    % Schema key names to iterate — structural sugar,
+                    % expanded into meta_keys/meta_values below.
+                    opts.schema_keys = string(varargin{i+1});
                     i = i + 2;
                     continue;
                 case "_log_fn"
