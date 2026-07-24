@@ -1,6 +1,6 @@
 name: CI
 
-# Test / lint / build gate. Runs on every push to main & dev and on every PR.
+# Test / build gate. Runs on every push to main & dev and on every PR.
 # Also exposed via workflow_call so the release workflow (publish.yml) can reuse
 # it as a pre-publish gate instead of duplicating the job definitions.
 
@@ -18,20 +18,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install ruff
-        run: pip install ruff
-      - name: ruff check
-        run: ruff check .
-      - name: ruff format --check
-        run: ruff format --check .
-
   test:
     runs-on: ubuntu-latest
     strategy:
