@@ -182,7 +182,12 @@ function varargout = for_each(fn, inputs, varargin)
             for i = 1:numel(meta_keys)
                 iter_struct.(char(meta_keys(i))) = meta_values{i};
             end
-            [filled, discovered_combos] = pi.apply_discovery(iter_struct, user_explicit_keys);
+            % condense_numeric=true only here: this is scifor's own
+            % standalone discovery call site (isempty(opts.all_combos)),
+            % never reached when driven through scidb.for_each (which
+            % always supplies opts.all_combos, mirroring the Python
+            % isolation boundary -- see docs/claude/schema-key-types.md).
+            [filled, discovered_combos] = pi.apply_discovery(iter_struct, user_explicit_keys, true);
             for i = 1:numel(meta_keys)
                 if isempty(meta_values{i}) && isfield(filled, char(meta_keys(i)))
                     meta_values{i} = filled.(char(meta_keys(i)));
@@ -253,6 +258,12 @@ function varargout = for_each(fn, inputs, varargin)
     % resolution, or an aggregation over a variant-tracked input would see
     % the discriminator as the deepest key and refuse to distribute.
     distribute_key = '';
+    % True only when distribute_key is synthesized by the "nothing
+    % iterated" fallback below (no source table/iterable ever carries this
+    % key), so it has no captured input type to round-trip to. Rather than
+    % leave it as a bare double index, it's cast to categorical to match
+    % how schema-key columns are represented elsewhere in the framework.
+    distribute_key_synthetic = false;
     if distribute
         real_schema_keys = full_schema_keys( ...
             ~contains(full_schema_keys, "__rid_") & ~contains(full_schema_keys, "__vsig_"));
@@ -268,6 +279,7 @@ function varargout = for_each(fn, inputs, varargin)
             % metadata_iterables at all) — distribute to the top of the
             % schema rather than erroring.
             distribute_key = real_schema_keys(1);
+            distribute_key_synthetic = true;
         else
             deepest_iterated = iter_keys_in_schema(end);
             deepest_idx = find(real_schema_keys == deepest_iterated, 1);
@@ -900,7 +912,8 @@ function varargout = for_each(fn, inputs, varargin)
             output_tables = cell(1, n_outputs);
             for o = 1:n_outputs
                 output_tables{o} = build_single_output_table( ...
-                    collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys, opts.nest_table_outputs, schema_col_types);
+                    collected_per_output{o}, resolved_output_names{o}, opts.categorical, effective_keys, opts.nest_table_outputs, schema_col_types, ...
+                    distribute_key, distribute_key_synthetic);
             end
             n_return = max(nargout, 1);
             for o = 1:n_return
@@ -1843,7 +1856,7 @@ end
 % Return value helpers
 % =========================================================================
 
-function tbl = build_single_output_table(collected, output_name, categorical_flag, schema_keys, nest_table_outputs, col_types)
+function tbl = build_single_output_table(collected, output_name, categorical_flag, schema_keys, nest_table_outputs, col_types, distribute_key, distribute_key_synthetic)
 %BUILD_SINGLE_OUTPUT_TABLE  Build one result table for a single output.
 %
 %   collected - cell array of {metadata_struct, value} pairs for one output
@@ -1853,6 +1866,12 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
 %   nest_table_outputs - if true, force nested mode even for table outputs
 %   col_types - struct from capture_schema_column_types: per-key input
 %       column type to restore on the output metadata columns
+%   distribute_key - name of the distribute target key, or '' if not
+%       distributing
+%   distribute_key_synthetic - true when distribute_key was defaulted to
+%       the top of the schema with no source table/iterable to carry a
+%       type (see for_each's "nothing iterated" fallback); the column is
+%       cast to categorical rather than left as a bare double index
 %
 %   If all values are tables and nest_table_outputs is false →
 %       flatten mode (metadata + data columns).
@@ -1863,6 +1882,12 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
     end
     if nargin < 6
         col_types = struct();
+    end
+    if nargin < 7
+        distribute_key = '';
+    end
+    if nargin < 8
+        distribute_key_synthetic = false;
     end
 
     n_rows = numel(collected);
@@ -1945,6 +1970,22 @@ function tbl = build_single_output_table(collected, output_name, categorical_fla
     % Round-trip metadata column types: cast each metadata column back to
     % the exact type of the input table column it was resolved from.
     tbl = restore_schema_column_types(tbl, col_types);
+
+    % A synthetic distribute key (no source table/iterable, so nothing was
+    % captured above to restore) is cast to categorical here regardless of
+    % categorical_flag — schema-key identity columns are categorical by
+    % convention elsewhere in the framework, and a bare double index would
+    % be the odd one out. Skipped when categorical_flag already converts
+    % every metadata column below.
+    if distribute_key_synthetic && ~categorical_flag && strlength(distribute_key) > 0
+        dist_key_char = char(distribute_key);
+        if ismember(dist_key_char, tbl.Properties.VariableNames)
+            col = tbl.(dist_key_char);
+            str_col = string(col);
+            unique_vals = unique(str_col, 'stable');
+            tbl.(dist_key_char) = categorical(str_col, unique_vals);
+        end
+    end
 
     % Sort by schema columns and convert to categorical if requested
     if categorical_flag

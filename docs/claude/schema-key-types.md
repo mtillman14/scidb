@@ -83,6 +83,47 @@ stored identity to protect, and scifor never sees schema policy.
   - Standalone MATLAB scifor (no loader injected) keeps the silent
     fallback, same as standalone Python scifor.
 
+## Standalone-only auto-condensation: `condense_numeric` (2026-07-28)
+
+Separate, narrower opt-in than the `schema_key_types` contract above — no
+database, no declaration, automatic. When `PathInput.apply_discovery(...,
+condense_numeric=True)` (Python) / `pi.apply_discovery(..., true)` (MATLAB),
+a **discovered** value that is purely digits (`"001"`) collapses to a
+number (`1`, stripping the leading zero) before it enters the iterables or
+the returned combos. Off by default (`condense_numeric=False`/omitted),
+so every pre-existing call site — including scidb's — is unaffected.
+
+- **Only for values scifor itself discovers from disk.** An explicit value
+  the caller passes (`subject=["001"]`) is never touched — same
+  identity-preservation reasoning as `feedback_zero_padded_schema_keys`,
+  just narrower in scope (there's no stored DB identity to protect in
+  standalone use, only the caller's own explicit-vs-discovered intent).
+- **Isolation from scidb is structural, not a runtime check.** Both layers
+  share `PathInput.apply_discovery` / `scifor.foreach.resolve_pathinput_discovery`,
+  but scidb always pre-builds its own combos (`_all_combos=state.full_combos`
+  in Python, `opts.all_combos` in MATLAB) before calling into scifor, and
+  scifor's own discovery call site is gated by `_all_combos is None` /
+  `isempty(opts.all_combos)` — so scidb's Step 3 discovery call
+  (`condense_numeric` omitted, defaults False) and scifor's standalone call
+  (`condense_numeric=True`, hardcoded) never both fire for the same run.
+  scidb's `schema_key_types` declared-only contract is completely unaffected.
+- **Python:** `scifor/src/scifor/pathinput.py::PathInput.apply_discovery`
+  condenses each digit-only combo value via `int(value)`; the standalone
+  call site in `scifor/src/scifor/foreach.py` (`resolve_pathinput_discovery`,
+  around the `_all_combos is None` block) passes `condense_numeric=True`.
+- **MATLAB:** `+scifor/PathInput.m::apply_discovery` takes a 4th
+  `condense_numeric` arg (default `false`, so every pre-existing 3-arg call
+  site is unaffected), forwarded to Python via `pyargs('condense_numeric',
+  ...)`. Returned Python `int`/`float` values are converted to MATLAB
+  `double` via the new private static `PathInput.condense_py_value`,
+  instead of the old unconditional `char(string(...))` — so a condensed
+  key actually ends up numeric, not just a shorter string. `+scifor/for_each.m`
+  passes `true` at its own standalone discovery call site only.
+- Tests: `scifor/tests/test_pathinput_discover.py::TestApplyDiscoveryCondenseNumeric`,
+  `scifor/tests/test_foreach_pathinput.py` (condensed vs explicit-passthrough
+  end-to-end), `scimatlab/tests/matlab/scifor/TestPathInput.m` (condense_numeric
+  section, mirrors the Python cases).
+
 ## MATLAB schema-key column TYPE round-trip (2026-07-13)
 
 Contract (user-designed): output metadata columns from `scifor.for_each`

@@ -265,6 +265,60 @@ class TestApplyDiscovery:
         assert any("disk combos" in m for m in msgs)
 
 
+class TestApplyDiscoveryCondenseNumeric:
+    """condense_numeric=True (standalone-scifor-only opt-in): digit-only
+    discovered values collapse to int, stripping leading zeros. Off by
+    default so scidb's declared-only schema_key_types contract is
+    unaffected -- see docs/claude/schema-key-types.md."""
+
+    @pytest.fixture
+    def padded_tree(self, tmp_path):
+        """tmp_path/data-001.mat, tmp_path/data-002.mat"""
+        (tmp_path / "data-001.mat").touch()
+        (tmp_path / "data-002.mat").touch()
+        return tmp_path
+
+    def test_condenses_zero_padded_digits(self, padded_tree):
+        pi = PathInput("data-{subject}.mat", root_folder=padded_tree)
+        iterables, combos = pi.apply_discovery({}, set(), condense_numeric=True)
+        assert sorted(iterables["subject"]) == [1, 2]
+        assert all(isinstance(v, int) for v in iterables["subject"])
+        assert {"subject": 1} in combos
+        assert {"subject": 2} in combos
+
+    def test_default_off_stays_verbatim_strings(self, padded_tree):
+        pi = PathInput("data-{subject}.mat", root_folder=padded_tree)
+        iterables, combos = pi.apply_discovery({}, set())
+        assert sorted(iterables["subject"]) == ["001", "002"]
+        assert {"subject": "001"} in combos
+
+    def test_non_digit_values_untouched(self, tmp_tree):
+        """tmp_tree's session/speed values ('A', 'B', 'fast', 'slow') are not
+        digit-only and must pass through unchanged even with the flag on."""
+        pi = PathInput(
+            "{subject}/XSENS/{session}/{subject}_XSENS_{session}_{speed}-001.xlsx",
+            root_folder=tmp_tree,
+        )
+        iterables, combos = pi.apply_discovery({}, set(), condense_numeric=True)
+        assert sorted(iterables["session"]) == ["A", "B"]
+        assert all(isinstance(v, str) for v in iterables["session"])
+        assert all(isinstance(v, str) for v in iterables["speed"])
+        # subject folders ("1", "2") ARE digit-only -> condensed.
+        assert sorted(iterables["subject"]) == [1, 2]
+
+    def test_explicit_values_never_condensed(self, padded_tree):
+        """A key with an explicit (non-empty) value asserts user intent and
+        is left completely alone -- condensation only ever touches values
+        scifor itself discovered from disk."""
+        pi = PathInput("data-{subject}.mat", root_folder=padded_tree)
+        iterables, combos = pi.apply_discovery(
+            {"subject": ["001", "002"]},
+            user_explicit_keys={"subject"},
+            condense_numeric=True,
+        )
+        assert iterables["subject"] == ["001", "002"]
+
+
 class TestLoad:
     def test_load_with_root_folder(self, tmp_path):
         pi = PathInput("{subject}/data.mat", root_folder=tmp_path)

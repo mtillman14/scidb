@@ -231,10 +231,11 @@ classdef PathInput < handle
             end
         end
 
-        function [iterables_out, combos] = apply_discovery(obj, metadata_iterables, user_explicit_keys)
+        function [iterables_out, combos] = apply_discovery(obj, metadata_iterables, user_explicit_keys, condense_numeric)
         %APPLY_DISCOVERY  Fill empty metadata iterables from filesystem discovery.
         %
         %   [ITERABLES, COMBOS] = pi.apply_discovery(METADATA_ITERABLES, USER_EXPLICIT_KEYS)
+        %   [ITERABLES, COMBOS] = pi.apply_discovery(METADATA_ITERABLES, USER_EXPLICIT_KEYS, CONDENSE_NUMERIC)
         %
         %   Thin wrapper over Python's PathInput.apply_discovery so the scidb
         %   and scifor layers share one discovery-orchestration implementation.
@@ -243,11 +244,22 @@ classdef PathInput < handle
         %   array of values (empty cell {} for keys to resolve from disk).
         %   USER_EXPLICIT_KEYS is a string array / cellstr of the keys the
         %   caller passed with explicit (non-empty) values.
+        %   CONDENSE_NUMERIC (default false) mirrors Python's
+        %   PathInput.apply_discovery flag of the same name: when true, a
+        %   discovered value that is purely digits (e.g. a zero-padded
+        %   filename token "001") collapses to a MATLAB double (1) instead
+        %   of staying a zero-padded char. Off by default -- scidb's
+        %   declared-only schema_key_types contract must opt in explicitly
+        %   instead; this flag is for policy-free standalone scifor use
+        %   only. See docs/claude/schema-key-types.md.
         %
         %   Returns ITERABLES (same struct with empty template keys filled
         %   from disk) and COMBOS — a cell array of structs to drive iteration
         %   directly, or [] when the Cartesian product of ITERABLES should be
         %   used instead.
+            if nargin < 4
+                condense_numeric = false;
+            end
 
             % Marshal metadata_iterables -> py.dict of key -> py.list(str).
             py_iter = py.dict();
@@ -273,12 +285,16 @@ classdef PathInput < handle
                 py_explicit.append(py.str(char(ek(i))));
             end
 
-            res = obj.py_obj.apply_discovery(py_iter, py_explicit);
+            res = obj.py_obj.apply_discovery(py_iter, py_explicit, ...
+                pyargs('condense_numeric', condense_numeric));
             out_iter = res{1};
             py_combos = res{2};
 
             % Convert returned iterables dict back to a MATLAB struct of
-            % cellstr values (discovered values are strings, like discover()).
+            % values. Discovered values are strings ("001") unless
+            % condense_numeric collapsed a digit-only value to a Python
+            % int -- scifor.PathInput.condense_py_value() preserves that
+            % as a MATLAB double rather than forcing it back to char.
             iterables_out = struct();
             ks = cell(py.list(out_iter.keys()));
             for ki = 1:numel(ks)
@@ -286,7 +302,7 @@ classdef PathInput < handle
                 v_list = cell(py.list(out_iter{k}));
                 vals = cell(1, numel(v_list));
                 for vi = 1:numel(v_list)
-                    vals{vi} = char(string(v_list{vi}));
+                    vals{vi} = scifor.PathInput.condense_py_value(v_list{vi});
                 end
                 iterables_out.(k) = vals;
             end
@@ -303,7 +319,7 @@ classdef PathInput < handle
                     cks = cell(py.list(d.keys()));
                     for cki = 1:numel(cks)
                         ck = char(cks{cki});
-                        s.(ck) = char(string(d{ck}));
+                        s.(ck) = scifor.PathInput.condense_py_value(d{ck});
                     end
                     combos{i} = s;
                 end
@@ -349,6 +365,22 @@ classdef PathInput < handle
                     py_canon.update(pyargs(canonical, py.list(spellings)));
                 end
                 py_aliases.update(pyargs(key, py_canon));
+            end
+        end
+
+        function v = condense_py_value(py_val)
+        %CONDENSE_PY_VALUE  Convert one discovered scalar back to MATLAB.
+        %
+        %   A plain py.str converts to char, exactly as before. A py.int
+        %   or py.float only appears here when condense_numeric=true
+        %   condensed a digit-only capture (e.g. "001" -> 1) on the
+        %   Python side -- preserve that as a MATLAB double rather than
+        %   re-stringifying it, so the schema column actually ends up
+        %   numeric, not just a shorter string.
+            if isa(py_val, 'py.int') || isa(py_val, 'py.float')
+                v = double(py_val);
+            else
+                v = char(string(py_val));
             end
         end
     end

@@ -295,6 +295,7 @@ def for_each(
                 metadata_iterables,
                 user_explicit_keys,
                 log=lambda msg: Log.debug(msg, layer="scifor"),
+                condense_numeric=True,
             )
             if discovered_combos is not None:
                 _all_combos = discovered_combos
@@ -1743,6 +1744,7 @@ def resolve_pathinput_discovery(
     metadata_iterables: dict,
     user_explicit_keys: "set | None" = None,
     log=None,
+    condense_numeric: bool = False,
 ) -> "tuple[dict, list[dict] | None]":
     """Fill empty metadata iterables from PathInput filesystem discovery,
     then drop any key a fully static PathInput (no ``{key}`` placeholders)
@@ -1761,6 +1763,10 @@ def resolve_pathinput_discovery(
         user_explicit_keys: Keys the caller passed with explicit non-empty
             values (not delegated to resolution).
         log: Optional ``log(msg)`` callback.
+        condense_numeric: Forwarded to ``PathInput.apply_discovery`` — see
+            there. Defaults to False so scidb's declared-only
+            ``schema_key_types`` contract is unaffected; the standalone
+            scifor call site opts in explicitly.
 
     Returns:
         ``(metadata_iterables, discovered_combos | None)``.
@@ -1768,7 +1774,7 @@ def resolve_pathinput_discovery(
     if pi is None:
         return metadata_iterables, None
     metadata_iterables, discovered_combos = pi.apply_discovery(
-        metadata_iterables, user_explicit_keys, log=log
+        metadata_iterables, user_explicit_keys, log=log, condense_numeric=condense_numeric
     )
     placeholder_keys = set(pi.placeholder_keys())
     if any(isinstance(v, list) and len(v) == 0 for v in metadata_iterables.values()):

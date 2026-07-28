@@ -99,7 +99,10 @@
       "Bash(awk '{print $1, $4}')",
       "Bash(xargs -0 -I{} sh -c 'git show HEAD:\"{}\" 2>/dev/null | grep -qU $'\"'\"'\\\\r'\"'\"' && echo \"{}\"')",
       "Bash(echo \"---exit code: $?---\")",
-      "Bash(awk '{print $1}')"
+      "Bash(awk '{print $1}')",
+      "Bash(ruff --version)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(xargs -I{} echo {})"
     ]
   }
 }

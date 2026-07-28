@@ -109,6 +109,45 @@ def test_case_b_empty_keys_filled_from_disk(discovery_tree):
 
 
 # ---------------------------------------------------------------------------
+# Discovered zero-padded numeric values condense to int (standalone-only)
+# ---------------------------------------------------------------------------
+
+
+def test_discovered_zero_padded_trial_condenses_to_int(discovery_tree):
+    """'trial' is discovered as '001'/'002' on disk; standalone scifor
+    condenses digit-only discovered values automatically."""
+    pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(discovery_tree))
+
+    result = for_each(
+        lambda filepath: Path(str(filepath)).read_text(),
+        inputs={"filepath": pi},
+        subject=[],
+        trial=[],
+    )
+
+    trial_values = result["trial"].tolist()
+    assert sorted(trial_values) == [1, 2]
+    assert all(isinstance(v, int) for v in trial_values)
+    assert sorted(result["subject"].tolist()) == [1, 2]
+
+
+def test_explicit_padded_trial_not_condensed(discovery_tree):
+    """An explicit zero-padded string value is user intent, not a discovery
+    -- it must stay verbatim, matching the literal file on disk."""
+    pi = PathInput("{subject}/6MWT-{trial}.mat", root_folder=str(discovery_tree))
+
+    result = for_each(
+        lambda filepath: str(filepath),
+        inputs={"filepath": pi},
+        subject=["1"],
+        trial=["001"],
+    )
+
+    assert len(result) == 1
+    assert result["trial"].iloc[0] == "001"
+
+
+# ---------------------------------------------------------------------------
 # Per-combo resolution: fn receives a resolved path, not the PathInput object
 # ---------------------------------------------------------------------------
 

@@ -513,6 +513,10 @@ classdef TestSciforForEach < matlab.unittest.TestCase
             tc.verifyEqual(height(result), 2);
             tc.verifyTrue(ismember('pass', result.Properties.VariableNames));
             tc.verifyFalse(ismember('cycle', result.Properties.VariableNames));
+            % Synthetic distribute key (no source table/iterable) comes
+            % back categorical, matching schema-key convention elsewhere.
+            tc.verifyTrue(iscategorical(result.pass));
+            tc.verifyEqual(cellstr(categories(result.pass)), {'1'; '2'});
         end
     end
 

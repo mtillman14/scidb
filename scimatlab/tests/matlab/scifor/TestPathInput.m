@@ -458,6 +458,20 @@ classdef TestPathInput < matlab.unittest.TestCase
                 fclose(fopen(fullfile(d, fname), 'w'));
             end
         end
+
+        function root = makePaddedNumericTree(~, base)
+            % root/1/6MWT-001.mat (content "1.5"), root/2/6MWT-002.mat ("2.5")
+            root = fullfile(base, 'padded_numeric');
+            specs = {{'1','001','1.5'}, {'2','002','2.5'}};
+            for i = 1:numel(specs)
+                s = specs{i}{1}; trial = specs{i}{2}; content = specs{i}{3};
+                d = fullfile(root, s);
+                if ~isfolder(d); mkdir(d); end
+                fid = fopen(fullfile(d, sprintf('6MWT-%s.mat', trial)), 'w');
+                fprintf(fid, '%s', content);
+                fclose(fid);
+            end
+        end
     end
 
     methods (Test)
@@ -508,6 +522,68 @@ classdef TestPathInput < matlab.unittest.TestCase
             testCase.verifyEqual(height(result), 4);
             testCase.verifyTrue(all(ismember(["subject" "session" "speed"], ...
                 string(result.Properties.VariableNames))));
+        end
+
+        % --------------------------------------------------------------
+        % condense_numeric: MATLAB parity with Python's standalone-only
+        % zero-padded discovery condensation (docs/claude/schema-key-types.md)
+        % --------------------------------------------------------------
+
+        function test_apply_discovery_condense_numeric_collapses_zero_padding(testCase)
+            root = testCase.makePaddedNumericTree(testCase.tmp_dir);
+            pi = scifor.PathInput('{subject}/6MWT-{trial}.mat', 'root_folder', root);
+            iter = struct('subject', {{}}, 'trial', {{}});
+            [filled, combos] = pi.apply_discovery(iter, string.empty, true);
+
+            testCase.verifyClass(filled.trial{1}, 'double');
+            testCase.verifyEqual(sort([filled.trial{:}]), [1 2]);
+            testCase.verifyClass(filled.subject{1}, 'double');
+            testCase.verifyEqual(sort([filled.subject{:}]), [1 2]);
+
+            trial_vals = cellfun(@(s) s.trial, combos);
+            testCase.verifyEqual(sort(trial_vals), [1 2]);
+        end
+
+        function test_apply_discovery_default_condense_numeric_false(testCase)
+            % Default (3-arg call, matching every pre-existing call site)
+            % stays verbatim char -- no behavior change without opt-in.
+            root = testCase.makePaddedNumericTree(testCase.tmp_dir);
+            pi = scifor.PathInput('{subject}/6MWT-{trial}.mat', 'root_folder', root);
+            iter = struct('subject', {{}}, 'trial', {{}});
+            [filled, ~] = pi.apply_discovery(iter, string.empty);
+
+            testCase.verifyClass(filled.trial{1}, 'char');
+            testCase.verifyEqual(sort(string(filled.trial)), ["001" "002"]);
+        end
+
+        function test_apply_discovery_condense_numeric_explicit_value_untouched(testCase)
+            % An explicit (non-empty) value is user intent -- condensation
+            % only ever touches values PathInput itself discovered from disk.
+            root = testCase.makePaddedNumericTree(testCase.tmp_dir);
+            pi = scifor.PathInput('{subject}/6MWT-{trial}.mat', 'root_folder', root);
+            iter = struct('subject', {{'001'}}, 'trial', {{}});
+            [filled, ~] = pi.apply_discovery(iter, "subject", true);
+
+            testCase.verifyEqual(filled.subject, {'001'});
+        end
+
+        function test_foreach_standalone_condenses_zero_padded_schema_column(testCase)
+            % End-to-end: scifor.for_each's own standalone discovery call
+            % site always opts in to condense_numeric, so a zero-padded
+            % 'trial' discovered from disk comes back as a numeric column.
+            root = testCase.makePaddedNumericTree(testCase.tmp_dir);
+            scifor.set_schema(["subject", "trial"]);
+            cleanup = onCleanup(@() scifor.set_schema(string.empty(1,0))); %#ok<NASGU>
+            pi = scifor.PathInput('{subject}/6MWT-{trial}.mat', 'root_folder', root);
+
+            fn = @(filepath) str2double(fileread(filepath));
+            result = scifor.for_each(fn, struct('filepath', pi), subject=[], trial=[]);
+
+            testCase.verifyEqual(height(result), 2);
+            testCase.verifyTrue(isnumeric(result.trial));
+            testCase.verifyEqual(sort(result.trial)', [1 2]);
+            testCase.verifyTrue(isnumeric(result.subject));
+            testCase.verifyEqual(sort(result.subject)', [1 2]);
         end
     end
 end

@@ -538,6 +538,7 @@ class PathInput:
         metadata_iterables: dict,
         user_explicit_keys: "set | None" = None,
         log=None,
+        condense_numeric: bool = False,
     ) -> "tuple[dict, list[dict] | None]":
         """Fill empty metadata iterables from filesystem discovery.
 
@@ -569,6 +570,14 @@ class PathInput:
                 suppress the discovered-combos shortcut in Case B.
             log: Optional ``log(msg)`` callback for parity with the layer-level
                 logging around this decision.
+            condense_numeric: When True, a discovered value that is purely
+                digits (e.g. a zero-padded filename token ``"001"``) is
+                collapsed to ``int`` (``1``) before it enters
+                ``metadata_iterables``/the returned combos. Off by default —
+                callers with stored identity to protect (scidb) must opt in
+                explicitly via ``schema_key_types`` instead; this flag is for
+                policy-free standalone use only. See
+                ``docs/claude/schema-key-types.md``.
 
         Returns:
             ``(metadata_iterables, discovered_combos | None)``.
@@ -585,6 +594,21 @@ class PathInput:
             f"PathInput discovery: template={self.path_template!r}, "
             f"root_folder={self.root_folder!r}, matching_files={len(combos)}"
         )
+        if condense_numeric and combos:
+            condensed_combos = []
+            for combo in combos:
+                new_combo = dict(combo)
+                for key, value in combo.items():
+                    if isinstance(value, str) and value.isdigit():
+                        condensed = int(value)
+                        if str(condensed) != value:
+                            _log(
+                                f"condensed discovered value: {key}={value!r} "
+                                f"-> {condensed!r}"
+                            )
+                        new_combo[key] = condensed
+                condensed_combos.append(new_combo)
+            combos = condensed_combos
         if not combos:
             return metadata_iterables, None
 

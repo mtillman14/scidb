@@ -1087,21 +1087,46 @@ class TestForEachDistribute:
 
         assert len(MockOutput.saved_data) == 0
 
-    def test_distribute_validation_no_schema_iterables(self):
-        """Should raise ValueError if no metadata_iterables are schema keys."""
+    def test_distribute_no_schema_iterables_defaults_to_top_of_schema(self):
+        """When no metadata_iterable matches a schema key (e.g. a fully
+        static PathInput with no {key} placeholders), distribute=True
+        falls back to distributing at the top of the schema instead of
+        raising."""
         db = self._make_mock_db(["subject", "trial", "cycle"])
 
         def process(x):
             return [1, 2]
 
-        with pytest.raises(ValueError, match="requires at least one metadata_iterable"):
+        for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            db=db,
+            distribute=True,
+        )
+
+        assert len(MockOutput.saved_data) == 2
+        for i, entry in enumerate(MockOutput.saved_data):
+            assert entry["metadata"]["subject"] == i + 1
+            assert "trial" not in entry["metadata"]
+            assert "cycle" not in entry["metadata"]
+
+    def test_distribute_no_schema_configured_still_raises(self):
+        """distribute=True with no schema at all (never configured) still
+        raises — the fallback only applies when a schema exists but
+        nothing in it is being iterated."""
+        db = self._make_mock_db([])
+
+        def process(x):
+            return [1, 2]
+
+        with pytest.raises(ValueError, match="requires a schema"):
             for_each(
                 process,
                 inputs={"x": MockVariableA},
                 outputs=[MockOutput],
                 db=db,
                 distribute=True,
-                some_non_schema_key=[1, 2],
             )
 
 
