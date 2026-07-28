@@ -497,6 +497,23 @@ classdef TestSciforForEach < matlab.unittest.TestCase
             tc.verifyEqual(height(result), 3);
             tc.verifyTrue(ismember('trial', result.Properties.VariableNames));
         end
+
+        function test_distribute_with_no_iterated_key_defaults_to_top_of_schema(tc)
+        %   distribute=true with no metadata iterable matching a schema key
+        %   distributes to the top of the schema instead of erroring — e.g.
+        %   a fully static PathInput with no {key} placeholders leaves
+        %   nothing to iterate, but the schema itself still tells us where
+        %   to expand.
+            scifor.set_schema(["pass", "cycle"]);
+
+            result = scifor.for_each( ...
+                @() [1.0; 2.0], ...
+                struct(), ...
+                distribute=true);
+            tc.verifyEqual(height(result), 2);
+            tc.verifyTrue(ismember('pass', result.Properties.VariableNames));
+            tc.verifyFalse(ismember('cycle', result.Properties.VariableNames));
+        end
     end
 
     % =====================================================================

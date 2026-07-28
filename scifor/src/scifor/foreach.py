@@ -111,7 +111,10 @@ def for_each(
                   True = all; list of names = selected; False/None = none.
         distribute: If True, split outputs by element/row and expand them
                     into the result table at the schema level below the
-                    deepest iterated key.
+                    deepest iterated key. If no metadata_iterable is a
+                    schema key (e.g. a fully static PathInput with no
+                    {key} placeholders), distributes to the top of the
+                    schema instead.
         where: Optional scifor.ColFilter/CompoundFilter to filter DataFrame
                rows after combo filtering.
         output_names: Names for result columns. list[str] names them;
@@ -337,28 +340,40 @@ def for_each(
             for k in full_schema_keys
             if "__rid_" not in str(k) and "__vsig_" not in str(k)
         ]
+        if not real_schema_keys:
+            raise ValueError(
+                "distribute=True requires a schema. Call set_schema() or "
+                "configure_database() first."
+            )
         iter_keys_in_schema = [k for k in real_schema_keys if k in metadata_iterables]
         if not iter_keys_in_schema:
-            raise ValueError(
-                "distribute=True requires at least one metadata_iterable "
-                "that is a schema key. Call set_schema() or configure_database() first."
+            # Nothing is being iterated at a schema level (e.g. a fully
+            # static PathInput with no {key} placeholders, or no
+            # metadata_iterables at all) — distribute to the top of the
+            # schema rather than erroring.
+            distribute_key = real_schema_keys[0]
+            Log.debug(
+                "resolve_distribute_target: '%s' (top of schema; nothing iterated)",
+                distribute_key,
+                layer="scifor",
             )
-        deepest_iterated = iter_keys_in_schema[-1]
-        deepest_idx = real_schema_keys.index(deepest_iterated)
+        else:
+            deepest_iterated = iter_keys_in_schema[-1]
+            deepest_idx = real_schema_keys.index(deepest_iterated)
 
-        if deepest_idx + 1 >= len(real_schema_keys):
-            raise ValueError(
-                f"distribute=True but '{deepest_iterated}' is the deepest schema key. "
-                f"There is no lower level to distribute to. "
-                f"Schema order: {real_schema_keys}"
+            if deepest_idx + 1 >= len(real_schema_keys):
+                raise ValueError(
+                    f"distribute=True but '{deepest_iterated}' is the deepest schema key. "
+                    f"There is no lower level to distribute to. "
+                    f"Schema order: {real_schema_keys}"
+                )
+            distribute_key = real_schema_keys[deepest_idx + 1]
+            Log.debug(
+                "resolve_distribute_target: '%s' (one level below '%s')",
+                distribute_key,
+                deepest_iterated,
+                layer="scifor",
             )
-        distribute_key = real_schema_keys[deepest_idx + 1]
-        Log.debug(
-            "resolve_distribute_target: '%s' (one level below '%s')",
-            distribute_key,
-            deepest_iterated,
-            layer="scifor",
-        )
 
     # Capture input schema-key column dtypes for output round-trip: output
     # metadata columns must come back as EXACTLY the input column's dtype

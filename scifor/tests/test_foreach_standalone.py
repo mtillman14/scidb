@@ -262,6 +262,26 @@ def test_distribute_requires_schema():
         )
 
 
+def test_distribute_with_no_iterated_key_defaults_to_top_of_schema():
+    """distribute=True with no metadata_iterable matching a schema key
+    distributes to the top of the schema instead of raising — e.g. a
+    fully static PathInput with no {key} placeholders leaves nothing to
+    iterate, but the schema itself still tells us where to expand."""
+    set_schema(["pass", "cycle"])
+
+    def fn():
+        return np.array([1.0, 2.0])
+
+    result = for_each(
+        fn,
+        inputs={},
+        distribute=True,
+    )
+    assert len(result) == 2
+    assert sorted(result["pass"]) == [1, 2]
+    assert "cycle" not in result.columns
+
+
 def test_distribute_splits_into_result_table():
     """distribute=True splits output and expands result table rows."""
     set_schema(["subject", "trial"])

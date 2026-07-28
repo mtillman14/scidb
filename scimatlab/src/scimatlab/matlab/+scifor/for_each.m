@@ -36,7 +36,11 @@ function varargout = for_each(fn, inputs, varargin)
 %                       input names. (default: false)
 %       distribute    - If true, split each output by element/row and
 %                       expand them into the result table at the schema
-%                       level below the deepest iterated key. (default: false)
+%                       level below the deepest iterated key. If no
+%                       metadata iterable is a schema key (e.g. a fully
+%                       static PathInput with no {key} placeholders),
+%                       distributes to the top of the schema instead.
+%                       (default: false)
 %       where         - Optional scifor.ColFilter to apply to table rows
 %                       after combo filtering. (default: [])
 %       categorical   - If true, convert metadata columns in result
@@ -259,18 +263,22 @@ function varargout = for_each(fn, inputs, varargin)
 
         iter_keys_in_schema = real_schema_keys(ismember(real_schema_keys, meta_keys));
         if isempty(iter_keys_in_schema)
-            error('scifor:for_each', ...
-                'distribute=true requires at least one metadata_iterable that is a schema key.');
-        end
-        deepest_iterated = iter_keys_in_schema(end);
-        deepest_idx = find(real_schema_keys == deepest_iterated, 1);
+            % Nothing is being iterated at a schema level (e.g. a fully
+            % static PathInput with no {key} placeholders, or no
+            % metadata_iterables at all) — distribute to the top of the
+            % schema rather than erroring.
+            distribute_key = real_schema_keys(1);
+        else
+            deepest_iterated = iter_keys_in_schema(end);
+            deepest_idx = find(real_schema_keys == deepest_iterated, 1);
 
-        if deepest_idx >= numel(real_schema_keys)
-            error('scifor:for_each', ...
-                'distribute=true but ''%s'' is the deepest schema key. There is no lower level to distribute to. Schema order: %s', ...
-                deepest_iterated, strjoin(real_schema_keys, ', '));
+            if deepest_idx >= numel(real_schema_keys)
+                error('scifor:for_each', ...
+                    'distribute=true but ''%s'' is the deepest schema key. There is no lower level to distribute to. Schema order: %s', ...
+                    deepest_iterated, strjoin(real_schema_keys, ', '));
+            end
+            distribute_key = real_schema_keys(deepest_idx + 1);
         end
-        distribute_key = real_schema_keys(deepest_idx + 1);
     end
 
     % --- Capture input schema-key column types for output round-trip ---
