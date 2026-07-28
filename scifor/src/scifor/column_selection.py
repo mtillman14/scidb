@@ -87,6 +87,23 @@ class ColumnSelection:
             (id(self.data), tuple(self.columns), self.iterate, tuple(self.excl_columns))
         )
 
+    def to_key(self) -> str:
+        """Return a canonical string for use as a version key.
+
+        Includes ``iterate`` and the resolved column list so that changing the
+        iterated column set (including the empty ``[]`` -> all-columns
+        resolution done before this is called) invalidates cached results.
+        ``excl_columns`` is only appended when non-empty, so existing keys
+        without it are unaffected.
+        """
+        name = getattr(self.data, "__name__", repr(self.data))
+        if self.excl_columns:
+            return (
+                f"{name}[{self.columns!r}, iterate={self.iterate}, "
+                f"excl={self.excl_columns!r}]"
+            )
+        return f"{name}[{self.columns!r}, iterate={self.iterate}]"
+
 
 def _display_name(obj: Any) -> str:
     """Get a display name for an object."""

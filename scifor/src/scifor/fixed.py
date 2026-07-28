@@ -34,3 +34,20 @@ class Fixed:
         """
         self.data = data
         self.fixed_metadata = fixed_metadata
+
+    def to_key(self) -> str:
+        """Return a canonical string for use as a version key."""
+        from .column_selection import ColumnSelection
+
+        if isinstance(self.data, ColumnSelection):
+            inner_key = self.data.to_key()
+        elif isinstance(self.data, type):
+            inner_key = self.data.__name__
+        else:
+            inner_key = repr(self.data)
+        sorted_kv = ", ".join(
+            f"{k}={v!r}" for k, v in sorted(self.fixed_metadata.items())
+        )
+        if sorted_kv:
+            return f"Fixed({inner_key}, {sorted_kv})"
+        return f"Fixed({inner_key})"

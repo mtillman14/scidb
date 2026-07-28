@@ -145,11 +145,11 @@ def reset_mocks():
 class TestMergeClass:
     def test_init_with_two_var_types(self):
         m = Merge(GaitData, ForceData)
-        assert len(m.var_specs) == 2
+        assert len(m.tables) == 2
 
     def test_init_with_three_var_types(self):
         m = Merge(StepLength, StepWidth, CadenceRate)
-        assert len(m.var_specs) == 3
+        assert len(m.tables) == 3
 
     def test_init_with_one_raises(self):
         with pytest.raises(ValueError, match="at least 2"):

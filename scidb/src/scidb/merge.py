@@ -1,94 +1,39 @@
-"""Merge input wrapper for for_each: combines multiple variables (DB-backed)."""
+"""scidb's DB-aware extension of scifor.Merge.
+
+The container (.tables, .to_key(), .__name__) lives entirely in
+scifor.Merge now -- this subclass restores only the one DB-only method with
+no scifor equivalent: .to_csv(), which loads each constituent variable type
+from the database and inner-joins on shared schema keys (schema-id-keyed
+export), as opposed to scifor's Merge.to_csv() (inherited by this class
+unless overridden), which does a generic in-memory pd.merge join of
+DataFrames and has no notion of loading from a database at all.
+
+Mirrors the same "unify the container, subclass for DB-only surface"
+pattern as column_selection.py.
+"""
 
 from typing import Any
 
+from scifor import Merge as _SciforMerge
 
-class Merge:
-    """
-    Combines 2+ variable inputs into a single pandas DataFrame for use
-    in for_each() inputs.
 
-    Each constituent is loaded individually and merged column-wise.
-    Works with variable types (classes with .load()) for DB-backed for_each.
-    For standalone DataFrame usage, see scifor.Merge.
+class Merge(_SciforMerge):
+    """``scifor.Merge`` plus a DB-aware ``.to_csv()``. See module docstring."""
 
-    Constituents can be:
-    - Variable types (classes with .load())
-    - Fixed wrappers (loaded with overridden metadata)
-    - ColumnSelection wrappers (MyVar["col"] or MyVar[["a", "b"]])
-    - Combinations: Fixed(MyVar["col"], session="BL")
-
-    Example:
-        for_each(
-            analyze,
-            inputs={
-                "combined": Merge(GaitData, ForceData),
-            },
-            outputs=[Result],
-            subject=[1, 2, 3],
-        )
-    """
-
-    def __init__(self, *var_specs: Any):
-        if len(var_specs) < 2:
-            raise ValueError(
-                f"Merge requires at least 2 variable inputs, got {len(var_specs)}."
-            )
-        for spec in var_specs:
-            if isinstance(spec, Merge):
-                raise TypeError("Cannot nest Merge inside another Merge.")
-        self.var_specs = var_specs
-
-    def to_csv(self, filename: str, *args, **kwargs) -> None:
+    def to_csv(self, filename: str, *args: Any, **kwargs: Any) -> None:
         """Export the merged variables to a CSV file in flat table format.
 
-        Each constituent is loaded independently and inner-joined on its shared
-        schema keys, producing one row per schema_id with one value column per
-        constituent (scalar variables) or per table column. Every constituent
-        must reduce to one row per schema_id. ``filename`` must end with
-        ``.csv``. ``kwargs`` mirror ``load()`` (``where=``, ``version=``,
-        ``db=``, metadata).
+        Each constituent is loaded independently and inner-joined on its
+        shared schema keys, producing one row per schema_id with one value
+        column per constituent (scalar variables) or per table column. Every
+        constituent must reduce to one row per schema_id. ``filename`` must
+        end with ``.csv``. ``kwargs`` mirror ``load()`` (``where=``,
+        ``version=``, ``db=``, metadata).
 
         Example:
             # subject,trial,StepLength,Speed
             Merge(StepLength, Speed).to_csv("gait.csv", subject=[1, 2])
         """
-        from .csv_export import export_csv
+        from scidb.csv_export import export_csv
 
         export_csv(self, filename, *args, **kwargs)
-
-    def to_key(self) -> str:
-        """Return a canonical string for use as a version key."""
-        parts = []
-        for spec in self.var_specs:
-            if hasattr(spec, "to_key"):
-                parts.append(spec.to_key())
-            elif isinstance(spec, type):
-                parts.append(spec.__name__)
-            else:
-                parts.append(repr(spec))
-        return f"Merge({', '.join(parts)})"
-
-    @property
-    def __name__(self) -> str:
-        """Display name for format_inputs and error messages."""
-        from .column_selection import ColumnSelection
-        from .fixed import Fixed
-
-        parts = []
-        for spec in self.var_specs:
-            if isinstance(spec, Fixed):
-                inner = spec.var_type
-                if isinstance(inner, ColumnSelection):
-                    inner_name = inner.__name__
-                else:
-                    inner_name = getattr(inner, "__name__", type(inner).__name__)
-                fixed_str = ", ".join(
-                    f"{k}={v}" for k, v in spec.fixed_metadata.items()
-                )
-                parts.append(f"Fixed({inner_name}, {fixed_str})")
-            elif isinstance(spec, ColumnSelection):
-                parts.append(spec.__name__)
-            else:
-                parts.append(getattr(spec, "__name__", type(spec).__name__))
-        return f"Merge({', '.join(parts)})"

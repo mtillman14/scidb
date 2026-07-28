@@ -76,6 +76,37 @@ classdef TestSciforForEachSchemaKeys < matlab.unittest.TestCase
                 'scifor:for_each');
         end
 
+        function test_schema_keys_dropped_for_static_pathinput(tc)
+        %   A fully static PathInput (no {key} placeholders anywhere in its
+        %   template) can never supply values for any key, so it can't be
+        %   the source of a genuine "user forgot something" mistake. A
+        %   schema key with no other source is silently dropped instead of
+        %   erroring -- the caller gets a single run against the literal
+        %   path, as if that key had never been requested.
+            pi = scifor.PathInput("/data/GAITRite/6MWT_GR.xlsx");
+
+            result = scifor.for_each(@(fp) fp, ...
+                struct('filePath', pi), ...
+                schema_keys=["subject", "pass"]);
+
+            tc.verifyEqual(height(result), 1);
+            tc.verifyEqual(result.output(1), "/data/GAITRite/6MWT_GR.xlsx");
+        end
+
+        function test_schema_keys_still_errors_for_templated_pathinput(tc)
+        %   Contrast case for test_schema_keys_dropped_for_static_pathinput:
+        %   a PathInput that DOES have placeholders is a real candidate
+        %   source, so a requested key it can't supply (and no table
+        %   supplies either) must still error -- dropping is only safe when
+        %   the PathInput is fully static.
+            pi = scifor.PathInput("/data/{subject}/6MWT_GR.xlsx");
+
+            tc.verifyError(@() scifor.for_each(@(fp) fp, ...
+                struct('filePath', pi), ...
+                schema_keys=["subject", "pass"]), ...
+                'scifor:for_each');
+        end
+
     end
 
 end

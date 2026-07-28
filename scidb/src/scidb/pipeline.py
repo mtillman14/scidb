@@ -92,23 +92,23 @@ def _loadable_classes(spec: Any) -> set[type]:
     ``PathInput``, constants, and literal DataFrames contribute no producer
     edge (nothing in the pipeline produces them).
     """
+    from scifor import ColumnSelection, EachOf, Fixed, Merge
+
     from .across_variants import AcrossVariants
-    from .column_selection import ColumnSelection
-    from .each_of import EachOf
-    from .fixed import Fixed
-    from .merge import Merge
     from .variant import Variant
 
     out: set[type] = set()
     if isinstance(spec, type):
         out.add(spec)
-    elif isinstance(spec, (Fixed, Variant, AcrossVariants, ColumnSelection)):
+    elif isinstance(spec, (Variant, AcrossVariants)):
         out |= _loadable_classes(spec.var_type)
+    elif isinstance(spec, (Fixed, ColumnSelection)):
+        out |= _loadable_classes(spec.data)
     elif isinstance(spec, EachOf):
         for alt in spec.alternatives:
             out |= _loadable_classes(alt)
     elif isinstance(spec, Merge):
-        for sub in spec.var_specs:
+        for sub in spec.tables:
             out |= _loadable_classes(sub)
     return out
 
@@ -266,9 +266,7 @@ def _rewrite_input(val: Any, key_map: dict):
     are rebuilt, never modified in place)."""
     from scifor.pathinput import PathInput
 
-    from scifor import PathOutput
-
-    from .fixed import Fixed
+    from scifor import Fixed, PathOutput
 
     if isinstance(val, PathOutput):
         return PathOutput(_rewrite_template(val.template, key_map))
@@ -281,7 +279,7 @@ def _rewrite_input(val: Any, key_map: dict):
         )
     if isinstance(val, Fixed):
         return Fixed(
-            _rewrite_input(val.var_type, key_map),
+            _rewrite_input(val.data, key_map),
             **_rename_keys(val.fixed_metadata, key_map),
         )
     return val
@@ -292,9 +290,8 @@ def _constant_input_names(spec: StepSpec) -> set[str]:
     same classification as ForEachConfig._get_direct_constants."""
     from scifor.pathinput import PathInput
 
-    from scifor import PathOutput
+    from scifor import ColName, PathOutput
 
-    from .colname import ColName
     from .foreach import _is_loadable
 
     return {

@@ -5,13 +5,13 @@ class EachOf:
     """Wrapper expressing multiple alternatives for a for_each() parameter.
 
     Can wrap:
-    - Variable types in inputs: ``EachOf(StepLength, StepTime)``
+    - Data inputs (DataFrames, Fixed, Merge, ColumnSelection, PathInput): ``EachOf(df_a, df_b)``
     - Constants in inputs: ``EachOf(0.05, 0.01)``
-    - where= filters: ``EachOf(Side == "L", Side == "R", None)``
+    - where= filters: ``EachOf(Col("side") == "L", Col("side") == "R", None)``
 
-    Each alternative becomes a separate variant. The total number of variants
-    is the cartesian product of all ``EachOf`` axes in a single ``for_each()``
-    call.
+    Each alternative expands into a separate, independent for_each() call. The
+    total number of calls is the cartesian product of all ``EachOf`` axes in a
+    single for_each() call; results are concatenated.
 
     With a single value, behaves identically to passing that value directly.
     """

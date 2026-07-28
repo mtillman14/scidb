@@ -18,8 +18,10 @@ input file," `PathOutput` = "name the output file."**
 
 ## ColName — a column name
 
-Defined in `scifor/src/scifor/colname.py` (and a thin scidb mirror in
-`scidb/src/scidb/colname.py` that converts to the scifor marker). Two forms:
+Defined in `scifor/src/scifor/colname.py`. scidb re-exports it directly
+(`from scifor import ColName`) — there is no scidb-side `ColName` class
+anymore (removed during the scifor/scidb modifier-class unification, see
+`docs/claude/scifor-scidb-modifier-unification.md`). Two forms:
 
 - `ColName(df)` / `ColName(MyVar)` — **static**. Resolved once, up front, to the
   single non-schema data column name of the DataFrame/variable. Raises if there
@@ -38,15 +40,39 @@ It is a *resolution marker*, not a real constant — see "Version keys" below.
 
 Defined in `scifor/src/scifor/pathinput.py`. Substitutes `{key}` from combo
 metadata into a template and resolves it to a real path the function then
-**reads**. In scidb it is heavyweight:
+**reads**.
 
-- it drives **Step 3 filesystem discovery** (`scidb/foreach.py:602`,
-  `_find_pathinput`, `discover()`) — walking the filesystem to enumerate which
-  combos exist as files, even to decide how many combos to run;
-- it is **loadable** (`_is_loadable`) — wrapped in a `PerComboLoader` whose
-  `.load(**combo)` resolves the path per combo;
+**As of the scifor/scidb modifier-class unification** (see
+`docs/claude/scifor-scidb-modifier-unification.md`), the discovery/resolution
+*orchestration* around `PathInput` lives in **scifor**, not scidb:
+
+- `scifor.foreach.resolve_pathinput_discovery(pi, metadata_iterables,
+  user_explicit_keys, log=...)` runs filesystem discovery (via
+  `pi.apply_discovery()`), fills empty schema keys from disk, and drops any
+  key a fully static (no `{key}` placeholders) `PathInput` can never supply
+  instead of leaving it as an empty iterable. Called from scifor's own
+  standalone `for_each()` (Step 2.5) **and** from scidb's `_for_each_prepare`
+  (its old Step 3 is now a thin call into this function) — one shared
+  implementation for both layers.
+- Per-combo resolution: bare `PathInput` is classified as a **constant**
+  (`_is_data_input` is False, same bucket as `PathOutput`) and resolved via
+  `scifor.foreach._resolve_path_inputs`, called right before `_call_fn` and
+  inside `_run_column_iteration` — mirroring `_resolve_path_outputs`'s shape
+  exactly. Default resolution is `pathinput.load(**metadata)`; scidb injects
+  a `_path_input_resolver` override (`_load_pathinput_checked`, schema-key-type
+  spelling enforcement) into `scifor.for_each(..., _path_input_resolver=...)`.
+- Consequently, `PathInput` is **excluded** from scidb's `_is_loadable` (it
+  has a real `.load()` so the old `hasattr(v, "load")` fallback would still
+  catch it without an explicit early-out) — a bare `PathInput` is never
+  wrapped in `PerComboLoader` anymore. `foreach_config.py`'s
+  `_get_direct_constants`/`_serialize_inputs` were updated in lockstep so
+  `PathInput.to_key()` still lands in `__inputs` (version-key identity)
+  instead of leaking into `__constants` as a raw object.
+- The one surviving scidb-side `PerComboLoader` path for `PathInput` is
+  `Fixed(PathInput(...))` — scifor's `Fixed` only wraps DataFrames, so a
+  loadable spec nested inside `Fixed` still needs scidb's loader.
 - `regex=True` matches the last segment against existing files and raises
-  `FileNotFoundError` on zero matches;
+  `FileNotFoundError` on zero matches (unchanged, in `PathInput.load()` itself).
 - zero-padded numeric filenames (`6MWT-001.mat` from `trial=1`) are handled
   natively by a numeric-equivalence fallback in `load()` — see
   `docs/claude/pathinput-zero-padded-matching.md`.
@@ -121,13 +147,15 @@ the schema-key metadata it substitutes.
 | File | Role |
 |------|------|
 | `scifor/src/scifor/colname.py` | `ColName` (two forms) |
-| `scifor/src/scifor/pathinput.py` | `PathInput` (input discovery/loading) |
+| `scifor/src/scifor/pathinput.py` | `PathInput` (template parsing, `discover()`, `load()`, `apply_discovery()`) |
 | `scifor/src/scifor/pathoutput.py` | `PathOutput` (output template + `resolve`) |
-| `scifor/src/scifor/foreach.py` | `_resolve_path_outputs`, per-column resolution in `_run_column_iteration`, the `{ColName}`-needs-iterate guard |
-| `scidb/src/scidb/colname.py` | scidb `ColName` → scifor marker |
-| `scidb/src/scidb/foreach_config.py` | `_get_direct_constants` excludes `ColName` + `PathOutput` from version keys |
+| `scifor/src/scifor/foreach.py` | `resolve_pathinput_discovery`, `_resolve_path_inputs`, `_resolve_path_outputs`, per-column resolution in `_run_column_iteration`, the `{ColName}`-needs-iterate guard |
+| `scidb/src/scidb/foreach.py` | `_for_each_prepare`'s Step 3 (thin call into `resolve_pathinput_discovery`), the `_path_input_resolver` closure around `_load_pathinput_checked`, `_has_pathinput`/`_find_pathinput` |
+| `scidb/src/scidb/foreach_config.py` | `_get_direct_constants` excludes `ColName` + `PathOutput` + `PathInput` from version keys; `_serialize_inputs` includes `PathInput` despite it no longer being `_is_loadable` |
 | `scifor/tests/test_foreach_standalone.py` | `PathOutput` + deferred-`ColName` tests |
+| `scifor/tests/test_foreach_pathinput.py` | Standalone `PathInput` discovery/resolution tests (new) |
 | `scidb/tests/test_for_columns.py` | `TestForColumnsPathOutput`, deferred-`ColName` tests |
+| `scidb/tests/test_pathinput_static_schema_keys.py` | Static-`PathInput` drop-unresolved-key leniency |
 
 ## MATLAB note
 
@@ -144,3 +172,6 @@ MATLAB pipelines need per-column output filenames.
 - `docs/claude/scifor-for-each-internals.md` — the standalone loop.
 - `docs/claude/scidb-for-each-internals.md` — input conversion + the delegation
   to `scifor.for_each`.
+- `docs/claude/scifor-scidb-modifier-unification.md` — the full unification
+  (`Fixed`/`Merge`/`ColumnSelection`/`ColName`/`EachOf`/`PathInput`
+  orchestration) this note's PathInput section was updated for.

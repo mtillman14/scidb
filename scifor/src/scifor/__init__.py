@@ -24,6 +24,7 @@ Example:
 
 from .colname import ColName
 from .column_selection import ColumnSelection
+from .each_of import EachOf
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
 from .fixed import Fixed
 from .foreach import ColumnFunctionError, ForColumnsError, for_each
@@ -48,6 +49,7 @@ __all__ = [
     "Merge",
     "ColumnSelection",
     "ColName",
+    "EachOf",
     "PathInput",
     "PathOutput",
     # Filters

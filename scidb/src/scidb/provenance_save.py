@@ -146,8 +146,7 @@ def compute_input_selectors(inputs: dict) -> dict:
     decision). Fixed/Variant/Merge resolve to whole records and need no selector;
     their effect is captured by *which* record_id the edge points at.
     """
-    from .column_selection import ColumnSelection
-    from .fixed import Fixed
+    from scifor import ColumnSelection, Fixed
 
     out: dict = {}
     for param, spec in inputs.items():
@@ -155,9 +154,9 @@ def compute_input_selectors(inputs: dict) -> dict:
         if isinstance(spec, ColumnSelection):
             cs = spec
         elif isinstance(spec, Fixed) and isinstance(
-            getattr(spec, "var_type", None), ColumnSelection
+            getattr(spec, "data", None), ColumnSelection
         ):
-            cs = spec.var_type
+            cs = spec.data
         if cs is not None and getattr(cs, "columns", None):
             out[param] = json.dumps({"columns": list(cs.columns)}, sort_keys=True)
         else:

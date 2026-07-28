@@ -1,4 +1,7 @@
-"""Pure for_each loop — works with DataFrames only, no I/O.
+"""Pure for_each loop — works with DataFrames, no DuckDB/database knowledge.
+
+Filesystem access via PathInput/PathOutput is fine and by design; the
+boundary this module holds is "no DuckDB knowledge," not "no I/O."
 
 Logging: emits through the scistacklog facade with ``layer="scifor"``.
 INFO carries the run narrative (banner, periodic progress, end-of-run
@@ -19,8 +22,10 @@ if TYPE_CHECKING:
 
 from .colname import ColName
 from .column_selection import ColumnSelection
+from .each_of import EachOf
 from .fixed import Fixed
 from .merge import Merge
+from .pathinput import PathInput
 from .pathoutput import PathOutput
 from .schema import expand_schema_keys, get_schema
 
@@ -86,14 +91,16 @@ def for_each(
     _log_fn: "Callable[[str], None] | None" = None,
     _progress_fn: "Callable[[dict], None] | None" = None,
     _cancel_check: "Callable[[], bool] | None" = None,
+    _path_input_resolver: "Callable[['PathInput', dict], Any] | None" = None,
     **metadata_iterables: list[Any],
 ) -> "pd.DataFrame | None":
     """
     Execute a function for all combinations of metadata, filtering
     DataFrame inputs per iteration.
 
-    This is a pure loop orchestrator — no I/O, no .load(), no .save().
-    All inputs must be DataFrames or constants.
+    This is a pure loop orchestrator — no DuckDB/database knowledge.
+    Filesystem access via PathInput/PathOutput inputs is fine and expected.
+    All other inputs must be DataFrames or constants.
 
     Args:
         fn: The function to execute.
@@ -129,11 +136,65 @@ def for_each(
         _log_fn: Deprecated — ignored. scifor now logs through the
                  scistacklog facade (layer="scifor") directly; kept only so
                  existing call sites don't break.
+        _path_input_resolver: Optional ``(pathinput, metadata) -> path``
+                 override for per-combo PathInput resolution. Used by DB
+                 wrappers that need schema-key-type-aware resolution;
+                 defaults to plain ``pathinput.load(**metadata)``.
         **metadata_iterables: Iterables of metadata values to combine.
 
     Returns:
         A pandas DataFrame of results, or None when dry_run=True.
     """
+    # Step -1: EachOf expansion — must be first, before any other logic.
+    # Each alternative becomes an independent recursive for_each() call;
+    # results are concatenated. Mirrors scidb.for_each's own EachOf
+    # expansion (which additionally threads save/db/lineage per
+    # alternative — concepts this pure layer doesn't have), so a
+    # standalone/no-DB pipeline can use EachOf too.
+    each_of_axes = []
+    for param, val in inputs.items():
+        if isinstance(val, EachOf):
+            each_of_axes.append(("input", param, val.alternatives))
+    if isinstance(where, EachOf):
+        each_of_axes.append(("where", None, where.alternatives))
+
+    if each_of_axes:
+        from itertools import product as _eachof_product
+
+        import pandas as pd
+
+        results = []
+        for combo in _eachof_product(*(axis[2] for axis in each_of_axes)):
+            concrete_inputs = dict(inputs)
+            concrete_where = where
+            for (kind, param, _alts), value in zip(each_of_axes, combo, strict=False):
+                if kind == "input":
+                    concrete_inputs[param] = value
+                elif kind == "where":
+                    concrete_where = value
+            result = for_each(
+                fn,
+                concrete_inputs,
+                dry_run=dry_run,
+                as_table=as_table,
+                distribute=distribute,
+                where=concrete_where,
+                output_names=output_names,
+                share_limits=share_limits,
+                schema_keys=schema_keys,
+                _progress_fn=_progress_fn,
+                _cancel_check=_cancel_check,
+                _path_input_resolver=_path_input_resolver,
+                **metadata_iterables,
+            )
+            if result is not None:
+                results.append(result)
+            # Cooperative cancel: stop iterating across EachOf alternatives
+            # as soon as the user cancels — don't start the next concrete run.
+            if _cancel_check is not None and _cancel_check():
+                break
+        return pd.concat(results, ignore_index=True) if results else None
+
     full_schema_keys = get_schema()
 
     # Step 0: Forgive a bare ColName class passed without parentheses.
@@ -179,8 +240,17 @@ def for_each(
             layer="scifor",
         )
 
-    # Step 2: Resolve empty lists [] in standalone mode (scan DataFrame inputs)
+    # Step 2: Resolve empty lists [] in standalone mode. Pass 1 scans
+    # DataFrame inputs (non-raising); Pass 2 (Step 2.5) fills whatever's
+    # still empty from PathInput filesystem discovery. Keys the user passed
+    # with explicit (non-empty) values assert intent and are never
+    # overwritten.
     if _all_combos is None:
+        user_explicit_keys = {
+            k
+            for k, v in metadata_iterables.items()
+            if not (isinstance(v, list) and len(v) == 0)
+        }
         needs_resolve = [
             k
             for k, v in metadata_iterables.items()
@@ -194,13 +264,7 @@ def for_each(
             )
             for key in needs_resolve:
                 values = _distinct_values_from_inputs(inputs, key)
-                if not values:
-                    Log.warn(
-                        f"no values found for '{key}' in input DataFrames, "
-                        f"0 iterations",
-                        layer="scifor",
-                    )
-                else:
+                if values:
                     Log.debug(
                         "resolved '%s' to %d values: %s",
                         key,
@@ -209,6 +273,56 @@ def for_each(
                         layer="scifor",
                     )
                 metadata_iterables[key] = values
+
+        # Step 2.5: PathInput filesystem discovery for keys DataFrames
+        # didn't resolve. The Case A/B decision (and whether discovered
+        # combos drive iteration directly) is owned by
+        # PathInput.apply_discovery so scifor and scidb share one
+        # implementation.
+        pi = _find_pathinput(inputs)
+        if pi is not None and (
+            not metadata_iterables
+            or any(
+                isinstance(v, list) and len(v) == 0
+                for v in metadata_iterables.values()
+            )
+        ):
+            metadata_iterables, discovered_combos = resolve_pathinput_discovery(
+                pi,
+                metadata_iterables,
+                user_explicit_keys,
+                log=lambda msg: Log.debug(msg, layer="scifor"),
+            )
+            if discovered_combos is not None:
+                _all_combos = discovered_combos
+                Log.debug(
+                    "pathinput_discovery: using %d disk combos",
+                    len(discovered_combos),
+                    layer="scifor",
+                )
+
+        # Any key still unresolved: warn (0 iterations) when a source
+        # exists but yields no values; error when no input provides the
+        # key at all. (A key a fully static PathInput can never supply was
+        # already dropped above by resolve_pathinput_discovery, so it
+        # won't reach this loop.)
+        for key in list(metadata_iterables.keys()):
+            v = metadata_iterables[key]
+            if isinstance(v, list) and len(v) == 0:
+                if _key_has_source(inputs, key, pi):
+                    Log.warn(
+                        f"no values found for '{key}' in inputs, 0 iterations",
+                        layer="scifor",
+                    )
+                else:
+                    raise ValueError(
+                        f"Empty list [] was passed for '{key}', but no input "
+                        f"DataFrame has that column and no PathInput template "
+                        f"has a {{{key}}} placeholder. Provide values "
+                        f"explicitly, add a DataFrame input with a '{key}' "
+                        f"column, or use a PathInput with a {{{key}}} "
+                        f"placeholder."
+                    )
 
     # Step 3: Validate distribute parameter and resolve target key.
     # Internal discriminator keys (scidb's __rid_* record-id and __vsig_*
@@ -691,12 +805,16 @@ def for_each(
                         full_schema_keys,
                         as_table_set,
                         metadata,
+                        path_input_resolver=_path_input_resolver,
                     ),
                 )
             else:
-                # PathOutput constants resolve to a finished path from this
-                # combo's metadata (no column outside for_columns).
+                # PathOutput/PathInput constants resolve to a finished path
+                # from this combo's metadata (no column outside for_columns).
                 call_inputs = _resolve_path_outputs(filtered_inputs, metadata, None)
+                call_inputs = _resolve_path_inputs(
+                    call_inputs, metadata, resolver=_path_input_resolver
+                )
                 result = _call_fn(fn, call_inputs, n_outputs)
             fn_elapsed = time.perf_counter() - fn_t0
             Log.debug(
@@ -845,6 +963,23 @@ def _resolve_path_outputs(kwargs: dict, metadata: dict, column: "str | None") ->
     }
 
 
+def _resolve_path_inputs(kwargs: dict, metadata: dict, resolver=None) -> dict:
+    """Return a copy of kwargs with any PathInput resolved to a path.
+
+    Substitutes the combo metadata into the template. Non-PathInput entries
+    pass through untouched. ``resolver(pathinput, metadata) -> path``
+    overrides the default ``pathinput.load(**metadata)`` — used by DB
+    wrappers that need schema-key-type-aware resolution.
+    """
+    if not any(isinstance(v, PathInput) for v in kwargs.values()):
+        return kwargs
+    resolve_fn = resolver or (lambda pi, m: pi.load(**m))
+    return {
+        name: (resolve_fn(v, metadata) if isinstance(v, PathInput) else v)
+        for name, v in kwargs.items()
+    }
+
+
 class ForColumnsError(ValueError):
     """A structural error in for_columns reassembly (e.g. a colliding output
     column or a non-collapsible return). These are deterministic across combos
@@ -882,6 +1017,7 @@ def _run_column_iteration(
     schema_keys,
     as_table_set,
     metadata,
+    path_input_resolver=None,
 ):
     """Run fn once per column and reassemble into a single one-row DataFrame.
 
@@ -917,6 +1053,10 @@ def _run_column_iteration(
     path_output_params = [
         name for name, v in base_kwargs.items() if isinstance(v, PathOutput)
     ]
+    # PathInput constants have no per-column token (unlike PathOutput's
+    # {ColName}) -- the same path applies to every column in this combo, so
+    # resolve once up front rather than inside the loop.
+    base_kwargs = _resolve_path_inputs(base_kwargs, metadata, resolver=path_input_resolver)
     for col in iterate_columns:
         call_kwargs = dict(base_kwargs)
         for name in deferred_colname_params:
@@ -1552,22 +1692,97 @@ def _merge_parts(parts: list["pd.DataFrame"]) -> "pd.DataFrame":
 
 
 def _distinct_values_from_inputs(inputs: dict, key: str) -> list:
-    """Find distinct values for `key` by scanning DataFrame inputs."""
+    """Find distinct values for `key` by scanning DataFrame inputs.
+
+    Non-raising: a PathInput may still supply the key via filesystem
+    discovery (handled by the caller), which decides whether an
+    unresolved key warns, is dropped, or errors.
+    """
     all_values = set()
     for _param_name, var_spec in inputs.items():
         df = _get_raw_df(var_spec)
         if df is not None and key in df.columns:
             all_values.update(df[key].dropna().unique().tolist())
     if not all_values:
-        raise ValueError(
-            f"Empty list [] was passed for '{key}', but no input DataFrame has "
-            f"that column. Either provide values explicitly or ensure a DataFrame "
-            f"input contains a '{key}' column."
-        )
+        return []
     try:
         return sorted(all_values)
     except TypeError:
         return list(all_values)
+
+
+def _find_pathinput(inputs: dict) -> "PathInput | None":
+    """Return the first bare PathInput in inputs, or None.
+
+    Bare only — ``Fixed(PathInput(...))`` is a scidb-only pattern (scifor's
+    ``Fixed`` wraps DataFrames, not loadable specs).
+    """
+    for var_spec in inputs.values():
+        if isinstance(var_spec, PathInput):
+            return var_spec
+    return None
+
+
+def resolve_pathinput_discovery(
+    pi: "PathInput | None",
+    metadata_iterables: dict,
+    user_explicit_keys: "set | None" = None,
+    log=None,
+) -> "tuple[dict, list[dict] | None]":
+    """Fill empty metadata iterables from PathInput filesystem discovery,
+    then drop any key a fully static PathInput (no ``{key}`` placeholders)
+    can never supply, instead of leaving it as an empty list that would
+    zero out the Cartesian product.
+
+    Shared by scifor's own standalone empty-list resolution and scidb's
+    DB-backed ``for_each`` (which calls this after its own DB-based
+    resolution leaves some keys still empty), so both layers make the
+    same discovery/leniency decision.
+
+    Args:
+        pi: The PathInput to discover against, or None if no PathInput is
+            present (metadata_iterables is returned unchanged, combos=None).
+        metadata_iterables: Mutable mapping of key -> list of values.
+        user_explicit_keys: Keys the caller passed with explicit non-empty
+            values (not delegated to resolution).
+        log: Optional ``log(msg)`` callback.
+
+    Returns:
+        ``(metadata_iterables, discovered_combos | None)``.
+    """
+    if pi is None:
+        return metadata_iterables, None
+    metadata_iterables, discovered_combos = pi.apply_discovery(
+        metadata_iterables, user_explicit_keys, log=log
+    )
+    placeholder_keys = set(pi.placeholder_keys())
+    if any(isinstance(v, list) and len(v) == 0 for v in metadata_iterables.values()):
+        pi_is_static = not placeholder_keys
+        if pi_is_static:
+            for key in list(metadata_iterables.keys()):
+                v = metadata_iterables[key]
+                if isinstance(v, list) and len(v) == 0:
+                    if log is not None:
+                        log(
+                            f"'{key}' has no source and PathInput "
+                            f"{pi.path_template!r} has no template placeholders; "
+                            f"ignoring '{key}' (treating it as if it were never "
+                            f"requested)"
+                        )
+                    del metadata_iterables[key]
+
+    # Discovered combos only drive iteration directly when every iterated key
+    # is one of this PathInput's own template placeholders -- otherwise a
+    # Cartesian product with keys resolved from elsewhere (tables/DB) is
+    # still required, and using the bare discovered combos would silently
+    # drop that other dimension's iteration. (metadata_iterables has already
+    # been filled per-key above, so the Cartesian-product fallback still
+    # picks up the disk-discovered values either way.)
+    if discovered_combos is not None and not set(metadata_iterables.keys()) <= (
+        placeholder_keys
+    ):
+        discovered_combos = None
+    return metadata_iterables, discovered_combos
 
 
 def _get_raw_df(var_spec: Any) -> "pd.DataFrame | None":
@@ -1579,6 +1794,17 @@ def _get_raw_df(var_spec: Any) -> "pd.DataFrame | None":
     if isinstance(var_spec, ColumnSelection) and _is_dataframe(var_spec.data):
         return var_spec.data
     return None
+
+
+def _key_has_source(inputs: dict, key: str, pi: "PathInput | None") -> bool:
+    """True if any DataFrame column or PathInput placeholder provides key."""
+    for var_spec in inputs.values():
+        df = _get_raw_df(var_spec)
+        if df is not None and key in df.columns:
+            return True
+    if pi is not None and key in pi.placeholder_keys():
+        return True
+    return False
 
 
 def _capture_schema_column_dtypes(inputs: dict, keys: list) -> dict:

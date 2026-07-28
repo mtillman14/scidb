@@ -11,23 +11,20 @@ from dataclasses import dataclass
 from pathlib import Path as _Path
 from typing import TYPE_CHECKING, Any
 
+from scifor.foreach import resolve_pathinput_discovery as _scifor_resolve_pathinput_discovery
 from scifor.pathinput import PathInput
 
 if TYPE_CHECKING:
     import pandas as pd
 
 import scifor as _scifor
+from scifor import ColName, ColumnSelection, EachOf, Fixed, Merge
 from scifor import for_each as _scifor_for_each
 
 from .across_variants import AcrossVariants
-from .colname import ColName
-from .column_selection import ColumnSelection
-from .each_of import EachOf
 from .filters import Filter
-from .fixed import Fixed
 from .foreach_config import ForEachConfig
 from .log import Log
-from .merge import Merge
 from .pipeline import Pipeline as _Pipeline
 from .pipeline import Step, active_pipeline
 from .provenance_save import GraphRecord as _GraphRecord
@@ -86,7 +83,7 @@ class _DryRunMerge(_scifor.Merge):
 
         self._dry_name = scidb_merge.__name__
         # scifor loops over self.tables in _print_dry_run_iteration
-        self.tables = [pd.DataFrame() for _ in scidb_merge.var_specs]
+        self.tables = [pd.DataFrame() for _ in scidb_merge.tables]
 
     @property
     def __name__(self) -> str:  # type: ignore[override]
@@ -556,6 +553,29 @@ def for_each(
     # --- Step 16: Wrap fn to resolve PerComboLoader/PerComboLoaderMerge inputs
     #     per-combo, normalize variable inputs to raw data, and/or inject combo
     #     metadata (for generates_file functions). ---
+    # Declared schema-key types drive PathInput spelling enforcement in
+    # per-combo loads (string keys: exact only; undeclared keys that need a
+    # spelling bridge: SchemaKeyTypeError). Hoisted above the wrap-fn guard
+    # below because a bare PathInput input no longer needs any of scidb's
+    # own per-combo wrapping (its resolution now happens inside scifor's
+    # for_each loop via _path_input_resolver) — this must be available even
+    # when nothing else triggers that wrapping.
+    _kt_db = db
+    if _kt_db is None:
+        try:
+            from scidb.database import get_database
+
+            _kt_db = get_database()
+        except Exception:
+            _kt_db = None
+    _schema_key_types = getattr(_kt_db, "dataset_schema_key_types", {}) or {}
+    _schema_keys_for_types = list(getattr(_kt_db, "dataset_schema_keys", []) or [])
+
+    def _path_input_resolver(pi: "PathInput", metadata: dict):
+        return _load_pathinput_checked(
+            pi, metadata, key_types=_schema_key_types, schema_keys=_schema_keys_for_types
+        )
+
     _per_combo = {
         k: v
         for k, v in state.loaded_inputs.items()
@@ -575,20 +595,6 @@ def for_each(
         _call_idx = [0]
         _orig_fn = fn
         _loaded_inputs_ref = state.loaded_inputs
-
-        # Declared schema-key types drive PathInput spelling enforcement in
-        # per-combo loads (string keys: exact only; undeclared keys that
-        # need a spelling bridge: SchemaKeyTypeError).
-        _kt_db = db
-        if _kt_db is None:
-            try:
-                from scidb.database import get_database
-
-                _kt_db = get_database()
-            except Exception:
-                _kt_db = None
-        _schema_key_types = getattr(_kt_db, "dataset_schema_key_types", {}) or {}
-        _schema_keys_for_types = list(getattr(_kt_db, "dataset_schema_keys", []) or [])
 
         # Get function parameters to check which metadata keys it accepts.
         _fn_params = None
@@ -677,6 +683,7 @@ def for_each(
             _all_combos=state.full_combos,
             _progress_fn=_tracking_progress_fn,
             _cancel_check=_cancel_check,
+            _path_input_resolver=_path_input_resolver,
             **state.extended_metadata_iterables,
         )
 
@@ -1370,7 +1377,12 @@ def _for_each_prepare(
         Log.debug("no empty lists to resolve from database")
 
     # --- Step 3: PathInput discovery.  Discovery runs whenever a PathInput
-    # is present; its role depends on what the caller supplied:
+    # is present; delegated to scifor.foreach.resolve_pathinput_discovery so
+    # scidb and scifor make the same discovery/leniency decision — including
+    # dropping a key a fully static (no {key} placeholders) PathInput can
+    # never supply, instead of leaving it as an empty iterable that would
+    # zero out the Cartesian product. Its role otherwise depends on what the
+    # caller supplied:
     #
     #   * No metadata_iterables at all → adopt every discovered key/value.
     #   * All template keys passed as [] → fill from disk and use the
@@ -1387,13 +1399,11 @@ def _for_each_prepare(
         Log.debug("PathInput detected, running filesystem discovery")
         pi = _find_pathinput(inputs)
         if pi is not None:
-            # The discovery decision (Case A / Case B, and whether discovered
-            # combos drive iteration directly) is owned by PathInput so the
-            # scidb and scifor layers share one implementation.  "Explicit"
-            # keys are those the user passed with non-empty values — a value
-            # filled from DB (Step 2) or disk is an auto-fill, not intent.
-            metadata_iterables, _discovered_combos = pi.apply_discovery(
-                metadata_iterables, user_explicit_keys, log=Log.debug
+            # "Explicit" keys are those the user passed with non-empty
+            # values — a value filled from DB (Step 2) or disk is an
+            # auto-fill, not intent.
+            metadata_iterables, _discovered_combos = _scifor_resolve_pathinput_discovery(
+                pi, metadata_iterables, user_explicit_keys, log=Log.debug
             )
     else:
         Log.debug("no PathInput detected, skipping filesystem discovery")
@@ -2733,9 +2743,9 @@ def _normalize_variable_inputs(
         if isinstance(input_spec, type):
             # Simple variable type
             variable_class = input_spec
-        elif hasattr(input_spec, "var_type") and isinstance(input_spec.var_type, type):
+        elif isinstance(input_spec, Fixed) and isinstance(input_spec.data, type):
             # Fixed wrapper - extract the variable class
-            variable_class = input_spec.var_type
+            variable_class = input_spec.data
 
         if variable_class is None:
             # Not a simple variable type - pass through
@@ -2867,7 +2877,7 @@ def _input_type_name(var_spec: Any) -> str:
     if isinstance(var_spec, Merge):
         return var_spec.__name__
     if isinstance(var_spec, Fixed):
-        inner = var_spec.var_type
+        inner = var_spec.data
         inner_name = _input_type_name(inner)
         fixed_str = ", ".join(f"{k}={v}" for k, v in var_spec.fixed_metadata.items())
         return f"Fixed({inner_name}, {fixed_str})"
@@ -2880,7 +2890,7 @@ def _input_type_name(var_spec: Any) -> str:
     if isinstance(var_spec, AcrossVariants):
         return f"AcrossVariants({_input_type_name(var_spec.var_type)})"
     if isinstance(var_spec, ColumnSelection):
-        inner_name = _input_type_name(var_spec.var_type)
+        inner_name = _input_type_name(var_spec.data)
         return f"ColumnSelection({inner_name}, {var_spec.columns})"
     if isinstance(var_spec, type):
         return var_spec.__name__
@@ -2911,15 +2921,15 @@ def _convert_inputs_for_display(inputs: dict[str, Any]) -> dict[str, Any]:
                 dummy, var_spec.columns, iterate=var_spec.iterate
             )
         elif isinstance(var_spec, Fixed) and isinstance(
-            var_spec.var_type, ColumnSelection
+            var_spec.data, ColumnSelection
         ):
-            inner = var_spec.var_type
+            inner = var_spec.data
             dummy = pd.DataFrame(columns=inner.columns or [])
             dummy_cs = _scifor.ColumnSelection(
                 dummy, inner.columns, iterate=inner.iterate
             )
             result[param_name] = _scifor.Fixed(dummy_cs, **var_spec.fixed_metadata)
-        elif isinstance(var_spec, Fixed) and not isinstance(var_spec.var_type, Merge):
+        elif isinstance(var_spec, Fixed) and not isinstance(var_spec.data, Merge):
             dummy = pd.DataFrame()
             result[param_name] = _scifor.Fixed(dummy, **var_spec.fixed_metadata)
         else:
@@ -2936,7 +2946,7 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
     """
     import json
 
-    var_type = colname.var_type
+    var_type = colname.data
 
     # Get the database
     resolved_db = db
@@ -3103,7 +3113,7 @@ def _load_input(
                 f"[Merge] {var_spec.__name__}: variant filter={merge_var_filter!r}"
             )
 
-        for sub_spec in var_spec.var_specs:
+        for sub_spec in var_spec.tables:
             if where is not None:
                 cls = _get_loadable_class_from_spec(sub_spec)
                 matching_ids = where.resolve(
@@ -3168,14 +3178,14 @@ def _load_input(
 
     # Fixed: check for Fixed(Merge(...)) error, then load inner
     if isinstance(var_spec, Fixed):
-        if isinstance(var_spec.var_type, Merge):
+        if isinstance(var_spec.data, Merge):
             raise TypeError(
                 "Fixed cannot wrap a Merge. Use Fixed on individual "
                 "constituents inside the Merge instead: "
                 "Merge(Fixed(df1, ...), df2)"
             )
         inner_loaded = _load_input(
-            var_spec.var_type,
+            var_spec.data,
             db,
             where,
             branch_params_filter=branch_params_filter,
@@ -3202,11 +3212,16 @@ def _load_input(
             }
         return _scifor.Fixed(inner_loaded, **fixed_meta)
 
-    # ColumnSelection: load inner var_type if possible, else per-combo
+    # ColumnSelection: already a DataFrame -> pass through unchanged (a bare
+    # scifor.ColumnSelection(df, ...) is now constructible under scidb too,
+    # since ColumnSelection is the same class in both packages); load inner
+    # var_type if possible; else per-combo.
     if isinstance(var_spec, ColumnSelection):
-        if hasattr(var_spec.var_type, "load"):
+        if isinstance(var_spec.data, pd.DataFrame):
+            return var_spec
+        if hasattr(var_spec.data, "load"):
             loaded_df = _load_var_type_as_spread(
-                var_spec.var_type,
+                var_spec.data,
                 db,
                 where,
                 branch_params_filter=branch_params_filter,
@@ -3275,11 +3290,11 @@ def _compute_fixed_input_rids(inputs: dict, db) -> dict:
             continue
 
         # Unwrap to get inner variable type
-        inner = value.var_type if hasattr(value, "var_type") else value
+        inner = value.data if hasattr(value, "data") else value
 
         # Unwrap ColumnSelection if present
-        if hasattr(inner, "var_type"):
-            inner = inner.var_type
+        if hasattr(inner, "data"):
+            inner = inner.data
 
         # Must be a variable type (class)
         if not isinstance(inner, type):
@@ -3331,7 +3346,7 @@ def _compute_merge_effective_ids(db, merge_spec: "Merge") -> set:
 
     # Collect (table_name, schema_ids) for each constituent
     constituent_data = []
-    for sub_spec in merge_spec.var_specs:
+    for sub_spec in merge_spec.tables:
         cls = _get_loadable_class_from_spec(sub_spec)
         if cls is None:
             continue
@@ -3427,7 +3442,7 @@ def _check_merge_filter_coverage(db, where, merge_effective_ids: set) -> None:
 
 def _merge_needs_per_combo(merge_spec: "Merge") -> bool:
     """Return True if any Merge constituent lacks load."""
-    for spec in merge_spec.var_specs:
+    for spec in merge_spec.tables:
         cls = _get_loadable_class_from_spec(spec)
         if cls is not None and not hasattr(cls, "load"):
             return True
@@ -3441,11 +3456,11 @@ def _get_loadable_class_from_spec(spec: Any) -> Any:
     if isinstance(spec, Variant):
         spec = spec.var_type
     if isinstance(spec, Fixed):
-        spec = spec.var_type
+        spec = spec.data
     if isinstance(spec, Variant):
         spec = spec.var_type
     if isinstance(spec, ColumnSelection):
-        spec = spec.var_type
+        spec = spec.data
     if isinstance(spec, type) or hasattr(spec, "load"):
         return spec
     return None
@@ -3882,10 +3897,10 @@ def _iterate_column_selection(spec: Any) -> "ColumnSelection | None":
         return spec
     if (
         isinstance(spec, Fixed)
-        and isinstance(spec.var_type, ColumnSelection)
-        and spec.var_type.iterate
+        and isinstance(spec.data, ColumnSelection)
+        and spec.data.iterate
     ):
-        return spec.var_type
+        return spec.data
     return None
 
 
@@ -3949,7 +3964,7 @@ def _resolve_for_columns(inputs: dict, db: Any | None) -> dict:
     resolved_cols: dict[str, list[str]] = {}
     for name, cs in iterate_params.items():
         if not cs.columns:  # empty [] (or legacy None) -> all data columns
-            cols = _resolve_all_columns(cs.var_type, resolved_db)
+            cols = _resolve_all_columns(cs.data, resolved_db)
             Log.debug(
                 f"for_columns: resolved '{name}' to all {len(cols)} column(s): {cols}"
             )
@@ -3971,7 +3986,7 @@ def _resolve_for_columns(inputs: dict, db: Any | None) -> dict:
     # Rebuild inputs with concrete, iterate-mode ColumnSelections.
     new_inputs = dict(inputs)
     for name, cs in iterate_params.items():
-        new_cs = ColumnSelection(cs.var_type, resolved_cols[name], iterate=True)
+        new_cs = ColumnSelection(cs.data, resolved_cols[name], iterate=True)
         spec = inputs[name]
         if isinstance(spec, Fixed):
             new_inputs[name] = Fixed(new_cs, **spec.fixed_metadata)
@@ -4223,11 +4238,11 @@ def _resolve_per_combo_loader(
 
     if isinstance(spec, Fixed):
         effective_kw = {**load_kw, **spec.fixed_metadata}
-        inner = spec.var_type
+        inner = spec.data
         columns = None
         if isinstance(inner, ColumnSelection):
             columns = inner.columns
-            inner = inner.var_type
+            inner = inner.data
         if isinstance(inner, PathInput):
             return _load_pathinput_checked(
                 inner, effective_kw, key_types or {}, schema_keys or []
@@ -4240,15 +4255,17 @@ def _resolve_per_combo_loader(
         return raw
 
     if isinstance(spec, ColumnSelection):
-        lv = spec.var_type.load(**load_kw)
+        lv = spec.data.load(**load_kw)
         raw = lv.data if hasattr(lv, "data") else lv
-        cls_name = getattr(spec.var_type, "__name__", type(spec.var_type).__name__)
+        cls_name = getattr(spec.data, "__name__", type(spec.data).__name__)
         return _apply_per_combo_col_selection(raw, spec.columns, cls_name)
 
-    if isinstance(spec, PathInput):
-        return _load_pathinput_checked(
-            spec, load_kw, key_types or {}, schema_keys or []
-        )
+    # Note: a bare PathInput never reaches this function anymore -- since
+    # _is_loadable excludes it, _convert_inputs passes it through as a
+    # constant and its per-combo resolution happens inside scifor's
+    # for_each loop (via _path_input_resolver), not here. Only
+    # Fixed(PathInput(...)) still routes through PerComboLoader (the
+    # isinstance(inner, PathInput) branch above).
 
     # Plain class
     lv = spec.load(**load_kw)
@@ -4262,7 +4279,7 @@ def _resolve_per_combo_merge(
     from scifor.foreach import _merge_parts as _scifor_merge_parts
 
     parts = []
-    for spec in pcl_merge.merge_spec.var_specs:
+    for spec in pcl_merge.merge_spec.tables:
         effective_kw = dict(load_kw)
         columns = None
         actual_spec = spec
@@ -4270,12 +4287,12 @@ def _resolve_per_combo_merge(
         # Unwrap Fixed
         if isinstance(actual_spec, Fixed):
             effective_kw = {**load_kw, **actual_spec.fixed_metadata}
-            actual_spec = actual_spec.var_type
+            actual_spec = actual_spec.data
 
         # Unwrap ColumnSelection
         if isinstance(actual_spec, ColumnSelection):
             columns = actual_spec.columns
-            actual_spec = actual_spec.var_type
+            actual_spec = actual_spec.data
 
         # Load the variable
         lv = actual_spec.load(**effective_kw)
@@ -4928,7 +4945,19 @@ def _save_results(
 
 
 def _is_loadable(var_spec: Any) -> bool:
-    """Check if an input spec is loadable (var type, Fixed, Merge, ColumnSelection, etc.)."""
+    """Check if an input spec is loadable (var type, Fixed, Merge, ColumnSelection, etc.).
+
+    PathInput is deliberately excluded before the ``hasattr(..., "load")``
+    fallback: it has a real ``.load()`` method (for standalone/scifor use),
+    but under scidb its per-combo resolution is now owned by scifor's
+    for_each loop directly (see resolve_pathinput_discovery /
+    _resolve_path_inputs), not scidb's variable-loading machinery. Treating
+    it as loadable here would (re)route it through PerComboLoader and would
+    also flip _get_direct_constants/_serialize_inputs' classification of it
+    for version-key hashing.
+    """
+    if isinstance(var_spec, PathInput):
+        return False
     try:
         import pandas as pd
 
@@ -4938,7 +4967,7 @@ def _is_loadable(var_spec: Any) -> bool:
         pass
     return isinstance(
         var_spec,
-        (type, Fixed, Variant, AcrossVariants, ColumnSelection, Merge, PathInput),
+        (type, Fixed, Variant, AcrossVariants, ColumnSelection, Merge),
     ) or hasattr(var_spec, "load")
 
 
@@ -4962,7 +4991,7 @@ def _has_pathinput(inputs: dict) -> bool:
     for v in inputs.values():
         if isinstance(v, PathInput):
             return True
-        if isinstance(v, Fixed) and isinstance(v.var_type, PathInput):
+        if isinstance(v, Fixed) and isinstance(v.data, PathInput):
             return True
     return False
 
@@ -4972,8 +5001,8 @@ def _find_pathinput(inputs: dict) -> PathInput | None:
     for v in inputs.values():
         if isinstance(v, PathInput):
             return v
-        if isinstance(v, Fixed) and isinstance(v.var_type, PathInput):
-            return v.var_type
+        if isinstance(v, Fixed) and isinstance(v.data, PathInput):
+            return v.data
     return None
 
 

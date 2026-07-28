@@ -13,7 +13,7 @@ class TestFixed:
             pass
 
         fixed = Fixed(MockType)
-        assert fixed.var_type is MockType
+        assert fixed.data is MockType
         assert fixed.fixed_metadata == {}
 
     def test_init_with_metadata(self):
@@ -23,7 +23,7 @@ class TestFixed:
             pass
 
         fixed = Fixed(MockType, subject=1, session="baseline")
-        assert fixed.var_type is MockType
+        assert fixed.data is MockType
         assert fixed.fixed_metadata == {"subject": 1, "session": "baseline"}
 
     def test_stores_various_metadata_types(self):

@@ -22,12 +22,28 @@ Example:
     raw = RawSignal.load(subject=1, session="A")
 """
 
-# From scifor (Layer 1)
-from scifor import Col, PathInput, PathOutput, get_schema, set_schema
+# From scifor (Layer 1) — Fixed/ColName/EachOf are the same classes scidb
+# constructs and reads; scidb has no class definitions of its own for these
+# anymore, only the DB-aware loading/orchestration around them (see
+# foreach.py). ColumnSelection and Merge are the two exceptions: scidb
+# exports its own thin subclass of each (see column_selection.py, merge.py)
+# adding DB-only methods with no scifor equivalent -- comparison operators
+# (MyVar["col"] == value) + .load() for ColumnSelection, a schema-id-keyed
+# .to_csv() for Merge (scifor's own .to_csv() only knows how to join
+# already-in-memory DataFrames, not load variable types from a database).
+from scifor import (
+    Col,
+    ColName,
+    EachOf,
+    Fixed,
+    PathInput,
+    PathOutput,
+    get_schema,
+    set_schema,
+)
 
 from .across_variants import AcrossVariants
 from .artifact_stamp import read_artifact_stamp, stamp_artifact
-from .colname import ColName
 from .column_selection import ColumnSelection
 from .constant import Constant, constant
 from .database import configure_database, get_database, get_user_id
@@ -40,7 +56,6 @@ from .discover import (
     scan_package,
     scan_project,
 )
-from .each_of import EachOf
 from .exceptions import (
     AmbiguousParamError,
     AmbiguousVersionError,
@@ -54,7 +69,6 @@ from .exceptions import (
 )
 from .exclusions import exclude_schema, include_schema, list_exclusions
 from .filters import raw_sql, schema_key
-from .fixed import Fixed
 
 # Batch execution (Layer 2 — DB-backed, no lineage)
 from .foreach import for_each

@@ -36,9 +36,8 @@ def is_scalar_value(value) -> bool:
 
 def _is_spec(obj) -> bool:
     """True if ``obj`` is a variable spec (class, instance, or wrapper)."""
-    from .column_selection import ColumnSelection
-    from .fixed import Fixed
-    from .merge import Merge
+    from scifor import ColumnSelection, Fixed, Merge
+
     from .variable import BaseVariable
     from .variant import Variant
 
@@ -85,15 +84,15 @@ def _resolve_constituent(spec):
     (metadata overrides) or ``Variant`` (branch-param pins) wrappers, merged
     onto the caller's metadata for this constituent only.
     """
-    from .column_selection import ColumnSelection
-    from .fixed import Fixed
+    from scifor import ColumnSelection, Fixed
+
     from .variable import BaseVariable
     from .variant import Variant
 
     if isinstance(spec, ColumnSelection):
-        return spec.var_type, list(spec.columns), {}
+        return spec.data, list(spec.columns), {}
     if isinstance(spec, Fixed):
-        var_type, columns, extra = _resolve_constituent(spec.var_type)
+        var_type, columns, extra = _resolve_constituent(spec.data)
         return var_type, columns, {**extra, **spec.fixed_metadata}
     if isinstance(spec, Variant):
         var_type, columns, extra = _resolve_constituent(spec.var_type)
@@ -201,13 +200,14 @@ def build_flat_table(spec, *, where, version, db, metadata):
     on its shared schema keys, so e.g. a subject-level covariate broadcasts
     across a trial-level measure.
     """
+    from scifor import Merge
+
     from .database import get_database
-    from .merge import Merge
 
     _db = db or get_database()
 
     if isinstance(spec, Merge):
-        constituents = [_resolve_constituent(s) for s in spec.var_specs]
+        constituents = [_resolve_constituent(s) for s in spec.tables]
     else:
         constituents = [_resolve_constituent(spec)]
 

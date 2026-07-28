@@ -114,7 +114,7 @@ def _reconstruct_input_for_keys(spec):
             iterate=bool(spec.get("iterate", False)),
         )
     if kind == "colname":
-        from scidb.colname import ColName
+        from scifor import ColName
 
         # Deferred ColName() -> no var_type; _convert_inputs turns it into a
         # scifor.ColName() marker. Static ColName(MyVar) carries type_name and
@@ -123,7 +123,7 @@ def _reconstruct_input_for_keys(spec):
             return ColName()
         return ColName(get_surrogate_class(spec["type_name"]))
     if kind == "fixed":
-        from scidb.fixed import Fixed
+        from scifor import Fixed
 
         inner = _reconstruct_input_for_keys(spec["inner"])
         fixed_meta = dict(spec.get("fixed_metadata", {}) or {})
@@ -135,7 +135,7 @@ def _reconstruct_input_for_keys(spec):
         branch_params = dict(spec.get("branch_params", {}) or {})
         return Variant(inner, **branch_params)
     if kind == "merge":
-        from scidb.merge import Merge
+        from scifor import Merge
 
         subs = [_reconstruct_input_for_keys(s) for s in spec["specs"]]
         return Merge(*subs)
@@ -711,29 +711,24 @@ def for_each_prepare(
     # set, so unwrap the sentinel back to the PathInput instance and let
     # MATLAB resolve it per-combo. Other per-combo loader kinds are not
     # yet supported on the MATLAB path; surface a clear error so the user knows.
-    from scidb.fixed import Fixed as _ScidbFixed
+    from scifor import Fixed as _Fixed
     from scifor.pathinput import PathInput as _SciforPathInput
 
     unsupported_per_combo = []
     for k, v in list(state.loaded_inputs.items()):
         if not isinstance(v, (PerComboLoader, PerComboLoaderMerge)):
             continue
-        # Unwrap PerComboLoader to its underlying scidb.Fixed / PathInput / etc.
+        # Unwrap PerComboLoader to its underlying Fixed / PathInput / etc.
         spec = v.spec if isinstance(v, PerComboLoader) else v.merge_spec
         # Direct PathInput
         if isinstance(spec, _SciforPathInput):
             state.loaded_inputs[k] = spec
             continue
-        # scidb.Fixed wrapping a PathInput: build a scifor.Fixed(pathinput,
-        # **meta) so MATLAB's resolve_data_spec sees the same kind it expects.
-        if isinstance(spec, _ScidbFixed) and isinstance(
-            spec.var_type, _SciforPathInput
-        ):
-            from scifor.fixed import Fixed as _SciforFixed
-
-            state.loaded_inputs[k] = _SciforFixed(
-                spec.var_type, **dict(spec.fixed_metadata)
-            )
+        # Fixed wrapping a PathInput: Fixed is the same class in scifor and
+        # scidb now, so the spec already IS what MATLAB's resolve_data_spec
+        # expects — pass it through unchanged.
+        if isinstance(spec, _Fixed) and isinstance(spec.data, _SciforPathInput):
+            state.loaded_inputs[k] = spec
             continue
         # Anything else (e.g. ColumnSelection over a var type with no load support)
         # is not yet supported on the MATLAB path.

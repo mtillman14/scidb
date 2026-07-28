@@ -196,12 +196,26 @@ function varargout = for_each(fn, inputs, varargin)
         end
 
         % Any key still unresolved: warn (0 iterations) when a source exists
-        % but yields no values; error when no input provides the key at all.
+        % but yields no values; drop the key entirely when the only
+        % PathInput is fully static (no {key} placeholders anywhere in its
+        % template) — a literal path can never drive iteration for ANY key,
+        % so an unresolved key in that situation isn't a mistake, it just
+        % means "this key doesn't apply here." Error only when a templated
+        % PathInput (or no PathInput at all) leaves the key genuinely
+        % unaccounted for.
+        pi_is_static = ~isempty(pi) && isempty(pi.placeholder_keys());
+        drop_idx = false(1, numel(meta_values));
         for i = 1:numel(meta_values)
             if isempty(meta_values{i})
                 if key_has_source(inputs, meta_keys(i), pi)
                     scifor.Log.warn('no values found for ''%s'' in inputs, 0 iterations', ...
                         meta_keys(i));
+                elseif pi_is_static
+                    scifor.Log.debug(['''%s'' has no source and PathInput ' ...
+                        '''%s'' has no template placeholders; ignoring ''%s'' ' ...
+                        '(treating it as if it were never requested).'], ...
+                        meta_keys(i), pi.path_template, meta_keys(i));
+                    drop_idx(i) = true;
                 else
                     error('scifor:for_each', ...
                         ['Empty list [] was passed for ''%s'', but no input table ' ...
@@ -212,6 +226,10 @@ function varargout = for_each(fn, inputs, varargin)
                         meta_keys(i), meta_keys(i), meta_keys(i), meta_keys(i));
                 end
             end
+        end
+        if any(drop_idx)
+            meta_keys(drop_idx) = [];
+            meta_values(drop_idx) = [];
         end
     end
 

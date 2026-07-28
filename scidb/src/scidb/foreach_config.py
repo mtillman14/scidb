@@ -160,17 +160,19 @@ class ForEachConfig:
         PathOutput resolves a template into an output path, which is write
         bookkeeping rather than computation identity. Including either raw
         marker object would also break version-key hashing (they are not
-        JSON-serializable).
+        JSON-serializable). PathInput is excluded for the same
+        JSON-serializability reason -- despite _is_loadable now excluding it
+        (its per-combo resolution moved to scifor's for_each loop), it still
+        belongs in ``__inputs`` via its own ``to_key()``, not here.
         """
-        from scifor import PathOutput
+        from scifor import ColName, PathInput, PathOutput
 
-        from .colname import ColName
         from .foreach import _is_loadable
 
         return {
             k: v
             for k, v in self.inputs.items()
-            if not _is_loadable(v) and not isinstance(v, (ColName, PathOutput))
+            if not _is_loadable(v) and not isinstance(v, (ColName, PathOutput, PathInput))
         }
 
     def _serialize_inputs(self) -> dict:
@@ -178,16 +180,23 @@ class ForEachConfig:
 
         Only includes loadable inputs (variable types, Fixed, ColumnSelection,
         Merge) — constants are already included in save_metadata directly.
+        PathInput is included too even though _is_loadable excludes it (its
+        resolution moved to scifor's for_each loop, not scidb's variable
+        loader) -- it still needs a stable identity in ``__inputs`` via its
+        own ``to_key()``, or two different templates would collapse into the
+        same version-key group.
 
         Returns a dict (not JSON string) so it can be carried in the in-memory
         config keys that build save_metadata.
         """
+        from scifor import PathInput
+
         from .foreach import _is_loadable
 
         result = {}
         for name in sorted(self.inputs):
             spec = self.inputs[name]
-            if _is_loadable(spec):
+            if _is_loadable(spec) or isinstance(spec, PathInput):
                 if hasattr(spec, "to_key"):
                     result[name] = spec.to_key()
                 elif isinstance(spec, type):

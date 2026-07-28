@@ -47,6 +47,18 @@ class Merge:
                 raise TypeError("Cannot nest Merge inside another Merge.")
         self.tables = tables
 
+    def to_key(self) -> str:
+        """Return a canonical string for use as a version key."""
+        parts = []
+        for spec in self.tables:
+            if hasattr(spec, "to_key"):
+                parts.append(spec.to_key())
+            elif isinstance(spec, type):
+                parts.append(spec.__name__)
+            else:
+                parts.append(repr(spec))
+        return f"Merge({', '.join(parts)})"
+
     def to_csv(
         self, filename: str, where=None, verbose: bool = False, **metadata: Any
     ) -> None:

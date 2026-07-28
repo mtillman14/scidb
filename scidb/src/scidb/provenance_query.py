@@ -924,9 +924,8 @@ def config_from_inputs(inputs: dict) -> dict:
     selector, PathInput/PathOutput/ColName are excluded, everything else is a
     constant. ``as_table``/``distribute`` aren't expressible here → defaults.
     """
-    from .colname import ColName
-    from .column_selection import ColumnSelection
-    from .fixed import Fixed
+    from scifor import ColName, ColumnSelection, Fixed
+
     from .foreach import _is_loadable
     from .provenance_save import compute_input_selectors
 
@@ -948,9 +947,9 @@ def config_from_inputs(inputs: dict) -> dict:
         if _is_loadable(spec):
             vt = spec
             if isinstance(vt, Fixed):
-                vt = vt.var_type
+                vt = vt.data
             if isinstance(vt, ColumnSelection):
-                vt = vt.var_type
+                vt = vt.data
             if isinstance(vt, type):
                 input_types[name] = vt.__name__
         else:

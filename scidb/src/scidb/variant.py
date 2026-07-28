@@ -87,8 +87,7 @@ class Variant:
             ValueError: If no branch_params are given, or a nested ``Variant``
                 supplies a conflicting value for the same key.
         """
-        from .each_of import EachOf
-        from .merge import Merge
+        from scifor import EachOf, Merge
 
         # ``fn=`` namespaces the supplied params under the producing function so the
         # exact-match load path resolves them without the dotted-string kwarg wart.
