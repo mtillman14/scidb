@@ -1,17 +1,80 @@
 # SciStack
 
-## Better Research Tools, Better Research Outcomes
+```bash
+pip install scistack # Installs tools for Python and MATLAB
+```
 
-SciStack is a database framework purpose-built for scientific data analysis. It gives you a structured, versioned, and queryable home for every piece of data your pipeline produces — from raw signals to final results — with near zero infrastructure code on your part, and **zero changes to your analysis code**.
+# Better Research Tools, Better Research Outcomes
 
-It works in both **Python** and **MATLAB**.
+SciStack is a suite of tools built by scientists for scientists of nearly any discipline to enhance data analysis pipelines. SciStack focuses on the common case of [embarrassingly parallel](https://en.wikipedia.org/wiki/Embarrassingly_parallel) workflows used to process nested datasets. It has three core goals:
 
-## The Problem
+1. **Minimalism:** Minimize wasted time and effort, with a focus on reducing boilerplate code and offering advanced capabilities.
+2. **Reusability:** With a near-zero boilerplate format and support for cookie-cutter pipelines, SciStack pipelines are highly interoperable between projects. Thus, SciStack encourages scientific code reuse, an essential yet underutilized scientific work product.
+3. **Openness:** Minimize lock-in to the SciStack framework. SciStack code never touches scientific code, so you can easily change your data processing pipeline architecture at any time.
 
-Every scientist who writes analysis code eventually builds the same thing: a tangle of folders, naming conventions, and bookkeeping scripts to track which data came from where, which version of a function produced it, and whether it's already been computed.
+# SciStack Design
 
-That infrastructure code is never the point. But it eats weeks of your time, it's fragile, and it's different in every lab.
+For any project, it's essential to pick the right tool for the job. SciStack - as the name implies - contains a suite of tools in a "stack" of increasing complexity and weight. There are three main tools in this stack:
 
+- `scifor`: The lightest-weight level. Syntactical sugar around nested `for` loops. Operates on in-memory variables only (no file IO) just like standard functions.
+- `scidb`: Wraps `scifor`, adds a SQL database for data save/load and an auditable data processing history
+- `scistack` GUI: Wraps `scidb`, adds a GUI to manage complex pipelines.
+
+## `scifor`: syntactic sugar around `for` loops
+
+Imagine you are conducting a study of human subjects walking. Each Subject comes in to the lab for multiple Sessions, and in each Session they perform multiple Trials of walking. During each Trial, you measure their speed every 0.1 seconds and store that data to one .csv file for each trial.
+
+### Example `scifor` Pipeline Data Loading Step
+
+```python
+import scifor
+import pandas as pd
+
+# Tell `scifor` about the structure of this dataset
+scifor.set_schema(["subject", "session", "trial"]) # ordered one-to-many
+
+def load_data(file_path: str) -> pd.DataFrame:
+    """Example logic to load the data"""
+    return pd.read_csv(file_path)
+
+path_template = scifor.PathInput("path/to/data/{subject}/{session}/{trial}.csv")
+loaded_df = scifor.for_each(load_data,
+    file_path=path_template,
+    subject=[], session=[], trial=[],
+    output_names=["Loaded"]
+)
+```
+
+In this example step, after defining a basic `load_data()` function, we:
+
+1. Defined a `scifor.PathInput`, providing a template to load all of the files of interest.
+2. Invoked the main command `scifor.for_each()`, providing `load_data` as the function, `file_path` as the input variable, and specifying to run `load_data` once over every combination of `subject`, `session`, and `trial` that match the `scifor.PathInput` path template.
+3. `loaded_df` is a `pd.DataFrame` with one row per `subject`, `session`, and `trial` combination. The data is stored into the `"Loaded"` field specified in the optional `output_names` parameter (default output name: `"value"`).
+
+### Example `scifor` Pipeline Data Processing Step
+
+```python
+import numpy as np
+
+def process_data(speed: np.ndarray) -> np.ndarray:
+    """Square every data point"""
+    return np.square(speed)
+
+squared_df = scifor.for_each(process_data,
+    speed=loaded_df,
+    subject=[], session=[], trial=[]
+)
+```
+
+`scifor.for_each` automatically parses `loaded_df`, repeatedly inputting only the `speed` values for one combination of `subject`, `session`, `trial`, allowing `process_data()` to remain very simple and ignore the structure of this project's dataset.
+
+To see more, refer to the `scifor` docs.
+
+## `scidb`
+
+## `scistack` GUI
+
+<!--
 ## Three Layers, Use What You Need
 
 SciStack replaces all of it with three ideas:
@@ -29,27 +92,29 @@ With SciStack, your analysis scripts contain _only_ analysis logic. The infrastr
 SciStack is a stack of libraries. You can enter at any level — each layer adds more features at the cost of a bit more setup.
 
 ```
+
 ┌────────────────────────────────────────────────────────────────────┐
-│                            scihist                                 │
-│  One-import entry point: for_each() with automatic DB load/save    │
-│  and lineage tracking. Re-exports everything from the layers below │
-│  deps: scidb + scilineage                                          │
+│ scihist │
+│ One-import entry point: for_each() with automatic DB load/save │
+│ and lineage tracking. Re-exports everything from the layers below │
+│ deps: scidb + scilineage │
 ├───────────────────────────────┬────────────────────────────────────┤
-│            scidb              │            scilineage              │
-│  Typed variable storage;      │  Wraps any function to record its  │
-│  configure_database(),        │  full computational lineage.       │
-│  for_each() that loads from   │  Enables caching and provenance    │
-│  DB and saves results back    │  queries — no DB required.         │
-│  deps: scifor + sciduck +     │  deps: canonical-hash              │
-│        canonical-hash +       │                                    │
-│        path-gen               │                                    │
+│ scidb │ scilineage │
+│ Typed variable storage; │ Wraps any function to record its │
+│ configure_database(), │ full computational lineage. │
+│ for_each() that loads from │ Enables caching and provenance │
+│ DB and saves results back │ queries — no DB required. │
+│ deps: scifor + sciduck + │ deps: canonical-hash │
+│ canonical-hash + │ │
+│ path-gen │ │
 ├───────────────────────────────┴────────────────────────────────────┤
-│                            scifor                                  │
-│  Batch execution on plain tables / DataFrames — iterates over      │
-│  condition combinations, slices data, collects results.            │
-│  No database, no tracking, no dependencies.                        │
+│ scifor │
+│ Batch execution on plain tables / DataFrames — iterates over │
+│ condition combinations, slices data, collects results. │
+│ No database, no tracking, no dependencies. │
 └────────────────────────────────────────────────────────────────────┘
-```
+
+````
 
 **scifor** is the foundation: a standalone batch execution engine that works with plain MATLAB tables or pandas DataFrames. There is no setup overhead — just give it a function, your data, and the experimental conditions to iterate over.
 
@@ -67,7 +132,7 @@ Each layer can be used independently. `scifor` is useful when your data is alrea
 
 ```bash
 pip install scistack
-```
+````
 
 This installs `scistack-db` (the `scidb` package) and `scimatlab` directly, which in turn pull in `sciduckdb`, `scipathgen`, `scicanonicalhash`, `scifor`, and `scistacklog`. `scihist` is a separate, higher-level package (it depends on `scidb` + `scilineage`) and is not installed automatically — install it explicitly if you want its `for_each()` with automatic lineage tracking:
 
@@ -434,7 +499,7 @@ default nothing is recorded while you tweak. When the figure is right, add
 lineage (and `skip_computed=True` skips unchanged figures on re-runs).
 
 **Every figure knows where it came from.** SciStack embeds a provenance
-stamp *inside* the image file (PNG/SVG/PDF): the record it belongs to, the
+stamp _inside_ the image file (PNG/SVG/PDF): the record it belongs to, the
 function and exact input records that produced it. Find a figure in a paper
 draft two years from now and trace it straight back to its data:
 
@@ -480,7 +545,7 @@ files don't collide:
 PathOutput("plots/{subject}_{low_hz}.png")   # one file per filter setting
 ```
 
-(and if a template *would* make two variants overwrite each other's file,
+(and if a template _would_ make two variants overwrite each other's file,
 SciStack refuses and tells you the one-line fix). To deliberately pool
 variants — e.g. a robustness/multiverse analysis across all your pipeline
 decisions — wrap the input in `AcrossVariants(...)` and the settings arrive
@@ -512,4 +577,4 @@ report command.
 - [Variables Guide](docs/guide/variables.md) — Deep dive into variable types
 - [Lineage Guide](docs/guide/lineage.md) — How provenance tracking works
 - [Batch Processing Guide](docs/guide/for_each.md) — for_each in depth
-- [API Reference](docs/api.md) — Complete API documentation
+- [API Reference](docs/api.md) — Complete API documentation -->
