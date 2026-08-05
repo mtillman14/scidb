@@ -85,6 +85,56 @@ function varargout = for_each(fn, inputs, varargin)
         fn_name = 'unknown';
     end
 
+    % --- Step 0: EachOf expansion — must be first, before any other logic.
+    %     Mirrors Python scifor/src/scifor/foreach.py's own EachOf expansion
+    %     (see docs/claude/each-of-variant-expansion.md): each alternative
+    %     becomes an independent recursive scifor.for_each() call; results
+    %     are concatenated per output index (this layer has no save/lineage
+    %     to thread, unlike scidb.for_each's own, separate EachOf step).
+    input_names_eo = fieldnames(inputs);
+    each_of_axes = {};   % {kind, field_name, alternatives_cell}
+    for p = 1:numel(input_names_eo)
+        name = input_names_eo{p};
+        if isa(inputs.(name), 'scifor.EachOf')
+            each_of_axes{end+1} = {'input', name, inputs.(name).alternatives}; %#ok<AGROW>
+        end
+    end
+    if isa(where_filter, 'scifor.EachOf')
+        each_of_axes{end+1} = {'where', '', where_filter.alternatives}; %#ok<AGROW>
+    end
+
+    if ~isempty(each_of_axes)
+        scifor.Log.debug('EachOf expansion detected - %d axis(es), making recursive calls', ...
+            numel(each_of_axes));
+        value_cells = cellfun(@(ax) ax{3}, each_of_axes, 'UniformOutput', false);
+        combos = scidb.internal.cartesian_product(value_cells);
+        n_out_request = max(nargout, 1);
+        branch_out = cell(numel(combos), n_out_request);
+        for ci = 1:numel(combos)
+            combo = combos{ci};
+            concrete_inputs = inputs;
+            concrete_varargin = varargin;
+            for a = 1:numel(each_of_axes)
+                axis = each_of_axes{a};
+                if strcmp(axis{1}, 'input')
+                    concrete_inputs.(axis{2}) = combo{a};
+                else
+                    concrete_varargin = replace_name_value(concrete_varargin, ...
+                        'where', combo{a});
+                end
+            end
+            [branch_out{ci, 1:n_out_request}] = scifor.for_each(fn, concrete_inputs, concrete_varargin{:});
+        end
+        for o = 1:n_out_request
+            branch_col = branch_out(:, o);
+            branch_col = branch_col(~cellfun(@isempty, branch_col));
+            varargout{o} = vertcat_each_of_results(branch_col, fn_name); %#ok<AGROW>
+        end
+        scifor.Log.debug('EachOf expansion complete - concatenated %d branch result(s)', ...
+            numel(combos));
+        return;
+    end
+
     % Get schema keys
     full_schema_keys = scifor.get_schema();
 
@@ -2616,4 +2666,51 @@ function args = build_limit_args(map, metadata, fn, n_inputs)
             args{end+1} = []; %#ok<AGROW>
         end
     end
+end
+
+
+function out_varargin = replace_name_value(in_varargin, name, new_value)
+%REPLACE_NAME_VALUE  Replace a name-value pair's value in a varargin cell
+%   array (case-insensitive on the name). Used by Step 0's EachOf
+%   expansion to substitute a concrete filter for a where=EachOf(...) axis
+%   before the recursive scifor.for_each() call.
+    out_varargin = in_varargin;
+    for i = 1:2:numel(out_varargin)
+        key = out_varargin{i};
+        if (ischar(key) || isstring(key)) && strcmpi(string(key), name)
+            out_varargin{i+1} = new_value;
+            return;
+        end
+    end
+    out_varargin{end+1} = name;
+    out_varargin{end+1} = new_value;
+end
+
+
+function result_tbl = vertcat_each_of_results(branch_results, fn_name)
+%VERTCAT_EACH_OF_RESULTS  Concatenate EachOf branch tables, with a clear
+%   error (instead of a raw MATLAB vertcat failure) when branches disagree
+%   on columns — which happens when the EachOf alternatives (e.g. two
+%   scifor.PathInput templates) don't share the same placeholder/schema-key
+%   names. MATLAB's table vertcat has no pandas-style NaN-union leniency,
+%   so mismatched columns must be a hard, clearly-explained error.
+    if isempty(branch_results)
+        result_tbl = table();
+        return;
+    end
+    first_vars = sort(string(branch_results{1}.Properties.VariableNames));
+    for i = 2:numel(branch_results)
+        these_vars = sort(string(branch_results{i}.Properties.VariableNames));
+        if ~isequal(first_vars, these_vars)
+            error('scifor:for_each:EachOfColumnMismatch', ...
+                ['for_each(%s): EachOf branches produced result tables with ' ...
+                 'different columns (branch 1: %s; branch %d: %s). Every ' ...
+                 'EachOf alternative must resolve to the same schema-key/' ...
+                 'metadata columns — e.g. two scifor.PathInput templates ' ...
+                 'must use the same {placeholder} names even if root_folder ' ...
+                 'differs.'], ...
+                fn_name, strjoin(first_vars, ', '), i, strjoin(these_vars, ', '));
+        end
+    end
+    result_tbl = vertcat(branch_results{:});
 end

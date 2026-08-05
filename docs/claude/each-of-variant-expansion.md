@@ -54,6 +54,49 @@ produces `2 types x 2 alphas x 3 filters = 12` variant branches, each iterating 
 - **`scifor/src/scifor/foreach.py`** — a second, independent, simpler expansion step (mirroring the logic above minus the DB-only params) was added so standalone/no-DB `scifor.for_each()` can use `EachOf` too, for the first time. scidb's own expansion always resolves `EachOf` before anything reaches `scifor.for_each`, so this new step never actually triggers on the scidb call path — it's purely additive for standalone callers.
 - **`scidb/src/scidb/__init__.py`** — `EachOf` re-exported straight from scifor (`from scifor import ... EachOf ...`), not its own class anymore.
 
+### MATLAB bridge (added 2026-08-05)
+
+`EachOf` was Python-only for a long time — every other modifier class
+(`Fixed`, `Merge`, `ColumnSelection`, `ColName`, `PathInput`, `PathOutput`,
+`Variant`, `AcrossVariants`) had a MATLAB classdef under `+scifor`/`+scidb`,
+but `EachOf` did not, and neither MATLAB `for_each.m` knew how to expand
+one (`scifor.EachOf(...)` raised "unable to resolve name"). This surfaced
+when a real pipeline needed a `scifor.PathInput` to span two on-disk
+locations (assessment-day vs. training-day folders) without changing the
+shared analysis function.
+
+The MATLAB bridge mirrors the Python dual-implementation shape above:
+
+- **`scimatlab/src/scimatlab/matlab/+scifor/EachOf.m`** — plain builder
+  (`alternatives` cell array), mirrors `+scifor/Fixed.m`'s shape. Lives only
+  in `+scifor`, matching the Python precedent that `scidb.EachOf` is just a
+  re-export rather than its own class.
+- **`+scidb/for_each.m`** — its own Step 0 recursion, inserted *before*
+  `describe_input_for_python` is called on anything (same "must be first"
+  rule as Python): scans `inputs` fields (and `opts.where`) for
+  `scifor.EachOf`, cartesian-products the alternatives via the existing
+  `scidb.internal.cartesian_product` helper (previously only used for
+  metadata combos), recursively calls `scidb.for_each` per combo, and
+  `vertcat`s the branch `result_tbl`s. Needs its own copy for the same
+  reason Python's scidb layer does — save/skip_computed/lineage per branch.
+- **`+scifor/for_each.m`** — the standalone-parity counterpart, same idea
+  but `varargout`-aware (scifor returns multiple tables via `varargout`,
+  unlike scidb's single `result_tbl`): each output index is `vertcat`'d
+  separately across branches.
+- **Column-mismatch guard** (`vertcat_each_of_results`, duplicated as a
+  local function in both `.m` files): MATLAB's table `vertcat` has no
+  pandas-style NaN-union leniency for mismatched columns the way Python's
+  `pd.concat` does, so branches whose alternatives resolve to different
+  schema-key/metadata columns (e.g. two `PathInput` templates using
+  different placeholder names) raise a named, explanatory error
+  (`scidb:for_each:EachOfColumnMismatch` / `scifor:for_each:EachOfColumnMismatch`)
+  instead of a raw MATLAB failure. Practical consequence: every `EachOf`
+  alternative for one input must resolve to the same placeholder/schema-key
+  names, even when the literal folders/`root_folder` differ.
+- **Tests** — `scimatlab/tests/matlab/scifor/TestEachOf.m` and
+  `scimatlab/tests/matlab/scidb/TestEachOf.m`, mirroring the Python
+  coverage in `scifor/tests/test_each_of.py` / `scidb/tests/test_each_of.py`.
+
 ## Relationship to existing variant machinery
 
 `EachOf` sits above the existing variant system, not alongside it. The hierarchy:
