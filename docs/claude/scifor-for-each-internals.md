@@ -193,7 +193,7 @@ Each constituent of the Merge is filtered independently (applying `Fixed` and `C
 
 The Merge logic lives in `_prepare_merge()` (lines 602–644) and `_merge_parts()` (lines 647–684).
 
-**Error handling during filtering:** If any input's filtering/preparation raises an exception, the combo is skipped. The error is printed as `[skip]`, logged to `/tmp/scihist_diag.log`, and the loop continues to the next combination. No partial results are collected for failed combos.
+**Error handling during filtering:** If any input's filtering/preparation raises an exception, the combo is skipped and the loop continues to the next combination. No partial results are collected for skipped combos. One specific case gets special treatment: if a per-combo DataFrame input filters down to 0 rows (outside `as_table` mode), `_prepare_input`/`_prepare_iterate_df` raise `NoDataError` rather than silently handing `fn` empty data — this is the expected outcome when the schema-key cross-product is sparser than the full grid, so it's reported in the end-of-run summary as `no data: N combo(s)`, not `failed: N × "..."` (see the no-data/failed split in `_record_iteration_failure`, below).
 
 #### 9e. Function call (lines 274–314)
 
@@ -205,7 +205,7 @@ result = fn(**kwargs)
 
 That's it. There is no output-count dispatch — `_call_fn()` (line 370–372) simply calls `fn(**kwargs)` and returns whatever the function returns.
 
-If the function raises an exception, the combo is skipped with the same graceful-skip logic as filtering errors: print `[skip]`, log the traceback, continue.
+If the function raises an exception, the combo is skipped with the same graceful-skip logic as filtering errors. Unlike a `NoDataError` from the filtering stage, a `fn`-raised exception is always a genuine failure — it escalates to WARN with a traceback on first occurrence and is reported in the summary as `failed: N × "..."`.
 
 Each successful call prints `[done] subject=1, session=pre: my_fn completed in 0.042s` with wall-clock timing.
 
@@ -398,15 +398,14 @@ The separation means that `scifor` can be used independently with plain DataFram
 
 ## Error handling philosophy
 
-scifor uses a **skip-and-continue** model. If a combo fails — whether during input filtering or during the function call — it is skipped. The error is:
+scifor uses a **skip-and-continue** model. If a combo fails — whether during input filtering or during the function call — it is skipped, logged via the `scistacklog` facade (`layer="scifor"`), and the loop continues to the next combo.
 
-1. Printed to stdout as `[skip] subject=1, session=pre: reason`
-2. Logged with a full traceback to `/tmp/scihist_diag.log`
-3. Also printed to stderr via `traceback.print_exc()`
+Every skip logs a `[skip] subject=1, session=pre: reason` line at DEBUG. What happens beyond that depends on *why* the combo was skipped:
 
-The loop continues to the next combo. The final summary shows how many combos completed vs. skipped.
+- **No data for this combo** (a per-combo DataFrame input filtered to 0 rows, outside `as_table` mode): raised as `NoDataError` (`scifor:NoData` in MATLAB). This is expected — missing combinations are normal in experimental data (a subject might not have a particular session) — so it never escalates past DEBUG, carries no traceback, and is reported in the end-of-run summary as `no data: N combo(s) — ...`, separate from genuine failures.
+- **Anything else** (a bug in `fn`, a malformed input spec, etc.): the first occurrence of each distinct reason escalates to WARN with a full traceback, and the end-of-run summary reports it as `failed: N × "reason" — ...`.
 
-This design choice reflects the reality of experimental data: missing combinations are normal (a subject might not have a particular session), and a single failure should not prevent the other 149 combinations from running.
+The final summary line (`completed=X, failed=Y, no_data=W, total=Z`) and the progress events passed to `_progress_fn` both carry this same split, so a UI consuming scifor's progress no longer has to treat "no data" as an error state.
 
 ---
 

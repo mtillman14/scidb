@@ -60,12 +60,17 @@ def _record_iteration_failure(
 ) -> None:
     """Track a per-iteration failure for the end-of-run summary.
 
-    Every failure logs a [skip] line at DEBUG with its traceback; the first
-    occurrence of each distinct reason also logs at WARN with the traceback,
-    so the default (INFO) log still answers "what failed and why".
+    Every failure logs a [skip] line at DEBUG; the first occurrence of each
+    distinct reason also logs at WARN with a traceback, so the default
+    (INFO) log still answers "what failed and why" — except NoDataError,
+    which is an expected outcome (this combo has no backing data) rather
+    than a bug, so it never escalates to WARN and carries no traceback.
     """
     reason = f"{type(exc).__name__}: {exc}"
     failure_reasons.setdefault(reason, []).append(metadata_str)
+    if isinstance(exc, NoDataError):
+        Log.debug(f"[skip] {metadata_str}: {context}: {exc}", layer="scifor")
+        return
     if reason not in warned_reasons:
         warned_reasons.add(reason)
         Log.warn(
@@ -644,9 +649,14 @@ def for_each(
         # Cooperative cancel: check between combos (before any work for this combo).
         if _cancel_check is not None and _cancel_check():
             was_cancelled = True
+            _nd = sum(
+                len(c)
+                for r, c in failure_reasons.items()
+                if r.startswith("NoDataError:")
+            )
             Log.info(
                 f"for_each({fn_name}) cancelled at combo {combo_idx + 1}/{total} "
-                f"(completed={completed}, failed={skipped})",
+                f"(completed={completed}, failed={skipped - _nd}, no_data={_nd})",
                 layer="scifor",
             )
             if _progress_fn is not None:
@@ -678,13 +688,18 @@ def for_each(
                     and elapsed_now - progress_last_emit >= _PROGRESS_MIN_INTERVAL_S
                 ):
                     progress_last_emit = elapsed_now
+                    _nd = sum(
+                        len(c)
+                        for r, c in failure_reasons.items()
+                        if r.startswith("NoDataError:")
+                    )
                     Log.info(
                         f"progress: {progress_key}={progress_value} "
                         f"({progress_seen}/{progress_total}) — "
                         f"{combo_idx}/{total} combos "
                         f"({100.0 * combo_idx / total:.1f}%), "
-                        f"completed={completed}, failed={skipped}, "
-                        f"elapsed={elapsed_now:.1f}s",
+                        f"completed={completed}, failed={skipped - _nd}, "
+                        f"no_data={_nd}, elapsed={elapsed_now:.1f}s",
                         layer="scifor",
                     )
 
@@ -920,9 +935,20 @@ def for_each(
 
     elapsed = time.perf_counter() - loop_t0
     cancelled_suffix = ", cancelled" if was_cancelled else ""
+    # NoDataError means the combo simply has no backing data (expected in a
+    # sparse schema-key cross-product) — split it out from genuine `fn`
+    # failures so the summary doesn't cry "failed" over missing data.
+    no_data_reasons = {
+        reason: combos
+        for reason, combos in failure_reasons.items()
+        if reason.startswith("NoDataError:")
+    }
+    no_data_count = sum(len(combos) for combos in no_data_reasons.values())
+    failed_count = skipped - no_data_count
     Log.info(
         f"for_each({fn_name}) done in {elapsed:.1f}s: completed={completed}, "
-        f"failed={skipped}, total={total}{cancelled_suffix}",
+        f"failed={failed_count}, no_data={no_data_count}, total={total}"
+        f"{cancelled_suffix}",
         layer="scifor",
     )
     # One line per distinct failure reason, so the default (INFO) log always
@@ -932,8 +958,9 @@ def for_each(
         more = (
             f" (+{len(combos) - len(shown)} more)" if len(combos) > len(shown) else ""
         )
+        label = "no data" if reason in no_data_reasons else "failed"
         Log.info(
-            f'failed: {len(combos)} × "{reason}" — {"; ".join(shown)}{more}',
+            f'{label}: {len(combos)} × "{reason}" — {"; ".join(shown)}{more}',
             layer="scifor",
         )
     if _progress_fn is not None:
@@ -943,7 +970,8 @@ def for_each(
                 "current": total,  # keeps positional consumers (GUI) safe
                 "total": total,
                 "completed": completed,
-                "failed": skipped,
+                "failed": failed_count,
+                "no_data": no_data_count,
                 "skipped": skipped,  # legacy key: consumers that tally every event
                 "cancelled": was_cancelled,
                 "failure_reasons": failure_reasons,
@@ -994,6 +1022,14 @@ def _resolve_path_inputs(kwargs: dict, metadata: dict, resolver=None) -> dict:
         name: (resolve_fn(v, metadata) if isinstance(v, PathInput) else v)
         for name, v in kwargs.items()
     }
+
+
+class NoDataError(RuntimeError):
+    """A per-combo DataFrame input had no matching rows after combo/where
+    filtering. This is expected whenever the schema-key cross-product is
+    sparser than the full grid (e.g. not every subject ran every trial), so
+    it is reported separately from genuine ``fn`` failures in the end-of-run
+    summary rather than as "failed"."""
 
 
 class ForColumnsError(ValueError):
@@ -1477,6 +1513,11 @@ def _prepare_input(
     filtered = _filter_df_for_combo(df, effective_metadata, schema_keys)
     filtered = _apply_where_filter(filtered, where)
 
+    # No matching rows -> skip this combo (unless as_table, where an empty
+    # table is valid output).
+    if not as_table and len(filtered) == 0:
+        raise NoDataError("No data for this combo after filtering.")
+
     if column_selection is not None:
         # An empty selection means "all data columns".
         cols = column_selection or _all_data_columns(filtered, schema_keys)
@@ -1595,7 +1636,10 @@ def _prepare_iterate_df(
     if not _is_per_combo_df(df, schema_keys):
         return df
     filtered = _filter_df_for_combo(df, effective_metadata, schema_keys)
-    return _apply_where_filter(filtered, where)
+    filtered = _apply_where_filter(filtered, where)
+    if len(filtered) == 0:
+        raise NoDataError("No data for this combo after filtering.")
+    return filtered
 
 
 def _apply_column_selection(df: "pd.DataFrame", columns: list[str]) -> Any:

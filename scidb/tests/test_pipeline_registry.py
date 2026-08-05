@@ -448,6 +448,61 @@ class TestLastRunReport:
         assert report["exploder"]["pipeline"] == "gait"
         assert report["exploder"]["cancelled"] is False
 
+    def test_report_counts_no_data_separately_from_failed(self, db, monkeypatch):
+        """A combo with no matching rows is expected/benign (schema-key
+        cross-product sparser than the full grid), unlike a genuine fn
+        failure, and last_run_report must keep the two counts separate.
+
+        This targets _execute_step's _collecting_progress_fn directly by
+        controlling the "summary" event scifor/scidb would emit, rather than
+        engineering a real sparse dataset: scidb's own combo discovery
+        already prunes combos with zero backing records before scifor ever
+        sees them (verified empirically — a genuinely absent subject never
+        reaches scifor's NoDataError path through scidb.for_each), so a
+        real end-to-end no-data scenario doesn't exercise this reporting
+        code at all. The plumbing this test guards is real regardless: it's
+        exactly what fires when a combo *does* survive to scifor's own
+        per-combo filtering (e.g. a `where=` clause, or one of several
+        inputs missing data for a combo whose other inputs exist) and comes
+        back with a NoDataError there."""
+        import scidb.foreach as scidb_foreach
+
+        _seed(db)
+        pipe = db.pipeline("gait")
+        for_each(
+            halve,
+            {"signal": RawSignal},
+            [Filtered],
+            subject=SUBJECTS,
+            trial=TRIALS,
+            db=db,
+        )
+
+        def fake_for_each(fn, inputs, outputs, **kwargs):
+            progress_fn = kwargs.get("_progress_fn")
+            if progress_fn is not None:
+                progress_fn(
+                    {
+                        "event": "summary",
+                        "completed": 2,
+                        "failed": 0,
+                        "no_data": 2,
+                        "total": 4,
+                        "cancelled": False,
+                    }
+                )
+            return None
+
+        monkeypatch.setattr(scidb_foreach, "for_each", fake_for_each)
+
+        pipe.run_all()
+
+        entry = pipe.last_run_report[0]
+        assert entry["completed"] == 2
+        assert entry["failed"] == 0
+        assert entry["no_data"] == 2
+        assert entry["total"] == 4
+
     def test_memoized_rerun_reports_clean(self, db):
         """skip_computed removes up-to-date combos BEFORE the loop — they
         must never inflate the report's failed count."""

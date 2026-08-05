@@ -27,7 +27,7 @@ from .column_selection import ColumnSelection
 from .each_of import EachOf
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
 from .fixed import Fixed
-from .foreach import ColumnFunctionError, ForColumnsError, for_each
+from .foreach import ColumnFunctionError, ForColumnsError, NoDataError, for_each
 from .merge import Merge
 from .pathinput import PathInput
 from .pathoutput import PathOutput
@@ -44,6 +44,7 @@ __all__ = [
     "for_each",
     "ColumnFunctionError",
     "ForColumnsError",
+    "NoDataError",
     # Input wrappers
     "Fixed",
     "Merge",

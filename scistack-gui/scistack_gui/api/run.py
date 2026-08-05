@@ -314,7 +314,7 @@ def _run_in_thread(
     # (continue-and-report), so success must be decided from these counts —
     # NOT from "the for_each call returned". skip_computed skips are
     # removed before the loop and never inflate 'failed'.
-    combo_totals = {"completed": 0, "failed": 0}
+    combo_totals = {"completed": 0, "failed": 0, "no_data": 0}
     # Build where= argument from where_filters.
     logger.info("[run_thread] Building where filters (run_id=%s)", run_id)
     where_arg = _build_where(where_filters)
@@ -466,7 +466,11 @@ def _run_in_thread(
                 # The end-of-run summary carries this target's final counts.
                 if info.get("event") == "summary":
                     combo_totals["completed"] += info.get("completed", 0)
-                    combo_totals["failed"] += info.get("failed", info.get("skipped", 0))
+                    no_data = info.get("no_data", 0)
+                    combo_totals["failed"] += info.get(
+                        "failed", info.get("skipped", 0) - no_data
+                    )
+                    combo_totals["no_data"] += no_data
                 # Convert metadata values to strings for JSON serialization.
                 meta = {str(k): str(val) for k, val in info.get("metadata", {}).items()}
                 logger.debug(
@@ -485,6 +489,7 @@ def _run_in_thread(
                         "total": info["total"],
                         "completed": info["completed"],
                         "skipped": info["skipped"],
+                        "no_data": info.get("no_data"),
                         "metadata": meta,
                         "error": info.get("error"),
                     }
@@ -524,19 +529,21 @@ def _run_in_thread(
                     emit(output)
                 target_ms = int((time.time() - started_at) * 1000)
                 target_failed = combo_totals["failed"] - target_snapshot["failed"]
+                target_no_data = combo_totals["no_data"] - target_snapshot["no_data"]
                 target_completed = (
                     combo_totals["completed"] - target_snapshot["completed"]
                 )
                 if target_failed:
                     logger.warning(
                         "[run_thread] Target %d/%d (%s) finished in %d ms with "
-                        "%d failed combo(s) (completed=%d) (run_id=%s)",
+                        "%d failed combo(s) (completed=%d, no_data=%d) (run_id=%s)",
                         idx,
                         len(unique_targets),
                         label,
                         target_ms,
                         target_failed,
                         target_completed,
+                        target_no_data,
                         run_id,
                     )
                     emit(
@@ -610,12 +617,14 @@ def _run_in_thread(
             cancelled = True
         logger.info(
             "[run_thread] Thread finished (success=%s, cancelled=%s, force=%s, "
-            "completed_combos=%d, failed_combos=%d) in %d ms (run_id=%s)",
+            "completed_combos=%d, failed_combos=%d, no_data_combos=%d) in %d ms "
+            "(run_id=%s)",
             success,
             cancelled,
             was_force,
             combo_totals["completed"],
             combo_totals["failed"],
+            combo_totals["no_data"],
             duration_ms,
             run_id,
         )
@@ -630,6 +639,7 @@ def _run_in_thread(
                 "force_cancelled": was_force,
                 "completed_combos": combo_totals["completed"],
                 "failed_combos": combo_totals["failed"],
+                "no_data_combos": combo_totals["no_data"],
             }
         )
         logger.debug("[run_thread] Emitting dag_updated message (run_id=%s)", run_id)
@@ -826,6 +836,7 @@ def _run_pipeline_in_thread(
         # pipeline's per-step run report.
         completed_combos = sum(e.get("completed", 0) for e in report)
         failed_combos = sum(e.get("failed", 0) for e in report)
+        no_data_combos = sum(e.get("no_data", 0) for e in report)
         for e in report:
             if e.get("failed"):
                 emit(
@@ -848,13 +859,14 @@ def _run_pipeline_in_thread(
             cancelled = True
         logger.info(
             "[pipeline_run] finished (run_id=%s success=%s "
-            "cancelled=%s completed_combos=%d failed_combos=%d) "
-            "in %d ms",
+            "cancelled=%s completed_combos=%d failed_combos=%d "
+            "no_data_combos=%d) in %d ms",
             run_id,
             success,
             cancelled,
             completed_combos,
             failed_combos,
+            no_data_combos,
             duration_ms,
         )
         push_message(
@@ -867,6 +879,7 @@ def _run_pipeline_in_thread(
                 "force_cancelled": was_force,
                 "completed_combos": completed_combos,
                 "failed_combos": failed_combos,
+                "no_data_combos": no_data_combos,
             }
         )
         push_message({"type": "dag_updated"})

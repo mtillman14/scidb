@@ -1108,6 +1108,63 @@ def test_all_skipped_returns_empty_df():
     assert len(result) == 0
 
 
+def test_no_data_combo_is_skipped_not_passed_to_fn():
+    """A combo with no matching rows never reaches fn -- it's skipped as
+    NoDataError before the call, mirroring MATLAB's scifor:NoData."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "value": [1.0, 2.0]})
+    received = []
+
+    def fn(value):
+        received.append(value)
+        return value
+
+    result = for_each(fn, inputs={"value": df}, subject=[1, 2, 3])
+    assert len(received) == 2  # subject=3 never called
+    assert len(result) == 2
+
+
+def test_no_data_combo_as_table_passes_empty_table():
+    """as_table=True exempts the NoData raise -- an empty table is valid
+    output for that combo, so fn is still called (mirrors MATLAB's
+    'unless as_table, where empty table is valid')."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "value": [1.0, 2.0]})
+    received = []
+
+    def fn(value):
+        received.append(value)
+        return len(value)
+
+    for_each(fn, inputs={"value": df}, subject=[1, 2, 3], as_table=True)
+    assert len(received) == 3  # subject=3 called with an empty DataFrame
+    assert len(received[-1]) == 0
+
+
+def test_no_data_combo_in_iterate_mode_skips_even_with_as_table():
+    """for_columns (iterate=True) has no as_table exemption -- a combo with
+    no matching rows always raises NoDataError, mirroring MATLAB's
+    prepare_iterate_table (which takes no as_table parameter)."""
+    set_schema(["subject"])
+    df = pd.DataFrame(
+        {"subject": [1, 2], "a": [1.0, 2.0], "b": [10.0, 20.0]}
+    )
+    received = []
+
+    def fn(v):
+        received.append(v)
+        return float(v[v.columns[-1]].max()) if len(v) else float("nan")
+
+    for_each(
+        fn,
+        inputs={"v": ColumnSelection(df, ["a", "b"], iterate=True)},
+        as_table=True,
+        subject=[1, 2, 3],
+    )
+    # subject=3 never reaches fn for either column
+    assert len(received) == 4  # 2 subjects x 2 columns
+
+
 def test_flatten_mode_dataframe_outputs():
     """When fn returns DataFrames, metadata is replicated per row."""
     set_schema(["subject"])

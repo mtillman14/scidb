@@ -577,6 +577,34 @@ classdef TestSciforForEach < matlab.unittest.TestCase
             % Only subject=2 should succeed
             tc.verifyEqual(height(result), 1);
         end
+
+        function test_no_data_combo_is_skipped_not_passed_to_fn(tc)
+        %   A combo with no matching rows never reaches fn -- it's skipped
+        %   as scifor:NoData before the call (expected, not a failure).
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;2], [10.0;20.0], 'VariableNames', {'subject','value'});
+
+            result = scifor.for_each(@(x) x, ...
+                struct('x', tbl), ...
+                subject=[1 2 3]);
+            % subject=3 has no backing rows -> skipped, never calls fn
+            tc.verifyEqual(height(result), 2);
+        end
+
+        function test_no_data_combo_as_table_passes_empty_table(tc)
+        %   as_table=true exempts the scifor:NoData raise -- an empty table
+        %   is valid output for that combo, so fn is still called.
+            scifor.set_schema(["subject"]);
+
+            tbl = table([1;2], [10.0;20.0], 'VariableNames', {'subject','value'});
+
+            result = scifor.for_each(@(x) height(x), ...
+                struct('x', tbl), ...
+                subject=[1 2 3], as_table=true);
+            tc.verifyEqual(height(result), 3);
+            tc.verifyEqual(sort(result.output), [0; 1; 1]);
+        end
     end
 
     % =====================================================================

@@ -668,11 +668,17 @@ function varargout = for_each(fn, inputs, varargin)
                         && elapsed_now >= PROGRESS_START_DELAY_S ...
                         && (elapsed_now - progress_last_emit) >= PROGRESS_MIN_INTERVAL_S
                     progress_last_emit = elapsed_now;
+                    nd = 0;
+                    for fr = 1:numel(failure_order)
+                        if startsWith(failure_order{fr}, 'scifor:NoData:')
+                            nd = nd + numel(failure_reasons(failure_order{fr}));
+                        end
+                    end
                     scifor.Log.info(['progress: %s=%s (%d/%d) — %d/%d combos ' ...
-                        '(%.1f%%), completed=%d, failed=%d, elapsed=%.1fs'], ...
+                        '(%.1f%%), completed=%d, failed=%d, no_data=%d, elapsed=%.1fs'], ...
                         progress_key, char(string(pv)), progress_seen, ...
                         progress_total, c - 1, total, ...
-                        100.0 * (c - 1) / total, completed, skipped, elapsed_now);
+                        100.0 * (c - 1) / total, completed, skipped - nd, nd, elapsed_now);
                 end
             end
         end
@@ -934,8 +940,19 @@ function varargout = for_each(fn, inputs, varargin)
             varargout{1} = [];
         end
     else
-        scifor.Log.info('for_each(%s) done in %.1fs: completed=%d, failed=%d, total=%d', ...
-            fn_name, toc(loop_t0), completed, skipped, total);
+        % scifor:NoData means the combo simply has no backing data (expected
+        % in a sparse schema-key cross-product) -- split it out from genuine
+        % fn failures so the summary doesn't cry "failed" over missing data.
+        no_data_count = 0;
+        for fr = 1:numel(failure_order)
+            if startsWith(failure_order{fr}, 'scifor:NoData:')
+                no_data_count = no_data_count + numel(failure_reasons(failure_order{fr}));
+            end
+        end
+        scifor.Log.info( ...
+            'for_each(%s) done in %.1fs: completed=%d, failed=%d, no_data=%d, total=%d', ...
+            fn_name, toc(loop_t0), completed, skipped - no_data_count, ...
+            no_data_count, total);
         % One line per distinct failure reason (combos capped at 5), so the
         % default (INFO) log answers "what failed and why".
         SUMMARY_COMBOS_MAX = 5;
@@ -948,8 +965,13 @@ function varargout = for_each(fn, inputs, varargin)
                 shown = sprintf('%s (+%d more)', shown, ...
                     numel(combos_for_reason) - n_shown);
             end
-            scifor.Log.info('failed: %d × "%s" — %s', ...
-                numel(combos_for_reason), reason, shown);
+            if startsWith(reason, 'scifor:NoData:')
+                label = 'no data';
+            else
+                label = 'failed';
+            end
+            scifor.Log.info('%s: %d × "%s" — %s', ...
+                label, numel(combos_for_reason), reason, shown);
         end
         if n_outputs == 0
             % Zero-output function: nothing to collect
@@ -2470,17 +2492,23 @@ function [failure_reasons, failure_order] = record_iteration_failure( ...
 %RECORD_ITERATION_FAILURE  Track a per-iteration failure for the summary.
 %   Every failure logs a [skip] line at DEBUG with the MATLAB error report;
 %   the first occurrence of each distinct reason also logs at WARN, so the
-%   default (INFO) log still answers "what failed and why".
+%   default (INFO) log still answers "what failed and why" -- except
+%   scifor:NoData, which is an expected outcome (this combo has no backing
+%   data) rather than a bug, so it never escalates to WARN and carries no
+%   report.
     reason = sprintf('%s: %s', err.identifier, err.message);
+    is_no_data = strcmp(err.identifier, 'scifor:NoData');
     if isKey(failure_reasons, reason)
         failure_reasons(reason) = [failure_reasons(reason), {metadata_str}];
     else
         failure_reasons(reason) = {metadata_str};
         failure_order{end+1} = reason;
-        scifor.Log.warn(['iteration failed: %s — %s: %s ' ...
-            '(first occurrence; report follows)\n%s'], ...
-            metadata_str, context, err.message, ...
-            getReport(err, 'extended', 'hyperlinks', 'off'));
+        if ~is_no_data
+            scifor.Log.warn(['iteration failed: %s — %s: %s ' ...
+                '(first occurrence; report follows)\n%s'], ...
+                metadata_str, context, err.message, ...
+                getReport(err, 'extended', 'hyperlinks', 'off'));
+        end
     end
     scifor.Log.debug('[skip] %s: %s: %s', metadata_str, context, err.message);
 end

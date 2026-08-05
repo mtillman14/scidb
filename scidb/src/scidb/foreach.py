@@ -659,13 +659,20 @@ def for_each(
     # scifor's final "summary" event is authoritative (it also carries the
     # aggregated failure reasons); the per-combo events keep the counts live
     # for GUI consumers.
-    _run_summary = {"total": 0, "completed": 0, "skipped": 0, "cancelled": False}
+    _run_summary = {
+        "total": 0,
+        "completed": 0,
+        "skipped": 0,
+        "no_data": 0,
+        "cancelled": False,
+    }
 
     def _tracking_progress_fn(info: dict):
         _run_summary["total"] = info.get("total", _run_summary["total"])
         _run_summary["completed"] = info.get("completed", _run_summary["completed"])
         _run_summary["skipped"] = info.get("skipped", _run_summary["skipped"])
         if info.get("event") == "summary":
+            _run_summary["no_data"] = info.get("no_data", 0)
             _run_summary["cancelled"] = bool(info.get("cancelled"))
         if _progress_fn is not None:
             _progress_fn(info)
@@ -692,7 +699,8 @@ def for_each(
     # documents what ran, what failed, and what was skipped for the whole call.
     _summary_parts = [
         f"completed={_run_summary['completed']}",
-        f"failed={_run_summary['skipped']}",
+        f"failed={_run_summary['skipped'] - _run_summary['no_data']}",
+        f"no_data={_run_summary['no_data']}",
     ]
     if state.skip_computed_count:
         _summary_parts.append(

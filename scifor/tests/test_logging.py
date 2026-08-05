@@ -86,7 +86,10 @@ def test_banner_and_done_summary_at_info(caplog):
     msgs = messages(caplog, logging.INFO)
     assert any("for_each(<lambda>) — 6 iterations" in m for m in msgs)
     assert any("subject=3 values [1, 2, 3]" in m for m in msgs)
-    assert any("done in" in m and "completed=6, failed=0, total=6" in m for m in msgs)
+    assert any(
+        "done in" in m and "completed=6, failed=0, no_data=0, total=6" in m
+        for m in msgs
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +111,7 @@ def test_summary_aggregates_failure_reasons(caplog):
 
     info = messages(caplog, logging.INFO)
     done = [m for m in info if "done in" in m]
-    assert done and "completed=3, failed=3, total=6" in done[0]
+    assert done and "completed=3, failed=3, no_data=0, total=6" in done[0]
     failed = [m for m in info if m.startswith("failed:")]
     assert len(failed) == 1
     assert 'failed: 3 × "ValueError: bad channel count"' in failed[0]
@@ -159,8 +162,76 @@ def test_summary_progress_event_carries_failure_reasons():
     assert len(summaries) == 1
     s = summaries[0]
     assert s["total"] == 2 and s["completed"] == 1 and s["failed"] == 1
+    assert s["no_data"] == 0
     assert list(s["failure_reasons"]) == ["ValueError: boom"]
     assert s["failure_reasons"]["ValueError: boom"] == ["subject=1"]
+
+
+# ---------------------------------------------------------------------------
+# No-data vs failed
+# ---------------------------------------------------------------------------
+
+
+def test_no_data_combo_reported_separately_from_failed(caplog):
+    """A combo with no matching rows is expected/benign — it must be broken
+    out from genuine `fn` failures, not lumped into "failed"."""
+    set_schema(["subject", "trial"])
+    with caplog.at_level(logging.DEBUG, logger="scifor"):
+        for_each(
+            lambda value: value.mean(),
+            inputs={"value": make_df(subjects=(1, 2, 3))},
+            subject=[1, 2, 3, 4],  # subject=4 has no backing rows
+            trial=[1, 2],
+        )
+
+    info = messages(caplog, logging.INFO)
+    done = [m for m in info if "done in" in m]
+    assert done and "completed=6, failed=0, no_data=2, total=8" in done[0]
+
+    no_data = [m for m in info if m.startswith("no data:")]
+    assert len(no_data) == 1
+    assert (
+        'no data: 2 × "NoDataError: No data for this combo after filtering."'
+        in no_data[0]
+    )
+    assert "subject=4, trial=1" in no_data[0]
+    assert not any(m.startswith("failed:") for m in info)
+
+    # Expected/benign — no WARN escalation, unlike a genuine failure.
+    warns = [
+        r for r in caplog.records if r.name == "scifor" and r.levelno == logging.WARNING
+    ]
+    assert not warns
+
+    skips = [m for m in messages(caplog, logging.DEBUG) if m.startswith("[skip]")]
+    assert len(skips) == 2
+
+
+def test_no_data_and_failed_combos_both_reported(caplog):
+    """A run with both a genuine failure and a no-data combo must label
+    each correctly and keep their counts separate."""
+    set_schema(["subject"])
+    df = pd.DataFrame({"subject": [1, 2], "value": [1.0, 2.0]})
+
+    def fn(value):
+        if value == 1.0:
+            raise ValueError("boom")
+        return float(value)
+
+    with caplog.at_level(logging.INFO, logger="scifor"):
+        for_each(fn, inputs={"value": df}, subject=[1, 2, 3])  # subject=3: no data
+
+    info = messages(caplog, logging.INFO)
+    done = [m for m in info if "done in" in m]
+    assert done and "completed=1, failed=1, no_data=1, total=3" in done[0]
+
+    failed = [m for m in info if m.startswith("failed:")]
+    assert len(failed) == 1
+    assert 'failed: 1 × "ValueError: boom"' in failed[0]
+
+    no_data = [m for m in info if m.startswith("no data:")]
+    assert len(no_data) == 1
+    assert "subject=3" in no_data[0]
 
 
 # ---------------------------------------------------------------------------

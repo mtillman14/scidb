@@ -575,10 +575,12 @@ class Pipeline:
         self._acknowledged = False
         # Per-step outcome of the most recent _run (run_all/run_until/
         # run_endpoints): [{"step", "label", "pipeline", "completed",
-        # "failed", "total", "cancelled"}]. for_each's continue-and-report
-        # policy means iteration failures never raise, so callers that need
-        # an honest verdict (the GUI's run status, CI wrappers) read this
-        # instead of inferring success from "the call returned".
+        # "failed", "no_data", "total", "cancelled"}]. for_each's
+        # continue-and-report policy means iteration failures never raise, so
+        # callers that need an honest verdict (the GUI's run status, CI
+        # wrappers) read this instead of inferring success from "the call
+        # returned". "no_data" combos (no backing data for that schema-key
+        # combination) are expected/benign and excluded from "failed".
         self.last_run_report: list[dict] = []
         _all_pipelines.append(self)
         for other in uses:
@@ -1219,9 +1221,10 @@ class Pipeline:
             )
         self.last_run_report = report
         failed_total = sum(e["failed"] for e in report)
+        no_data_total = sum(e.get("no_data", 0) for e in report)
         Log.info(
             f"pipeline_run_finished: '{self.name}' ({len(order)} step(s), "
-            f"{failed_total} failed combo(s))"
+            f"{failed_total} failed combo(s), {no_data_total} no-data combo(s))"
         )
         return results
 
@@ -1255,6 +1258,7 @@ class Pipeline:
                 "pipeline": owner.name,
                 "completed": 0,
                 "failed": 0,
+                "no_data": 0,
                 "total": 0,
                 "cancelled": False,
             }
@@ -1266,7 +1270,11 @@ class Pipeline:
             ):
                 if info.get("event") == "summary":
                     _entry["completed"] = info.get("completed", 0)
-                    _entry["failed"] = info.get("failed", info.get("skipped", 0))
+                    no_data = info.get("no_data", 0)
+                    _entry["failed"] = info.get(
+                        "failed", info.get("skipped", 0) - no_data
+                    )
+                    _entry["no_data"] = no_data
                     _entry["total"] = info.get("total", 0)
                     _entry["cancelled"] = bool(info.get("cancelled"))
                 if _next is not None:

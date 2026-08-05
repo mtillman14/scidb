@@ -260,7 +260,9 @@ Source: `/workspace/sciduck/src/sciduckdb/sciduckdb.py`, lines 1116–1141.
 
 This query runs against the `_schema` table, which contains entries for *all* variable types. It does not filter per-variable — if subject 1 has data for `RawEMG` but not for `ForceData`, the combination is still considered "existing" because the `_schema` entry exists. If both `RawEMG` and `ForceData` are listed as inputs, the missing `ForceData` for that combo will cause scifor to skip it at iteration time (graceful skip-and-continue).
 
-Per-input data availability is not checked at the combo level during planning. Instead, missing data is handled at iteration time: if the loaded DataFrame for an input has no rows matching a particular combo, scifor's filtering produces an empty result, and the function call typically fails and is skipped.
+Per-input data availability is not checked at the combo level during planning. Instead, missing data is handled at iteration time: if the loaded DataFrame for an input has no rows matching a particular combo, scifor's filtering raises `NoDataError` (`scifor:NoData` in MATLAB) before `fn` is ever called (unless `as_table=True`, where an empty table is valid output), and the combo is skipped.
+
+This is deliberately reported differently from a genuine `fn` failure. Both are counted in scifor's per-combo skip total, but the end-of-run summary and progress lines break them out separately — `no data: N combo(s) — ...` (DEBUG-only escalation, no traceback; expected when the schema-key cross-product is sparser than the full grid) vs `failed: N × "reason" — ...` (WARN on first occurrence, with traceback; an actual bug in `fn`). See `scifor.NoDataError` / MATLAB's `scifor:NoData` identifier in `scifor/src/scifor/foreach.py` and `scimatlab/src/scimatlab/matlab/+scifor/for_each.m`.
 
 ### Step 3: PathInput filesystem discovery (lines 204–235)
 

@@ -37,11 +37,9 @@ def test_single_alternative_behaves_like_passing_it_directly():
 
 def test_each_of_input_expands_and_concatenates():
     # Both alternatives carry every iterated subject -- a combo scifor can't
-    # match still calls fn with empty data rather than skipping ("the
-    # function is still called ... the emptiness must never be silent"),
-    # so a partial-subject df here would add ambiguous empty-array rows
-    # instead of cleanly testing "N alternatives -> N recursive calls,
-    # concatenated".
+    # match now skips as NoDataError, so a partial-subject df here would
+    # silently drop rows instead of cleanly testing "N alternatives -> N
+    # recursive calls, concatenated".
     set_schema(["subject"])
     df_a = make_df((1, 2))
     df_b = pd.DataFrame({"subject": [1, 2], "value": [10.0, 20.0]})
@@ -69,11 +67,11 @@ def test_each_of_constant_axis():
 
 def test_each_of_where_axis():
     # Each where= alternative recurses over both subjects independently;
-    # the combo it excludes still completes with empty data rather than
-    # being skipped (same non-silent-emptiness behavior as above), so the
-    # total is 2 alternatives x 2 subjects = 4, not 2. The two combos
-    # where subject actually matches the alternative's where= clause carry
-    # the real per-subject value.
+    # the combo it excludes now filters to 0 rows and is skipped as
+    # NoDataError (expected: this alternative has no data for that
+    # subject), rather than completing with empty data. So the total is
+    # just the 2 combos where subject actually matches the alternative's
+    # where= clause, carrying the real per-subject value.
     set_schema(["subject"])
     df = make_df((1, 2))
     result = for_each(
@@ -82,14 +80,8 @@ def test_each_of_where_axis():
         where=EachOf(Col("subject") == 1, Col("subject") == 2),
         subject=[1, 2],
     )
-    assert len(result) == 4
-    # The excluded combo in each alternative extracts to an empty numpy
-    # array (0 rows, 1 data col -- same _extract_data path as any
-    # zero-match combo), not a scalar or None, so plain `in`/`==` against
-    # the mixed-type column would itself raise ("truth value of an empty
-    # array is ambiguous"). Filter to the real (scalar) values first.
-    real_outputs = [v for v in result["output"] if isinstance(v, float)]
-    assert sorted(real_outputs) == [1.0, 2.0]
+    assert len(result) == 2
+    assert sorted(result["output"]) == [1.0, 2.0]
 
 
 def test_each_of_cancel_check_stops_immediately():
