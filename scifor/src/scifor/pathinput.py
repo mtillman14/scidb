@@ -70,6 +70,18 @@ class PathInput:
                 ``{session}`` folder spelled "Baseline" resolves as "BL" and
                 vice versa. Match-only: never affects how a path is written,
                 only how it's found (``load()``) or reported (``discover()``).
+        key_regex: Optional ``{key: pattern}`` map overriding the default
+                greedy ``[^/\\]+`` capture used for ``{key}`` when building
+                ``discover()``'s matching regex. Needed when two placeholders
+                are adjacent with no delimiter between them (e.g.
+                ``"{speed}{trial}"``) — without a literal to anchor the
+                split, greedy backtracking hands everything but the last
+                character to the first placeholder. Declaring
+                ``key_regex={"speed": r"[A-Za-z]+", "trial": r"\d+"}``
+                resolves the ambiguity explicitly. *pattern* is a raw regex
+                fragment (no capturing group) substituted into the named
+                group scifor builds internally; unrelated keys and
+                delimiter-separated segments are unaffected.
 
     Example:
         for_each(
@@ -90,6 +102,7 @@ class PathInput:
         root_folder: str | Path | None = None,
         regex: bool = False,
         aliases: "dict[str, dict[str, list[str]]] | None" = None,
+        key_regex: "dict[str, str] | None" = None,
     ):
         self.path_template = path_template
         self.root_folder = Path(root_folder) if root_folder is not None else None
@@ -101,6 +114,7 @@ class PathInput:
         self._dir_cache: dict[str, tuple[int, list[str]]] = {}
         self.aliases = aliases or {}
         self._alias_reverse = self._build_alias_reverse(self.aliases)
+        self.key_regex = self._validate_key_regex(key_regex or {})
 
     def _build_alias_reverse(
         self, aliases: "dict[str, dict[str, list[str]]]"
@@ -135,6 +149,17 @@ class PathInput:
             reverse[key] = key_reverse
         return reverse
 
+    def _validate_key_regex(self, key_regex: "dict[str, str]") -> "dict[str, str]":
+        """Validate ``key_regex`` keys are actual template placeholders."""
+        placeholder_set = set(self.placeholder_keys())
+        for key in key_regex:
+            if key not in placeholder_set:
+                raise ValueError(
+                    f"PathInput key_regex key {key!r} is not a placeholder in "
+                    f"template {self.path_template!r}"
+                )
+        return dict(key_regex)
+
     def to_key(self) -> str:
         """Return a structured JSON string for version_keys serialization.
 
@@ -153,6 +178,8 @@ class PathInput:
             payload["regex"] = True
         if self.aliases:
             payload["aliases"] = self.aliases
+        if self.key_regex:
+            payload["key_regex"] = self.key_regex
         return json.dumps(payload)
 
     def load(self, db=None, **metadata: Any) -> Path:
@@ -779,9 +806,14 @@ class PathInput:
                 if entry_path.is_dir():
                     self._walk(entry_path, segments, seg_idx + 1, new_bindings, results)
 
-    @staticmethod
-    def _segment_to_regex(segment: str) -> str:
-        """Convert a template segment like ``{subject}_XSENS_{session}`` to a regex."""
+    def _segment_to_regex(self, segment: str) -> str:
+        """Convert a template segment like ``{subject}_XSENS_{session}`` to a regex.
+
+        A placeholder declared in ``key_regex`` uses its custom pattern
+        instead of the default greedy ``[^/\\]+`` — needed to disambiguate
+        placeholders that are adjacent with no delimiter between them (see
+        the ``key_regex`` docstring on ``__init__``).
+        """
         parts = _string.Formatter().parse(segment)
         regex = ""
         key_counts: dict[str, int] = {}
@@ -793,7 +825,8 @@ class PathInput:
                 key_counts[field_name] = key_counts.get(field_name, 0) + 1
                 count = key_counts[field_name]
                 group_name = field_name if count == 1 else f"{field_name}_{count}"
-                regex += f"(?P<{group_name}>[^/\\\\]+)"
+                pattern = self.key_regex.get(field_name, r"[^/\\]+")
+                regex += f"(?P<{group_name}>{pattern})"
         return regex
 
     def __repr__(self) -> str:

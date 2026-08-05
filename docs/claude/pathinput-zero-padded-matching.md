@@ -83,3 +83,6 @@ equality matching subsumes it).
 
 - `docs/claude/input-markers-colname-pathinput-pathoutput.md` — PathInput's
   role among the input markers.
+- `docs/claude/pathinput-key-regex.md` — a different ambiguity: two
+  placeholders adjacent with no delimiter (`{speed}{trial}`), solved with
+  an explicit per-key regex rather than this numeric fallback.

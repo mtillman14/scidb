@@ -299,6 +299,65 @@ classdef TestPathInput < matlab.unittest.TestCase
             testCase.verifyEqual(sessions('sub2'), 'BL');  % on disk: "BL" itself
         end
 
+        %% key_regex: adjacent-placeholder disambiguation
+
+        function test_key_regex_unknown_key_errors(testCase)
+            % The Python-side ValueError (key_regex key that isn't an
+            % actual template placeholder) crosses the MATLAB/Python
+            % bridge as some MException; the specific identifier is an
+            % implementation detail of that bridge, so match generically.
+            testCase.verifyError(@() scifor.PathInput("{subject}/data.mat", ...
+                'key_regex', struct('session', '\d+')), ...
+                ?MException);
+        end
+
+        function test_key_regex_default_greedy_split_is_wrong(testCase)
+            % Baseline: without key_regex, adjacent placeholders with no
+            % delimiter split at "everything but the last character."
+            emg_dir = fullfile(testCase.tmp_dir, 'emg');
+            mkdir(emg_dir);
+            fclose(fopen(fullfile(emg_dir, 'SS01_EMG_SSV10.mat'), 'w'));
+
+            pi = scifor.PathInput("{subject}_EMG_{speed}{trial}.mat", ...
+                'root_folder', emg_dir);
+            combos = pi.discover();
+            testCase.verifyLength(combos, 1);
+            testCase.verifyEqual(combos{1}.speed, 'SSV1');
+            testCase.verifyEqual(combos{1}.trial, '0');
+        end
+
+        function test_key_regex_letters_digits_split_resolves_ambiguity(testCase)
+            emg_dir = fullfile(testCase.tmp_dir, 'emg');
+            mkdir(emg_dir);
+            fclose(fopen(fullfile(emg_dir, 'SS01_EMG_SSV1.mat'), 'w'));
+            fclose(fopen(fullfile(emg_dir, 'SS01_EMG_SSV10.mat'), 'w'));
+            fclose(fopen(fullfile(emg_dir, 'SS02_EMG_FV12.mat'), 'w'));
+
+            pi = scifor.PathInput("{subject}_EMG_{speed}{trial}.mat", ...
+                'root_folder', emg_dir, ...
+                'key_regex', struct('speed', '[A-Za-z]+', 'trial', '\d+'));
+            combos = pi.discover();
+            testCase.verifyLength(combos, 3);
+
+            found = containers.Map('KeyType', 'char', 'ValueType', 'char');
+            for i = 1:numel(combos)
+                found(combos{i}.subject) = sprintf('%s|%s', combos{i}.speed, combos{i}.trial);
+            end
+            testCase.verifyEqual(found('SS02'), 'FV|12');
+        end
+
+        function test_key_regex_no_match_when_value_violates_pattern(testCase)
+            emg_dir = fullfile(testCase.tmp_dir, 'emg_bad');
+            mkdir(emg_dir);
+            fclose(fopen(fullfile(emg_dir, 'EMG_SSV1a.mat'), 'w'));
+
+            pi = scifor.PathInput("EMG_{speed}{trial}.mat", ...
+                'root_folder', emg_dir, ...
+                'key_regex', struct('speed', '[A-Za-z]+', 'trial', '\d+'));
+            combos = pi.discover();
+            testCase.verifyEmpty(combos);
+        end
+
         %% placeholder_keys tests
 
         function test_placeholder_keys_simple(testCase)

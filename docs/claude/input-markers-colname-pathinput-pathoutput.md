@@ -76,6 +76,9 @@ metadata into a template and resolves it to a real path the function then
 - zero-padded numeric filenames (`6MWT-001.mat` from `trial=1`) are handled
   natively by a numeric-equivalence fallback in `load()` — see
   `docs/claude/pathinput-zero-padded-matching.md`.
+- two placeholders adjacent with no delimiter (`{speed}{trial}`) are
+  ambiguous under the default greedy capture; `key_regex` lets a caller
+  declare the split explicitly — see `docs/claude/pathinput-key-regex.md`.
 
 All of that is about *finding inputs to read*. Pointing a `PathInput` at an
 output path is wrong: discovery finds nothing and regex mode errors.

@@ -12,6 +12,7 @@ classdef PathInput < handle
 %   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER)
 %   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER, regex=true)
 %   PI = scifor.PathInput(TEMPLATE, aliases=ALIASES)
+%   PI = scifor.PathInput(TEMPLATE, key_regex=KEY_REGEX)
 %
 %   The template uses {key} placeholders that are replaced by the
 %   metadata values supplied by for_each on each iteration.
@@ -29,6 +30,18 @@ classdef PathInput < handle
 %       scifor.PathInput("{subject}/{session}/data.mat", ...
 %           aliases=struct('session', struct('BL', ["Baseline", "1. Baseline"])))
 %
+%   KEY_REGEX overrides the default greedy capture used for a {key}
+%   placeholder when discover() builds its matching regex. Needed when
+%   two placeholders are adjacent with no delimiter between them (e.g.
+%   "{speed}{trial}") — without a literal to anchor the split, greedy
+%   backtracking hands everything but the last character to the first
+%   placeholder. Struct: KEY_REGEX.(key) = PATTERN (a raw regex fragment,
+%   no capturing group). E.g. "SS01_EMG_SSV1.mat" where speed is letters
+%   and trial is digits:
+%
+%       scifor.PathInput("{subject}_EMG_{speed}{trial}.mat", ...
+%           key_regex=struct('speed', '[A-Za-z]+', 'trial', '\d+'))
+%
 %   Example:
 %       scifor.for_each(@process_file, ...
 %           struct('filepath', scifor.PathInput("{subject}/trial_{trial}.mat", ...
@@ -42,6 +55,7 @@ classdef PathInput < handle
         root_folder    string   % Optional root directory
         regex          logical  % Whether to use regex matching on the last segment
         aliases        struct   % key -> canonical -> [spellings] (see class help)
+        key_regex      struct   % key -> regex pattern (see class help)
         py_obj                  % Python scifor.pathinput.PathInput instance
     end
 
@@ -53,18 +67,21 @@ classdef PathInput < handle
         %   PI = scifor.PathInput(TEMPLATE, root_folder=FOLDER)
         %   PI = scifor.PathInput(TEMPLATE, regex=true)
         %   PI = scifor.PathInput(TEMPLATE, aliases=ALIASES)
+        %   PI = scifor.PathInput(TEMPLATE, key_regex=KEY_REGEX)
 
             arguments
                 path_template  string
                 options.root_folder  string = ""
                 options.regex        logical = false
                 options.aliases      struct = struct()
+                options.key_regex    struct = struct()
             end
 
             obj.path_template = path_template;
             obj.root_folder = options.root_folder;
             obj.regex = options.regex;
             obj.aliases = options.aliases;
+            obj.key_regex = options.key_regex;
 
             % Construct the Python instance once and reuse for load/discover.
             if strlength(options.root_folder) > 0
@@ -76,7 +93,8 @@ classdef PathInput < handle
                 char(path_template), ...
                 pyargs('root_folder', py_root, ...
                        'regex', logical(options.regex), ...
-                       'aliases', scifor.PathInput.aliases_to_py(options.aliases)));
+                       'aliases', scifor.PathInput.aliases_to_py(options.aliases), ...
+                       'key_regex', scifor.PathInput.key_regex_to_py(options.key_regex)));
         end
 
         function filepath = load(obj, varargin)
@@ -338,6 +356,9 @@ classdef PathInput < handle
             if ~isempty(fieldnames(obj.aliases))
                 opts = opts + sprintf(', aliases=<%d key(s)>', numel(fieldnames(obj.aliases)));
             end
+            if ~isempty(fieldnames(obj.key_regex))
+                opts = opts + sprintf(', key_regex=<%d key(s)>', numel(fieldnames(obj.key_regex)));
+            end
             fprintf('  scifor.PathInput("%s"%s)\n', obj.path_template, opts);
         end
     end
@@ -365,6 +386,24 @@ classdef PathInput < handle
                     py_canon.update(pyargs(canonical, py.list(spellings)));
                 end
                 py_aliases.update(pyargs(key, py_canon));
+            end
+        end
+
+        function py_key_regex = key_regex_to_py(key_regex)
+        %KEY_REGEX_TO_PY  Marshal the flat KEY_REGEX struct into a py.dict
+        %   of key -> regex-pattern str, matching Python's
+        %   ``{key: pattern}`` shape.
+
+            py_key_regex = py.dict();
+            keys = fieldnames(key_regex);
+            for i = 1:numel(keys)
+                key = keys{i};
+                pattern = key_regex.(key);
+                if ~(ischar(pattern) || isstring(pattern))
+                    error('scifor:PathInput', ...
+                        'key_regex.%s must be a char or string regex pattern.', key);
+                end
+                py_key_regex.update(pyargs(key, char(pattern)));
             end
         end
 
