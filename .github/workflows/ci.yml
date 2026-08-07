@@ -1,12 +1,11 @@
 name: CI
 
-# Test / build gate. Runs on every push to main & dev and on every PR.
-# Also exposed via workflow_call so the release workflow (publish.yml) can reuse
-# it as a pre-publish gate instead of duplicating the job definitions.
+# Test / build gate. Runs on every PR, and reused via workflow_call as the
+# pre-publish gate when a release tag is pushed (see publish.yml). Trunk-based
+# dev: no run fires from a plain push to main — PRs and tag-triggered releases
+# are the only gates.
 
 on:
-  push:
-    branches: [main, dev]
   pull_request:
   workflow_call:
 
