@@ -79,14 +79,68 @@ def fn_node_id(fn_name: str, call_id: str) -> str:
     return f"fn__{fn_name}__{call_id}"
 
 
+# ---------------------------------------------------------------------------
+# Placement IDs — per-scope independent copies of a DB-derived canonical node
+# ---------------------------------------------------------------------------
+#
+# A canonical id (var__{Type}, fn__{fn}__{wiring_id}, const__{name},
+# pathInput__{name}) names a piece of real, shared DB data — but the SAME
+# wiring can be independently PLACED (graduated) on more than one pipeline
+# scope at once (e.g. a duplicated hypothesis re-running identical, unedited
+# wiring). ``{canonical_id}::{pipeline_id}`` is the placement-qualified id
+# for one such placement; ``::`` never appears in a pipeline_id (``main`` or
+# ``pipe_{hex}``) or in a function/variable/constant label, so it's a safe,
+# unambiguous separator.
+
+PLACEMENT_SEP = "::"
+
+# Every prefix a DB-derived (non-manual) canonical id can start with —
+# shared by the layout.json migration and anything else that needs to
+# distinguish "this id names real DB data" from a manual/opaque id.
+_DB_DERIVED_PREFIXES = ("var__", "fn__", "const__", "pathInput__")
+
+# Matches domain.scope_filter.ROOT / pipeline_store.ROOT_PIPELINE_ID — kept
+# as a local literal since this module is pure (no DB/store imports).
+_ROOT_PIPELINE_ID = "main"
+
+
+def placement_id(canonical_id: str, pipeline_id: str) -> str:
+    """The id for one scope's independent placement of a canonical node."""
+    return f"{canonical_id}{PLACEMENT_SEP}{pipeline_id}"
+
+
+def parse_placement_id(node_id: str) -> tuple[str, str] | None:
+    """Split a placement-qualified id into (canonical_id, pipeline_id).
+
+    Returns None for a bare id with no placement suffix.
+    """
+    if PLACEMENT_SEP not in node_id:
+        return None
+    bare, _, scope = node_id.rpartition(PLACEMENT_SEP)
+    return (bare, scope) if bare else None
+
+
+def strip_placement(node_id: str) -> str:
+    """The bare canonical id, with any placement suffix removed (a no-op
+    if there wasn't one). For every ad-hoc ``var__``/``const__``/
+    ``pathInput__``/``fn__`` prefix-parser that only ever wants the bare
+    id (never the scope), call this FIRST.
+    """
+    bare, _ = parse_placement_id(node_id) or (node_id, None)
+    return bare
+
+
 def parse_fn_node_id(node_id: str) -> tuple[str, str] | None:
     """Parse a composite fn node ID into (fn_name, call_id).
 
     Returns None for legacy/manual IDs that don't match the composite
     pattern (e.g. ``fn__bandpass`` or ``fn__bandpass__abc123`` where
     ``abc123`` is a random 6-char manual suffix rather than a 16-hex
-    call_id).
+    call_id). Strips a placement suffix (``::{pipeline_id}``) first, if
+    present — callers only ever want the bare (fn_name, call_id), never
+    the placement scope, so this is transparent to every consumer.
     """
+    node_id, _scope = parse_placement_id(node_id) or (node_id, None)
     if not node_id.startswith("fn__"):
         return None
     body = node_id[len("fn__") :]
@@ -1019,6 +1073,14 @@ def merge_manual_nodes(
     kept as a separate node — the user can wire it up and run it to
     produce a real call site of its own.
 
+    Graduation targets the manual node's OWN placement
+    (``placement_id(canonical_id, meta["pipeline_id"])``), not the bare
+    canonical id — this is what lets two manual nodes with the same label
+    in DIFFERENT scopes (e.g. a duplicated pipeline re-running identical,
+    unedited wiring) graduate independently instead of racing for one
+    shared slot and stealing it from each other (the root cause fixed by
+    this rework — see plan-placement-qualified-node-ids.md).
+
     Returns:
         Tuple of:
         - List of manual node IDs that should be added to the graph.
@@ -1046,9 +1108,12 @@ def merge_manual_nodes(
         candidates = db_nodes_by_label.get(key, [])
         if len(candidates) == 1:
             canonical_id = candidates[0]
-            if canonical_id not in saved_positions:
+            target_id = placement_id(
+                canonical_id, meta.get("pipeline_id") or _ROOT_PIPELINE_ID
+            )
+            if target_id not in saved_positions:
                 graduations.append(
-                    GraduationAction(old_id=node_id, new_id=canonical_id)
+                    GraduationAction(old_id=node_id, new_id=target_id)
                 )
                 continue
         elif len(candidates) > 1:

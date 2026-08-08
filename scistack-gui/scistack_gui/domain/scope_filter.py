@@ -21,48 +21,130 @@ from __future__ import annotations
 
 import logging
 
+from scistack_gui.domain.graph_builder import (
+    parse_placement_id,
+    placement_id,
+    strip_placement,
+)
+
 logger = logging.getLogger(__name__)
 
 ROOT = "main"
 
 
 def node_scope(node_id: str, manual_nodes: dict, positions_by_scope: dict) -> str:
-    """The pipeline scope a node belongs to (see module docstring)."""
+    """The pipeline scope a node belongs to (see module docstring).
+
+    A placement-qualified id (``{canonical}::{scope}``) carries its scope
+    directly — no position scan needed, and no ambiguity possible. The
+    position-scan fallback stays for bare ids (not-yet-migrated documents,
+    or a canonical id with no explicit placement at all, which defaults to
+    root — see :func:`_resolve_in_scope`).
+    """
     meta = manual_nodes.get(node_id)
     if meta is not None:
         return meta.get("pipeline_id") or ROOT
+    parsed = parse_placement_id(node_id)
+    if parsed is not None:
+        return parsed[1]
     for scope_id, positions in positions_by_scope.items():
         if node_id in positions:
             return scope_id
     return ROOT
 
 
-def filter_graph_to_scope(
+def _resolve_in_scope(
+    node_id: str,
+    scope_id: str,
+    manual_nodes: dict,
+    positions_by_scope: dict,
+) -> str | None:
+    """Resolve ``node_id`` (manual, bare canonical, or already placement-
+    qualified) to its id WITHIN ``scope_id``, or None if not visible there.
+
+    A DB-derived canonical id can have independent placements in more than
+    one scope (see domain.graph_builder.placement_id) — this is the one
+    shared "does X belong to scope Y" answer used by both
+    :func:`resolve_scope_view` and :func:`document_interface`, so scope
+    membership is judged identically everywhere.
+
+    A bare id can ALSO be positioned directly, with no placement suffix at
+    all — dragging an existing DB-derived node straight onto a sub-canvas
+    writes its position under the literal bare id, bypassing graduation
+    entirely (this is the original "position IS the membership record"
+    mechanism, still single-scope-exclusive by construction: a bare key
+    can only physically live in one scope bucket at a time). Both forms
+    are checked so a canonical id can carry an old-style bare placement in
+    one scope while independently graduating into a new-style qualified
+    placement in another.
+    """
+    meta = manual_nodes.get(node_id)
+    if meta is not None:
+        return node_id if (meta.get("pipeline_id") or ROOT) == scope_id else None
+
+    parsed = parse_placement_id(node_id)
+    if parsed is not None:
+        return node_id if parsed[1] == scope_id else None
+
+    candidate = placement_id(node_id, scope_id)
+    if candidate in positions_by_scope.get(scope_id, {}):
+        return candidate
+    if node_id in positions_by_scope.get(scope_id, {}):
+        return node_id
+
+    # No placement (qualified or bare) for this id in scope_id — check
+    # whether it's placed anywhere else at all before defaulting to root.
+    for positions in positions_by_scope.values():
+        if node_id in positions:
+            return None  # bare placement, but in a DIFFERENT scope
+        for pid in positions:
+            parsed_pid = parse_placement_id(pid)
+            if parsed_pid is not None and parsed_pid[0] == node_id:
+                return None  # qualified placement, but in a DIFFERENT scope
+    return node_id if scope_id == ROOT else None
+
+
+def resolve_scope_view(
     nodes: list[dict],
     edges: list[dict],
     scope_id: str,
     manual_nodes: dict,
     positions_by_scope: dict,
 ) -> tuple[list, list]:
-    """Restrict a fully-built graph to one scope.
+    """Resolve the full (bare-id) built graph into ONE scope's view.
 
-    Nodes keep membership per :func:`node_scope`; an edge survives when
-    BOTH endpoints' scopes are this scope — judged by node_scope, not by
-    kept-node membership, so a dangling manual edge (an endpoint id that
-    matches no built node, e.g. a legacy ``fn__{name}`` reference) defaults
-    to root and stays on the root canvas exactly as it did pre-scoping.
+    Replaces the old ``filter_graph_to_scope`` now that a DB-derived
+    canonical node can have independent placements in more than one scope:
+    a node is kept, with its id rewritten to the resolved (placement-
+    qualified, where applicable) form, when :func:`_resolve_in_scope`
+    finds it visible here; an edge is kept, with its endpoints rewritten,
+    only when BOTH resolve within this scope — so a dangling reference (an
+    endpoint that matches no built node) still defaults to root and stays
+    on the root canvas exactly as it did pre-scoping.
     """
-    kept_nodes = [
-        n
-        for n in nodes
-        if node_scope(n["id"], manual_nodes, positions_by_scope) == scope_id
-    ]
-    kept_edges = [
-        e
-        for e in edges
-        if node_scope(e["source"], manual_nodes, positions_by_scope) == scope_id
-        and node_scope(e["target"], manual_nodes, positions_by_scope) == scope_id
-    ]
+    id_map: dict[str, str] = {}
+    kept_nodes = []
+    for n in nodes:
+        resolved = _resolve_in_scope(n["id"], scope_id, manual_nodes, positions_by_scope)
+        if resolved is not None:
+            id_map[n["id"]] = resolved
+            kept_nodes.append({**n, "id": resolved} if resolved != n["id"] else n)
+
+    kept_edges = []
+    for e in edges:
+        src = id_map.get(e["source"]) or _resolve_in_scope(
+            e["source"], scope_id, manual_nodes, positions_by_scope
+        )
+        tgt = id_map.get(e["target"]) or _resolve_in_scope(
+            e["target"], scope_id, manual_nodes, positions_by_scope
+        )
+        if src is not None and tgt is not None:
+            kept_edges.append(
+                {**e, "source": src, "target": tgt}
+                if (src, tgt) != (e["source"], e["target"])
+                else e
+            )
+
     logger.debug(
         "[scope_filter] scope %s: kept %d/%d node(s), %d/%d edge(s)",
         scope_id,
@@ -79,8 +161,9 @@ def _var_label(node_id: str, manual_nodes: dict) -> str | None:
     meta = manual_nodes.get(node_id)
     if meta is not None:
         return meta["label"] if meta.get("type") == "variableNode" else None
-    if node_id.startswith("var__"):
-        return node_id[len("var__") :]
+    bare = strip_placement(node_id)
+    if bare.startswith("var__"):
+        return bare[len("var__") :]
     return None
 
 
@@ -105,25 +188,30 @@ def document_interface(
         return {"inputs": [], "outputs": []}
     positions_by_scope = positions_by_scope or {}
 
-    # Scope membership: manual nodes by pipeline_id, DB-derived nodes by
-    # where their position lives (same rule as node_scope).
-    scope_nodes = {
-        nid
-        for nid, meta in manual_nodes.items()
-        if (meta.get("pipeline_id") or ROOT) == scope_id
-    }
-    scope_nodes |= set(positions_by_scope.get(scope_id, {})) - set(manual_nodes)
+    # Scope membership judged per-edge-endpoint via the same resolution
+    # resolve_scope_view uses — a bare id and a placement-qualified id for
+    # the SAME canonical node must both correctly test "in scope_id" here,
+    # since edges can carry either form (bare, pre-graduation; placement-
+    # qualified, after graduate_manual_node rewrites them).
     consumed: set[str] = set()
     produced: set[str] = set()
     for e in edges:
         src, tgt = e["source"], e["target"]
         src_label = _var_label(src, manual_nodes)
         tgt_label = _var_label(tgt, manual_nodes)
+        tgt_in_scope = (
+            _resolve_in_scope(tgt, scope_id, manual_nodes, positions_by_scope)
+            is not None
+        )
+        src_in_scope = (
+            _resolve_in_scope(src, scope_id, manual_nodes, positions_by_scope)
+            is not None
+        )
         # var -> fn (consumption): source is a variable, target in scope.
-        if src_label is not None and tgt in scope_nodes:
+        if src_label is not None and tgt_in_scope:
             consumed.add(src_label)
         # fn -> var (production): target is a variable, source in scope.
-        if tgt_label is not None and src in scope_nodes:
+        if tgt_label is not None and src_in_scope:
             produced.add(tgt_label)
 
     for use in uses_by_parent.get(scope_id, []):

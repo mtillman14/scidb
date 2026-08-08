@@ -46,6 +46,7 @@ def _load() -> dict:
             "constants": [],
             "path_inputs": [],
             "positions_scoped": True,
+            "placements_migrated": True,
         }
     with p.open() as f:
         raw = json.load(f)
@@ -74,6 +75,34 @@ def _load() -> dict:
             else {}
         )
         raw["positions_scoped"] = True
+    # One-time migration: DB-derived position keys (var__/fn__/const__/
+    # pathInput__) become placement-qualified (canonical_id::scope) so the
+    # SAME wiring can be independently placed in more than one scope
+    # (see domain.graph_builder.placement_id). A bare id's current scope
+    # bucket IS its one existing placement, so this preserves today's
+    # behavior exactly for every pre-existing document.
+    if not raw.get("placements_migrated"):
+        from scistack_gui.domain.graph_builder import (
+            PLACEMENT_SEP,
+            _DB_DERIVED_PREFIXES,
+            placement_id,
+        )
+
+        n_migrated = 0
+        for scope, positions in raw["positions"].items():
+            for node_id in list(positions.keys()):
+                if PLACEMENT_SEP in node_id:
+                    continue
+                if not node_id.startswith(_DB_DERIVED_PREFIXES):
+                    continue
+                positions[placement_id(node_id, scope)] = positions.pop(node_id)
+                n_migrated += 1
+        raw["placements_migrated"] = True
+        if n_migrated:
+            logger.info(
+                "[layout] placement migration: qualified %d DB-derived "
+                "position(s) with their scope", n_migrated,
+            )
     logger.debug(
         "[layout] Layout has %d scope(s), %d constants, %d path_inputs",
         len(raw["positions"]),
@@ -139,7 +168,11 @@ def drop_node_positions(node_id: str) -> None:
 
 
 def move_node_position(
-    node_id: str, new_pipeline_id: str, default_x: float = 0.0, default_y: float = 0.0
+    node_id: str,
+    new_pipeline_id: str,
+    default_x: float = 0.0,
+    default_y: float = 0.0,
+    new_node_id: str | None = None,
 ) -> dict:
     """Move one node's saved position into a new scope (extract-to-submodule).
 
@@ -149,6 +182,15 @@ def move_node_position(
     rewritten (pipeline_store.move_node_scope), which takes priority when
     both exist. Returns the position that was moved (or the default, if the
     node had no saved position in any scope).
+
+    ``node_id`` is placement-qualified for an already-graduated DB-derived
+    node (``{canonical}::{old_scope}`` — see domain.graph_builder.
+    placement_id) — its embedded scope would go STALE if the position were
+    simply re-written under the same key in a new scope bucket (node_scope
+    trusts that embedded suffix over which bucket holds it). Callers moving
+    such a node must pass ``new_node_id`` (the re-keyed placement id for
+    the destination scope); it defaults to ``node_id`` for manual nodes,
+    which carry no scope in their id at all.
     """
     data = _load()
     pos = None
@@ -157,6 +199,7 @@ def move_node_position(
         if found is not None:
             pos = found
             break
+    node_id = new_node_id or node_id
     if pos is None:
         pos = {"x": default_x, "y": default_y}
     _scope_positions(data, new_pipeline_id)[node_id] = pos
@@ -271,7 +314,14 @@ def delete_node(node_id: str) -> None:
 
     For DB-derived nodes (var__, fn__, const__, pathInput__), also mark them
     as hidden so _build_graph won't recreate them from pipeline history.
+    Hiding is deliberately GLOBAL (not per-placement) — the id passed in
+    may be placement-qualified (the frontend renders whatever id a
+    graduated node resolved to in its own scope), so it's stripped to the
+    bare canonical id before being stored/matched, since
+    domain.graph_builder.filter_hidden checks bare prefixes.
     """
+    from scistack_gui.domain.graph_builder import strip_placement
+
     logger.info("[layout] delete_node called (node_id=%r)", node_id)
     logger.info("[layout] Removing position from JSON")
     data = _load()
@@ -282,8 +332,9 @@ def delete_node(node_id: str) -> None:
     db = get_db()
     pipeline_store.delete_node(db, node_id)
     # Hide DB-derived nodes so they don't reappear from list_pipeline_variants().
+    bare_id = strip_placement(node_id)
     logger.info("[layout] Marking node as hidden (so it won't be auto-recreated)")
-    pipeline_store.hide_node(db, node_id)
+    pipeline_store.hide_node(db, bare_id)
     logger.info("[layout] Node deleted successfully")
 
 
@@ -297,8 +348,11 @@ def read_all_constant_names() -> list[str]:
     Sources (unioned):
     - ``constants[]``: palette items created via the "+" button.
     - manual constant nodes in DB (type ``constantNode``).
-    - Canonical DB-derived constant IDs in positions (``const__name``).
+    - Canonical DB-derived constant IDs in positions (``const__name``,
+      possibly placement-qualified as ``const__name::{pipeline_id}``).
     """
+    from scistack_gui.domain.graph_builder import strip_placement
+
     data = _load()
     names: set[str] = set(data["constants"])
     manual_nodes = pipeline_store.get_manual_nodes(get_db())
@@ -308,8 +362,9 @@ def read_all_constant_names() -> list[str]:
             names.add(meta["label"])
     # Canonical DB-derived constant nodes not already covered by manual_nodes.
     for node_id in _positions_all(data):
-        if node_id.startswith("const__") and node_id not in manual_nodes:
-            names.add(node_id[len("const__") :])
+        bare_id = strip_placement(node_id)
+        if bare_id.startswith("const__") and node_id not in manual_nodes:
+            names.add(bare_id[len("const__") :])
     return sorted(names)
 
 
@@ -331,17 +386,21 @@ def read_all_path_input_names() -> list[dict]:
 
     Sources (unioned):
     - ``path_inputs[]``: palette items created via the "+" button.
-    - Canonical DB-derived pathInput IDs in positions (``pathInput__name``).
+    - Canonical DB-derived pathInput IDs in positions (``pathInput__name``,
+      possibly placement-qualified as ``pathInput__name::{pipeline_id}``).
     """
+    from scistack_gui.domain.graph_builder import strip_placement
+
     data = _load()
     by_name: dict[str, dict] = {}
     for pi in data["path_inputs"]:
         by_name[pi["name"]] = pi
     for node_id in _positions_all(data):
-        if node_id.startswith("pathInput__"):
-            # Node IDs are "pathInput__<name>__<random>"; extract just <name>.
-            parts = node_id.split("__")
-            name = parts[1] if len(parts) >= 2 else node_id[len("pathInput__") :]
+        bare_id = strip_placement(node_id)
+        if bare_id.startswith("pathInput__"):
+            # Bare IDs are "pathInput__<name>__<random>"; extract just <name>.
+            parts = bare_id.split("__")
+            name = parts[1] if len(parts) >= 2 else bare_id[len("pathInput__") :]
             if name not in by_name:
                 by_name[name] = {"name": name, "template": "", "root_folder": None}
     return sorted(by_name.values(), key=lambda p: p["name"])

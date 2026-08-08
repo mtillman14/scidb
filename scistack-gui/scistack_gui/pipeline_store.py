@@ -343,14 +343,11 @@ def move_node_scope(db, node_id: str, new_pipeline_id: str) -> None:
     )
 
 
-def graduate_manual_node(db, old_id: str, new_id: str) -> None:
-    """Remove the manual node entry for old_id (the DB-derived node takes over).
-
-    Also rewrites any manual edges that reference old_id so they point to
-    new_id instead of becoming dangling.
+def rename_edge_endpoints(db, old_id: str, new_id: str) -> None:
+    """Rewrite any manual edges referencing old_id to point to new_id
+    instead of becoming dangling — shared by graduation and by re-keying
+    an already-placement-qualified node moved to a new scope (extraction).
     """
-    _duck(db)._execute("DELETE FROM _pipeline_nodes WHERE node_id = ?", [old_id])
-    # Update edges that reference the old node ID.
     _duck(db)._execute(
         "UPDATE _pipeline_edges SET source = ? WHERE source = ?",
         [new_id, old_id],
@@ -359,6 +356,16 @@ def graduate_manual_node(db, old_id: str, new_id: str) -> None:
         "UPDATE _pipeline_edges SET target = ? WHERE target = ?",
         [new_id, old_id],
     )
+
+
+def graduate_manual_node(db, old_id: str, new_id: str) -> None:
+    """Remove the manual node entry for old_id (the DB-derived node takes over).
+
+    Also rewrites any manual edges that reference old_id so they point to
+    new_id instead of becoming dangling.
+    """
+    _duck(db)._execute("DELETE FROM _pipeline_nodes WHERE node_id = ?", [old_id])
+    rename_edge_endpoints(db, old_id, new_id)
 
 
 # ---------------------------------------------------------------------------

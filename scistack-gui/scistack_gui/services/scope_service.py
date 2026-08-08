@@ -153,8 +153,8 @@ def extract_to_submodule(pipeline_id: str, node_ids: list[str], name: str) -> di
     scope, regardless of where the other endpoint lives, so the original
     edge is exactly what makes the new submodule's interface (inputs/
     outputs) compute correctly. It simply stops rendering on either
-    canvas once its endpoints split across two scopes (both
-    ``filter_graph_to_scope`` checks require same-scope endpoints) — which
+    canvas once its endpoints split across two scopes (``resolve_scope_view``
+    requires both endpoints to resolve within the same scope) — which
     is fine, since the moved node no longer renders on the parent canvas
     either. What the parent canvas needs INSTEAD is a new, additional edge
     from the kept node to the placed pipeline node's port, purely for
@@ -170,6 +170,7 @@ def extract_to_submodule(pipeline_id: str, node_ids: list[str], name: str) -> di
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store as ps
     from scistack_gui.db import get_db
+    from scistack_gui.domain import graph_builder
     from scistack_gui.domain.edge_resolver import node_id_to_var_label
     from scistack_gui.domain.scope_filter import node_scope
 
@@ -239,7 +240,19 @@ def extract_to_submodule(pipeline_id: str, node_ids: list[str], name: str) -> di
         if manual_nodes.get(nid, {}).get("type") == "pipelineNode":
             ps.move_pipeline_use_parent(db, nid, new_pid)
         ps.move_node_scope(db, nid, new_pid)
-        layout_store.move_node_position(nid, new_pid)
+
+        # A graduated (placement-qualified) DB-derived node's id embeds
+        # its OLD scope — node_scope trusts that suffix over which bucket
+        # holds the position, so simply re-writing the position under the
+        # unchanged key would go stale. Re-key it for the new scope and
+        # rewrite any internal edges that referenced the old key.
+        parsed = graph_builder.parse_placement_id(nid)
+        new_node_id = (
+            graph_builder.placement_id(parsed[0], new_pid) if parsed else None
+        )
+        layout_store.move_node_position(nid, new_pid, new_node_id=new_node_id)
+        if new_node_id:
+            ps.rename_edge_endpoints(db, nid, new_node_id)
 
     use_result = add_pipeline_use(pipeline_id, new_pid, None, cx, cy)
     use_id = use_result["use_id"]
@@ -269,45 +282,44 @@ def extract_to_submodule(pipeline_id: str, node_ids: list[str], name: str) -> di
 
 
 def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
-    """Fork ``pipeline_id``'s own MANUAL nodes into a brand-new,
-    independent pipeline the user can freely edit (e.g. "gait symmetry"
-    -> "gait speed"), while keeping any placed submodule pointing at the
-    SAME child pipeline — the shared submodule itself is never
-    duplicated, since factoring something out as a submodule is
-    precisely what makes it reusable across hypotheses.
+    """Fork ``pipeline_id``'s own nodes into a brand-new, independent
+    pipeline the user can freely edit (e.g. "gait symmetry" -> "gait
+    speed"), while keeping any placed submodule pointing at the SAME
+    child pipeline — the shared submodule itself is never duplicated,
+    since factoring something out as a submodule is precisely what makes
+    it reusable across hypotheses.
 
-    Deliberately does NOT touch already-executed ("graduated") DB-derived
-    nodes (variable-type nodes, and function nodes matching an existing
-    call site) — found via a real test failure during implementation:
-    those have a single GLOBAL, scope-singular canonical identity in this
-    system (``var__{Type}``, `fn__{fn}__{call_id}`` are unique document-
-    wide). Creating a second manual node with the same label doesn't
-    produce an independent copy — the next graph build "graduates" it by
-    label match and TRANSFERS the canonical node's position to wherever
-    the new manual node was placed, silently stealing it away from the
-    original pipeline. So graduated content is left alone (still
-    implicitly shared/global, matching "code and variables reference the
-    same ground truth"); only genuinely manual (not-yet-graduated) nodes
-    are safe to fork, along with PathInput nodes, whose name-identity is
-    deliberately shared by reference rather than position-exclusive
-    (Stage 2) — copying the node (same name) is always safe there.
+    Includes already-executed ("graduated") DB-derived nodes too, now that
+    graduation is scope-aware (placement-qualified ids — see
+    domain.graph_builder.placement_id and plan-placement-qualified-node-
+    ids.md): a fresh manual copy of a graduated node safely graduates to
+    its OWN independent placement in the new scope, rather than colliding
+    with and stealing the original's (the bug an earlier version of this
+    function hit and worked around by skipping graduated nodes entirely —
+    no longer necessary).
 
     What forks is the per-node GUI config (schemaFilter/schemaLevel/
-    runOptions, and eventually whereFilters) and the manual wiring, since
-    each copy gets its own node_id — copying those verbatim is what makes
-    the duplicate compute IDENTICALLY to the original until the user
-    changes something (at which point scidb naturally creates an
-    independent variant, no special handling needed).
+    runOptions, and eventually whereFilters) and the wiring, since each
+    copy gets its own node_id — copying those verbatim is what makes the
+    duplicate compute IDENTICALLY to the original until the user changes
+    something (at which point scidb naturally creates an independent
+    variant, no special handling needed). Function/variable-type identity
+    stays shared for free (a fresh node with the same label just resolves
+    against the same real function/DB table); PathInput nodes are shared
+    by name by default too (Stage 2) — copying the node (same name
+    reference) is exactly the desired "shared ground truth" behavior.
     """
     import uuid
 
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store as ps
     from scistack_gui.db import get_db
+    from scistack_gui.domain import graph_builder
+    from scistack_gui.services.pipeline_service import get_pipeline_graph
 
     db = get_db()
-    manual_nodes = ps.get_manual_nodes(db, pipeline_id)
-    all_manual_edges = ps.get_manual_edges(db)
+    graph = get_pipeline_graph(db, pipeline_id)
+    manual_nodes = ps.get_manual_nodes(db, pipeline_id)  # config source
     old_positions = layout_store.read_positions_by_scope().get(pipeline_id, {})
     offset = 40.0
     prefix_by_type = {
@@ -331,33 +343,51 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
         )
         old_to_new[use["use_id"]] = result["use_id"]
 
-    # Everything else genuinely manual: fresh node_id + config copied
-    # verbatim (pipelineNode rows are handled above via the use rows).
-    for old_id, meta in manual_nodes.items():
-        node_type = meta["type"]
+    # Everything else: fresh node_id + config copied verbatim. Uses the
+    # FULL resolved graph (not just get_manual_nodes) so already-executed
+    # nodes are duplicated too — each gets its own node_id and, if its
+    # label matches real DB history, independently graduates to its own
+    # placement in new_pid on the next graph build.
+    for node in graph["nodes"]:
+        old_id = node["id"]
+        node_type = node["type"]
         if node_type == "pipelineNode":
             continue
-        label = meta["label"]
+        label = manual_nodes.get(old_id, {}).get("label") or node.get("data", {}).get("label", "")
         prefix = prefix_by_type.get(node_type, node_type)
         new_id = f"{prefix}__{label}__{uuid.uuid4().hex[:8]}"
         old_to_new[old_id] = new_id
 
         ps.write_manual_node(db, new_id, node_type, label, new_pid)
-        config = meta.get("config")
+        config = manual_nodes.get(old_id, {}).get("config")
         if config:
             ps.update_node_config(db, new_id, config)
 
         pos = old_positions.get(old_id, {"x": 0.0, "y": 0.0})
         layout_store.write_node_position(new_id, pos["x"] + offset, pos["y"] + offset, pipeline_id=new_pid)
 
-    # Internal edges: only those wholly within the duplicated (manual) set
-    # — an edge touching a graduated node we deliberately left alone has
-    # no duplicate endpoint to reconnect to.
+        # old_id may be a BARE canonical id relying on the implicit root
+        # default (never explicitly placed anywhere) rather than an
+        # explicit placement. Once the fresh copy above independently
+        # graduates to its OWN placement in new_pid on the next graph
+        # build, a bare id's "no placement anywhere" fallback and a
+        # "moved away to another scope" state become indistinguishable
+        # from position data alone (domain.scope_filter._resolve_in_scope
+        # can't tell "duplicated" from "relocated") — the source's
+        # implicit default would silently disappear from its own canvas.
+        # Affirm the source's own explicit placement now, before that
+        # ambiguity can arise.
+        if old_id not in manual_nodes and graph_builder.parse_placement_id(old_id) is None:
+            solidified_id = graph_builder.placement_id(old_id, pipeline_id)
+            layout_store.write_node_position(solidified_id, pos["x"], pos["y"], pipeline_id=pipeline_id)
+
+    # Internal edges: get_pipeline_graph is already scope-resolved (both
+    # endpoints belong to pipeline_id), so both sides are always mapped.
     n_edges = 0
-    for e in all_manual_edges:
+    for e in graph["edges"]:
         src, tgt = old_to_new.get(e["source"]), old_to_new.get(e["target"])
         if src is None or tgt is None:
-            continue
+            continue  # defensive; shouldn't happen given the scope resolution
         ps.write_manual_edge(db, {
             "id": f"edge_{uuid.uuid4().hex[:12]}",
             "source": src,

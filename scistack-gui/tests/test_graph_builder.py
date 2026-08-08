@@ -798,23 +798,45 @@ class TestMergeManualNodes:
         assert "var__Raw" not in to_add
 
     def test_graduated_node_produces_graduation_action(self):
+        """Graduation targets the manual node's OWN placement
+        (canonical_id::pipeline_id), not the bare canonical id — this is
+        what lets two same-label manual nodes in different scopes
+        graduate independently instead of racing for one shared slot."""
         existing = [self._db_node("var__Raw", "variableNode", "Raw")]
-        manual = {"uuid-old": {"type": "variableNode", "label": "Raw"}}
+        manual = {"uuid-old": {"type": "variableNode", "label": "Raw", "pipeline_id": "main"}}
         to_add, graduations = merge_manual_nodes(existing, manual, saved_positions={})
         assert "uuid-old" not in to_add
         assert len(graduations) == 1
         assert graduations[0].old_id == "uuid-old"
-        assert graduations[0].new_id == "var__Raw"
+        assert graduations[0].new_id == "var__Raw::main"
 
-    def test_graduation_skipped_if_canonical_has_saved_position(self):
-        # If the canonical node already has a saved position, do not graduate.
+    def test_graduation_skipped_if_own_placement_already_exists(self):
+        # If THIS scope's placement is already positioned, do not re-graduate.
         existing = [self._db_node("var__Raw", "variableNode", "Raw")]
-        manual = {"uuid-old": {"type": "variableNode", "label": "Raw"}}
+        manual = {"uuid-old": {"type": "variableNode", "label": "Raw", "pipeline_id": "main"}}
         to_add, graduations = merge_manual_nodes(
-            existing, manual, saved_positions={"var__Raw": {"x": 10, "y": 20}}
+            existing, manual, saved_positions={"var__Raw::main": {"x": 10, "y": 20}}
         )
         assert "uuid-old" in to_add
         assert len(graduations) == 0
+
+    def test_same_label_different_scopes_graduate_independently(self):
+        """The core regression test for the placement rework: two manual
+        nodes with the SAME label in DIFFERENT scopes (e.g. a duplicated
+        pipeline re-running identical, unedited wiring) must both
+        graduate to their OWN placement, not collide over one shared slot
+        (the bug: an earlier design stole the position from whichever
+        scope claimed it second)."""
+        existing = [self._db_node("var__Raw", "variableNode", "Raw")]
+        manual = {
+            "uuid-a": {"type": "variableNode", "label": "Raw", "pipeline_id": "main"},
+            "uuid-b": {"type": "variableNode", "label": "Raw", "pipeline_id": "pipe_dup"},
+        }
+        to_add, graduations = merge_manual_nodes(existing, manual, saved_positions={})
+        assert to_add == []
+        assert len(graduations) == 2
+        new_ids = {g.new_id for g in graduations}
+        assert new_ids == {"var__Raw::main", "var__Raw::pipe_dup"}
 
     def test_empty_manual_nodes(self):
         existing = [self._db_node("var__Raw", "variableNode", "Raw")]
@@ -823,14 +845,15 @@ class TestMergeManualNodes:
         assert graduations == []
 
     def test_function_graduation_with_single_call_site(self):
-        """One DB-derived call site → manual fn graduates to that call_id."""
+        """One DB-derived call site → manual fn graduates to that call_id
+        (as its own placement in its own scope)."""
         cid = _cid("only")
         existing = [self._db_node(f"fn__bp__{cid}", "functionNode", "bp")]
-        manual = {"uuid-old": {"type": "functionNode", "label": "bp"}}
+        manual = {"uuid-old": {"type": "functionNode", "label": "bp", "pipeline_id": "main"}}
         to_add, graduations = merge_manual_nodes(existing, manual, saved_positions={})
         assert "uuid-old" not in to_add
         assert len(graduations) == 1
-        assert graduations[0].new_id == f"fn__bp__{cid}"
+        assert graduations[0].new_id == f"fn__bp__{cid}::main"
 
     def test_function_no_graduation_when_multiple_call_sites(self):
         """Multiple DB-derived call sites for the same fn → manual node stays

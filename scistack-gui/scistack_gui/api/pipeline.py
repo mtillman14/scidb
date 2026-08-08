@@ -585,6 +585,15 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         logger.debug(
             "[pipeline] graduated manual node: %s -> %s", action.old_id, action.new_id
         )
+        # graduate_manual_node rewrites edge endpoints in the DB
+        # (pipeline_store.rename_edge_endpoints), but `edges` here was
+        # already built earlier in this same call — patch it in-memory too
+        # so this response isn't missing edges that just got graduated.
+        for e in edges:
+            if e["source"] == action.old_id:
+                e["source"] = action.new_id
+            if e["target"] == action.old_id:
+                e["target"] = action.new_id
 
     # Build and append manual nodes that should be added.
     logger.info("[pipeline] Building %d manual node(s) to add", len(to_add))
@@ -713,10 +722,10 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         positions_by_scope = layout_store.read_positions_by_scope()
 
     logger.info("[pipeline] Filtering graph to scope %s", pipeline_id)
-    from scistack_gui.domain.scope_filter import filter_graph_to_scope
+    from scistack_gui.domain.scope_filter import resolve_scope_view
     from scistack_gui.services.scope_service import build_pipeline_nodes
 
-    nodes, edges = filter_graph_to_scope(
+    nodes, edges = resolve_scope_view(
         nodes, edges, pipeline_id, manual_nodes, positions_by_scope
     )
     nodes += build_pipeline_nodes(db, pipeline_id)

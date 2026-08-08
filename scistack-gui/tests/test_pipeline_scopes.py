@@ -320,12 +320,15 @@ class TestScopedPositions:
 
         result = layout_store.read_layout()
 
-        assert result["positions"]["var__RawSignal"] == {"x": 10.0, "y": 20.0}
+        # DB-derived ids also pick up the one-time placement-qualification
+        # migration — root (their one existing scope) becomes their one
+        # existing placement (domain.graph_builder.placement_id).
+        assert result["positions"]["var__RawSignal::main"] == {"x": 10.0, "y": 20.0}
         # And the migration is scope-shaped on disk after the next write.
         layout_store.write_node_position("n_new", 1.0, 1.0)
         on_disk = json.loads(layout_path.read_text())
         assert on_disk["positions_scoped"] is True
-        assert on_disk["positions"]["main"]["var__RawSignal"] == {"x": 10.0, "y": 20.0}
+        assert on_disk["positions"]["main"]["var__RawSignal::main"] == {"x": 10.0, "y": 20.0}
         assert on_disk["positions"]["main"]["n_new"] == {"x": 1.0, "y": 1.0}
 
     def test_scoped_manual_node_write_and_read(self, layout_path):
@@ -664,27 +667,46 @@ class TestDuplicatePipeline:
         # The original is untouched.
         assert set(ps.get_manual_nodes(db, pid)) == original_ids
 
-    def test_duplicate_does_not_touch_graduated_nodes_or_corrupt_original(self, client):
-        """Variable/function nodes with real DB history (the seeded
-        bandpass_filter graph on root) have a single GLOBAL, scope-singular
-        canonical identity in this system (var__Type, fn__{fn}__{call_id}).
-        Creating a second manual node with the same label would collide on
-        the next graph build and STEAL that node's position away from the
-        original (graduation is a label match, not scope-aware) — found via
-        a real failing test during implementation. Duplicate must leave
-        graduated content alone entirely: the copy is empty of it, and the
-        original is completely unaffected."""
-        before_ids = {n["id"] for n in client.get("/api/pipeline").json()["nodes"]}
+    def test_duplicate_includes_graduated_nodes_without_corrupting_original(self, client):
+        """The seeded bandpass_filter graph (root scope) is DB-derived
+        ("graduated"), not manual. An earlier version of duplicate_pipeline
+        skipped graduated content entirely, because a second manual node
+        with the same label used to collide on the next graph build and
+        STEAL the position away from the original (graduation matched by
+        label only, scope-blind). Graduation is now scope-aware
+        (placement-qualified ids — see domain.graph_builder.placement_id):
+        duplicate copies graduated content as an independent placement
+        (own node_id, own run-state), and — the actual regression this
+        whole rework exists to fix — the original is completely
+        untouched.
+
+        Note: duplication also *solidifies* the source's own bare
+        canonical ids into explicit `{bare}::main` placements (see
+        scope_service.duplicate_pipeline) — this is what prevents the
+        ambiguity that used to make root's implicit content vanish once
+        the duplicate's own copy independently graduated elsewhere. So
+        `main`'s exact node ids legitimately change (bare -> placement-
+        qualified); what must stay identical is its content (labels/
+        types/count), not the literal id strings."""
+        before = client.get("/api/pipeline").json()["nodes"]
+        before_labels = {(n["type"], n["data"]["label"]) for n in before}
 
         r = client.post("/api/pipelines/main/duplicate", json={"name": "main_copy"})
         assert r.status_code == 200
         pid = r.json()["pipeline_id"]
 
-        copy_nodes = client.get("/api/pipeline", params={"pipeline_id": pid}).json()["nodes"]
-        assert copy_nodes == []  # nothing manual to copy; graduated content stays put
+        copy_labels = {
+            (n["type"], n["data"]["label"])
+            for n in client.get("/api/pipeline", params={"pipeline_id": pid}).json()["nodes"]
+        }
+        assert ("functionNode", "bandpass_filter") in copy_labels
+        assert ("variableNode", "RawSignal") in copy_labels
+        assert ("variableNode", "FilteredSignal") in copy_labels
 
-        after_ids = {n["id"] for n in client.get("/api/pipeline").json()["nodes"]}
-        assert after_ids == before_ids  # main is completely untouched
+        after = client.get("/api/pipeline").json()["nodes"]
+        after_labels = {(n["type"], n["data"]["label"]) for n in after}
+        assert after_labels == before_labels  # main's content is untouched
+        assert len(after) == len(before)
 
     def test_duplicate_keeps_submodule_use_pointing_at_same_child(self, client):
         child = client.post("/api/pipelines", json={"name": "shared_prep"}).json()[

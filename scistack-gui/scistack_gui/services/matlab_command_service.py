@@ -63,7 +63,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     from scistack_gui.api.matlab_command import generate_matlab_command as _fmt
     from scistack_gui.db import get_db_path
     from scistack_gui.domain.edge_resolver import infer_manual_fn_output_types
-    from scistack_gui.domain.graph_builder import parse_path_input
+    from scistack_gui.domain.graph_builder import parse_path_input, strip_placement
 
     db_path = str(get_db_path())
 
@@ -113,10 +113,11 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         tgt_fn_name = tgt_parts[1]
         if tgt_fn_name != function_name:
             continue
+        bare_src = strip_placement(src)
         pi_name = (
-            src.split("__")[1]
-            if len(src.split("__")) >= 2
-            else src[len("pathInput__") :]
+            bare_src.split("__")[1]
+            if len(bare_src.split("__")) >= 2
+            else bare_src[len("pathInput__") :]
         )
         param_name = th[len("in__") :]
         if pi_name in saved_pis:
@@ -130,7 +131,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         for edge in layout_store.read_manual_edges():
             th = edge.get("targetHandle", "")
             if th == f"in__{param_name}":
-                src = edge.get("source", "")
+                src = strip_placement(edge.get("source", ""))
                 pi_name = src.split("__")[1] if len(src.split("__")) >= 2 else ""
                 if pi_name in saved_pis and saved_pis[pi_name].get("template"):
                     pi["template"] = saved_pis[pi_name]["template"]

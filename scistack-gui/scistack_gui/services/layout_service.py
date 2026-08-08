@@ -206,17 +206,19 @@ def deep_copy_path_input(node_id: str) -> dict:
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store as ps
     from scistack_gui.db import get_db
+    from scistack_gui.domain.graph_builder import strip_placement
     from scistack_gui.domain.scope_filter import node_scope
 
     db = get_db()
     manual_nodes = ps.get_manual_nodes(db)
     meta = manual_nodes.get(node_id)
+    bare_id = strip_placement(node_id)
     if meta is not None:
         if meta.get("type") != "pathInputNode":
             raise ValueError(f"'{node_id}' is not a PathInput node")
         old_name = meta["label"]
-    elif node_id.startswith("pathInput__"):
-        parts = node_id.split("__")
+    elif bare_id.startswith("pathInput__"):
+        parts = bare_id.split("__")
         old_name = parts[1] if len(parts) >= 2 else None
     else:
         old_name = None

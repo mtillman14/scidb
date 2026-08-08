@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from scistack_gui.domain.graph_builder import strip_placement
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,13 +36,16 @@ def node_id_to_var_label(
         existing_node_labels: {node_id: label} for all DB-derived nodes already built.
         manual_nodes: {node_id: {"type": ..., "label": ...}} from pipeline_store.
     """
-    # DB-derived nodes use the convention "var__TypeName".
-    if node_id.startswith("var__"):
+    # DB-derived nodes use the convention "var__TypeName", optionally
+    # placement-qualified as "var__TypeName::{pipeline_id}" — strip that
+    # suffix before parsing so a placed node still resolves correctly.
+    bare_id = strip_placement(node_id)
+    if bare_id.startswith("var__"):
         # Check existing DB nodes first.
         if node_id in existing_node_labels:
             return existing_node_labels[node_id]
-        # Fall back to extracting from the ID itself.
-        parts = node_id.split("__")
+        # Fall back to extracting from the (bare) ID itself.
+        parts = bare_id.split("__")
         if len(parts) >= 2:
             return parts[1]
     # Check the manual_nodes dict.
@@ -96,14 +101,16 @@ def resolve_function_edges(
             # Check if source is a constant node.
             is_const = False
             const_label = None
-            if source.startswith("const__"):
+            bare_source = strip_placement(source)
+            if bare_source.startswith("const__"):
                 is_const = True
                 src_meta = manual_nodes.get(source)
                 if src_meta:
                     const_label = src_meta["label"]
                 else:
-                    # DB-derived constant: ID is "const__<name>".
-                    const_label = source.replace("const__", "", 1)
+                    # DB-derived constant: bare ID is "const__<name>",
+                    # possibly placement-qualified as "const__<name>::{scope}".
+                    const_label = bare_source.replace("const__", "", 1)
             else:
                 src_meta = manual_nodes.get(source)
                 if src_meta and src_meta.get("type") == "constantNode":

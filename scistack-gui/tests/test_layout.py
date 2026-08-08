@@ -42,12 +42,18 @@ class TestReadLayout:
         assert result["manual_nodes"] == {}
 
     def test_legacy_flat_format_is_migrated(self, layout_path):
-        """Old format had node positions at the top level, no 'positions' key."""
+        """Old format had node positions at the top level, no 'positions' key.
+
+        A DB-derived id also picks up the one-time placement-qualification
+        migration (domain.graph_builder.placement_id) — its one existing
+        scope (root, from the flat->scoped migration) becomes its one
+        existing placement.
+        """
         legacy = {"var__RawSignal": {"x": 10.0, "y": 20.0}}
         layout_path.write_text(json.dumps(legacy))
         result = layout_store.read_layout()
-        # positions should contain the legacy entries
-        assert result["positions"]["var__RawSignal"] == {"x": 10.0, "y": 20.0}
+        # positions should contain the legacy entries, placement-qualified
+        assert result["positions"]["var__RawSignal::main"] == {"x": 10.0, "y": 20.0}
         # new keys default to empty
         assert result["manual_nodes"] == {}
         assert result["constants"] == []
