@@ -41,9 +41,13 @@ export default function EditTab() {
   const [varSubmitting, setVarSubmitting] = useState(false)
   const varInputRef = useRef<HTMLInputElement>(null)
 
-  // Nested pipelines: the scopes list + navigation state.
+  // Nested pipelines: the scopes list + navigation state. Hypothesis-tagged
+  // pipelines get their own tab strip (HypothesisTabs) — this list is
+  // submodules only, so drag-onto-canvas here always means "place a
+  // reusable submodule," never "place a whole hypothesis."
   const { currentScope, jumpTo, renameInPath, bumpGraph, graphVersion } = useScope()
   const [pipelines, setPipelines] = useState<PipelineInfo[]>([])
+  const [hypothesisIds, setHypothesisIds] = useState<Set<string>>(new Set())
   const [addingPipe, setAddingPipe] = useState(false)
   const [pipeDraft, setPipeDraft] = useState('')
   const [pipeError, setPipeError] = useState('')
@@ -61,6 +65,11 @@ export default function EditTab() {
   function fetchPipelines() {
     callBackend('list_pipelines')
       .then(d => setPipelines((d as { pipelines: PipelineInfo[] }).pipelines))
+      .catch(console.error)
+    callBackend('list_hypotheses')
+      .then(d => setHypothesisIds(new Set(
+        (d as { hypotheses: Array<{ pipeline_id: string }> }).hypotheses.map(h => h.pipeline_id)
+      )))
       .catch(console.error)
   }
 
@@ -229,14 +238,14 @@ export default function EditTab() {
   return (
     <div style={styles.root}>
       <Section
-        title="Pipelines"
+        title="Submodules"
         action={
-          <button style={styles.addBtn} onClick={() => setAddingPipe(true)} title="New pipeline">
+          <button style={styles.addBtn} onClick={() => setAddingPipe(true)} title="New submodule">
             +
           </button>
         }
       >
-        {pipelines.map(p => (
+        {pipelines.filter(p => !hypothesisIds.has(p.pipeline_id)).map(p => (
           renamingPid === p.pipeline_id ? (
             <input
               key={p.pipeline_id}
@@ -302,7 +311,7 @@ export default function EditTab() {
             ref={pipeInputRef}
             style={styles.draftInput}
             value={pipeDraft}
-            placeholder="pipeline name…"
+            placeholder="submodule name…"
             onChange={e => setPipeDraft(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Enter') commitPipeDraft()

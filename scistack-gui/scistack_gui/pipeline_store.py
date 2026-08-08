@@ -11,6 +11,8 @@ Tables created in the user's .duckdb file:
     _pipeline_nodes (node_id, node_type, label, config, pipeline_id)
     _pipeline_edges (edge_id, source, target, source_handle, target_handle)
     _pipeline_uses  (use_id, parent_pipeline_id, child_pipeline_id, binding_json)
+    _hypotheses     (pipeline_id, research_question, hypothesis_statement,
+                      evidence_for, evidence_against)
 
 These tables are created lazily on first access so they are always present
 regardless of whether init_db() or configure_database() was used to open the DB.
@@ -28,6 +30,16 @@ iterate}`` (empty = identity), mirroring scidb's ``Pipeline.bind()``.
 These tables are the GUI's DOCUMENT (what the user drew) — NOT backend
 spec persistence, which is deliberately unbuilt: at run time the GUI
 constructs in-session ``scidb.Pipeline`` objects from this document.
+
+Hypothesis tabs
+---------------
+A "hypothesis" is not a separate structure — it is a top-level pipeline
+scope (a row in ``_pipelines``) tagged with a row in ``_hypotheses``
+(research question, hypothesis statement, evidence for/against). The
+reserved root scope (``main``) is tagged as a hypothesis too, the same as
+any other — it is simply the default one, not a special "scratch" scope.
+A pipeline used purely as a submodule (placed via ``_pipeline_uses`` and
+never tagged) has no ``_hypotheses`` row and does not appear as a tab.
 
 Edges carry no scope column: an edge lives in the scope of the nodes it
 connects (both endpoints are always in one scope; service-level queries
@@ -133,6 +145,23 @@ def _ensure_tables(db) -> None:
         pass  # Column already exists
     _duck(db)._execute(
         "UPDATE _pipeline_nodes SET pipeline_id = ? WHERE pipeline_id IS NULL",
+        [ROOT_PIPELINE_ID],
+    )
+
+    # --- Hypothesis tabs (a hypothesis is a tagged top-level pipeline) ---
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _hypotheses (
+            pipeline_id          VARCHAR PRIMARY KEY,
+            research_question    VARCHAR DEFAULT '',
+            hypothesis_statement VARCHAR DEFAULT '',
+            evidence_for         VARCHAR DEFAULT '[]',
+            evidence_against     VARCHAR DEFAULT '[]'
+        )
+    """)
+    # The root pipeline is the default hypothesis, tagged the same as any
+    # other (one-time, idempotent — existing DBs backfill on next access).
+    _duck(db)._execute(
+        "INSERT INTO _hypotheses (pipeline_id) VALUES (?) ON CONFLICT DO NOTHING",
         [ROOT_PIPELINE_ID],
     )
 
@@ -281,6 +310,37 @@ def delete_node(db, node_id: str) -> None:
     logger.info("[pipeline_store] delete_node called (node_id=%r)", node_id)
     _duck(db)._execute("DELETE FROM _pipeline_nodes WHERE node_id = ?", [node_id])
     logger.info("[pipeline_store] Node deleted from _pipeline_nodes table")
+
+
+def move_pipeline_use_parent(db, use_id: str, new_parent_pipeline_id: str) -> None:
+    """Move an existing pipeline-node PLACEMENT to a new parent scope
+    (extract-to-submodule regrouping a selection that includes one).
+
+    A placed pipeline node's rendering scope is ``_pipeline_uses.
+    parent_pipeline_id`` (see api/pipeline.py's ``_build_graph`` docstring
+    — pipelineNode entries come from ``scope_service.build_pipeline_nodes``,
+    driven by this column), NOT its ``_pipeline_nodes.pipeline_id`` — the
+    two must move together (pair with move_node_scope) or the node ends up
+    inconsistent: present in the new scope's node list but still rendered
+    as a use of the old parent.
+    """
+    _duck(db)._execute(
+        "UPDATE _pipeline_uses SET parent_pipeline_id = ? WHERE use_id = ?",
+        [new_parent_pipeline_id, use_id],
+    )
+
+
+def move_node_scope(db, node_id: str, new_pipeline_id: str) -> None:
+    """Move an existing node's scope (extract-to-submodule).
+
+    A no-op if ``node_id`` has no ``_pipeline_nodes`` row (a pure
+    DB-derived node whose scope is entirely position-based — the caller
+    also moves its saved position, which is what actually re-scopes it).
+    """
+    _duck(db)._execute(
+        "UPDATE _pipeline_nodes SET pipeline_id = ? WHERE node_id = ?",
+        [new_pipeline_id, node_id],
+    )
 
 
 def graduate_manual_node(db, old_id: str, new_id: str) -> None:
@@ -623,6 +683,109 @@ def update_use_binding(db, use_id: str, binding: dict) -> None:
         [json.dumps(binding), use_id],
     )
     logger.info("[pipeline_store] update_use_binding: %s -> %s", use_id, binding)
+
+
+# ---------------------------------------------------------------------------
+# Hypotheses (tagged top-level pipelines, rendered as tabs)
+# ---------------------------------------------------------------------------
+
+
+def _loads_list(raw: "str | None") -> list:
+    try:
+        return json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def list_hypotheses(db) -> list[dict]:
+    """Hypothesis-tagged pipelines, root first: [{"pipeline_id", "name",
+    "research_question", "hypothesis_statement", "evidence_for",
+    "evidence_against"}]."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT p.pipeline_id, p.name, h.research_question, "
+        "h.hypothesis_statement, h.evidence_for, h.evidence_against "
+        "FROM _hypotheses h JOIN _pipelines p ON p.pipeline_id = h.pipeline_id "
+        "ORDER BY (p.pipeline_id != ?), p.name",
+        [ROOT_PIPELINE_ID],
+    )
+    return [
+        {
+            "pipeline_id": pipeline_id,
+            "name": name,
+            "research_question": question or "",
+            "hypothesis_statement": statement or "",
+            "evidence_for": _loads_list(ev_for),
+            "evidence_against": _loads_list(ev_against),
+        }
+        for pipeline_id, name, question, statement, ev_for, ev_against in rows
+    ]
+
+
+def tag_as_hypothesis(db, pipeline_id: str) -> None:
+    """Tag an EXISTING pipeline as a hypothesis (e.g. after duplicating
+    one) — a no-op if it's already tagged."""
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _hypotheses (pipeline_id) VALUES (?) ON CONFLICT DO NOTHING",
+        [pipeline_id],
+    )
+    logger.info("[pipeline_store] tag_as_hypothesis: %s", pipeline_id)
+
+
+def create_hypothesis(db, name: str) -> str:
+    """Create a new pipeline and tag it as a hypothesis; returns its pipeline_id."""
+    _ensure_tables(db)
+    pipeline_id = create_pipeline(db, name)
+    _duck(db)._execute("INSERT INTO _hypotheses (pipeline_id) VALUES (?)", [pipeline_id])
+    logger.info("[pipeline_store] create_hypothesis: '%s' -> %s", name, pipeline_id)
+    return pipeline_id
+
+
+def update_hypothesis(
+    db,
+    pipeline_id: str,
+    research_question: "str | None" = None,
+    hypothesis_statement: "str | None" = None,
+    evidence_for: "list | None" = None,
+    evidence_against: "list | None" = None,
+) -> None:
+    """Update whichever fields are provided; ``None`` leaves a field unchanged."""
+    _ensure_tables(db)
+    known = _duck(db)._fetchall(
+        "SELECT 1 FROM _hypotheses WHERE pipeline_id = ?", [pipeline_id]
+    )
+    if not known:
+        raise ValueError(f"'{pipeline_id}' is not a hypothesis pipeline")
+    fields, values = [], []
+    if research_question is not None:
+        fields.append("research_question = ?")
+        values.append(research_question)
+    if hypothesis_statement is not None:
+        fields.append("hypothesis_statement = ?")
+        values.append(hypothesis_statement)
+    if evidence_for is not None:
+        fields.append("evidence_for = ?")
+        values.append(json.dumps(evidence_for))
+    if evidence_against is not None:
+        fields.append("evidence_against = ?")
+        values.append(json.dumps(evidence_against))
+    if not fields:
+        return
+    values.append(pipeline_id)
+    _duck(db)._execute(
+        f"UPDATE _hypotheses SET {', '.join(fields)} WHERE pipeline_id = ?", values
+    )
+    logger.info("[pipeline_store] update_hypothesis: %s", pipeline_id)
+
+
+def delete_hypothesis(db, pipeline_id: str) -> None:
+    """Delete a hypothesis: its metadata row, then the underlying pipeline
+    (reuses delete_pipeline's root/consumer guards)."""
+    _ensure_tables(db)
+    delete_pipeline(db, pipeline_id)
+    _duck(db)._execute("DELETE FROM _hypotheses WHERE pipeline_id = ?", [pipeline_id])
+    logger.info("[pipeline_store] delete_hypothesis: %s", pipeline_id)
 
 
 # ---------------------------------------------------------------------------

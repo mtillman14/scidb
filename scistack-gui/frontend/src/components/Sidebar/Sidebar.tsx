@@ -22,12 +22,13 @@ import PathInputSettingsPanel from './PathInputSettingsPanel'
 import PipelineSettingsPanel from './PipelineSettingsPanel'
 import EndpointPanel from './EndpointPanel'
 import ProjectConfigPanel from './ProjectConfigPanel'
+import HypothesisPanel from './HypothesisPanel'
 import type { PipelineNodeData } from '../DAG/PipelineNode'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import type { Node } from '@xyflow/react'
 import type { ConstantValue } from '../DAG/ConstantNode'
 
-const BASE_TABS = ['Runs', 'Edit', 'Project'] as const
+const BASE_TABS = ['Runs', 'Edit', 'Hypothesis', 'Project'] as const
 type BaseTab = typeof BASE_TABS[number]
 type Tab = BaseTab | 'Node'
 
@@ -98,7 +99,7 @@ export default function Sidebar() {
   }, [selectedNode])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)
-  const tabs: Tab[] = hasNodeTab ? ['Runs', 'Edit', 'Node'] : ['Runs', 'Edit']
+  const tabs: Tab[] = hasNodeTab ? [...BASE_TABS, 'Node'] : [...BASE_TABS]
 
   // Compute variant combinations from constant nodes and multi-wired variable inputs
   // connected to the selected function node.
@@ -188,6 +189,7 @@ export default function Sidebar() {
       <div style={styles.content}>
         {activeTab === 'Runs' && <RunsTab />}
         {activeTab === 'Edit' && <EditTab />}
+        {activeTab === 'Hypothesis' && <HypothesisPanel />}
         {activeTab === 'Project' && <ProjectConfigPanel />}
         {activeTab === 'Node' && isFunctionNode(selectedNode)
           && (selectedNode.data as FnNodeData).endpoint_kind && (

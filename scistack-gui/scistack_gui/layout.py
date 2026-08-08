@@ -138,6 +138,36 @@ def drop_node_positions(node_id: str) -> None:
         _save(data)
 
 
+def move_node_position(
+    node_id: str, new_pipeline_id: str, default_x: float = 0.0, default_y: float = 0.0
+) -> dict:
+    """Move one node's saved position into a new scope (extract-to-submodule).
+
+    Position IS the scope-membership record for DB-derived nodes (see
+    domain.scope_filter.node_scope), so this alone re-scopes them; manual
+    nodes additionally need their ``_pipeline_nodes.pipeline_id`` column
+    rewritten (pipeline_store.move_node_scope), which takes priority when
+    both exist. Returns the position that was moved (or the default, if the
+    node had no saved position in any scope).
+    """
+    data = _load()
+    pos = None
+    for scope in data["positions"].values():
+        found = scope.pop(node_id, None)
+        if found is not None:
+            pos = found
+            break
+    if pos is None:
+        pos = {"x": default_x, "y": default_y}
+    _scope_positions(data, new_pipeline_id)[node_id] = pos
+    _save(data)
+    logger.info(
+        "[layout] move_node_position: %r -> scope %r (%.1f, %.1f)",
+        node_id, new_pipeline_id, pos["x"], pos["y"],
+    )
+    return pos
+
+
 def read_layout(pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID) -> dict:
     """Return one SCOPE's layout (positions + manual nodes from DB).
 
@@ -330,6 +360,33 @@ def write_path_input(name: str, template: str, root_folder: str | None = None) -
         {"name": name, "template": template, "root_folder": root_folder}
     )
     _save(data)
+
+
+def deep_copy_path_input(name: str) -> str:
+    """Mint a new, independently-named PathInput definition cloned from
+    ``name`` — the opt-in escape hatch from the default "shared by name"
+    behavior (placements reference a name by default; this is how one
+    placement gets its own value). Does not touch ``name`` itself or any
+    other placement still referencing it.
+    """
+    data = _load()
+    source = next((p for p in data["path_inputs"] if p["name"] == name), None)
+    template = source["template"] if source else ""
+    root_folder = source["root_folder"] if source else None
+
+    existing = {p["name"] for p in data["path_inputs"]}
+    new_name = f"{name}_copy"
+    n = 2
+    while new_name in existing:
+        new_name = f"{name}_copy{n}"
+        n += 1
+
+    data["path_inputs"].append(
+        {"name": new_name, "template": template, "root_folder": root_folder}
+    )
+    _save(data)
+    logger.info("[layout] deep_copy_path_input: %r -> %r", name, new_name)
+    return new_name
 
 
 def delete_path_input(name: str) -> None:

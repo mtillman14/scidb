@@ -6,9 +6,25 @@ POST   /api/pipelines                     — create a scope
 PUT    /api/pipelines/{pid}               — rename
 DELETE /api/pipelines/{pid}               — delete (guards apply)
 GET    /api/pipelines/{pid}/interface     — the scope's ports
+POST   /api/pipelines/{pid}/extract       — turn selected nodes into a new
+                                             submodule pipeline (a move,
+                                             not a copy)
+POST   /api/pipelines/{pid}/duplicate     — fork pid's own nodes into a
+                                             new independent pipeline
+                                             (submodule placements keep
+                                             pointing at the same child)
+POST   /api/hypotheses/{pid}/duplicate    — same, and tags the copy as
+                                             its own hypothesis (new tab)
 POST   /api/pipelines/{pid}/uses          — place a pipeline node on pid
 PUT    /api/pipeline-uses/{use_id}/binding
 DELETE /api/pipeline-uses/{use_id}
+
+GET    /api/hypotheses                    — hypothesis-tagged pipelines (tabs)
+POST   /api/hypotheses                    — create a pipeline + tag it
+PUT    /api/hypotheses/{pid}              — edit metadata (research
+                                             question, statement, evidence)
+DELETE /api/hypotheses/{pid}              — delete (delegates to
+                                             delete_pipeline's guards)
 
 Store-level ValueErrors (cycles, root guards, duplicate names, unknown
 ids, binding-key whitelist) map to HTTP 400 with the store's message.
@@ -31,6 +47,26 @@ class PipelineCreate(BaseModel):
 
 
 class PipelineRename(BaseModel):
+    name: str
+
+
+class HypothesisCreate(BaseModel):
+    name: str
+
+
+class HypothesisUpdate(BaseModel):
+    research_question: str | None = None
+    hypothesis_statement: str | None = None
+    evidence_for: list | None = None
+    evidence_against: list | None = None
+
+
+class ExtractToSubmodule(BaseModel):
+    node_ids: list[str]
+    name: str
+
+
+class DuplicatePipeline(BaseModel):
     name: str
 
 
@@ -70,6 +106,50 @@ def put_pipeline(pipeline_id: str, body: PipelineRename) -> dict:
 @router.delete("/pipelines/{pipeline_id}")
 def delete_pipeline(pipeline_id: str) -> dict:
     return _guard(scope_service.delete_pipeline, pipeline_id)
+
+
+@router.get("/hypotheses")
+def get_hypotheses() -> dict:
+    return scope_service.list_hypotheses()
+
+
+@router.post("/hypotheses")
+def post_hypothesis(body: HypothesisCreate) -> dict:
+    return _guard(scope_service.create_hypothesis, body.name)
+
+
+@router.put("/hypotheses/{pipeline_id}")
+def put_hypothesis(pipeline_id: str, body: HypothesisUpdate) -> dict:
+    return _guard(
+        scope_service.update_hypothesis,
+        pipeline_id,
+        body.research_question,
+        body.hypothesis_statement,
+        body.evidence_for,
+        body.evidence_against,
+    )
+
+
+@router.delete("/hypotheses/{pipeline_id}")
+def delete_hypothesis(pipeline_id: str) -> dict:
+    return _guard(scope_service.delete_hypothesis, pipeline_id)
+
+
+@router.post("/pipelines/{pipeline_id}/extract")
+def post_extract_to_submodule(pipeline_id: str, body: ExtractToSubmodule) -> dict:
+    return _guard(
+        scope_service.extract_to_submodule, pipeline_id, body.node_ids, body.name
+    )
+
+
+@router.post("/pipelines/{pipeline_id}/duplicate")
+def post_duplicate_pipeline(pipeline_id: str, body: DuplicatePipeline) -> dict:
+    return _guard(scope_service.duplicate_pipeline, pipeline_id, body.name)
+
+
+@router.post("/hypotheses/{pipeline_id}/duplicate")
+def post_duplicate_hypothesis(pipeline_id: str, body: DuplicatePipeline) -> dict:
+    return _guard(scope_service.duplicate_hypothesis, pipeline_id, body.name)
 
 
 @router.get("/pipelines/{pipeline_id}/interface")

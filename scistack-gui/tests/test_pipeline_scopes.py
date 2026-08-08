@@ -72,6 +72,113 @@ class TestPipelineScopes:
 
 
 # ---------------------------------------------------------------------------
+# Hypotheses (tagged top-level pipelines, rendered as tabs)
+# ---------------------------------------------------------------------------
+
+
+class TestHypotheses:
+    def test_root_is_default_hypothesis(self, layout_path):
+        db = get_db()
+        (hyp,) = ps.list_hypotheses(db)
+        assert hyp["pipeline_id"] == "main"
+        assert hyp["name"] == "main"
+        assert hyp["research_question"] == ""
+        assert hyp["evidence_for"] == []
+        assert hyp["evidence_against"] == []
+
+    def test_create_hypothesis_tags_a_new_pipeline(self, layout_path):
+        db = get_db()
+        pid = ps.create_hypothesis(db, "gait symmetry")
+        assert pid.startswith("pipe_")
+        # It's a real pipeline too (submodule placement machinery just works).
+        assert {"pipeline_id": pid, "name": "gait symmetry"} in ps.list_pipelines(db)
+
+        ids = {h["pipeline_id"] for h in ps.list_hypotheses(db)}
+        assert ids == {"main", pid}
+
+    def test_pipeline_without_tag_is_not_a_hypothesis(self, layout_path):
+        db = get_db()
+        pid = ps.create_pipeline(db, "loading")  # plain submodule, not tagged
+        ids = {h["pipeline_id"] for h in ps.list_hypotheses(db)}
+        assert pid not in ids
+
+    def test_update_hypothesis_partial_fields(self, layout_path):
+        db = get_db()
+        pid = ps.create_hypothesis(db, "gait symmetry")
+
+        ps.update_hypothesis(db, pid, research_question="Does symmetry change?")
+        (hyp,) = [h for h in ps.list_hypotheses(db) if h["pipeline_id"] == pid]
+        assert hyp["research_question"] == "Does symmetry change?"
+        assert hyp["hypothesis_statement"] == ""
+
+        ps.update_hypothesis(
+            db, pid, evidence_for=["symmetry improved at week 4"]
+        )
+        (hyp,) = [h for h in ps.list_hypotheses(db) if h["pipeline_id"] == pid]
+        # Untouched fields survive a partial update.
+        assert hyp["research_question"] == "Does symmetry change?"
+        assert hyp["evidence_for"] == ["symmetry improved at week 4"]
+
+    def test_update_non_hypothesis_pipeline_rejected(self, layout_path):
+        db = get_db()
+        pid = ps.create_pipeline(db, "loading")
+        with pytest.raises(ValueError, match="not a hypothesis"):
+            ps.update_hypothesis(db, pid, research_question="x")
+
+    def test_delete_hypothesis_removes_pipeline_and_tag(self, layout_path):
+        db = get_db()
+        pid = ps.create_hypothesis(db, "gait symmetry")
+
+        ps.delete_hypothesis(db, pid)
+
+        assert pid not in {p["pipeline_id"] for p in ps.list_pipelines(db)}
+        assert pid not in {h["pipeline_id"] for h in ps.list_hypotheses(db)}
+
+    def test_delete_root_hypothesis_rejected(self, layout_path):
+        db = get_db()
+        with pytest.raises(ValueError, match="root"):
+            ps.delete_hypothesis(db, "main")
+
+
+class TestHypothesisApi:
+    def test_list_and_create(self, client):
+        r = client.get("/api/hypotheses")
+        assert r.status_code == 200
+        assert r.json()["hypotheses"][0]["pipeline_id"] == "main"
+
+        r = client.post("/api/hypotheses", json={"name": "gait symmetry"})
+        assert r.status_code == 200
+        pid = r.json()["pipeline_id"]
+
+        ids = {h["pipeline_id"] for h in client.get("/api/hypotheses").json()["hypotheses"]}
+        assert ids == {"main", pid}
+
+    def test_update_and_delete(self, client):
+        pid = client.post("/api/hypotheses", json={"name": "gait symmetry"}).json()[
+            "pipeline_id"
+        ]
+
+        r = client.put(
+            f"/api/hypotheses/{pid}",
+            json={
+                "research_question": "Does symmetry change over time?",
+                "evidence_for": ["week 4 trend"],
+            },
+        )
+        assert r.status_code == 200
+        hyps = {h["pipeline_id"]: h for h in client.get("/api/hypotheses").json()["hypotheses"]}
+        assert hyps[pid]["research_question"] == "Does symmetry change over time?"
+        assert hyps[pid]["evidence_for"] == ["week 4 trend"]
+
+        assert client.delete(f"/api/hypotheses/{pid}").status_code == 200
+        ids = {h["pipeline_id"] for h in client.get("/api/hypotheses").json()["hypotheses"]}
+        assert pid not in ids
+
+    def test_root_hypothesis_delete_is_400(self, client):
+        assert client.delete("/api/hypotheses/main").status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # Scoped nodes
 # ---------------------------------------------------------------------------
 
@@ -435,6 +542,272 @@ class TestScopedGraph:
         assert len(root["edges"]) > 0
         assert sub["edges"] == []
         assert sub["pipeline_id"] == pid
+
+
+class TestPathInputDeepCopy:
+    def test_copy_shares_template_by_default(self, client):
+        """Placing the SAME named PathInput twice — via two separate manual
+        nodes — is the default 'shared' behavior: no deep copy involved."""
+        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
+        client.put("/api/layout/pi_a", json={
+            "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
+        })
+        client.put("/api/layout/pi_b", json={
+            "x": 10, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
+        })
+
+        db = get_db()
+        assert ps.get_manual_nodes(db)["pi_a"]["label"] == "gait_data"
+        assert ps.get_manual_nodes(db)["pi_b"]["label"] == "gait_data"
+        names = {p["name"] for p in client.get("/api/path-inputs").json()}
+        assert names == {"gait_data"}  # one shared definition, not two
+
+    def test_deep_copy_forks_only_the_targeted_node(self, client):
+        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
+        client.put("/api/layout/pi_a", json={
+            "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
+        })
+        client.put("/api/layout/pi_b", json={
+            "x": 10, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
+        })
+
+        r = client.post("/api/path-inputs/pi_a/deep-copy")
+        assert r.status_code == 200
+        new_name = r.json()["name"]
+        assert new_name != "gait_data"
+
+        db = get_db()
+        # Only pi_a was repointed; pi_b still references the original name.
+        assert ps.get_manual_nodes(db)["pi_a"]["label"] == new_name
+        assert ps.get_manual_nodes(db)["pi_b"]["label"] == "gait_data"
+        # pi_a kept its position (deep-copy is not a move).
+        layout = client.get("/api/layout").json()
+        assert layout["positions"]["pi_a"] == {"x": 0.0, "y": 0.0}
+
+        # The new definition cloned the original's template independently.
+        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
+        assert by_name[new_name]["template"] == "{subject}.csv"
+        assert by_name["gait_data"]["template"] == "{subject}.csv"
+
+        # Editing the original no longer affects the deep-copied one.
+        client.put("/api/path-inputs/gait_data", json={"name": "gait_data", "template": "{subject}_v2.csv"})
+        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
+        assert by_name["gait_data"]["template"] == "{subject}_v2.csv"
+        assert by_name[new_name]["template"] == "{subject}.csv"
+
+    def test_deep_copy_disambiguates_repeated_names(self, client):
+        client.post("/api/path-inputs", json={"name": "gait_data", "template": "t"})
+        client.put("/api/layout/pi_a", json={
+            "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
+        })
+        client.put("/api/layout/pi_c", json={
+            "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
+        })
+
+        name1 = client.post("/api/path-inputs/pi_a/deep-copy").json()["name"]
+        name2 = client.post("/api/path-inputs/pi_c/deep-copy").json()["name"]
+        assert name1 != name2
+
+    def test_deep_copy_rejects_non_path_input_node(self, client):
+        client.put("/api/layout/fn_node", json={
+            "x": 0, "y": 0, "node_type": "functionNode", "label": "fn_a",
+        })
+        r = client.post("/api/path-inputs/fn_node/deep-copy")
+        assert r.status_code == 400
+
+
+class TestDuplicatePipeline:
+    def test_duplicate_copies_manual_nodes_config_and_edges(self, client):
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()["pipeline_id"]
+        client.put("/api/layout/mv_in", json={
+            "x": 0, "y": 0, "node_type": "variableNode", "label": "RawSignal", "pipeline_id": pid,
+        })
+        client.put("/api/layout/mf_proc", json={
+            "x": 10, "y": 0, "node_type": "functionNode", "label": "custom_proc", "pipeline_id": pid,
+        })
+        client.put("/api/layout/mv_out", json={
+            "x": 20, "y": 0, "node_type": "variableNode", "label": "FilteredSignal", "pipeline_id": pid,
+        })
+        client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_proc"})
+        client.put("/api/edges/e_out", json={"source": "mf_proc", "target": "mv_out"})
+        client.put("/api/layout/mf_proc/config", json={"config": {"schemaFilter": {"subject": ["S01"]}}})
+
+        r = client.post(f"/api/pipelines/{pid}/duplicate", json={"name": "loading_v2"})
+        assert r.status_code == 200
+        new_pid = r.json()["pipeline_id"]
+
+        db = get_db()
+        original_ids = set(ps.get_manual_nodes(db, pid))
+        copy_nodes = ps.get_manual_nodes(db, new_pid)
+        copy_ids = set(copy_nodes)
+        assert original_ids.isdisjoint(copy_ids)  # fresh node ids
+        assert {(n["type"], n["label"]) for n in copy_nodes.values()} == {
+            ("variableNode", "RawSignal"),
+            ("functionNode", "custom_proc"),
+            ("variableNode", "FilteredSignal"),
+        }
+        # Config forked to the new node id.
+        fn_copy = next(n for n in copy_nodes.values() if n["type"] == "functionNode")
+        assert fn_copy.get("config") == {"schemaFilter": {"subject": ["S01"]}}
+
+        # Edges duplicated onto the new node ids.
+        id_by_label = {n["label"]: nid for nid, n in copy_nodes.items()}
+        copy_edges = [
+            e for e in ps.get_manual_edges(db)
+            if e["source"] in copy_ids or e["target"] in copy_ids
+        ]
+        in_edge = next(e for e in copy_edges if e["target"] == id_by_label["custom_proc"])
+        assert in_edge["source"] == id_by_label["RawSignal"]
+        out_edge = next(e for e in copy_edges if e["source"] == id_by_label["custom_proc"])
+        assert out_edge["target"] == id_by_label["FilteredSignal"]
+
+        # The original is untouched.
+        assert set(ps.get_manual_nodes(db, pid)) == original_ids
+
+    def test_duplicate_does_not_touch_graduated_nodes_or_corrupt_original(self, client):
+        """Variable/function nodes with real DB history (the seeded
+        bandpass_filter graph on root) have a single GLOBAL, scope-singular
+        canonical identity in this system (var__Type, fn__{fn}__{call_id}).
+        Creating a second manual node with the same label would collide on
+        the next graph build and STEAL that node's position away from the
+        original (graduation is a label match, not scope-aware) — found via
+        a real failing test during implementation. Duplicate must leave
+        graduated content alone entirely: the copy is empty of it, and the
+        original is completely unaffected."""
+        before_ids = {n["id"] for n in client.get("/api/pipeline").json()["nodes"]}
+
+        r = client.post("/api/pipelines/main/duplicate", json={"name": "main_copy"})
+        assert r.status_code == 200
+        pid = r.json()["pipeline_id"]
+
+        copy_nodes = client.get("/api/pipeline", params={"pipeline_id": pid}).json()["nodes"]
+        assert copy_nodes == []  # nothing manual to copy; graduated content stays put
+
+        after_ids = {n["id"] for n in client.get("/api/pipeline").json()["nodes"]}
+        assert after_ids == before_ids  # main is completely untouched
+
+    def test_duplicate_keeps_submodule_use_pointing_at_same_child(self, client):
+        child = client.post("/api/pipelines", json={"name": "shared_prep"}).json()[
+            "pipeline_id"
+        ]
+        parent = client.post("/api/pipelines", json={"name": "symmetry"}).json()[
+            "pipeline_id"
+        ]
+        # No binding: `child` has zero steps, so any params binding would
+        # fail bind-time validation regardless of duplication — this test
+        # is only about the child_pipeline_id reference, not bindings.
+        client.post(
+            f"/api/pipelines/{parent}/uses", json={"child_pipeline_id": child}
+        )
+
+        r = client.post(f"/api/pipelines/{parent}/duplicate", json={"name": "speed"})
+        assert r.status_code == 200
+        new_pid = r.json()["pipeline_id"]
+
+        db = get_db()
+        (use,) = ps.get_pipeline_uses(db, new_pid)
+        assert use["child_pipeline_id"] == child  # SAME submodule, not a copy
+        # The original parent's use is untouched (different use_id).
+        (orig_use,) = ps.get_pipeline_uses(db, parent)
+        assert orig_use["use_id"] != use["use_id"]
+
+    def test_duplicate_name_collision_is_400(self, client):
+        client.post("/api/pipelines", json={"name": "loading"})
+        r = client.post("/api/pipelines/main/duplicate", json={"name": "loading"})
+        assert r.status_code == 400
+
+
+class TestDuplicateHypothesis:
+    def test_duplicate_tags_copy_as_hypothesis(self, client):
+        pid = client.post("/api/hypotheses", json={"name": "gait symmetry"}).json()[
+            "pipeline_id"
+        ]
+
+        r = client.post(f"/api/hypotheses/{pid}/duplicate", json={"name": "gait speed"})
+        assert r.status_code == 200
+        new_pid = r.json()["pipeline_id"]
+
+        ids = {h["pipeline_id"] for h in client.get("/api/hypotheses").json()["hypotheses"]}
+        assert new_pid in ids
+
+        # But a plain (non-hypothesis) pipeline duplicate is NOT auto-tagged.
+        plain = client.post("/api/pipelines", json={"name": "prep"}).json()["pipeline_id"]
+        new_plain = client.post(f"/api/pipelines/{plain}/duplicate", json={"name": "prep_v2"}).json()[
+            "pipeline_id"
+        ]
+        ids = {h["pipeline_id"] for h in client.get("/api/hypotheses").json()["hypotheses"]}
+        assert new_plain not in ids
+
+
+class TestExtractToSubmodule:
+    def test_extract_moves_node_and_adds_boundary_edges(self, client):
+        client.put("/api/layout/mv_in", json={
+            "x": 0, "y": 0, "node_type": "variableNode", "label": "RawSignal",
+        })
+        client.put("/api/layout/mf_proc", json={
+            "x": 10, "y": 0, "node_type": "functionNode", "label": "custom_proc",
+        })
+        client.put("/api/layout/mv_out", json={
+            "x": 20, "y": 0, "node_type": "variableNode", "label": "FilteredSignal",
+        })
+        client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_proc"})
+        client.put("/api/edges/e_out", json={"source": "mf_proc", "target": "mv_out"})
+
+        r = client.post(
+            "/api/pipelines/main/extract",
+            json={"node_ids": ["mf_proc"], "name": "processing"},
+        )
+        assert r.status_code == 200
+        pid, use_id = r.json()["pipeline_id"], r.json()["use_id"]
+
+        db = get_db()
+        # The function node moved scopes; the boundary variables stayed.
+        assert set(ps.get_manual_nodes(db, pid)) == {"mf_proc"}
+        assert set(ps.get_manual_nodes(db, "main")) == {"mv_in", "mv_out", use_id}
+
+        # Original edges are UNCHANGED (they feed the submodule's own
+        # interface via document_interface — see the function's docstring)
+        # — plus new boundary edges landed on the pipeline node's ports.
+        edges = ps.get_manual_edges(db)
+        assert {"id": "e_in", "source": "mv_in", "target": "mf_proc"} in edges
+        assert {"id": "e_out", "source": "mf_proc", "target": "mv_out"} in edges
+        new_in = [e for e in edges if e["source"] == "mv_in" and e["target"] == use_id]
+        new_out = [e for e in edges if e["source"] == use_id and e["target"] == "mv_out"]
+        assert len(new_in) == 1 and new_in[0]["targetHandle"] == "in__RawSignal"
+        assert len(new_out) == 1 and new_out[0]["sourceHandle"] == "out__FilteredSignal"
+
+        # The submodule's interface computes correctly from the untouched
+        # original edges.
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+        assert iface == {"inputs": ["RawSignal"], "outputs": ["FilteredSignal"]}
+
+        # The pipeline node on main carries the same ports.
+        graph = client.get("/api/pipeline").json()
+        node = next(n for n in graph["nodes"] if n["id"] == use_id)
+        assert node["data"]["inputs"] == ["RawSignal"]
+        assert node["data"]["outputs"] == ["FilteredSignal"]
+
+    def test_extract_rejects_node_outside_scope(self, client):
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        client.put("/api/layout/sub_node", json={
+            "x": 0, "y": 0, "node_type": "functionNode", "label": "fn_a",
+            "pipeline_id": pid,
+        })
+
+        r = client.post(
+            "/api/pipelines/main/extract",
+            json={"node_ids": ["sub_node"], "name": "regrouped"},
+        )
+        assert r.status_code == 400
+        assert "not on pipeline" in r.json()["detail"]
+
+    def test_extract_rejects_empty_selection(self, client):
+        r = client.post(
+            "/api/pipelines/main/extract", json={"node_ids": [], "name": "empty"}
+        )
+        assert r.status_code == 400
 
 
 class TestDocumentInterface:

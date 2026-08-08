@@ -14,6 +14,7 @@ import { useEffect, useState, useCallback } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import PipelineDAG from "./components/DAG/PipelineDAG";
 import Breadcrumb from "./components/DAG/Breadcrumb";
+import HypothesisTabs from "./components/HypothesisTabs";
 import Sidebar from "./components/Sidebar/Sidebar";
 import PipelineRunController from "./components/PipelineRunController";
 import { RunLogProvider } from "./context/RunLogContext";
@@ -263,6 +264,7 @@ export default function App() {
                   </span>
                 )}
               </header>
+              <HypothesisTabs />
               <ReactFlowProvider>
                 <div style={styles.body}>
                   <div style={styles.dagArea}>

@@ -132,10 +132,60 @@ def _h_delete_pipeline(params):
     return delete_pipeline(params["pipeline_id"])
 
 
+def _h_list_hypotheses(params):
+    from scistack_gui.services.scope_service import list_hypotheses
+
+    return list_hypotheses()
+
+
+def _h_create_hypothesis(params):
+    from scistack_gui.services.scope_service import create_hypothesis
+
+    return create_hypothesis(params["name"])
+
+
+def _h_update_hypothesis(params):
+    from scistack_gui.services.scope_service import update_hypothesis
+
+    return update_hypothesis(
+        params["pipeline_id"],
+        research_question=params.get("research_question"),
+        hypothesis_statement=params.get("hypothesis_statement"),
+        evidence_for=params.get("evidence_for"),
+        evidence_against=params.get("evidence_against"),
+    )
+
+
+def _h_delete_hypothesis(params):
+    from scistack_gui.services.scope_service import delete_hypothesis
+
+    return delete_hypothesis(params["pipeline_id"])
+
+
 def _h_get_pipeline_interface(params):
     from scistack_gui.services.scope_service import pipeline_interface
 
     return pipeline_interface(params["pipeline_id"])
+
+
+def _h_extract_to_submodule(params):
+    from scistack_gui.services.scope_service import extract_to_submodule
+
+    return extract_to_submodule(
+        params["pipeline_id"], params["node_ids"], params["name"]
+    )
+
+
+def _h_duplicate_pipeline(params):
+    from scistack_gui.services.scope_service import duplicate_pipeline
+
+    return duplicate_pipeline(params["pipeline_id"], params["name"])
+
+
+def _h_duplicate_hypothesis(params):
+    from scistack_gui.services.scope_service import duplicate_hypothesis
+
+    return duplicate_hypothesis(params["pipeline_id"], params["name"])
 
 
 def _h_add_pipeline_use(params):
@@ -244,6 +294,12 @@ def _h_get_path_inputs(params):
     from scistack_gui.services.layout_service import get_path_inputs
 
     return get_path_inputs()
+
+
+def _h_deep_copy_path_input(params):
+    from scistack_gui.services.layout_service import deep_copy_path_input
+
+    return deep_copy_path_input(params["node_id"])
 
 
 def _h_put_layout(params):
@@ -606,6 +662,7 @@ METHODS = {
     "create_path_input": _h_create_path_input,
     "update_path_input": _h_update_path_input,
     "delete_path_input": _h_delete_path_input,
+    "deep_copy_path_input": _h_deep_copy_path_input,
     "start_run": _h_start_run,
     "cancel_run": _h_cancel_run,
     "force_cancel_run": _h_force_cancel_run,
@@ -618,7 +675,14 @@ METHODS = {
     "create_pipeline": _h_create_pipeline,
     "rename_pipeline": _h_rename_pipeline,
     "delete_pipeline": _h_delete_pipeline,
+    "list_hypotheses": _h_list_hypotheses,
+    "create_hypothesis": _h_create_hypothesis,
+    "update_hypothesis": _h_update_hypothesis,
+    "delete_hypothesis": _h_delete_hypothesis,
     "get_pipeline_interface": _h_get_pipeline_interface,
+    "extract_to_submodule": _h_extract_to_submodule,
+    "duplicate_pipeline": _h_duplicate_pipeline,
+    "duplicate_hypothesis": _h_duplicate_hypothesis,
     "add_pipeline_use": _h_add_pipeline_use,
     "update_use_binding": _h_update_use_binding,
     "remove_pipeline_use": _h_remove_pipeline_use,

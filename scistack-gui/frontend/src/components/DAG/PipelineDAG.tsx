@@ -27,6 +27,7 @@ import {
   type Edge,
   type EdgeChange,
   type Connection,
+  type OnSelectionChangeParams,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -72,6 +73,10 @@ export default function PipelineDAG() {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [runFinalized, setRunFinalized] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [extractDraft, setExtractDraft] = useState<{ open: boolean; name: string; error: string }>(
+    { open: false, name: '', error: '' }
+  )
 
   const fetchPipeline = useCallback(async () => {
     // Fetch pipeline first — _build_graph has a side effect (graduate_manual_node)
@@ -153,6 +158,29 @@ export default function PipelineDAG() {
     setSelectedNode(null)
     setContextMenu(null)
   }, [setSelectedNode])
+
+  // Box-select (shift+drag, react-flow's default) tracked here so a
+  // multi-node selection can offer "extract to submodule" — the app never
+  // read node.selected before this.
+  const onSelectionChange = useCallback(({ nodes: selected }: OnSelectionChangeParams) => {
+    setSelectedIds(selected.map(n => n.id))
+  }, [])
+
+  const handleExtract = useCallback(() => {
+    const name = extractDraft.name.trim()
+    if (!name) return
+    callBackend('extract_to_submodule', {
+      pipeline_id: currentScope,
+      node_ids: selectedIds,
+      name,
+    })
+      .then(() => {
+        setExtractDraft({ open: false, name: '', error: '' })
+        setSelectedIds([])
+        bumpGraph()
+      })
+      .catch(err => setExtractDraft(d => ({ ...d, error: (err as Error).message })))
+  }, [extractDraft.name, selectedIds, currentScope, bumpGraph])
 
   // Double-click a pipeline node → descend into the child scope (push the
   // navigation crumb; the crumb carries the binding so the breadcrumb can
@@ -349,10 +377,44 @@ export default function PipelineDAG() {
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
         onPaneClick={onPaneClick}
+        onSelectionChange={onSelectionChange}
         nodeTypes={nodeTypes}
       >
         <Background />
         <Controls />
+        {selectedIds.length > 1 && (
+          <Panel position="top-left">
+            <div style={styles.extractPanel}>
+              {!extractDraft.open ? (
+                <button
+                  style={styles.extractBtn}
+                  onClick={() => setExtractDraft({ open: true, name: '', error: '' })}
+                  type="button"
+                >
+                  ⧉ Extract {selectedIds.length} nodes to submodule
+                </button>
+              ) : (
+                <div style={styles.extractForm}>
+                  <input
+                    style={styles.extractInput}
+                    autoFocus
+                    value={extractDraft.name}
+                    placeholder="submodule name…"
+                    onChange={e => setExtractDraft(d => ({ ...d, name: e.target.value, error: '' }))}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleExtract()
+                      if (e.key === 'Escape') setExtractDraft({ open: false, name: '', error: '' })
+                    }}
+                  />
+                  <button style={styles.extractBtn} onClick={handleExtract} type="button">
+                    Extract
+                  </button>
+                </div>
+              )}
+              {extractDraft.error && <div style={styles.extractError}>{extractDraft.error}</div>}
+            </div>
+          </Panel>
+        )}
         <Panel position="top-right">
           <div style={styles.runPanel}>
             <label style={styles.finalizedToggle} title="Draft runs preview endpoints without DB writes; finalized runs stamp and record them.">
@@ -414,6 +476,44 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontWeight: 600,
     fontSize: 12,
+  },
+  extractPanel: {
+    padding: '4px 8px',
+    background: '#1a1a2e',
+    border: '1px solid #a21caf',
+    borderRadius: 6,
+  },
+  extractForm: {
+    display: 'flex',
+    gap: 4,
+  },
+  extractInput: {
+    background: '#0f0f1e',
+    border: '1px solid #a21caf',
+    borderRadius: 3,
+    color: '#ccc',
+    fontSize: 12,
+    fontFamily: 'monospace',
+    padding: '4px 6px',
+    outline: 'none',
+  },
+  extractBtn: {
+    padding: '4px 10px',
+    background: '#a21caf',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 12,
+    whiteSpace: 'nowrap',
+  },
+  extractError: {
+    marginTop: 4,
+    fontSize: 11,
+    color: '#f87171',
+    maxWidth: 240,
+    whiteSpace: 'pre-wrap',
   },
   contextMenu: {
     position: 'absolute',

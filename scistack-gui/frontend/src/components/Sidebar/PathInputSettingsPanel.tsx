@@ -6,10 +6,11 @@
  * the backend on Enter or blur.  Escape reverts to the last saved value.
  */
 
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import { callBackend } from '../../api'
 import { useCommittedInput } from '../../hooks/useCommittedInput'
+import { useScope } from '../../context/ScopeContext'
 
 interface Props {
   id: string
@@ -26,6 +27,8 @@ function parseTemplateKeys(template: string): string[] {
 
 export default function PathInputSettingsPanel({ id, label, template, root_folder }: Props) {
   const { setNodes } = useReactFlow()
+  const { bumpGraph } = useScope()
+  const [deepCopyError, setDeepCopyError] = useState('')
 
   // Refs so each field's callbacks can read the other field's latest draft
   // without stale-closure issues.
@@ -68,6 +71,12 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
 
   const keys = parseTemplateKeys(templateInput.value)
 
+  const handleDeepCopy = useCallback(() => {
+    callBackend('deep_copy_path_input', { node_id: id })
+      .then(() => { setDeepCopyError(''); bumpGraph() })
+      .catch(err => setDeepCopyError((err as Error).message))
+  }, [id, bumpGraph])
+
   return (
     <div style={styles.root}>
       <div style={styles.name}>{label}</div>
@@ -79,6 +88,9 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
           placeholder="{subject}/trial_{trial}.mat"
           {...templateInput}
         />
+        <div style={styles.hint}>
+          Shared by name — editing this changes every placement of "{label}".
+        </div>
       </section>
 
       <section style={styles.section}>
@@ -88,6 +100,13 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
           placeholder="/data (optional)"
           {...rootInput}
         />
+      </section>
+
+      <section style={styles.section}>
+        <button style={styles.deepCopyBtn} onClick={handleDeepCopy} type="button">
+          Deep copy (make this placement independent)
+        </button>
+        {deepCopyError && <div style={styles.errorText}>{deepCopyError}</div>}
       </section>
 
       {keys.length > 0 && (
@@ -141,6 +160,29 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '5px 6px',
     outline: 'none',
     boxSizing: 'border-box',
+  },
+  hint: {
+    fontSize: 10,
+    color: '#666',
+    marginTop: 4,
+    lineHeight: 1.4,
+  },
+  deepCopyBtn: {
+    width: '100%',
+    padding: '5px 0',
+    background: 'transparent',
+    color: '#fbbf24',
+    border: '1px solid #92702a',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  errorText: {
+    marginTop: 6,
+    fontSize: 11,
+    color: '#f87171',
+    whiteSpace: 'pre-wrap',
   },
   keysRow: {
     display: 'flex',

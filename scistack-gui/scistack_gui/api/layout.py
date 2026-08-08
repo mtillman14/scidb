@@ -6,7 +6,7 @@ PUT  /api/layout/{node_id} — persist a single node's position (and optionally
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from scidb.database import DatabaseManager
 
@@ -119,6 +119,19 @@ def delete_path_input(name: str):
     from scistack_gui.services.layout_service import delete_path_input as _del
 
     return _del(name)
+
+
+@router.post("/path-inputs/{node_id}/deep-copy")
+def post_deep_copy_path_input(node_id: str):
+    """Opt-in fork: give this ONE PathInput node placement an independent
+    named definition, leaving every other placement of the original name
+    untouched (see layout_service.deep_copy_path_input)."""
+    from scistack_gui.services.layout_service import deep_copy_path_input
+
+    try:
+        return deep_copy_path_input(node_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.put("/edges/{edge_id}")

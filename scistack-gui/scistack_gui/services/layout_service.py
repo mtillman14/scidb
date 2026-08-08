@@ -197,6 +197,47 @@ def delete_path_input(name: str) -> dict:
     return {"ok": True}
 
 
+def deep_copy_path_input(node_id: str) -> dict:
+    """Give one PathInput node its own independent named definition —
+    opt-in fork; every other placement of the original name is untouched.
+    See pipeline_store's module docstring for the "shared by default"
+    PathInput design this is the escape hatch for.
+    """
+    from scistack_gui import layout as layout_store
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
+    from scistack_gui.domain.scope_filter import node_scope
+
+    db = get_db()
+    manual_nodes = ps.get_manual_nodes(db)
+    meta = manual_nodes.get(node_id)
+    if meta is not None:
+        if meta.get("type") != "pathInputNode":
+            raise ValueError(f"'{node_id}' is not a PathInput node")
+        old_name = meta["label"]
+    elif node_id.startswith("pathInput__"):
+        parts = node_id.split("__")
+        old_name = parts[1] if len(parts) >= 2 else None
+    else:
+        old_name = None
+    if not old_name:
+        raise ValueError(f"'{node_id}' is not a PathInput node")
+
+    positions_by_scope = layout_store.read_positions_by_scope()
+    pipeline_id = node_scope(node_id, manual_nodes, positions_by_scope)
+    pos = positions_by_scope.get(pipeline_id, {}).get(node_id, {"x": 0.0, "y": 0.0})
+
+    new_name = layout_store.deep_copy_path_input(old_name)
+
+    # Upsert guarantees a row exists whether or not this node was manual
+    # before (a DB-derived PathInput node has no _pipeline_nodes row until
+    # its first override) — position is passed through unchanged.
+    layout_store.write_manual_node(
+        node_id, pos["x"], pos["y"], "pathInputNode", new_name, pipeline_id=pipeline_id
+    )
+    return {"ok": True, "name": new_name}
+
+
 def put_pending_constant(name: str, value: str) -> dict:
     from scistack_gui import layout as layout_store
 
