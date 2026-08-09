@@ -23,6 +23,12 @@ interface PipelineInfo {
   name: string
 }
 
+interface HiddenPipelineInfo {
+  pipeline_id: string
+  name: string
+  is_hypothesis: boolean
+}
+
 export default function EditTab() {
   const [registry, setRegistry] = useState<Registry>({ functions: [], variables: [] })
   const [constants, setConstants] = useState<string[]>([])
@@ -48,6 +54,8 @@ export default function EditTab() {
   const { currentScope, jumpTo, renameInPath, bumpGraph, graphVersion } = useScope()
   const [pipelines, setPipelines] = useState<PipelineInfo[]>([])
   const [hypothesisIds, setHypothesisIds] = useState<Set<string>>(new Set())
+  const [hiddenPipelines, setHiddenPipelines] = useState<HiddenPipelineInfo[]>([])
+  const [showHiddenPipelines, setShowHiddenPipelines] = useState(false)
   const [addingPipe, setAddingPipe] = useState(false)
   const [pipeDraft, setPipeDraft] = useState('')
   const [pipeError, setPipeError] = useState('')
@@ -73,6 +81,18 @@ export default function EditTab() {
       .catch(console.error)
   }
 
+  function fetchHiddenPipelines() {
+    callBackend('get_hidden_pipelines')
+      .then(d => setHiddenPipelines((d as { pipelines: HiddenPipelineInfo[] }).pipelines))
+      .catch(console.error)
+  }
+
+  const handleRestorePipeline = (pid: string) => {
+    callBackend('unhide_pipeline', { pipeline_id: pid })
+      .then(() => { setPipeError(''); fetchPipelines(); fetchHiddenPipelines() })
+      .catch(err => setPipeError((err as Error).message))
+  }
+
   useEffect(() => {
     fetchRegistry()
     fetchConstants()
@@ -83,6 +103,7 @@ export default function EditTab() {
   // graphVersion — keep the pipelines list in sync.
   useEffect(() => {
     fetchPipelines()
+    fetchHiddenPipelines()
   }, [graphVersion])
 
   // Re-fetch registry when the backend signals a refresh (e.g. module reload).
@@ -91,6 +112,7 @@ export default function EditTab() {
       fetchRegistry()
       fetchPathInputs()
       fetchPipelines()
+      fetchHiddenPipelines()
     }
   }, []))
 
@@ -178,7 +200,7 @@ export default function EditTab() {
     setAddingPI(false)
   }
 
-  // Backend 400s (duplicate names, root mutations, still-used deletes)
+  // Backend 400s (duplicate names, still-used or last-remaining hides)
   // carry a clear message — surface it verbatim under the section.
   const commitPipeDraft = () => {
     const name = pipeDraft.trim()
@@ -212,8 +234,15 @@ export default function EditTab() {
       .then(() => {
         setPipeError('')
         fetchPipelines()
-        if (pid === currentScope) jumpTo('main', 'main')
-        else bumpGraph()
+        fetchHiddenPipelines()
+        if (pid === currentScope) {
+          // Land on whatever pipeline is left, not a hardcoded 'main' —
+          // 'main' itself may now be hidden.
+          const remaining = pipelines.find(p => p.pipeline_id !== pid)
+          if (remaining) jumpTo(remaining.pipeline_id, remaining.name)
+        } else {
+          bumpGraph()
+        }
       })
       .catch(err => setPipeError((err as Error).message))
   }
@@ -323,6 +352,35 @@ export default function EditTab() {
         {pipeError && (
           <div style={styles.errorText}>{pipeError}</div>
         )}
+        {(() => {
+          const hiddenSubmodules = hiddenPipelines.filter(p => !p.is_hypothesis)
+          if (hiddenSubmodules.length === 0) return null
+          return (
+            <div style={styles.hiddenWrap}>
+              <button
+                style={styles.hiddenToggle}
+                onClick={() => setShowHiddenPipelines(v => !v)}
+                type="button"
+              >
+                {showHiddenPipelines
+                  ? 'hide'
+                  : `${hiddenSubmodules.length} hidden — show`}
+              </button>
+              {showHiddenPipelines && hiddenSubmodules.map(p => (
+                <div key={p.pipeline_id} style={styles.hiddenRow}>
+                  <span style={{ flex: 1 }}>{p.name}</span>
+                  <button
+                    style={styles.rowBtn}
+                    onClick={() => handleRestorePipeline(p.pipeline_id)}
+                    title="Restore this submodule"
+                  >
+                    restore
+                  </button>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
       </Section>
       <Section title="Functions">
         {[...registry.functions, ...(registry.matlab_functions ?? [])].map(fn => {
@@ -550,5 +608,24 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
     cursor: 'pointer',
     padding: '0 2px',
+  },
+  hiddenWrap: {
+    marginTop: 4,
+  },
+  hiddenToggle: {
+    background: 'transparent',
+    border: 'none',
+    color: '#666',
+    fontSize: 11,
+    cursor: 'pointer',
+    padding: '4px 0',
+  },
+  hiddenRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 11,
+    color: '#aaa',
+    padding: '2px 0',
   },
 }

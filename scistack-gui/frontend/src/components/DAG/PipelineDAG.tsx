@@ -452,6 +452,25 @@ export default function PipelineDAG() {
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      {/* React Flow's default selected-edge color (--xy-edge-stroke-selected-default:
+          #555) is a dark gray meant for a light canvas — on this app's dark navy
+          background it's nearly invisible, so a click-to-select gives no visible
+          feedback. Override with a bright, on-brand highlight + thicker stroke;
+          deselecting (clicking the pane, or Escape) removes the .selected class
+          automatically, so the highlight already disappears for free. */}
+      <style>{`
+        .react-flow__edge-path {
+          stroke: #6b6b8f;
+        }
+        .react-flow__edge:hover .react-flow__edge-path {
+          stroke: #9d92f5;
+        }
+        .react-flow__edge.selected .react-flow__edge-path {
+          stroke: #a78bfa;
+          stroke-width: 3;
+          filter: drop-shadow(0 0 4px rgba(167, 139, 250, 0.6));
+        }
+      `}</style>
       <ReactFlow
         nodes={nodes}
         edges={edges}

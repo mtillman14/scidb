@@ -127,9 +127,21 @@ def _h_rename_pipeline(params):
 
 
 def _h_delete_pipeline(params):
-    from scistack_gui.services.scope_service import delete_pipeline
+    from scistack_gui.services.scope_service import hide_pipeline
 
-    return delete_pipeline(params["pipeline_id"])
+    return hide_pipeline(params["pipeline_id"])
+
+
+def _h_unhide_pipeline(params):
+    from scistack_gui.services.scope_service import unhide_pipeline
+
+    return unhide_pipeline(params["pipeline_id"])
+
+
+def _h_get_hidden_pipelines(params):
+    from scistack_gui.services.scope_service import list_hidden_pipelines
+
+    return list_hidden_pipelines()
 
 
 def _h_list_hypotheses(params):
@@ -157,9 +169,9 @@ def _h_update_hypothesis(params):
 
 
 def _h_delete_hypothesis(params):
-    from scistack_gui.services.scope_service import delete_hypothesis
+    from scistack_gui.services.scope_service import hide_hypothesis
 
-    return delete_hypothesis(params["pipeline_id"])
+    return hide_hypothesis(params["pipeline_id"])
 
 
 def _h_get_pipeline_interface(params):
@@ -727,6 +739,8 @@ METHODS = {
     "create_pipeline": _h_create_pipeline,
     "rename_pipeline": _h_rename_pipeline,
     "delete_pipeline": _h_delete_pipeline,
+    "unhide_pipeline": _h_unhide_pipeline,
+    "get_hidden_pipelines": _h_get_hidden_pipelines,
     "list_hypotheses": _h_list_hypotheses,
     "create_hypothesis": _h_create_hypothesis,
     "update_hypothesis": _h_update_hypothesis,

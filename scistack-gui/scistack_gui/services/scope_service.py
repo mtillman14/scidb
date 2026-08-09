@@ -43,15 +43,30 @@ def rename_pipeline(pipeline_id: str, name: str) -> dict:
     return {"ok": True}
 
 
-def delete_pipeline(pipeline_id: str) -> dict:
-    """Delete a scope (store guards apply) and drop its saved positions."""
-    from scistack_gui import layout as layout_store
+def hide_pipeline(pipeline_id: str) -> dict:
+    """Hide a scope (store guards apply). Positions are left intact —
+    never delete data; unhide_pipeline fully restores it."""
     from scistack_gui import pipeline_store as ps
     from scistack_gui.db import get_db
 
-    ps.delete_pipeline(get_db(), pipeline_id)
-    layout_store.drop_scope_positions(pipeline_id)
+    ps.hide_pipeline(get_db(), pipeline_id)
     return {"ok": True}
+
+
+def unhide_pipeline(pipeline_id: str) -> dict:
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
+
+    ps.unhide_pipeline(get_db(), pipeline_id)
+    return {"ok": True}
+
+
+def list_hidden_pipelines() -> dict:
+    """Hidden pipelines — the restore panel's data."""
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
+
+    return {"pipelines": ps.list_hidden_pipelines(get_db())}
 
 
 def list_hypotheses() -> dict:
@@ -91,14 +106,13 @@ def update_hypothesis(
     return {"ok": True}
 
 
-def delete_hypothesis(pipeline_id: str) -> dict:
-    """Delete a hypothesis (store guards apply) and drop its saved positions."""
-    from scistack_gui import layout as layout_store
+def hide_hypothesis(pipeline_id: str) -> dict:
+    """Hide a hypothesis tab (store guards apply). Positions and hypothesis
+    metadata are left intact — unhide_pipeline fully restores the tab."""
     from scistack_gui import pipeline_store as ps
     from scistack_gui.db import get_db
 
-    ps.delete_hypothesis(get_db(), pipeline_id)
-    layout_store.drop_scope_positions(pipeline_id)
+    ps.hide_hypothesis(get_db(), pipeline_id)
     return {"ok": True}
 
 
@@ -437,7 +451,9 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
     try:
         build_backend_pipeline(db, new_pid, built)
     except Exception as exc:
-        ps.delete_pipeline(db, new_pid)
+        # Real delete, not hide: this pipeline never became valid, so there
+        # is no user-visible content to preserve.
+        ps._hard_delete_pipeline(db, new_pid)
         layout_store.drop_scope_positions(new_pid)
         raise ValueError(f"duplicated pipeline failed to compile: {exc}") from exc
     finally:

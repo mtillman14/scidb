@@ -25,7 +25,7 @@ class TestPipelineScopes:
         pipes = ps.list_pipelines(get_db())
         assert pipes[0] == {"pipeline_id": "main", "name": "main"}
 
-    def test_create_rename_delete(self, layout_path):
+    def test_create_rename_hide(self, layout_path):
         db = get_db()
         pid = ps.create_pipeline(db, "loading")
         assert pid.startswith("pipe_")
@@ -35,8 +35,13 @@ class TestPipelineScopes:
         names = {p["pipeline_id"]: p["name"] for p in ps.list_pipelines(db)}
         assert names[pid] == "loading_v2"
 
-        ps.delete_pipeline(db, pid)
+        ps.hide_pipeline(db, pid)
         assert pid not in {p["pipeline_id"] for p in ps.list_pipelines(db)}
+        assert pid in {p["pipeline_id"] for p in ps.list_hidden_pipelines(db)}
+
+        ps.unhide_pipeline(db, pid)
+        names = {p["pipeline_id"]: p["name"] for p in ps.list_pipelines(db)}
+        assert names[pid] == "loading_v2"  # rename survived hide/unhide
 
     def test_duplicate_name_rejected(self, layout_path):
         db = get_db()
@@ -44,31 +49,66 @@ class TestPipelineScopes:
         with pytest.raises(ValueError, match="already exists"):
             ps.create_pipeline(db, "loading")
 
-    def test_root_cannot_be_renamed_or_deleted(self, layout_path):
+    def test_duplicate_name_rejected_even_when_hidden(self, layout_path):
+        # Name uniqueness must hold globally, not just among visible
+        # pipelines — otherwise two pipelines would collide by name the
+        # moment the hidden one is restored.
         db = get_db()
-        with pytest.raises(ValueError, match="root"):
-            ps.rename_pipeline(db, "main", "other")
-        with pytest.raises(ValueError, match="root"):
-            ps.delete_pipeline(db, "main")
+        pid = ps.create_pipeline(db, "loading")
+        ps.create_pipeline(db, "sibling")  # keep >1 visible so hiding is legal
+        ps.hide_pipeline(db, pid)
+        with pytest.raises(ValueError, match="already exists"):
+            ps.create_pipeline(db, "loading")
 
-    def test_delete_used_pipeline_rejected(self, layout_path):
+    def test_root_can_be_renamed(self, layout_path):
+        # 'main' is just the default hypothesis, not a special scratch scope.
+        db = get_db()
+        ps.rename_pipeline(db, "main", "other")
+        names = {p["pipeline_id"]: p["name"] for p in ps.list_pipelines(db)}
+        assert names["main"] == "other"
+
+    def test_cannot_hide_last_remaining_pipeline(self, layout_path):
+        db = get_db()
+        with pytest.raises(ValueError, match="last remaining"):
+            ps.hide_pipeline(db, "main")
+
+    def test_root_can_be_hidden_when_sibling_exists(self, layout_path):
+        db = get_db()
+        sibling = ps.create_pipeline(db, "sibling")
+
+        ps.hide_pipeline(db, "main")
+
+        assert "main" not in {p["pipeline_id"] for p in ps.list_pipelines(db)}
+        hidden = {p["pipeline_id"]: p for p in ps.list_hidden_pipelines(db)}
+        assert "main" in hidden
+
+        # Hiding the last visible one now (only `sibling` left) is rejected.
+        with pytest.raises(ValueError, match="last remaining"):
+            ps.hide_pipeline(db, sibling)
+
+        ps.unhide_pipeline(db, "main")
+        assert "main" in {p["pipeline_id"] for p in ps.list_pipelines(db)}
+
+    def test_hide_used_pipeline_rejected(self, layout_path):
         db = get_db()
         child = ps.create_pipeline(db, "loading")
         ps.add_pipeline_use(db, "main", child)
         with pytest.raises(ValueError, match="still used by"):
-            ps.delete_pipeline(db, child)
+            ps.hide_pipeline(db, child)
 
-    def test_delete_cascades_own_contents(self, layout_path):
+    def test_hide_preserves_own_contents(self, layout_path):
         db = get_db()
         pid = ps.create_pipeline(db, "loading")
         ps.write_manual_node(db, "n1", "functionNode", "fn_a", pid)
         ps.write_manual_node(db, "n2", "variableNode", "VarB", pid)
         ps.write_manual_edge(db, {"id": "e1", "source": "n1", "target": "n2"})
 
-        ps.delete_pipeline(db, pid)
+        ps.hide_pipeline(db, pid)
 
-        assert ps.get_manual_nodes(db, pid) == {}
-        assert all(e["id"] != "e1" for e in ps.get_manual_edges(db))
+        assert pid not in {p["pipeline_id"] for p in ps.list_pipelines(db)}
+        # Never delete data: nodes/edges survive the hide untouched.
+        assert set(ps.get_manual_nodes(db, pid)) == {"n1", "n2"}
+        assert any(e["id"] == "e1" for e in ps.get_manual_edges(db))
 
 
 # ---------------------------------------------------------------------------
@@ -125,19 +165,33 @@ class TestHypotheses:
         with pytest.raises(ValueError, match="not a hypothesis"):
             ps.update_hypothesis(db, pid, research_question="x")
 
-    def test_delete_hypothesis_removes_pipeline_and_tag(self, layout_path):
+    def test_hide_hypothesis_preserves_pipeline_and_tag(self, layout_path):
         db = get_db()
         pid = ps.create_hypothesis(db, "gait symmetry")
+        ps.update_hypothesis(db, pid, research_question="Does symmetry change?")
 
-        ps.delete_hypothesis(db, pid)
+        ps.hide_hypothesis(db, pid)
 
         assert pid not in {p["pipeline_id"] for p in ps.list_pipelines(db)}
         assert pid not in {h["pipeline_id"] for h in ps.list_hypotheses(db)}
+        hidden = {p["pipeline_id"]: p for p in ps.list_hidden_pipelines(db)}
+        assert hidden[pid]["is_hypothesis"] is True
 
-    def test_delete_root_hypothesis_rejected(self, layout_path):
+        ps.unhide_pipeline(db, pid)
+        (hyp,) = [h for h in ps.list_hypotheses(db) if h["pipeline_id"] == pid]
+        # Never delete data: research question survived the hide untouched.
+        assert hyp["research_question"] == "Does symmetry change?"
+
+    def test_hide_root_hypothesis_rejected_when_alone(self, layout_path):
         db = get_db()
-        with pytest.raises(ValueError, match="root"):
-            ps.delete_hypothesis(db, "main")
+        with pytest.raises(ValueError, match="last remaining"):
+            ps.hide_hypothesis(db, "main")
+
+    def test_hide_root_hypothesis_allowed_with_sibling(self, layout_path):
+        db = get_db()
+        ps.create_hypothesis(db, "gait symmetry")
+        ps.hide_hypothesis(db, "main")
+        assert "main" not in {h["pipeline_id"] for h in ps.list_hypotheses(db)}
 
 
 class TestHypothesisApi:
@@ -174,8 +228,14 @@ class TestHypothesisApi:
         ids = {h["pipeline_id"] for h in client.get("/api/hypotheses").json()["hypotheses"]}
         assert pid not in ids
 
-    def test_root_hypothesis_delete_is_400(self, client):
+    def test_last_remaining_hypothesis_delete_is_400(self, client):
         assert client.delete("/api/hypotheses/main").status_code == 400
+
+    def test_root_hypothesis_delete_succeeds_with_sibling(self, client):
+        client.post("/api/hypotheses", json={"name": "gait symmetry"})
+        assert client.delete("/api/hypotheses/main").status_code == 200
+        ids = {h["pipeline_id"] for h in client.get("/api/hypotheses").json()["hypotheses"]}
+        assert "main" not in ids
 
 
 # ---------------------------------------------------------------------------
@@ -378,10 +438,15 @@ class TestScopeApi:
         assert r.status_code == 400
         assert "already exists" in r.json()["detail"]
 
-    def test_root_guards_are_400(self, client):
+    def test_last_remaining_pipeline_guard_is_400_but_rename_succeeds(self, client):
+        # 'main' has no special protection — only the "don't hide the last
+        # visible pipeline" guard applies, same as any other pipeline.
         assert client.delete("/api/pipelines/main").status_code == 400
         r = client.put("/api/pipelines/main", json={"name": "x"})
-        assert r.status_code == 400
+        assert r.status_code == 200
+
+        client.post("/api/pipelines", json={"name": "sibling"})
+        assert client.delete("/api/pipelines/main").status_code == 200
 
     def test_use_flow_and_pipeline_node_on_parent_canvas(self, client):
         pid = client.post("/api/pipelines", json={"name": "loading"}).json()[

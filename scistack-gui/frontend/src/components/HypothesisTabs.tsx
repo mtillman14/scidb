@@ -6,11 +6,18 @@
  * research-question/evidence metadata. 'main' is simply the default
  * hypothesis, a sibling to every other one, not a special scratch scope.
  *
- * Switching tabs is exactly ScopeContext's existing `jumpTo` (resets the
- * breadcrumb to that pipeline's root) — no new navigation state needed.
+ * Switching tabs uses ScopeContext's `jumpToRoot`, which resets the
+ * breadcrumb to a single crumb naming the hypothesis itself — hypotheses
+ * are true top-level siblings, not scopes nested under 'main' (unlike the
+ * Submodules sidebar's `jumpTo`, which does prepend the root crumb).
  * A tab reads as "current" whenever the breadcrumb's ROOT is that
  * hypothesis, so it stays highlighted while the user has descended into
  * one of its submodules.
+ *
+ * "Delete" hides the hypothesis rather than deleting its data (project
+ * ethos — see pipeline_store.py's hide_pipeline); the toggle at the end of
+ * the tab strip restores hidden ones, same pattern as PipelineDAG's
+ * hidden-edges panel.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -27,9 +34,17 @@ export interface HypothesisInfo {
   evidence_against: string[]
 }
 
+interface HiddenPipelineInfo {
+  pipeline_id: string
+  name: string
+  is_hypothesis: boolean
+}
+
 export default function HypothesisTabs() {
-  const { breadcrumb, jumpTo, renameInPath, bumpGraph } = useScope()
+  const { breadcrumb, jumpToRoot, renameInPath, bumpGraph } = useScope()
   const [hypotheses, setHypotheses] = useState<HypothesisInfo[]>([])
+  const [hiddenPipelines, setHiddenPipelines] = useState<HiddenPipelineInfo[]>([])
+  const [showHidden, setShowHidden] = useState(false)
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState('')
@@ -47,11 +62,36 @@ export default function HypothesisTabs() {
       .catch(console.error)
   }, [])
 
-  useEffect(() => { fetchHypotheses() }, [fetchHypotheses])
+  const fetchHidden = useCallback(() => {
+    callBackend('get_hidden_pipelines')
+      .then(d => setHiddenPipelines((d as { pipelines: HiddenPipelineInfo[] }).pipelines))
+      .catch(console.error)
+  }, [])
+
+  useEffect(() => { fetchHypotheses(); fetchHidden() }, [fetchHypotheses, fetchHidden])
 
   useBackendMessage(useCallback((msg) => {
-    if (msg.type === 'dag_updated' || msg.method === 'dag_updated') fetchHypotheses()
-  }, [fetchHypotheses]))
+    if (msg.type === 'dag_updated' || msg.method === 'dag_updated') { fetchHypotheses(); fetchHidden() }
+  }, [fetchHypotheses, fetchHidden]))
+
+  // If the breadcrumb's root was hidden in a prior session (e.g. 'main'
+  // itself), the page reloads pointed at a scope that's no longer visible
+  // — land on whatever hypothesis is actually there instead.
+  useEffect(() => {
+    if (hypotheses.length === 0) return
+    const rootId = breadcrumb[0].pipeline_id
+    if (!hypotheses.some(h => h.pipeline_id === rootId)) {
+      jumpToRoot(hypotheses[0].pipeline_id, hypotheses[0].name)
+    }
+    // Only re-check when the hypothesis list changes, not on every breadcrumb move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hypotheses])
+
+  const handleRestore = (pid: string) => {
+    callBackend('unhide_pipeline', { pipeline_id: pid })
+      .then(() => { setError(''); fetchHypotheses(); fetchHidden() })
+      .catch(err => setError((err as Error).message))
+  }
 
   useEffect(() => {
     if (adding) addInputRef.current?.focus()
@@ -73,7 +113,7 @@ export default function HypothesisTabs() {
           setError('')
           fetchHypotheses()
           const r = d as { pipeline_id: string; name: string }
-          jumpTo(r.pipeline_id, r.name)
+          jumpToRoot(r.pipeline_id, r.name)
         })
         .catch(err => setError((err as Error).message))
     }
@@ -108,7 +148,7 @@ export default function HypothesisTabs() {
         setError('')
         fetchHypotheses()
         const r = d as { pipeline_id: string }
-        jumpTo(r.pipeline_id, name)
+        jumpToRoot(r.pipeline_id, name)
       })
       .catch(err => setError((err as Error).message))
   }
@@ -118,8 +158,15 @@ export default function HypothesisTabs() {
       .then(() => {
         setError('')
         fetchHypotheses()
-        if (pid === rootPipelineId) jumpTo('main', 'main')
-        else bumpGraph()
+        fetchHidden()
+        if (pid === rootPipelineId) {
+          // Land on whatever hypothesis is left, not a hardcoded 'main' —
+          // 'main' itself may be the one just hidden.
+          const remaining = hypotheses.find(h => h.pipeline_id !== pid)
+          if (remaining) jumpToRoot(remaining.pipeline_id, remaining.name)
+        } else {
+          bumpGraph()
+        }
       })
       .catch(err => setError((err as Error).message))
   }
@@ -164,7 +211,7 @@ export default function HypothesisTabs() {
             style={h.pipeline_id === rootPipelineId ? styles.tabActive : styles.tab}
             title={h.research_question || h.name}
           >
-            <span onClick={() => jumpTo(h.pipeline_id, h.name)} style={styles.tabLabel}>
+            <span onClick={() => jumpToRoot(h.pipeline_id, h.name)} style={styles.tabLabel}>
               {h.name}
             </span>
             <span style={styles.tabActions}>
@@ -175,23 +222,21 @@ export default function HypothesisTabs() {
               >
                 ⎘
               </button>
-              {h.pipeline_id !== 'main' && (
-                <>
-                  <button
-                    style={styles.rowBtn}
-                    title="Rename hypothesis"
-                    onClick={() => { setRenamingPid(h.pipeline_id); setRenameDraft(h.name) }}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    style={styles.rowBtn}
-                    title="Delete hypothesis"
-                    onClick={() => handleDelete(h.pipeline_id)}
-                  >
-                    ×
-                  </button>
-                </>
+              <button
+                style={styles.rowBtn}
+                title="Rename hypothesis"
+                onClick={() => { setRenamingPid(h.pipeline_id); setRenameDraft(h.name) }}
+              >
+                ✎
+              </button>
+              {hypotheses.length >= 2 && (
+                <button
+                  style={styles.rowBtn}
+                  title="Delete hypothesis (hides it — never deletes data; restore below)"
+                  onClick={() => handleDelete(h.pipeline_id)}
+                >
+                  ×
+                </button>
               )}
             </span>
           </div>
@@ -215,6 +260,34 @@ export default function HypothesisTabs() {
           + new hypothesis
         </button>
       )}
+      {(() => {
+        const hiddenHypotheses = hiddenPipelines.filter(p => p.is_hypothesis)
+        if (hiddenHypotheses.length === 0) return null
+        return (
+          <span style={styles.hiddenWrap}>
+            <button
+              style={styles.hiddenToggle}
+              onClick={() => setShowHidden(v => !v)}
+              type="button"
+            >
+              {showHidden ? 'hide' : `${hiddenHypotheses.length} hidden — show`}
+            </button>
+            {showHidden && hiddenHypotheses.map(p => (
+              <span key={p.pipeline_id} style={styles.hiddenRow}>
+                {p.name}
+                <button
+                  style={styles.hiddenRestoreBtn}
+                  onClick={() => handleRestore(p.pipeline_id)}
+                  type="button"
+                  title="Restore this hypothesis"
+                >
+                  restore
+                </button>
+              </span>
+            ))}
+          </span>
+        )
+      })()}
       {error && <span style={styles.errorText}>{error}</span>}
     </div>
   )
@@ -293,5 +366,37 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
     cursor: 'pointer',
     padding: '4px 2px',
+  },
+  hiddenWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginLeft: 8,
+  },
+  hiddenToggle: {
+    background: 'transparent',
+    border: 'none',
+    color: '#666',
+    fontSize: 11,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    padding: '4px 0',
+  },
+  hiddenRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 11,
+    color: '#aaa',
+    whiteSpace: 'nowrap',
+  },
+  hiddenRestoreBtn: {
+    background: 'transparent',
+    border: '1px solid #3a3a5a',
+    borderRadius: 3,
+    color: '#9a8ff0',
+    fontSize: 10,
+    cursor: 'pointer',
+    padding: '1px 5px',
   },
 }

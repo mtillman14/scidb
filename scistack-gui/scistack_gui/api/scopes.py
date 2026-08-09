@@ -1,10 +1,14 @@
 """
 Nested-pipeline scope endpoints (plan-gui-nested-pipelines.md Part A).
 
-GET    /api/pipelines                     — list scopes + use edges
+GET    /api/pipelines                     — list VISIBLE scopes + use edges
 POST   /api/pipelines                     — create a scope
-PUT    /api/pipelines/{pid}               — rename
-DELETE /api/pipelines/{pid}               — delete (guards apply)
+PUT    /api/pipelines/{pid}               — rename (root included)
+DELETE /api/pipelines/{pid}               — hide (guards apply; never
+                                             deletes data — see
+                                             pipeline_store.hide_pipeline)
+POST   /api/pipelines/{pid}/unhide        — restore a hidden scope
+GET    /api/pipelines/hidden              — hidden scopes (restore panel)
 GET    /api/pipelines/{pid}/interface     — the scope's ports
 POST   /api/pipelines/{pid}/extract       — turn selected nodes into a new
                                              submodule pipeline (a move,
@@ -23,11 +27,12 @@ GET    /api/hypotheses                    — hypothesis-tagged pipelines (tabs)
 POST   /api/hypotheses                    — create a pipeline + tag it
 PUT    /api/hypotheses/{pid}              — edit metadata (research
                                              question, statement, evidence)
-DELETE /api/hypotheses/{pid}              — delete (delegates to
-                                             delete_pipeline's guards)
+DELETE /api/hypotheses/{pid}              — hide (delegates to
+                                             hide_pipeline's guards)
 
-Store-level ValueErrors (cycles, root guards, duplicate names, unknown
-ids, binding-key whitelist) map to HTTP 400 with the store's message.
+Store-level ValueErrors (cycles, last-visible-pipeline guard, duplicate
+names, unknown ids, binding-key whitelist) map to HTTP 400 with the store's
+message.
 """
 
 import logging
@@ -105,7 +110,18 @@ def put_pipeline(pipeline_id: str, body: PipelineRename) -> dict:
 
 @router.delete("/pipelines/{pipeline_id}")
 def delete_pipeline(pipeline_id: str) -> dict:
-    return _guard(scope_service.delete_pipeline, pipeline_id)
+    """Hides the pipeline (never deletes data) — see scope_service.hide_pipeline."""
+    return _guard(scope_service.hide_pipeline, pipeline_id)
+
+
+@router.post("/pipelines/{pipeline_id}/unhide")
+def post_unhide_pipeline(pipeline_id: str) -> dict:
+    return _guard(scope_service.unhide_pipeline, pipeline_id)
+
+
+@router.get("/pipelines/hidden")
+def get_hidden_pipelines() -> dict:
+    return scope_service.list_hidden_pipelines()
 
 
 @router.get("/hypotheses")
@@ -132,7 +148,8 @@ def put_hypothesis(pipeline_id: str, body: HypothesisUpdate) -> dict:
 
 @router.delete("/hypotheses/{pipeline_id}")
 def delete_hypothesis(pipeline_id: str) -> dict:
-    return _guard(scope_service.delete_hypothesis, pipeline_id)
+    """Hides the hypothesis (never deletes data) — see scope_service.hide_hypothesis."""
+    return _guard(scope_service.hide_hypothesis, pipeline_id)
 
 
 @router.post("/pipelines/{pipeline_id}/extract")

@@ -133,6 +133,14 @@ def _ensure_tables(db) -> None:
             name        VARCHAR NOT NULL
         )
     """)
+    # Hidden pipelines (never deleted, same ethos as hide_node/hide_edge):
+    # migration for existing DBs.
+    try:
+        _duck(db)._execute(
+            "ALTER TABLE _pipelines ADD COLUMN hidden BOOLEAN DEFAULT FALSE"
+        )
+    except Exception:
+        pass  # Column already exists
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_uses (
             use_id             VARCHAR PRIMARY KEY,
@@ -491,10 +499,13 @@ def get_pending_constants(db) -> dict[str, set[str]]:
 
 
 def list_pipelines(db) -> list[dict]:
-    """All pipeline scopes: [{"pipeline_id", "name"}], root first."""
+    """All VISIBLE pipeline scopes: [{"pipeline_id", "name"}], root first.
+    Hidden pipelines (see hide_pipeline) are excluded — use
+    list_hidden_pipelines for those."""
     _ensure_tables(db)
     rows = _duck(db)._fetchall(
-        "SELECT pipeline_id, name FROM _pipelines ORDER BY (pipeline_id != ?), name",
+        "SELECT pipeline_id, name FROM _pipelines WHERE NOT hidden "
+        "ORDER BY (pipeline_id != ?), name",
         [ROOT_PIPELINE_ID],
     )
     return [{"pipeline_id": r[0], "name": r[1]} for r in rows]
@@ -506,7 +517,12 @@ def create_pipeline(db, name: str) -> str:
     name = str(name).strip()
     if not name:
         raise ValueError("pipeline name must be non-empty")
-    existing = {p["name"] for p in list_pipelines(db)}
+    # Uniqueness is checked against ALL pipelines, hidden included — two
+    # pipelines sharing a name would be confusing the moment either is
+    # unhidden, even if only one is visible right now.
+    existing = {
+        r[0] for r in _duck(db)._fetchall("SELECT name FROM _pipelines")
+    }
     if name in existing:
         raise ValueError(f"a pipeline named '{name}' already exists")
     pipeline_id = f"pipe_{uuid.uuid4().hex[:12]}"
@@ -519,9 +535,9 @@ def create_pipeline(db, name: str) -> str:
 
 
 def rename_pipeline(db, pipeline_id: str, name: str) -> None:
+    """Rename any pipeline scope, including the root — 'main' is just the
+    default hypothesis, not a special scratch scope (see module docstring)."""
     _ensure_tables(db)
-    if pipeline_id == ROOT_PIPELINE_ID:
-        raise ValueError("the root pipeline cannot be renamed")
     name = str(name).strip()
     if not name:
         raise ValueError("pipeline name must be non-empty")
@@ -537,27 +553,16 @@ def rename_pipeline(db, pipeline_id: str, name: str) -> None:
     )
 
 
-def delete_pipeline(db, pipeline_id: str) -> None:
-    """Delete an EMPTY-of-consumers pipeline scope and its contents.
+def _hard_delete_pipeline(db, pipeline_id: str) -> None:
+    """Internal-only, REAL delete of a pipeline scope and its contents.
 
-    Refuses the root and any pipeline still placed on another canvas
-    (delete those pipeline nodes first — fail fast beats silent cascade).
-    Cascades: own nodes, edges between them, its outgoing use rows (and
-    THEIR canvas node rows live in this scope, so they go with the nodes).
+    Not the user-facing "delete" operation (see hide_pipeline for that —
+    per project ethos, user-facing removal never deletes data). This exists
+    only to roll back a pipeline that never became valid, e.g.
+    duplicate_pipeline's post-copy compile-sanity-check failure: there is no
+    user-visible content to preserve, so a real delete is correct here.
     """
     _ensure_tables(db)
-    if pipeline_id == ROOT_PIPELINE_ID:
-        raise ValueError("the root pipeline cannot be deleted")
-    consumers = _duck(db)._fetchall(
-        "SELECT p.name FROM _pipeline_uses u JOIN _pipelines p "
-        "ON p.pipeline_id = u.parent_pipeline_id WHERE u.child_pipeline_id = ?",
-        [pipeline_id],
-    )
-    if consumers:
-        names = sorted({r[0] for r in consumers})
-        raise ValueError(
-            f"pipeline is still used by {names} — remove those pipeline nodes first"
-        )
     node_rows = _duck(db)._fetchall(
         "SELECT node_id FROM _pipeline_nodes WHERE pipeline_id = ?",
         [pipeline_id],
@@ -576,10 +581,68 @@ def delete_pipeline(db, pipeline_id: str) -> None:
     )
     _duck(db)._execute("DELETE FROM _pipelines WHERE pipeline_id = ?", [pipeline_id])
     logger.info(
-        "[pipeline_store] delete_pipeline: %s (%d node(s) removed)",
+        "[pipeline_store] _hard_delete_pipeline: %s (%d node(s) removed)",
         pipeline_id,
         len(node_ids),
     )
+
+
+def hide_pipeline(db, pipeline_id: str) -> None:
+    """Hide a pipeline scope (user-facing "delete") without touching its
+    contents — never delete data, per project ethos (see hide_node/
+    hide_edge/hide_combo for the same pattern at node/edge granularity).
+
+    Refuses any pipeline still placed on another canvas (remove those
+    pipeline nodes first — fail fast beats a canvas silently pointing at
+    invisible content) and refuses to hide the last remaining VISIBLE
+    pipeline — 'main' has no special protection beyond that; it is simply
+    the default hypothesis (see module docstring). Positions are left
+    intact so unhide_pipeline fully restores the canvas.
+    """
+    _ensure_tables(db)
+    consumers = _duck(db)._fetchall(
+        "SELECT p.name FROM _pipeline_uses u JOIN _pipelines p "
+        "ON p.pipeline_id = u.parent_pipeline_id WHERE u.child_pipeline_id = ?",
+        [pipeline_id],
+    )
+    if consumers:
+        names = sorted({r[0] for r in consumers})
+        raise ValueError(
+            f"pipeline is still used by {names} — remove those pipeline nodes first"
+        )
+    visible_count = _duck(db)._fetchall(
+        "SELECT COUNT(*) FROM _pipelines WHERE NOT hidden"
+    )[0][0]
+    if visible_count <= 1:
+        raise ValueError("cannot hide the last remaining pipeline")
+    _duck(db)._execute(
+        "UPDATE _pipelines SET hidden = TRUE WHERE pipeline_id = ?", [pipeline_id]
+    )
+    logger.info("[pipeline_store] hide_pipeline: %s", pipeline_id)
+
+
+def unhide_pipeline(db, pipeline_id: str) -> None:
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "UPDATE _pipelines SET hidden = FALSE WHERE pipeline_id = ?", [pipeline_id]
+    )
+    logger.info("[pipeline_store] unhide_pipeline: %s", pipeline_id)
+
+
+def list_hidden_pipelines(db) -> list[dict]:
+    """Hidden pipelines: [{"pipeline_id", "name", "is_hypothesis"}] — the
+    restore panel's data (both the hypothesis-tab strip and the plain
+    Submodules list draw from this same set)."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT p.pipeline_id, p.name, h.pipeline_id IS NOT NULL "
+        "FROM _pipelines p LEFT JOIN _hypotheses h ON h.pipeline_id = p.pipeline_id "
+        "WHERE p.hidden ORDER BY p.name"
+    )
+    return [
+        {"pipeline_id": r[0], "name": r[1], "is_hypothesis": bool(r[2])}
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -721,15 +784,17 @@ def _loads_list(raw: "str | None") -> list:
 
 
 def list_hypotheses(db) -> list[dict]:
-    """Hypothesis-tagged pipelines, root first: [{"pipeline_id", "name",
-    "research_question", "hypothesis_statement", "evidence_for",
-    "evidence_against"}]."""
+    """VISIBLE hypothesis-tagged pipelines, root first: [{"pipeline_id",
+    "name", "research_question", "hypothesis_statement", "evidence_for",
+    "evidence_against"}]. Hidden ones (see hide_pipeline) are excluded —
+    their _hypotheses metadata row is left untouched so unhide_pipeline
+    brings the tab back with research question/evidence intact."""
     _ensure_tables(db)
     rows = _duck(db)._fetchall(
         "SELECT p.pipeline_id, p.name, h.research_question, "
         "h.hypothesis_statement, h.evidence_for, h.evidence_against "
         "FROM _hypotheses h JOIN _pipelines p ON p.pipeline_id = h.pipeline_id "
-        "ORDER BY (p.pipeline_id != ?), p.name",
+        "WHERE NOT p.hidden ORDER BY (p.pipeline_id != ?), p.name",
         [ROOT_PIPELINE_ID],
     )
     return [
@@ -802,13 +867,13 @@ def update_hypothesis(
     logger.info("[pipeline_store] update_hypothesis: %s", pipeline_id)
 
 
-def delete_hypothesis(db, pipeline_id: str) -> None:
-    """Delete a hypothesis: its metadata row, then the underlying pipeline
-    (reuses delete_pipeline's root/consumer guards)."""
+def hide_hypothesis(db, pipeline_id: str) -> None:
+    """Hide a hypothesis tab (reuses hide_pipeline's consumer/last-visible
+    guards). Its _hypotheses metadata row is left untouched — unhiding
+    brings the tab back with research question/evidence intact."""
     _ensure_tables(db)
-    delete_pipeline(db, pipeline_id)
-    _duck(db)._execute("DELETE FROM _hypotheses WHERE pipeline_id = ?", [pipeline_id])
-    logger.info("[pipeline_store] delete_hypothesis: %s", pipeline_id)
+    hide_pipeline(db, pipeline_id)
+    logger.info("[pipeline_store] hide_hypothesis: %s", pipeline_id)
 
 
 # ---------------------------------------------------------------------------

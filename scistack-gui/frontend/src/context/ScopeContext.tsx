@@ -48,6 +48,7 @@ interface ScopeContextValue {
   descend: (crumb: Crumb) => void
   ascendTo: (index: number) => void
   jumpTo: (pipeline_id: string, name: string) => void
+  jumpToRoot: (pipeline_id: string, name: string) => void
   renameInPath: (pipeline_id: string, name: string) => void
   graphVersion: number
   bumpGraph: () => void
@@ -74,6 +75,14 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
       : [ROOT_CRUMB, { use_id: null, pipeline_id, name, binding: null }])
   }, [])
 
+  // Hypothesis navigation: hypotheses are true top-level siblings (see
+  // pipeline_store.py's module docstring — 'main' is just the default one),
+  // not scopes nested under 'main'. Unlike jumpTo, this never prepends the
+  // root crumb — the target IS its own root.
+  const jumpToRoot = useCallback((pipeline_id: string, name: string) => {
+    setBreadcrumb([{ use_id: null, pipeline_id, name, binding: null }])
+  }, [])
+
   // Keep crumb labels fresh after a pipeline rename.
   const renameInPath = useCallback((pipeline_id: string, name: string) => {
     setBreadcrumb(prev => prev.map(c =>
@@ -87,7 +96,7 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ScopeContext.Provider value={{
-      currentScope, breadcrumb, descend, ascendTo, jumpTo, renameInPath,
+      currentScope, breadcrumb, descend, ascendTo, jumpTo, jumpToRoot, renameInPath,
       graphVersion, bumpGraph,
     }}>
       {children}
