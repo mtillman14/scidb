@@ -1,10 +1,12 @@
 """
 GUI test data generator — VO2 max pipeline adapted for for_each.
 
-Uses the modern scidb API to populate test_gui.duckdb with:
-  - 3 subjects
-  - A branching pipeline step (window_seconds=30 vs 60) so we can
-    see multiple variants in the GUI
+Seeds test_gui.duckdb with raw data for 3 subjects (RawVO2,
+RawHeartRate) and registers the pipeline functions below, but runs
+NOTHING — a fresh pipeline starts with an empty canvas, and the user
+places/wires/runs each step themselves in the GUI (including running
+compute_rolling_vo2 twice, with window_seconds=30 and 60, to get the
+two-variant branch this demo is built around).
 
 Safe to import by scistack-gui --module: all execution is guarded
 by if __name__ == "__main__".
@@ -18,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from scidb import BaseVariable, configure_database, for_each
+from scidb import BaseVariable, configure_database
 
 # from scilineage.src.scilineage import lineage_fcn
 
@@ -125,9 +127,18 @@ def stat_vo2_summary(max_vo2):
 if __name__ == "__main__":
     db_path = Path("test_gui.duckdb")
 
-    # Remove previous run so we start fresh
+    # Remove previous run so we start fresh — this must also clear the
+    # layout file (test_gui.layout.json), not just the .duckdb: node
+    # positions/manual-node scope assignments there are keyed by ids that
+    # can reference stale wiring hashes, call sites, or scopes from a
+    # prior schema/pipeline shape. Leaving it around after regenerating
+    # the DB is exactly the kind of staleness that produces corrupted-
+    # looking canvases (disappearing nodes, edges to nowhere).
     for f in Path(".").glob("test_gui.duckdb*"):
         f.unlink()
+    layout_file = Path("test_gui.layout.json")
+    if layout_file.exists():
+        layout_file.unlink()
 
     db = configure_database(db_path, ["subject"])
     print(f"Database: {db_path}")
@@ -158,46 +169,22 @@ if __name__ == "__main__":
 
     print()
 
-    print("Running for_each: compute_rolling_vo2 (window_seconds=30)...")
-    for_each(
-        compute_rolling_vo2,
-        inputs={"signal": RawVO2, "window_seconds": 30, "sample_interval": 5},
-        outputs=[RollingVO2],
-        subject=subjects,
-    )
-
-    print("Running for_each: compute_rolling_vo2 (window_seconds=60)...")
-    for_each(
-        compute_rolling_vo2,
-        inputs={"signal": RawVO2, "window_seconds": 60, "sample_interval": 5},
-        outputs=[RollingVO2],
-        subject=subjects,
-    )
-
-    print("\nRunning for_each: compute_max_vo2...")
-    for_each(
-        compute_max_vo2,
-        inputs={"rolling_vo2": RollingVO2},
-        outputs=[MaxVO2],
-        subject=subjects,
-    )
-
-    print("\nRunning for_each: compute_max_hr...")
-    for_each(
-        compute_max_hr,
-        inputs={"signal": RawHeartRate},
-        outputs=[MaxHeartRate],
-        subject=subjects,
-    )
-
-    print("\nPipeline variants in DB:")
-    for v in db.list_pipeline_variants():
-        print(
-            f"  {v['function_name']} -> {v['output_type']} "
-            f"| constants={v['constants']} | {v['record_count']} records"
-        )
-
-    print("\nDone. Open with: scistack-gui --module gui_test_data.py test_gui.duckdb")
+    # Deliberately NOT pre-run: a real new pipeline starts with raw data
+    # seeded and its functions registered (import of this module registers
+    # them), but with an empty canvas — the user drags each function on,
+    # wires it, and clicks Run themselves. Pre-executing here would mean
+    # the GUI never actually exercises node placement/wiring/run for this
+    # demo, and it's exactly the "click Run in the GUI" path the placement-
+    # qualified-id and duplicate-pipeline work needs exercised by hand.
+    print("Raw data seeded. Nothing has been run yet — build the pipeline")
+    print("interactively in the GUI:")
+    print("  1. compute_rolling_vo2(signal=RawVO2, window_seconds, sample_interval) -> RollingVO2")
+    print("     (run it twice with window_seconds=30 and 60 to get two variants)")
+    print("  2. compute_max_vo2(rolling_vo2=RollingVO2) -> MaxVO2")
+    print("  3. compute_max_hr(signal=RawHeartRate) -> MaxHeartRate")
+    print("  4. compute_80_perc_max_hr / compute_50_perc_max_hr / compute_perc_max_hr(max_hr, perc)")
+    print("  5. stat_vo2_summary(max_vo2=MaxVO2) -> cohort summary")
+    print("\nOpen with: scistack-gui --module gui_test_data.py test_gui.duckdb")
     db.close()
 
 
@@ -210,4 +197,7 @@ class MaxHR_50Perc(BaseVariable):
 
 
 class MaxHR_Perc(BaseVariable):
+    pass
+
+class RollingHR(BaseVariable):
     pass

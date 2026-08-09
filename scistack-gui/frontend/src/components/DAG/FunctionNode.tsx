@@ -141,6 +141,7 @@ export default function FunctionNode({ id, data }: Props) {
     const wf = (data as unknown as Record<string, unknown>).whereFilters as unknown[] | undefined
     await callBackend('start_run', {
       function_name: data.label,
+      node_id: id,
       variants: checkedVariants,
       run_id: newRunId,
       schema_filter: data.schemaFilter ?? null,

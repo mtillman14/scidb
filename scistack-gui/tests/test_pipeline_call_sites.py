@@ -23,7 +23,7 @@ from scistack_gui import registry as _registry
 from scistack_gui.app import create_app
 from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
 
-from scidb import configure_database, for_each
+from scidb import BaseVariable, configure_database, for_each
 
 
 @pytest.fixture
@@ -225,3 +225,149 @@ def test_legacy_call_site_position_is_adopted(two_call_sites_client):
     main_positions = positions.get("main", {})
     assert legacy_id not in main_positions, "legacy key must be dropped"
     assert main_positions.get(group_id) == {"x": 123.0, "y": 456.0}
+
+
+# ---------------------------------------------------------------------------
+# Manual function node vs. a same-name, differently-wired real call site
+# ---------------------------------------------------------------------------
+#
+# Regression coverage for a real bug: placing a SECOND manual functionNode
+# with the same label as an already-executed function, but wired to a
+# DIFFERENT input/output variable type, must neither graduate into the
+# executed call site's canonical id (merge_manual_nodes matches candidates
+# by (type, label) only) nor inherit its green run state
+# (_own_state_for_function's scihist.check_node_state call had no call_id,
+# so it answered "has this FUNCTION NAME ever produced these outputs",
+# blind to which inputs actually fed it). Found via a real GUI session:
+# a second compute_rolling_vo2 wired to RawHeartRate (instead of RawVO2)
+# turned green immediately, without ever being run.
+
+
+class OtherSignal(BaseVariable):
+    pass
+
+
+class OtherFiltered(BaseVariable):
+    pass
+
+
+def test_differently_wired_manual_node_does_not_graduate_or_show_green(client):
+    OtherSignal.save(np.zeros(5), subject=1, session="pre")
+
+    client.put(
+        "/api/layout/mv_other_in",
+        json={"x": 0, "y": 0, "node_type": "variableNode", "label": "OtherSignal"},
+    )
+    client.put(
+        "/api/layout/mf_bp2",
+        json={"x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter"},
+    )
+    client.put(
+        "/api/layout/mv_other_out",
+        json={"x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered"},
+    )
+    client.put("/api/edges/e_in2", json={"source": "mv_other_in", "target": "mf_bp2"})
+    client.put("/api/edges/e_out2", json={"source": "mf_bp2", "target": "mv_other_out"})
+
+    nodes = client.get("/api/pipeline").json()["nodes"]
+    bp_nodes = [
+        n
+        for n in nodes
+        if n["type"] == "functionNode" and n["data"]["label"] == "bandpass_filter"
+    ]
+
+    assert len(bp_nodes) == 2, (
+        "the differently-wired manual node must not graduate into (merge "
+        f"with) the real bandpass_filter(RawSignal) node, got {[n['id'] for n in bp_nodes]}"
+    )
+    new_node = next(n for n in bp_nodes if n["id"] == "mf_bp2")
+    assert new_node["data"]["run_state"] == "red", (
+        "must not inherit the RawSignal call site's green state just "
+        "because the function NAME matches — it has never itself been run"
+    )
+
+
+def test_unwired_manual_node_still_graduates_immediately(client):
+    """The flip side: a manual node with NO wiring info yet (just placed,
+    nothing connected) has no basis to claim it's "different" from the
+    single existing candidate, so it must still graduate/show real state
+    immediately — the existing, deliberate UX this fix must not break."""
+    client.put(
+        "/api/layout/mf_bp3",
+        json={"x": 0, "y": 0, "node_type": "functionNode", "label": "bandpass_filter"},
+    )
+
+    nodes = client.get("/api/pipeline").json()["nodes"]
+    bp_nodes = [
+        n
+        for n in nodes
+        if n["type"] == "functionNode" and n["data"]["label"] == "bandpass_filter"
+    ]
+    assert len(bp_nodes) == 1, "an unwired same-label node must graduate, not duplicate"
+    assert bp_nodes[0]["data"]["run_state"] == "green"
+
+
+def test_manual_node_graduates_after_running_despite_shared_label_ambiguity(client):
+    """Regression test: once a differently-wired manual node has actually
+    been run (a second real call site now shares the function's label
+    with the original), it must graduate into its own real node on the
+    next graph build — not stay stuck as a permanent duplicate "replica"
+    alongside the real one. merge_manual_nodes' (type, label) matching
+    alone refuses to graduate once >1 real candidate shares a label
+    (ambiguous); the fix resolves each manual function node's own wiring
+    and matches against the correct candidate regardless of how many
+    OTHER candidates share the label. Found via a real GUI session: a
+    successfully-run, green compute_rolling_vo2(RawHeartRate) node never
+    merged with its own real call site once compute_rolling_vo2(RawVO2)
+    also existed — both stayed visible as separate nodes forever."""
+
+    class OtherSignal4(BaseVariable):
+        pass
+
+    class OtherFiltered4(BaseVariable):
+        pass
+
+    OtherSignal4.save(np.zeros(5), subject=1, session="pre")
+
+    client.put("/api/layout/mv_o4_in", json={
+        "x": 0, "y": 0, "node_type": "variableNode", "label": "OtherSignal4",
+    })
+    client.put("/api/layout/mf_bp_other4", json={
+        "x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter",
+    })
+    client.put("/api/layout/mv_o4_out", json={
+        "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered4",
+    })
+    client.put("/api/edges/e_o4_in", json={"source": "mv_o4_in", "target": "mf_bp_other4"})
+    client.put("/api/edges/e_o4_out", json={"source": "mf_bp_other4", "target": "mv_o4_out"})
+    client.put("/api/edges/e_o4_const", json={
+        "source": "const__low_hz", "target": "mf_bp_other4", "target_handle": "in__low_hz",
+    })
+
+    # Simulate the manual node having been successfully run (what
+    # /api/run + derive_target_for_node would do) — a second real
+    # bandpass_filter call site now exists, sharing the label with the
+    # original RawSignal-wired one.
+    for_each(
+        bandpass_filter,
+        inputs={"signal": OtherSignal4, "low_hz": 20},
+        outputs=[OtherFiltered4],
+        subject=[1],
+        session=["pre"],
+    )
+
+    nodes = client.get("/api/pipeline").json()["nodes"]
+    bp_nodes = [
+        n
+        for n in nodes
+        if n["type"] == "functionNode" and n["data"]["label"] == "bandpass_filter"
+    ]
+    assert len(bp_nodes) == 2, (
+        "the manual node must graduate into its own real call site, not "
+        f"stay stuck as a permanent duplicate, got {[n['id'] for n in bp_nodes]}"
+    )
+    assert "mf_bp_other4" not in {n["id"] for n in bp_nodes}
+    graduated = next(
+        n for n in bp_nodes if n["data"].get("input_params", {}).get("signal") == "OtherSignal4"
+    )
+    assert graduated["data"]["run_state"] == "green"

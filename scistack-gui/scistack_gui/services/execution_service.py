@@ -150,6 +150,144 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     ]
 
 
+def derive_target_for_node(db, node_id: str) -> list[dict]:
+    """The for_each target(s) that ONE SPECIFIC function node represents.
+
+    ``derive_fn_targets`` resolves by function NAME across every node/call
+    site sharing that name — correct as long as a name has only ever had
+    ONE wiring, but the same function name can now legitimately have
+    multiple independent wirings on one canvas (e.g. compute_rolling_vo2
+    fed by RawVO2 in one node and by RawHeartRate in another — see
+    api/pipeline.py's wiring-conflict guard, which keeps such nodes from
+    merging/showing each other's state). Resolving purely by name can't
+    tell them apart for EXECUTION either: clicking Run on the RawHeartRate
+    node used to silently re-run the RawVO2 node's real DB history instead
+    (found via a real GUI session). This resolves by the exact node
+    clicked, using its own embedded wiring (already-graduated nodes) or
+    its own resolved edges (still-manual nodes) to select only the
+    matching real history / infer a fresh target — never anything
+    belonging to a different node that merely shares the label.
+
+    Returns the same shape as ``derive_fn_targets`` (a list of
+    ``{"input_types", "output_type", "constants"}`` dicts — one per known
+    constant-value variant of THIS wiring, or one freshly-inferred target
+    if it has never been run), or ``[]`` if ``node_id`` isn't a function
+    node or nothing is derivable from it.
+    """
+    from scistack_gui import pipeline_store
+    from scistack_gui.api.pipeline import _fn_params_from_registry
+    from scistack_gui.domain.edge_resolver import resolve_function_edges
+    from scistack_gui.domain.graph_builder import parse_fn_node_id, wiring_id
+
+    manual_nodes = pipeline_store.get_manual_nodes(db)
+    all_edges = pipeline_store.get_manual_edges(db)
+
+    meta = manual_nodes.get(node_id)
+    parsed = parse_fn_node_id(node_id)
+    resolved = None
+    if meta is not None:
+        if meta["type"] != "functionNode":
+            return []
+        function_name = meta["label"]
+        node_wiring = None  # resolved from this node's own edges, below
+    elif parsed is not None:
+        function_name, node_wiring = parsed
+    else:
+        return []
+
+    all_variants = db.list_pipeline_variants()
+    fn_variants = [v for v in all_variants if v["function_name"] == function_name]
+
+    if node_wiring is None:
+        # Manual (not yet graduated) node — resolve ITS OWN wiring from
+        # its own edges only, never from any other node sharing the label.
+        sig_params = _fn_params_from_registry(function_name)
+        resolved = resolve_function_edges(
+            fn_node_ids={node_id},
+            manual_edges=all_edges,
+            manual_nodes=manual_nodes,
+            existing_node_labels={},
+            sig_params=sig_params,
+        )
+        if not resolved.output_types:
+            return []
+        inferred_inputs = {p: ts[0] for p, ts in resolved.input_types.items() if ts}
+        node_wiring = wiring_id(function_name, inferred_inputs, set(resolved.output_types))
+
+    matching = [
+        v
+        for v in fn_variants
+        if wiring_id(function_name, v["input_types"], {v["output_type"]}) == node_wiring
+    ]
+    if matching:
+        return matching
+    if resolved is None:
+        # An already-graduated node whose embedded wiring matches nothing
+        # in current history (stale) — nothing safe to run as this node.
+        return []
+
+    # Never run with this wiring before — infer constant values from (in
+    # order): pending (staged-but-unrun) values, then real DB history for
+    # this FUNCTION regardless of wiring (a constant's known values are a
+    # function-level property — e.g. compute_rolling_vo2's window_seconds
+    # already has a real, known value from the RawVO2 call site, and a
+    # user wiring the SAME shared constant node into a new RawHeartRate
+    # wiring clearly means to reuse it, not re-stage it from scratch).
+    inferred_constants: dict[str, list] = {}
+    if resolved.constant_names:
+        pending = pipeline_store.get_pending_constants(db)
+        for cname in resolved.constant_names:
+            typed_vals = []
+            for raw in pending.get(cname, set()):
+                try:
+                    typed_vals.append(ast.literal_eval(raw))
+                except (ValueError, SyntaxError):
+                    typed_vals.append(raw)
+            if not typed_vals:
+                known_vals = {
+                    v["constants"][cname]
+                    for v in fn_variants
+                    if cname in v.get("constants", {})
+                }
+                if known_vals:
+                    typed_vals = sorted(known_vals, key=str)
+                    logger.debug(
+                        "[execution] '%s' (node %s): constant '%s' has no "
+                        "pending value — reusing known value(s) %s from "
+                        "other call site(s) of this function",
+                        function_name,
+                        node_id,
+                        cname,
+                        typed_vals,
+                    )
+            if typed_vals:
+                inferred_constants[cname] = typed_vals
+            else:
+                logger.warning(
+                    "[execution] '%s' (node %s): constant '%s' wired but "
+                    "has no pending or known values",
+                    function_name,
+                    node_id,
+                    cname,
+                )
+
+    if inferred_constants:
+        const_names = sorted(inferred_constants.keys())
+        return [
+            {
+                "input_types": resolved.input_types,
+                "output_type": out,
+                "constants": dict(zip(const_names, combo, strict=False)),
+            }
+            for combo in product(*(inferred_constants[c] for c in const_names))
+            for out in resolved.output_types
+        ]
+    return [
+        {"input_types": resolved.input_types, "output_type": out, "constants": {}}
+        for out in resolved.output_types
+    ]
+
+
 def apply_pending_overrides(targets: list[dict], pending_constants: dict) -> list[dict]:
     """Staged pending values override DB history on every derived target
     that uses the constant — the SHARED seam for eager per-node runs and

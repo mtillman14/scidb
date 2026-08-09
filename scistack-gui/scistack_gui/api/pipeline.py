@@ -182,6 +182,53 @@ def _own_state_for_function(
         return "red"
 
 
+def _wiring_conflicts_with_candidate(
+    inferred_inputs: dict[str, str],
+    output_types: list[str],
+    candidate_input_params: dict,
+    candidate_output_types,
+) -> bool:
+    """Whether a manual function node's OWN resolved wiring actively
+    contradicts a candidate DB call site's real wiring.
+
+    Absence of wiring info is NOT a conflict — a freshly-placed, still
+    unwired function node has no basis to distinguish "this is the same
+    call site" from "this is a different one", so it graduates into a
+    single matching candidate immediately (existing UX — see
+    test_graduation_preserves_sub_scope_membership, which places a bare
+    functionNode with no edges at all and expects it to graduate). A
+    conflict is only genuine once the manual node is ACTIVELY wired to a
+    variable type that differs from the candidate's for that same param
+    or output (e.g. compute_rolling_vo2 fed by RawHeartRate instead of
+    the candidate's RawVO2).
+    """
+    for param, var_type in inferred_inputs.items():
+        real_type = candidate_input_params.get(param)
+        if real_type and real_type != var_type:
+            return True
+    if output_types and candidate_output_types:
+        if not set(output_types) & set(candidate_output_types):
+            return True
+    return False
+
+
+def _find_db_fn_candidate(
+    agg, fn_label: str, wiring: str
+) -> tuple[dict, set] | None:
+    """Real (input_params, output_types) for a DB-derived (fn_label,
+    wiring) call site group, or None if it doesn't exist.
+
+    ``agg`` here must be the WIRING-GROUPED aggregate (post
+    ``group_call_sites_by_wiring`` — see ``_build_graph``), whose keys are
+    ``(fn_name, wiring_id)``, matching what a DB-derived function node id
+    (``fn__{fn_name}__{wiring_id}``) encodes.
+    """
+    key = (fn_label, wiring)
+    if key not in agg.fn_input_params and key not in agg.fn_outputs:
+        return None
+    return agg.fn_input_params.get(key, {}), agg.fn_outputs.get(key, set())
+
+
 def _compute_run_states(
     db: DatabaseManager,
     fn_input_params: dict[tuple, dict],
@@ -578,6 +625,112 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         nodes, mergeable_manual_nodes, saved_positions
     )
 
+    # Function-node graduation refinement — merge_manual_nodes decides by
+    # (type, label) alone, which is no longer sufficient now that multiple
+    # real call sites can share one function name (e.g. compute_rolling_vo2
+    # fed by RawVO2 in one node, RawHeartRate in another). Two passes, both
+    # keyed off each manual function node's OWN resolved wiring:
+    #
+    # Pass 1 (reject): merge_manual_nodes proposed graduation because
+    # exactly one label-matched candidate exists — but "exactly one"
+    # candidate isn't necessarily the RIGHT one once other wirings share
+    # the label. Absence of wiring info (never wired yet) is NOT treated
+    # as a conflict — see test_graduation_preserves_sub_scope_membership,
+    # a bare unwired node with a single real candidate must still graduate
+    # immediately, the original one-candidate-wins UX.
+    #
+    # Pass 2 (promote): merge_manual_nodes REFUSED to graduate at all
+    # because 0 or >1 candidates share the label — but if this manual
+    # node's own wiring uniquely matches exactly one of them (however many
+    # OTHER same-named candidates also exist), it should still graduate.
+    # Without this, a manual node that's already been run successfully
+    # (and shows green) never merges with its own real counterpart once a
+    # second same-named wiring exists: a permanent duplicate "replica"
+    # node stays on the canvas forever (found via a real GUI session).
+    existing_node_labels = {n["id"]: n["data"]["label"] for n in nodes}
+
+    def _resolve_manual_fn_wiring(node_id: str, fn_label: str):
+        sig_params = _fn_params_from_registry(fn_label)
+        resolved = resolve_function_edges(
+            fn_node_ids={node_id},
+            manual_edges=manual_edges_list,
+            manual_nodes=manual_nodes,
+            existing_node_labels=existing_node_labels,
+            sig_params=sig_params,
+        )
+        inferred_inputs = {p: ts[0] for p, ts in resolved.input_types.items() if ts}
+        return resolved, inferred_inputs
+
+    validated_graduations = []
+    for action in graduations:
+        meta = manual_nodes[action.old_id]
+        if meta["type"] != "functionNode":
+            validated_graduations.append(action)
+            continue
+        resolved, inferred_inputs = _resolve_manual_fn_wiring(action.old_id, meta["label"])
+        candidate_parsed = gb.parse_fn_node_id(action.new_id)
+        candidate = (
+            _find_db_fn_candidate(agg, meta["label"], candidate_parsed[1])
+            if candidate_parsed is not None
+            else None
+        )
+        conflict = candidate is not None and _wiring_conflicts_with_candidate(
+            inferred_inputs, resolved.output_types, candidate[0], candidate[1]
+        )
+        if not conflict:
+            validated_graduations.append(action)
+        else:
+            logger.warning(
+                "[pipeline] graduation candidate %s -> %s rejected: manual "
+                "node's own wiring (inputs=%s, outputs=%s) conflicts with "
+                "the candidate's real wiring (inputs=%s, outputs=%s) — "
+                "keeping %s as a separate manual node",
+                action.old_id,
+                action.new_id,
+                inferred_inputs,
+                resolved.output_types,
+                candidate[0] if candidate else None,
+                candidate[1] if candidate else None,
+                action.old_id,
+            )
+            to_add.append(action.old_id)
+    graduations = validated_graduations
+
+    still_to_add = []
+    for node_id in to_add:
+        meta = manual_nodes[node_id]
+        if meta["type"] != "functionNode":
+            still_to_add.append(node_id)
+            continue
+        resolved, inferred_inputs = _resolve_manual_fn_wiring(node_id, meta["label"])
+        if not resolved.output_types:
+            still_to_add.append(node_id)
+            continue
+        my_wiring = gb.wiring_id(meta["label"], inferred_inputs, set(resolved.output_types))
+        matches = [
+            n["id"]
+            for n in nodes
+            if n["type"] == "functionNode"
+            and n["data"]["label"] == meta["label"]
+            and (gb.parse_fn_node_id(n["id"]) or (None, None))[1] == my_wiring
+        ]
+        if len(matches) != 1:
+            still_to_add.append(node_id)
+            continue
+        target_id = gb.placement_id(matches[0], meta.get("pipeline_id") or "main")
+        if target_id in saved_positions:
+            still_to_add.append(node_id)
+            continue
+        logger.debug(
+            "[pipeline] wiring-matched graduation: %s -> %s (inputs=%s, outputs=%s)",
+            node_id,
+            target_id,
+            inferred_inputs,
+            resolved.output_types,
+        )
+        graduations.append(gb.GraduationAction(old_id=node_id, new_id=target_id))
+    to_add = still_to_add
+
     # Execute graduation side effects.
     logger.info("[pipeline] Executing %d graduation action(s)", len(graduations))
     for action in graduations:
@@ -597,7 +750,6 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
 
     # Build and append manual nodes that should be added.
     logger.info("[pipeline] Building %d manual node(s) to add", len(to_add))
-    existing_node_labels = {n["id"]: n["data"]["label"] for n in nodes}
     for node_id in to_add:
         meta = manual_nodes[node_id]
         # For function nodes, resolve edges and compute state.
@@ -639,14 +791,46 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
                     state_output_types,
                 )
             if state_output_types:
-                manual_fn_state = _own_state_for_function(
-                    db, fn_label, set(state_output_types)
-                )
+                # _own_state_for_function checks scihist.check_node_state
+                # without a call_id, so it answers "has THIS FUNCTION NAME
+                # ever produced these outputs" — blind to which inputs fed
+                # it. Two manual nodes can share a function name while
+                # being wired to different inputs (e.g. compute_rolling_vo2
+                # fed by RawVO2 vs. by RawHeartRate); without this guard,
+                # the second would read the first's completed run as its
+                # own and show green despite never having been run. Same
+                # conflict check the graduation-candidate validation above
+                # uses — an unwired/partially-wired node is still trusted
+                # (no basis to say it's different), only an ACTIVE mismatch
+                # forces red.
+                found_any_history = False
+                compatible_with_some_history = False
+                for fn_name, wid in agg.fn_input_params:
+                    if fn_name != fn_label:
+                        continue
+                    found_any_history = True
+                    real_inputs, real_outputs = _find_db_fn_candidate(
+                        agg, fn_label, wid
+                    )
+                    if not _wiring_conflicts_with_candidate(
+                        inferred_inputs, state_output_types, real_inputs, real_outputs
+                    ):
+                        compatible_with_some_history = True
+                        break
+                trust_history = not found_any_history or compatible_with_some_history
+                if trust_history:
+                    manual_fn_state = _own_state_for_function(
+                        db, fn_label, set(state_output_types)
+                    )
+                else:
+                    manual_fn_state = "red"
                 logger.debug(
-                    "manual fn %s: computed state=%s (outputs=%s)",
+                    "manual fn %s: computed state=%s (outputs=%s, "
+                    "trust_history=%s)",
                     fn_label,
                     manual_fn_state,
                     state_output_types,
+                    trust_history,
                 )
             else:
                 manual_fn_state = "red"

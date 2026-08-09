@@ -331,6 +331,9 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
 
     new_pid = ps.create_pipeline(db, new_name)
     old_to_new: dict[str, str] = {}
+    # Counts nodes solidified below with no prior real position, so each
+    # gets a distinct fallback instead of all landing on the same point.
+    unpositioned_solidified = 0
 
     # Submodule placements: fresh use_id, same child_pipeline_id, binding
     # copied (the duplicate's binding becomes independently editable from
@@ -363,7 +366,8 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
         if config:
             ps.update_node_config(db, new_id, config)
 
-        pos = old_positions.get(old_id, {"x": 0.0, "y": 0.0})
+        real_pos = old_positions.get(old_id)
+        pos = real_pos or {"x": 0.0, "y": 0.0}
         layout_store.write_node_position(new_id, pos["x"] + offset, pos["y"] + offset, pipeline_id=new_pid)
 
         # old_id may be a BARE canonical id relying on the implicit root
@@ -379,7 +383,31 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
         # ambiguity can arise.
         if old_id not in manual_nodes and graph_builder.parse_placement_id(old_id) is None:
             solidified_id = graph_builder.placement_id(old_id, pipeline_id)
-            layout_store.write_node_position(solidified_id, pos["x"], pos["y"], pipeline_id=pipeline_id)
+            if real_pos is not None:
+                solidify_pos = real_pos
+            else:
+                # No saved position ever existed for old_id — the frontend
+                # (frontend/src/layout.ts) auto-arranges such nodes via
+                # dagre on every load. Writing a REAL saved position is
+                # still required (it's the only way to record "this
+                # canonical node is explicitly claimed by `pipeline_id`",
+                # avoiding the ambiguity above) but it must not be the
+                # same shared fallback for every node solidified here —
+                # the frontend treats any saved position as authoritative
+                # and stops auto-laying it out, so identical coordinates
+                # collapse every such node onto the same point (nodes
+                # appear to vanish, edges between them render as
+                # zero-length stubs). Spread them out instead.
+                solidify_pos = {
+                    "x": unpositioned_solidified * 60.0,
+                    "y": unpositioned_solidified * 60.0,
+                }
+                unpositioned_solidified += 1
+            logger.info(
+                "[duplicate_pipeline] solidifying %s -> %s at %r (had_real_pos=%s)",
+                old_id, solidified_id, solidify_pos, real_pos is not None,
+            )
+            layout_store.write_node_position(solidified_id, solidify_pos["x"], solidify_pos["y"], pipeline_id=pipeline_id)
 
     # Internal edges: get_pipeline_graph is already scope-resolved (both
     # endpoints belong to pipeline_id), so both sides are always mapped.

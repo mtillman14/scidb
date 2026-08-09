@@ -708,6 +708,49 @@ class TestDuplicatePipeline:
         assert after_labels == before_labels  # main's content is untouched
         assert len(after) == len(before)
 
+    def test_duplicate_solidifies_never_positioned_nodes_without_collapsing_them(
+        self, client
+    ):
+        """Regression test: the seeded bandpass_filter/RawSignal/
+        FilteredSignal nodes have NEVER been explicitly positioned (no
+        `/api/layout/...` PUT was ever issued for them) — the frontend
+        auto-arranges such nodes via dagre on every load
+        (frontend/src/layout.ts), and only stops doing so once a real
+        saved position exists.
+
+        `duplicate_pipeline` must still solidify main's own claim on each
+        of these (see the big comment in scope_service.duplicate_pipeline)
+        so the original doesn't lose them once the copy independently
+        graduates elsewhere — but an earlier version of that fix wrote
+        the SAME shared (0, 0) fallback for every one of them. The
+        frontend treats any saved position as authoritative, so identical
+        coordinates collapsed every such node onto the same point:
+        they visually overlapped into what looked like disappeared nodes,
+        with zero-length edges between them looking like dangling stubs.
+        Solidified positions must be distinct from each other."""
+        r = client.post("/api/pipelines/main/duplicate", json={"name": "main_copy"})
+        assert r.status_code == 200
+
+        positions = client.get("/api/layout", params={"pipeline_id": "main"}).json()[
+            "positions"
+        ]
+        solidified = [
+            (node_id, (pos["x"], pos["y"]))
+            for node_id, pos in positions.items()
+            if node_id.endswith("::main")
+            and any(
+                node_id.startswith(f"{p}__")
+                for p in ("var", "fn", "const", "pathInput")
+            )
+        ]
+        # The seeded graph has at least RawSignal, bandpass_filter, and
+        # FilteredSignal — all previously unpositioned.
+        assert len(solidified) >= 3
+        coords = [c for _, c in solidified]
+        assert len(set(coords)) == len(coords), (
+            f"solidified nodes must not share coordinates, got {solidified}"
+        )
+
     def test_duplicate_keeps_submodule_use_pointing_at_same_child(self, client):
         child = client.post("/api/pipelines", json={"name": "shared_prep"}).json()[
             "pipeline_id"
@@ -907,6 +950,137 @@ class TestExecutionCompiler:
         from scistack_gui.services.execution_service import derive_fn_targets
 
         assert derive_fn_targets(get_db(), "no_such_fn") == []
+
+
+class TestDeriveTargetForNode:
+    """Regression coverage: clicking Run on a SPECIFIC function node must
+    execute THAT node's own wiring, never a different node's real DB
+    history just because they share a function name. Found via a real GUI
+    session: a manual bandpass_filter node wired to a different input
+    variable silently re-ran the already-executed bandpass_filter(RawSignal)
+    call site instead of its own wiring — derive_fn_targets resolves by
+    function NAME across every node sharing that name, with no way to
+    distinguish which node the user actually clicked. derive_target_for_node
+    is the node-scoped alternative that fixes this."""
+
+    def test_manual_node_derives_its_own_wiring_not_a_different_call_sites(self, client):
+        import numpy as np
+        from scidb import BaseVariable
+
+        class OtherSignal2(BaseVariable):
+            pass
+
+        class OtherFiltered2(BaseVariable):
+            pass
+
+        OtherSignal2.save(np.zeros(5), subject=1, session="pre")
+
+        client.put("/api/layout/mv_o_in", json={
+            "x": 0, "y": 0, "node_type": "variableNode", "label": "OtherSignal2",
+        })
+        client.put("/api/layout/mf_bp_other", json={
+            "x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter",
+        })
+        client.put("/api/layout/mv_o_out", json={
+            "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered2",
+        })
+        client.put("/api/edges/e_o_in", json={"source": "mv_o_in", "target": "mf_bp_other"})
+        client.put("/api/edges/e_o_out", json={"source": "mf_bp_other", "target": "mv_o_out"})
+        client.put("/api/constants/low_hz/pending/99")
+        client.put("/api/edges/e_o_const", json={
+            "source": "const__low_hz", "target": "mf_bp_other", "target_handle": "in__low_hz",
+        })
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import derive_target_for_node
+
+        targets = derive_target_for_node(get_db(), "mf_bp_other")
+
+        assert len(targets) == 1
+        # A never-run target's input_types values are lists (matching
+        # derive_fn_targets' own never-run fallback shape — see
+        # edge_resolver.ResolvedEdges.input_types, which supports multi-type/
+        # EachOf wiring); only DB-history-derived targets (list_pipeline_
+        # variants' rows) use bare strings. run.py already handles both
+        # ("type_names may be a list (new) or a string (from DB history)").
+        assert targets[0]["input_types"].get("signal") == ["OtherSignal2"]
+        assert targets[0]["output_type"] == "OtherFiltered2"
+        assert targets[0]["constants"].get("low_hz") == 99, (
+            "must use the staged pending value (99), not the real "
+            "bandpass_filter(RawSignal) call site's low_hz=20 — this is a "
+            "different, never-run wiring"
+        )
+
+    def test_never_run_wiring_reuses_known_constant_value_without_staging(self, client):
+        """Regression test: a never-run wiring's constant doesn't need to
+        be re-staged as a pending value if it's ALREADY a real, known value
+        from a different call site of the SAME function — found via a real
+        GUI session where wiring the SAME shared window_seconds/
+        sample_interval constant nodes (already 30/5 from the real
+        compute_rolling_vo2(RawVO2) run) into a new compute_rolling_vo2
+        (RawHeartRate) node produced 'wired but has no pending values' and
+        for_each failed with missing required arguments — the real,
+        already-visible-on-canvas constant value was silently dropped."""
+        import numpy as np
+        from scidb import BaseVariable
+
+        class OtherSignal3(BaseVariable):
+            pass
+
+        class OtherFiltered3(BaseVariable):
+            pass
+
+        OtherSignal3.save(np.zeros(5), subject=1, session="pre")
+
+        client.put("/api/layout/mv_o3_in", json={
+            "x": 0, "y": 0, "node_type": "variableNode", "label": "OtherSignal3",
+        })
+        client.put("/api/layout/mf_bp_other3", json={
+            "x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter",
+        })
+        client.put("/api/layout/mv_o3_out", json={
+            "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered3",
+        })
+        client.put("/api/edges/e_o3_in", json={"source": "mv_o3_in", "target": "mf_bp_other3"})
+        client.put("/api/edges/e_o3_out", json={"source": "mf_bp_other3", "target": "mv_o3_out"})
+        # Wire the REAL, already-known low_hz constant (value 20, from the
+        # populated_db fixture's real bandpass_filter(RawSignal) run) —
+        # deliberately WITHOUT staging any pending value for it.
+        client.put("/api/edges/e_o3_const", json={
+            "source": "const__low_hz", "target": "mf_bp_other3", "target_handle": "in__low_hz",
+        })
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import derive_target_for_node
+
+        targets = derive_target_for_node(get_db(), "mf_bp_other3")
+
+        assert len(targets) == 1
+        assert targets[0]["input_types"].get("signal") == ["OtherSignal3"]
+        assert targets[0]["output_type"] == "OtherFiltered3"
+        assert targets[0]["constants"].get("low_hz") == 20, (
+            "must reuse the real, already-known low_hz=20 value from the "
+            "original bandpass_filter(RawSignal) call site, not drop the "
+            "constant just because it was never staged as pending"
+        )
+
+    def test_graduated_node_derives_only_its_own_call_site(self, client):
+        """The flip side: an already-graduated node's own wiring must
+        resolve to ITS real DB history, not get confused by an unrelated
+        manual node sharing the same label."""
+        from scistack_gui.db import get_db
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+        from scistack_gui.services.execution_service import derive_target_for_node
+
+        real_wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"})
+        real_node_id = fn_node_id("bandpass_filter", real_wid)
+
+        targets = derive_target_for_node(get_db(), real_node_id)
+
+        assert len(targets) == 1
+        assert targets[0]["input_types"].get("signal") == "RawSignal"
+        assert targets[0]["output_type"] == "FilteredSignal"
+        assert targets[0]["constants"] == {"low_hz": 20}
 
     def test_compile_root_scope(self, client):
         from scistack_gui.db import get_db

@@ -560,6 +560,50 @@ class TestRunEndpoint:
         assert r.json()["run_id"] == "my_run_42"
         _wait_for_threads("Thread-")
 
+    def test_forwards_schema_keys_not_schema_level_to_for_each(self, client, monkeypatch):
+        """Regression test: scidb.for_each's real parameter is `schema_keys`
+        (see scidb/src/scidb/foreach.py), not `schema_level` — `schema_level`
+        is only this module's own GUI-facing name (RunRequest.schema_level)
+        for "which schema keys to iterate".
+
+        A prior version of `_run_in_thread` forwarded it verbatim as
+        `schema_level=...` when calling the real for_each. Since for_each
+        accepts arbitrary **metadata_iterables, that unrecognized keyword
+        didn't error — it silently became a bogus metadata-iteration axis
+        literally named "schema_level", leaving the REAL schema key (e.g.
+        "subject") un-iterated. for_each then entered aggregation mode and
+        pooled every row for that key into one call, crashing any function
+        written per-combo the moment its input had more than one variant
+        (found via a real GUI run of gui_test_data.compute_max_vo2).
+
+        This test doesn't need to reproduce that full multi-variant crash —
+        it directly pins the fix: with no explicit schema_level/schema_filter/
+        as_table, `_run_in_thread` must call for_each with `schema_keys` set
+        to all DB schema keys, and must never pass a `schema_level` kwarg at
+        all (since for_each has no such parameter)."""
+        from scistack_gui.api import run as run_api
+
+        captured = {}
+
+        def fake_for_each(*args, **kwargs):
+            captured.update(kwargs)
+            return None
+
+        monkeypatch.setattr(run_api, "for_each", fake_for_each)
+
+        r = client.post(
+            "/api/run",
+            json={"function_name": "bandpass_filter", "variants": []},
+        )
+        assert r.status_code == 200
+        _wait_for_threads("Thread-")
+
+        assert captured, "for_each was never called"
+        assert "schema_level" not in captured
+        assert captured.get("schema_keys") == list(
+            _gui_db.get_db().dataset_schema_keys
+        )
+
     def test_unknown_function_still_returns_200_with_run_id(self, client):
         """
         The HTTP layer returns immediately; the error is surfaced via WebSocket.

@@ -76,6 +76,12 @@ class RunRequest(BaseModel):
     schema_level: list[str] | None = None  # which schema keys to iterate; None = all
     run_options: dict | None = None  # {dry_run, save, distribute}; all optional
     where_filters: list[WhereFilterSpec] | None = None  # data filters for where= param
+    # The canvas node the user actually clicked Run on. Optional for back-
+    # compat, but required to disambiguate once >1 node shares function_name
+    # with a different wiring (see execution_service.derive_target_for_node)
+    # — without it, targets are derived by NAME alone and a click on one
+    # node's Run button can silently execute a DIFFERENT node's real history.
+    node_id: str | None = None
 
 
 def _run_in_thread(
@@ -87,6 +93,7 @@ def _run_in_thread(
     schema_level: list[str] | None = None,
     run_options: dict | None = None,
     where_filters: list[WhereFilterSpec] | None = None,
+    node_id: str | None = None,
 ):
     """
     Executed in a background thread. Runs for_each for each variant,
@@ -193,13 +200,24 @@ def _run_in_thread(
     # Derive the for_each targets for this function node — DB history with
     # manual-wiring overrides, or the manual-edge fallback. Shared with the
     # pipeline compiler (execution_service) so per-node and pipeline runs
-    # derive identically.
+    # derive identically. When node_id is given, scope derivation to that
+    # EXACT node's own wiring (derive_target_for_node) rather than every
+    # node/call site sharing function_name — required once more than one
+    # wiring of the same function name can coexist on a canvas.
     logger.info(
-        "[run_thread] Deriving targets for '%s' (run_id=%s)", function_name, run_id
+        "[run_thread] Deriving targets for '%s' (node_id=%s, run_id=%s)",
+        function_name,
+        node_id,
+        run_id,
     )
-    from scistack_gui.services.execution_service import derive_fn_targets
+    if node_id:
+        from scistack_gui.services.execution_service import derive_target_for_node
 
-    fn_variants = derive_fn_targets(db, function_name)
+        fn_variants = derive_target_for_node(db, node_id)
+    else:
+        from scistack_gui.services.execution_service import derive_fn_targets
+
+        fn_variants = derive_fn_targets(db, function_name)
     logger.debug(
         "[run_thread] Derived %d target(s) for '%s' (run_id=%s)",
         len(fn_variants),
@@ -517,7 +535,24 @@ def _run_in_thread(
                         _progress_fn=_progress_fn,
                         _cancel_check=_is_cancelled,
                         schema_filter=schema_filter,
-                        schema_level=schema_level,
+                        # NOTE: scidb.for_each's real parameter is
+                        # `schema_keys`, not `schema_level` — `schema_level`
+                        # is this module's own GUI-facing name for "which
+                        # schema keys to iterate" (RunRequest.schema_level,
+                        # etc.). Passing `schema_level=` here used to land
+                        # in for_each's **metadata_iterables catch-all
+                        # instead of actually requesting iteration: it
+                        # silently created a bogus metadata axis literally
+                        # named "schema_level", leaving the REAL schema key
+                        # (e.g. "subject") un-iterated. for_each then
+                        # entered aggregation mode and pooled every row
+                        # for a given key into one call — functions written
+                        # per-combo (e.g. gui_test_data.compute_max_vo2)
+                        # then crash on the multi-row table. See
+                        # execution_service.build_backend_pipeline's
+                        # schema_iterables comment for the same failure
+                        # mode, found earlier via a different call path.
+                        schema_keys=schema_level,
                     )
                 output = buf.getvalue()
                 if output:
@@ -689,9 +724,10 @@ def _summarize_schema_filter(schema_filter: dict[str, list] | None) -> str:
 def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     logger.info("[api/run] POST /api/run - Validating request")
     logger.debug(
-        "[api/run] Request: function_name=%s, variants=%d, run_id=%s, schema_filter=%s, "
-        "schema_level=%s, run_options=%s, where_filters=%d",
+        "[api/run] Request: function_name=%s, node_id=%s, variants=%d, run_id=%s, "
+        "schema_filter=%s, schema_level=%s, run_options=%s, where_filters=%d",
         req.function_name,
+        req.node_id,
         len(req.variants),
         req.run_id,
         _summarize_schema_filter(req.schema_filter),
@@ -715,6 +751,7 @@ def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
             req.schema_level,
             req.run_options,
             req.where_filters,
+            req.node_id,
         ),
         daemon=True,
     )
