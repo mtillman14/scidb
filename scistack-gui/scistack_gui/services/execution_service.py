@@ -74,6 +74,21 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
         fn_node_ids, all_edges, manual_nodes, existing_node_labels={}
     )
 
+    from scistack_gui.domain.variant_resolver import filter_disconnected_targets
+
+    hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
+    if hidden_edge_ids and fn_variants:
+        before = len(fn_variants)
+        fn_variants = filter_disconnected_targets(
+            fn_variants, function_name, hidden_edge_ids
+        )
+        if len(fn_variants) != before:
+            logger.info(
+                "[execution] '%s': %d target(s) excluded — disconnected wiring",
+                function_name,
+                before - len(fn_variants),
+            )
+
     if fn_variants and manual_output_types:
         # User rewired outputs: current wiring overrides stale DB history.
         logger.info(
@@ -219,6 +234,19 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
         for v in fn_variants
         if wiring_id(function_name, v["input_types"], {v["output_type"]}) == node_wiring
     ]
+    hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
+    if hidden_edge_ids and matching:
+        from scistack_gui.domain.variant_resolver import filter_disconnected_targets
+
+        before = len(matching)
+        matching = filter_disconnected_targets(matching, function_name, hidden_edge_ids)
+        if len(matching) != before:
+            logger.info(
+                "[execution] node %s ('%s'): %d target(s) excluded — disconnected wiring",
+                node_id,
+                function_name,
+                before - len(matching),
+            )
     if matching:
         return matching
     if resolved is None:
@@ -286,6 +314,186 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
         {"input_types": resolved.input_types, "output_type": out, "constants": {}}
         for out in resolved.output_types
     ]
+
+
+def disconnected_reason(db, function_name: str, node_id: "str | None" = None) -> "str | None":
+    """Human-readable reason *function_name* (or one specific node's own
+    wiring, if ``node_id`` is given) can't run right now because a
+    required input edge is hidden — None if it's runnable, INCLUDING the
+    case where it simply has no DB history yet (a different, unrelated
+    situation the caller already messages separately).
+
+    Cheap, independent of ``derive_fn_targets``/``derive_target_for_node``
+    (which already silently exclude disconnected targets) — this exists so
+    callers that get an empty target list can tell "disconnected" apart
+    from "never run" and surface the right explicit error (see api/run.py).
+    """
+    from scistack_gui import pipeline_store
+    from scistack_gui.domain.graph_builder import (
+        inbound_edge_candidates,
+        parse_fn_node_id,
+        wiring_id,
+    )
+
+    hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
+    if not hidden_edge_ids:
+        return None
+
+    node_wiring = None
+    if node_id:
+        parsed = parse_fn_node_id(node_id)
+        if parsed is not None:
+            node_wiring = parsed[1]
+
+    all_variants = db.list_pipeline_variants()
+    for v in all_variants:
+        if v["function_name"] != function_name:
+            continue
+        wid = wiring_id(function_name, v["input_types"], {v["output_type"]})
+        if node_wiring is not None and wid != node_wiring:
+            continue
+        var_types = []
+        for tv in v["input_types"].values():
+            if isinstance(tv, (list, set, tuple)):
+                var_types.extend(tv)
+            else:
+                var_types.append(tv)
+        for pname, vtype in v["input_types"].items():
+            candidate = f"e__{vtype}__{function_name}__{wid}"
+            if candidate in hidden_edge_ids:
+                return f"input '{pname}' is disconnected — reconnect it before running"
+        for cname in v.get("constants", {}).keys():
+            candidate = f"e__{cname}__{function_name}__{wid}"
+            if candidate in hidden_edge_ids:
+                return f"input '{cname}' is disconnected — reconnect it before running"
+    return None
+
+
+def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
+    """Synthetic report entries (compatible in shape with scidb's
+    Pipeline.last_run_report) for functions in *pipeline_id*'s scope that
+    won't actually run because a required input is disconnected (direct)
+    or because an upstream producer is (cascaded) — computed independently
+    of the compiled scidb.Pipeline and merged into the response by
+    run_pipeline/plan_pipeline, never mutating scidb's own report object
+    (this "disconnected" concept is GUI-authored state, scistack-gui's own
+    layer — see plan-edge-hide-delete.md).
+    """
+    from scistack_gui import pipeline_store
+    from scistack_gui.domain.graph_builder import hidden_wirings, wirings_downstream_of
+
+    hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
+    if not hidden_edge_ids:
+        return []
+
+    scidb_agg = db.get_aggregated_variants()
+    fn_input_params: dict = {}
+    fn_outputs: dict = {}
+    fn_constants: dict = {}
+    for (fn_name, call_id), fn_data in scidb_agg["functions"].items():
+        fkey = (fn_name, call_id)
+        fn_input_params[fkey] = fn_data["input_params"]
+        fn_outputs[fkey] = set(fn_data["outputs"])
+        fn_constants[fkey] = set(fn_data["constants"].keys())
+    path_inputs: dict = {
+        param_name: {"functions": {tuple(f) for f in pi_data["functions"]}}
+        for param_name, pi_data in scidb_agg["path_inputs"].items()
+    }
+
+    seed = hidden_wirings(fn_input_params, fn_outputs, fn_constants, path_inputs, hidden_edge_ids)
+    if not seed:
+        return []
+    downstream = wirings_downstream_of(fn_input_params, fn_outputs, seed)
+
+    scope_labels = set(_scope_function_labels(db, pipeline_id))
+
+    def _entry(fn: str, reason: str) -> dict:
+        return {
+            "step": fn,
+            "label": fn,
+            "pipeline": pipeline_id,
+            "completed": 0,
+            "failed": 0,
+            "no_data": 0,
+            "total": 0,
+            "cancelled": False,
+            "skipped": True,
+            "skip_reason": reason,
+        }
+
+    entries: list[dict] = []
+    seen_labels: set[str] = set()
+    for fn, wid in sorted(seed):
+        if fn not in scope_labels or fn in seen_labels:
+            continue
+        seen_labels.add(fn)
+        reason = "required input disconnected"
+        for fkey, params in fn_input_params.items():
+            if fkey[0] != fn:
+                continue
+            for pname, vtype in params.items():
+                if f"e__{vtype}__{fn}__{wid}" in hidden_edge_ids:
+                    reason = f"input '{pname}' disconnected"
+                    break
+            for cname in fn_constants.get(fkey, set()):
+                if f"e__{cname}__{fn}__{wid}" in hidden_edge_ids:
+                    reason = f"input '{cname}' disconnected"
+                    break
+        entries.append(_entry(fn, reason))
+    for fn, _wid in sorted(downstream):
+        if fn not in scope_labels or fn in seen_labels:
+            continue
+        seen_labels.add(fn)
+        entries.append(_entry(fn, "upstream input unavailable"))
+
+    if entries:
+        logger.info(
+            "[execution] scope %s: %d function(s) skipped (disconnected/cascaded)",
+            pipeline_id,
+            len(entries),
+        )
+    return entries
+
+
+def resolve_combo_call_ids(
+    db, function_name: str, node_id: str | None, variant_key: dict
+) -> list[str]:
+    """Turn one Variants-table row (its constant axes) into the call_id(s)
+    to hide/unhide — usually one, occasionally more if multiple output
+    types share the same constants. Entries with no computable call_id
+    (an unresolved multi-type input) are silently skipped — fail safe, see
+    ``variant_resolver.compute_call_id``.
+    """
+    from scistack_gui import pipeline_store
+    from scistack_gui.domain.variant_resolver import constants_match, resolve_target_call_id
+
+    targets = (
+        derive_target_for_node(db, node_id)
+        if node_id
+        else derive_fn_targets(db, function_name)
+    )
+    pending_consts = pipeline_store.get_pending_constants(db)
+    targets = apply_pending_overrides(targets, pending_consts)
+    matches = [t for t in targets if constants_match(t["constants"], variant_key)]
+
+    node_config: dict = {}
+    if node_id:
+        node_config = pipeline_store.get_manual_nodes(db).get(node_id, {}).get("config") or {}
+    run_opts = node_config.get("runOptions") or {}
+    pending_names = set(pending_consts)
+
+    cids: list[str] = []
+    for t in matches:
+        cid = resolve_target_call_id(
+            function_name,
+            t,
+            pending_names,
+            distribute=run_opts.get("distribute", False),
+            as_table=run_opts.get("as_table"),
+        )
+        if cid is not None:
+            cids.append(cid)
+    return cids
 
 
 def apply_pending_overrides(targets: list[dict], pending_constants: dict) -> list[dict]:
@@ -405,6 +613,10 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
 
     from scidb import for_each
     from scistack_gui import pipeline_store, registry
+    from scistack_gui.domain.variant_resolver import (
+        filter_hidden_targets,
+        hidden_call_ids_for_fn,
+    )
 
     if _built is None:
         _built = {}
@@ -434,6 +646,14 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
     # targets must all survive.
     pending_consts = pipeline_store.get_pending_constants(db)
 
+    # Hidden combos (see plan-combo-hiding.md) — this path never passes
+    # distribute/as_table to for_each (below), so filtering here must use
+    # the same False/None it actually runs with, not a node's persisted
+    # runOptions; a hidden pending combo hashed with a different
+    # distribute/as_table simply won't match and fails safe (reappears)
+    # rather than mis-hiding a different combo.
+    hidden_ids = pipeline_store.get_hidden_node_ids(db)
+
     for fn_label in _scope_function_labels(db, pipeline_id):
         try:
             fn = registry.get_function(fn_label)
@@ -446,6 +666,14 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
             continue
         targets = apply_pending_overrides(
             derive_fn_targets(db, fn_label), pending_consts
+        )
+        targets = filter_hidden_targets(
+            targets,
+            fn_label,
+            hidden_call_ids_for_fn(hidden_ids, fn_label),
+            pending_consts,
+            distribute=False,
+            as_table=None,
         )
         seen_target_keys: set = set()
         for target in targets:
@@ -505,6 +733,10 @@ def plan_pipeline(db, pipeline_id: str, target: str = "") -> list[dict]:
     """The plan-preview data (R2): compile + plan; nothing executes.
 
     Entries: step, pipeline, endpoint, state (green/red/unknown), n_combos.
+    Functions excluded from compilation because a required input is
+    disconnected (direct) or starved by one (cascaded) still appear here —
+    synthetic entries with n_combos=0 and a skip_reason — rather than
+    silently vanishing from the preview.
     """
     built: dict = {}
     try:
@@ -512,7 +744,7 @@ def plan_pipeline(db, pipeline_id: str, target: str = "") -> list[dict]:
         entries = pipe.plan(target=target or None)
     finally:
         _discard_compiled(built)
-    return [
+    result = [
         {
             "step": e["step"],
             "pipeline": e["pipeline"],
@@ -522,6 +754,21 @@ def plan_pipeline(db, pipeline_id: str, target: str = "") -> list[dict]:
         }
         for e in entries
     ]
+    planned_steps = {e["step"] for e in result}
+    for skipped in disconnected_report_entries(db, pipeline_id):
+        if skipped["step"] in planned_steps:
+            continue
+        result.append(
+            {
+                "step": skipped["step"],
+                "pipeline": skipped["pipeline"],
+                "endpoint": False,
+                "state": "red",
+                "n_combos": 0,
+                "skip_reason": skipped["skip_reason"],
+            }
+        )
+    return result
 
 
 def run_pipeline(
@@ -562,11 +809,15 @@ def run_pipeline(
     finally:
         _discard_compiled(built)
     # for_each never raises on iteration failures (continue-and-report),
-    # so the caller decides success from the per-step report.
+    # so the caller decides success from the per-step report. Functions
+    # excluded from compilation because a required input is disconnected
+    # never reach scidb's own report — appended here instead of silently
+    # vanishing from what the user sees (see disconnected_report_entries).
+    report = list(pipe.last_run_report) + disconnected_report_entries(db, pipeline_id)
     return {
         "ok": True,
         "pipeline": pipe.name,
         "mode": mode,
-        "report": pipe.last_run_report,
+        "report": report,
         "rendered": rendered,
     }

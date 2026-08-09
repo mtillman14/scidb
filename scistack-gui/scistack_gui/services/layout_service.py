@@ -93,6 +93,7 @@ def delete_layout(node_id: str) -> dict:
 
 
 def put_edge(
+    db,
     edge_id: str,
     source: str,
     target: str,
@@ -100,6 +101,8 @@ def put_edge(
     target_handle: str | None = None,
 ) -> dict:
     from scistack_gui import layout as layout_store
+    from scistack_gui import pipeline_store
+    from scistack_gui.domain.graph_builder import candidate_edge_id, find_cycle
 
     logger.info(
         "[layout_service] put_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
@@ -109,6 +112,45 @@ def put_edge(
         source_handle,
         target_handle,
     )
+
+    # If this connection recreates a previously-hidden DB-derived edge
+    # (same source/target — the candidate id is deterministic, see
+    # graph_builder.candidate_edge_id), unhide the ORIGINAL edge instead of
+    # creating a redundant manual one. This is what makes delete+reconnect
+    # idempotent: state/execution recompute fresh from the real DB history
+    # under the original edge id, not a new manual-edge id.
+    candidate = candidate_edge_id(source, target)
+    if candidate is not None and candidate in pipeline_store.get_hidden_edge_ids(db):
+        logger.info(
+            "[layout_service] put_edge: reconnecting hidden DB-derived edge %r "
+            "— unhiding instead of creating a manual edge",
+            candidate,
+        )
+        pipeline_store.unhide_edge(db, candidate)
+        _notify_dag_updated()
+        return {"ok": True, "unhidden": candidate}
+
+    # Checked against manual edges only (not the full DB-derived data-lineage
+    # graph): computing that graph (domain.pipeline_service.get_pipeline_graph
+    # -> api.pipeline._build_graph) has a side effect — it PERSISTS manual-node
+    # graduation as part of building the response — so calling it here, before
+    # this edge's wiring is fully in place, can graduate a node prematurely on
+    # its still-incomplete wiring (regression found via
+    # test_differently_wired_manual_node_does_not_graduate_or_show_green and
+    # friends). A cycle closed purely through immutable, already-executed
+    # DB-derived edges plus this one new manual edge won't be caught here —
+    # it still surfaces at run time as scidb's PipelineCycleError.
+    existing_edges = [e for e in layout_store.read_manual_edges() if e["id"] != edge_id]
+    cycle_path = find_cycle(existing_edges, source, target)
+    if cycle_path is not None:
+        logger.warning(
+            "[layout_service] put_edge rejected — would create a cycle: %s",
+            " -> ".join(cycle_path),
+        )
+        raise ValueError(
+            f"connecting '{source}' to '{target}' would create a dependency "
+            f"cycle: {' -> '.join(cycle_path)}"
+        )
     layout_store.write_manual_edge(
         {
             "id": edge_id,
@@ -123,14 +165,51 @@ def put_edge(
     return {"ok": True}
 
 
-def delete_edge(edge_id: str) -> dict:
+def delete_edge(
+    db,
+    edge_id: str,
+    source: str = "",
+    target: str = "",
+    source_handle: str | None = None,
+    target_handle: str | None = None,
+) -> dict:
     from scistack_gui import layout as layout_store
+    from scistack_gui import pipeline_store
 
     logger.info("[layout_service] delete_edge called (edge_id=%r)", edge_id)
-    layout_store.delete_manual_edge(edge_id)
-    logger.info("[layout_service] Edge deleted successfully")
+    # Whether an edge is "manual" is decided by ACTUAL membership in the
+    # manual-edges table, not the `manual__` id prefix — that prefix is
+    # only the frontend's own naming convention for edges it creates via
+    # onConnect; put_edge accepts any caller-supplied id, so a manual edge
+    # can legitimately have a differently-shaped id (e.g. existing tests
+    # PUT arbitrary ids like "e_del").
+    is_manual = any(e["id"] == edge_id for e in layout_store.read_manual_edges())
+    if is_manual:
+        layout_store.delete_manual_edge(edge_id)
+        logger.info("[layout_service] Manual edge hard-deleted")
+    else:
+        # DB-derived edge: never delete data, only hide it — build_edges
+        # excludes it on every rebuild until unhide_edge (see put_edge's
+        # reconnect-detection) or the restore panel brings it back.
+        pipeline_store.hide_edge(db, edge_id, source, target, source_handle, target_handle)
+        logger.info("[layout_service] DB-derived edge hidden")
     _notify_dag_updated()
     return {"ok": True}
+
+
+def unhide_edge(db, edge_id: str) -> dict:
+    from scistack_gui import pipeline_store
+
+    logger.info("[layout_service] unhide_edge called (edge_id=%r)", edge_id)
+    pipeline_store.unhide_edge(db, edge_id)
+    _notify_dag_updated()
+    return {"ok": True}
+
+
+def get_hidden_edges(db) -> dict:
+    from scistack_gui import pipeline_store
+
+    return {"edges": pipeline_store.list_hidden_edges(db)}
 
 
 def get_constants() -> list[str]:
@@ -269,3 +348,46 @@ def put_node_config(db, node_id: str, config: dict) -> dict:
 
     pipeline_store.update_node_config(db, node_id, config)
     return {"ok": True}
+
+
+def hide_variant_combo(
+    db, function_name: str, node_id: str | None, variant_key: dict
+) -> dict:
+    """Hide one row of a function's constant Cartesian product — never
+    deletes data, only excludes it from display and future runs."""
+    from scistack_gui import pipeline_store
+    from scistack_gui.domain.graph_builder import fn_node_id
+    from scistack_gui.services.execution_service import resolve_combo_call_ids
+
+    logger.info(
+        "[layout_service] hide_variant_combo called (function_name=%r, "
+        "node_id=%r, variant_key=%r)",
+        function_name,
+        node_id,
+        variant_key,
+    )
+    call_ids = resolve_combo_call_ids(db, function_name, node_id, variant_key)
+    for cid in call_ids:
+        pipeline_store.hide_combo(
+            db, fn_node_id(function_name, cid), function_name, variant_key
+        )
+    logger.info(
+        "[layout_service] hide_variant_combo: hid %d call site(s)", len(call_ids)
+    )
+    _notify_dag_updated()
+    return {"ok": True, "hidden_count": len(call_ids)}
+
+
+def unhide_variant_combo(db, node_id: str) -> dict:
+    from scistack_gui import pipeline_store
+
+    logger.info("[layout_service] unhide_variant_combo called (node_id=%r)", node_id)
+    pipeline_store.unhide_combo(db, node_id)
+    _notify_dag_updated()
+    return {"ok": True}
+
+
+def get_hidden_combos(db, function_name: str) -> dict:
+    from scistack_gui import pipeline_store
+
+    return {"combos": pipeline_store.list_hidden_combos(db, function_name)}

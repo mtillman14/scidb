@@ -11,7 +11,7 @@ import hashlib
 import json
 import logging
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -567,20 +567,59 @@ def filter_hidden(agg: AggregatedData, hidden_ids: set[str]) -> AggregatedData:
     return agg
 
 
+def _wiring_group_key(agg: "AggregatedData", fkey: FnKey) -> tuple[str, str]:
+    """(fn_name, wiring_id) for the call site's canvas node — see wiring_id()."""
+    fn, _cid = fkey
+    return (
+        fn,
+        wiring_id(fn, agg.fn_input_params.get(fkey, {}), agg.fn_outputs.get(fkey, set())),
+    )
+
+
+def _fkey_has_constant_value(
+    agg: "AggregatedData", fkey: FnKey, const_name: str, pval: str
+) -> bool:
+    return any(
+        str(row.get("constants", {}).get(const_name)) == pval
+        for row in agg.fn_variants_map.get(fkey, [])
+    )
+
+
 def auto_clean_pending_constants(
     pending_constants: dict[str, set[str]],
-    const_counts: dict[str, dict],
+    agg: "AggregatedData",
 ) -> tuple[dict[str, set[str]], list[tuple[str, str]]]:
-    """Remove pending values that are now in const_counts (they've been run).
+    """Remove pending values once every wiring that consumes them has run.
+
+    A constant can feed multiple function nodes that share a function name
+    but are wired to different inputs/outputs (e.g. compute_rolling_vo2 fed
+    by RawVO2 in one node, RawHeartRate in another — each its own canvas
+    node/wiring, see group_call_sites_by_wiring). A naive "is this value in
+    the DB anywhere" check blurs across those wirings: as soon as ONE of
+    them ran with the new value, the check saw the value in the DB and
+    cleared the pending flag for ALL of them — silently un-marking the
+    OTHER (never re-run) wiring as no-longer-pending, even though it's
+    still showing its old, stale value. Removal must wait until every
+    wiring group that references the constant has its own real call site
+    recording that exact value.
 
     Returns:
         Tuple of (cleaned pending_constants, list of (name, value) to remove from DB).
     """
     removals: list[tuple[str, str]] = []
     for const_name in list(pending_constants.keys()):
+        consuming_fkeys = agg.const_fns.get(const_name, set())
+        required_groups = {_wiring_group_key(agg, fkey) for fkey in consuming_fkeys}
         still_pending: set[str] = set()
         for pval in pending_constants[const_name]:
-            if pval in const_counts.get(const_name, {}):
+            covered_groups = {
+                _wiring_group_key(agg, fkey)
+                for fkey in consuming_fkeys
+                if _fkey_has_constant_value(agg, fkey, const_name, pval)
+            }
+            # required_groups being empty means no real call site references
+            # this constant yet — never auto-clean on that vacuous truth.
+            if required_groups and required_groups <= covered_groups:
                 removals.append((const_name, pval))
             else:
                 still_pending.add(pval)
@@ -839,6 +878,7 @@ def build_edges(
     manual_edges: list[dict],
     hidden_ids: set[str],
     matlab_param_to_class: dict[str, dict[str, str]] | None = None,
+    hidden_edge_ids: set[str] | None = None,
 ) -> list[dict]:
     """Build React Flow edges (DB-derived + manual).
 
@@ -857,6 +897,11 @@ def build_edges(
             fns, the explicit mapping from signature param name to connected
             Variable class. Drives sourceHandle=out__{param_name} for output
             edges instead of the class-name-based handle.
+        hidden_edge_ids: Set of edge IDs the user has explicitly hidden (see
+            pipeline_store.hide_edge) — excluded from the DB-derived edges
+            they'd otherwise regenerate every rebuild. Never deletes data,
+            only excludes rendering (and, for inbound edges, marks the
+            target wiring "disconnected" — see hidden_wirings).
     """
     logger.info(
         "[graph_builder] build_edges: building edges from DB-derived data and manual edges"
@@ -864,9 +909,11 @@ def build_edges(
     edges = []
     seen_edges: set[tuple] = set()
     p2c_all = matlab_param_to_class or {}
+    hidden_edge_ids = hidden_edge_ids or set()
 
     # Variable → function edges (one per call-site target).
     logger.debug("[graph_builder] building variable → function edges")
+    hidden_var_to_fn = 0
     for fkey, params in fn_input_params.items():
         fn, cid = fkey
         target_id = fn_node_id(fn, cid)
@@ -874,9 +921,13 @@ def build_edges(
             key = (f"var__{in_type}", target_id)
             if key not in seen_edges:
                 seen_edges.add(key)
+                edge_id = f"e__{in_type}__{fn}__{cid}"
+                if edge_id in hidden_edge_ids:
+                    hidden_var_to_fn += 1
+                    continue
                 edges.append(
                     {
-                        "id": f"e__{in_type}__{fn}__{cid}",
+                        "id": edge_id,
                         "source": f"var__{in_type}",
                         "target": target_id,
                         "targetHandle": f"in__{param_name}",
@@ -884,12 +935,15 @@ def build_edges(
                 )
     var_to_fn_count = len(edges)
     logger.debug(
-        "[graph_builder] built %d variable → function edge(s)", var_to_fn_count
+        "[graph_builder] built %d variable → function edge(s) (%d hidden)",
+        var_to_fn_count,
+        hidden_var_to_fn,
     )
 
     # Function → variable edges.  For MATLAB fns, use the param↔class mapping
     # (call-site-independent) so sourceHandle=out__{param_name}.
     logger.debug("[graph_builder] building function → variable edges")
+    hidden_fn_to_var = 0
     for fkey, out_types in fn_outputs.items():
         fn, cid = fkey
         source_id = fn_node_id(fn, cid)
@@ -899,11 +953,15 @@ def build_edges(
             if key in seen_edges:
                 continue
             seen_edges.add(key)
+            edge_id = f"e__{fn}__{cid}__{out_type}"
+            if edge_id in hidden_edge_ids:
+                hidden_fn_to_var += 1
+                continue
             param = class_to_param.get(out_type)
             source_handle = f"out__{param}" if param else f"out__{out_type}"
             edges.append(
                 {
-                    "id": f"e__{fn}__{cid}__{out_type}",
+                    "id": edge_id,
                     "source": source_id,
                     "target": f"var__{out_type}",
                     "sourceHandle": source_handle,
@@ -911,11 +969,14 @@ def build_edges(
             )
     fn_to_var_count = len(edges) - var_to_fn_count
     logger.debug(
-        "[graph_builder] built %d function → variable edge(s)", fn_to_var_count
+        "[graph_builder] built %d function → variable edge(s) (%d hidden)",
+        fn_to_var_count,
+        hidden_fn_to_var,
     )
 
     # Constant → function edges (one per call site that uses the constant).
     logger.debug("[graph_builder] building constant → function edges")
+    hidden_const_to_fn = 0
     for const_name, fkeys in const_fns.items():
         for fkey in fkeys:
             fn, cid = fkey
@@ -923,9 +984,13 @@ def build_edges(
             key = (f"const__{const_name}", target_id)
             if key not in seen_edges:
                 seen_edges.add(key)
+                edge_id = f"e__{const_name}__{fn}__{cid}"
+                if edge_id in hidden_edge_ids:
+                    hidden_const_to_fn += 1
+                    continue
                 edges.append(
                     {
-                        "id": f"e__{const_name}__{fn}__{cid}",
+                        "id": edge_id,
                         "source": f"const__{const_name}",
                         "target": target_id,
                         "targetHandle": f"const__{const_name}",
@@ -933,11 +998,14 @@ def build_edges(
                 )
     const_to_fn_count = len(edges) - var_to_fn_count - fn_to_var_count
     logger.debug(
-        "[graph_builder] built %d constant → function edge(s)", const_to_fn_count
+        "[graph_builder] built %d constant → function edge(s) (%d hidden)",
+        const_to_fn_count,
+        hidden_const_to_fn,
     )
 
     # PathInput → function edges.
     logger.debug("[graph_builder] building pathInput → function edges")
+    hidden_path_to_fn = 0
     for param_name, pi in path_inputs.items():
         for fkey in pi["functions"]:
             fn, cid = fkey
@@ -945,9 +1013,13 @@ def build_edges(
             key = (f"pathInput__{param_name}", target_id)
             if key not in seen_edges:
                 seen_edges.add(key)
+                edge_id = f"e__{param_name}__{fn}__{cid}"
+                if edge_id in hidden_edge_ids:
+                    hidden_path_to_fn += 1
+                    continue
                 edges.append(
                     {
-                        "id": f"e__{param_name}__{fn}__{cid}",
+                        "id": edge_id,
                         "source": f"pathInput__{param_name}",
                         "target": target_id,
                         "targetHandle": f"in__{param_name}",
@@ -957,7 +1029,9 @@ def build_edges(
         len(edges) - var_to_fn_count - fn_to_var_count - const_to_fn_count
     )
     logger.debug(
-        "[graph_builder] built %d pathInput → function edge(s)", path_to_fn_count
+        "[graph_builder] built %d pathInput → function edge(s) (%d hidden)",
+        path_to_fn_count,
+        hidden_path_to_fn,
     )
 
     # Merge manually-created edges.
@@ -965,6 +1039,8 @@ def build_edges(
     db_edge_count = len(edges)
     for me in manual_edges:
         if me["source"] in hidden_ids or me["target"] in hidden_ids:
+            continue
+        if me["id"] in hidden_edge_ids:
             continue
         if any(e["id"] == me["id"] for e in edges):
             continue
@@ -982,13 +1058,219 @@ def build_edges(
     manual_edge_count = len(edges) - db_edge_count
     logger.debug("[graph_builder] added %d manual edge(s)", manual_edge_count)
 
+    total_hidden = (
+        hidden_var_to_fn + hidden_fn_to_var + hidden_const_to_fn + hidden_path_to_fn
+    )
     logger.info(
-        "[graph_builder] build_edges complete: %d total edges (%d DB-derived, %d manual)",
+        "[graph_builder] build_edges complete: %d total edges (%d DB-derived, "
+        "%d manual, %d hidden)",
         len(edges),
         db_edge_count,
         manual_edge_count,
+        total_hidden,
     )
     return edges
+
+
+# ---------------------------------------------------------------------------
+# Disconnected wirings — hiding an INBOUND edge (variable/constant/
+# pathInput -> function) means that wiring is missing a required input
+# entirely, not just decluttered from the canvas. Every call site sharing
+# that wiring is affected (run_state forced red, execution blocked) — see
+# domain.run_state.propagate_run_states(disconnected_fkeys=...) and
+# domain.variant_resolver.filter_disconnected_targets. Hiding an OUTBOUND
+# (function -> variable) edge is deliberately excluded here: it's cosmetic
+# only, since the function's real output still exists in the DB either way.
+# ---------------------------------------------------------------------------
+
+
+def inbound_edge_candidates(
+    fn: str, wid: str, var_types=(), const_names=(), path_names=()
+) -> list[str]:
+    """Candidate inbound edge ids (var/const/pathInput -> fn) for one
+    wiring — the same id shape build_edges constructs, reusable anywhere a
+    caller needs to check "is this call site's required input hidden?"
+    without needing the edge to already exist (hidden_wirings,
+    variant_resolver.filter_disconnected_targets)."""
+    return (
+        [f"e__{vt}__{fn}__{wid}" for vt in var_types]
+        + [f"e__{cn}__{fn}__{wid}" for cn in const_names]
+        + [f"e__{pn}__{fn}__{wid}" for pn in path_names]
+    )
+
+
+def hidden_wirings(
+    fn_input_params: dict[FnKey, dict],
+    fn_outputs: dict[FnKey, set],
+    fn_constants: dict[FnKey, set],
+    path_inputs: dict[str, dict],
+    hidden_edge_ids: set[str],
+) -> set[tuple[str, str]]:
+    """(fn_name, wiring_id) pairs with at least one hidden inbound edge.
+
+    Reconstructs each call site's candidate inbound edge ids the same way
+    build_edges does (without needing edges to already exist) and checks
+    them against ``hidden_edge_ids``. Works on the PRE-GROUPING agg (raw
+    per-call-site FnKeys) — every call site sharing a wiring recomputes
+    the same wiring_id, so the result is correct regardless of grouping.
+    """
+    if not hidden_edge_ids:
+        return set()
+    result: set[tuple[str, str]] = set()
+    for fkey, params in fn_input_params.items():
+        fn, _cid = fkey
+        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()))
+        candidates = inbound_edge_candidates(
+            fn, wid, var_types=params.values(), const_names=fn_constants.get(fkey, set())
+        )
+        if hidden_edge_ids.intersection(candidates):
+            result.add((fn, wid))
+    for param_name, pi in path_inputs.items():
+        for fkey in pi["functions"]:
+            fn, _cid = fkey
+            wid = wiring_id(
+                fn, fn_input_params.get(fkey, {}), fn_outputs.get(fkey, set())
+            )
+            if f"e__{param_name}__{fn}__{wid}" in hidden_edge_ids:
+                result.add((fn, wid))
+    if result:
+        logger.info("[graph_builder] hidden_wirings: %s", sorted(result))
+    return result
+
+
+def wiring_disconnected_fkeys(
+    fn_input_params: dict[FnKey, dict],
+    fn_outputs: dict[FnKey, set],
+    wirings: set[tuple[str, str]],
+) -> set[FnKey]:
+    """Map a (fn_name, wiring_id) set back to raw pre-grouping call-site
+    FnKeys — for feeding domain.run_state.propagate_run_states, which
+    still operates per real call site at the point it runs."""
+    if not wirings:
+        return set()
+    result: set[FnKey] = set()
+    for fkey, params in fn_input_params.items():
+        fn, _cid = fkey
+        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()))
+        if (fn, wid) in wirings:
+            result.add(fkey)
+    return result
+
+
+def wirings_downstream_of(
+    fn_input_params: dict[FnKey, dict],
+    fn_outputs: dict[FnKey, set],
+    seed_wirings: set[tuple[str, str]],
+) -> set[tuple[str, str]]:
+    """Every wiring that transitively consumes a seed wiring's output —
+    used to report which OTHER functions become un-runnable as a
+    consequence of a disconnected wiring (starved of an input) without
+    being directly disconnected themselves. Returns only the downstream
+    wirings, never the seeds (callers already have those)."""
+    if not seed_wirings:
+        return set()
+    wiring_outputs: dict[tuple[str, str], set] = {}
+    wiring_inputs: dict[tuple[str, str], set] = {}
+    for fkey, params in fn_input_params.items():
+        fn, _cid = fkey
+        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()))
+        wiring_inputs.setdefault((fn, wid), set()).update(params.values())
+        wiring_outputs.setdefault((fn, wid), set()).update(fn_outputs.get(fkey, set()))
+
+    affected = set(seed_wirings)
+    frontier = set(seed_wirings)
+    while frontier:
+        produced: set = set()
+        for w in frontier:
+            produced |= wiring_outputs.get(w, set())
+        next_frontier = set()
+        for w, inputs in wiring_inputs.items():
+            if w in affected:
+                continue
+            if inputs & produced:
+                affected.add(w)
+                next_frontier.add(w)
+        frontier = next_frontier
+    return affected - seed_wirings
+
+
+def candidate_edge_id(source_id: str, target_id: str) -> str | None:
+    """The deterministic DB-derived edge id a (source, target) node-id pair
+    WOULD have in build_edges' output, without needing the edge to exist.
+
+    Used to detect "the user just dragged a connection that recreates a
+    previously-hidden DB-derived edge" (see layout_service.put_edge) —
+    reconnecting the exact same nodes should unhide the original edge
+    rather than create a redundant manual one. Returns None for pairs that
+    aren't a recognized DB-derived category (a genuinely new connection).
+    Both ids may be placement-qualified; only the bare ids matter here.
+    """
+    src = strip_placement(source_id)
+    tgt = strip_placement(target_id)
+    src_prefixes = ("var__", "const__", "pathInput__")
+    if src.startswith(src_prefixes):
+        parsed = parse_fn_node_id(tgt)
+        if parsed is None:
+            return None
+        fn, wid = parsed
+        x = src.split("__", 1)[1]
+        return f"e__{x}__{fn}__{wid}"
+    if tgt.startswith("var__"):
+        parsed = parse_fn_node_id(src)
+        if parsed is None:
+            return None
+        fn, wid = parsed
+        out_type = tgt[len("var__") :]
+        return f"e__{fn}__{wid}__{out_type}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Cycle detection
+# ---------------------------------------------------------------------------
+
+
+def find_cycle(
+    edges: list[dict], new_source: str, new_target: str
+) -> list[str] | None:
+    """Would adding an edge new_source -> new_target close a cycle?
+
+    ``edges`` is the FULL current graph for one scope (DB-derived + manual,
+    as returned by services.pipeline_service.get_pipeline_graph) — checking
+    manual edges alone would miss a cycle closed through existing
+    DB-derived data-lineage edges. A self-loop (new_source == new_target)
+    is always a cycle.
+
+    Returns the cycle path new_source -> new_target -> ... -> new_source if
+    adding the edge would create one, else None.
+    """
+    if new_source == new_target:
+        return [new_source, new_target]
+
+    adjacency: dict[str, list[str]] = defaultdict(list)
+    for e in edges:
+        adjacency[e["source"]].append(e["target"])
+
+    # BFS forward from new_target: if new_source is reachable, the new edge
+    # would close a loop back to itself.
+    parent: dict[str, str] = {}
+    frontier = deque([new_target])
+    seen = {new_target}
+    while frontier:
+        current = frontier.popleft()
+        if current == new_source:
+            path = [current]
+            while current != new_target:
+                current = parent[current]
+                path.append(current)
+            path.reverse()
+            return [new_source] + path
+        for nxt in adjacency[current]:
+            if nxt not in seen:
+                seen.add(nxt)
+                parent[nxt] = current
+                frontier.append(nxt)
+    return None
 
 
 def _apply_saved_config(node_data: dict, config: dict | None) -> None:

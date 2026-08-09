@@ -54,7 +54,7 @@ interface RunLogContextValue {
   runs: RunEntry[]
   startRun: (run_id: string, function_name: string, kind?: 'function' | 'pipeline') => void
   appendLine: (run_id: string, line: string) => void
-  finishRun: (run_id: string, success: boolean, duration_ms?: number, cancelled?: boolean) => void
+  finishRun: (run_id: string, success: boolean, duration_ms?: number, cancelled?: boolean, error?: string) => void
   markCancelling: (run_id: string) => void
   setRunMeta: (run_id: string, meta: RunMeta) => void
   updateProgress: (run_id: string, progress: RunProgress) => void
@@ -88,7 +88,7 @@ export function RunLogProvider({ children }: { children: React.ReactNode }) {
     ))
   }, [])
 
-  const finishRun = useCallback((run_id: string, success: boolean, duration_ms?: number, cancelled?: boolean) => {
+  const finishRun = useCallback((run_id: string, success: boolean, duration_ms?: number, cancelled?: boolean, error?: string) => {
     setRuns(prev => prev.map(r => {
       if (r.run_id !== run_id) return r
       let status: RunEntry['status']
@@ -104,6 +104,7 @@ export function RunLogProvider({ children }: { children: React.ReactNode }) {
         status,
         duration_ms: duration_ms ?? (Date.now() - r.started_at),
         current_combo: undefined,
+        error_summary: error ?? r.error_summary,
       }
     }))
   }, [])

@@ -36,6 +36,11 @@ interface FunctionNodeData {
   endpoint_kind?: 'plot' | 'stat'
   // 'pending' is GUI-only: a staged (unrun) constant value — not in the DB.
   run_state?: 'green' | 'pending' | 'red'
+  // True when a required input edge was deleted (hidden, not just stale) —
+  // always red, and won't actually run until reconnected (backend refuses
+  // with an explicit error rather than silently no-op'ing — see
+  // execution_service.disconnected_reason).
+  disconnected?: boolean
   schemaFilter?: Record<string, unknown[]> | null
   schemaLevel?: string[] | null
   runOptions?: { dry_run: boolean; save: boolean; distribute: boolean; as_table: boolean }
@@ -105,7 +110,8 @@ export default function FunctionNode({ id, data }: Props) {
       const success = (params.success ?? true) as boolean
       const durationMs = params.duration_ms as number | undefined
       const cancelled = (params.cancelled ?? false) as boolean
-      finishRun(runId!, success, durationMs, cancelled)
+      const error = params.error as string | undefined
+      finishRun(runId!, success, durationMs, cancelled, error)
       setRunning(false)
       setCancelling(false)
     }
@@ -251,6 +257,7 @@ export default function FunctionNode({ id, data }: Props) {
     <div style={{
       ...styles.container,
       ...(stateStyle ? { border: `2px solid ${stateStyle.border}`, background: stateStyle.background } : {}),
+      ...(data.disconnected ? { borderStyle: 'dashed' } : {}),
     }}>
       {leftHandles.length > 0
         ? leftHandles.map((h, i) => (
@@ -265,6 +272,12 @@ export default function FunctionNode({ id, data }: Props) {
           ))
         : <Handle type="target" position={Position.Left} />
       }
+
+      {data.disconnected && (
+        <div style={styles.disconnectedBadge} title="A required input's edge was deleted — reconnect it before running">
+          🔌 disconnected
+        </div>
+      )}
 
       {data.endpoint_kind && (
         <div style={{
@@ -470,6 +483,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
+  },
+  disconnectedBadge: {
+    display: 'block',
+    margin: '0 auto 4px',
+    padding: '1px 8px',
+    width: 'fit-content',
+    borderRadius: 10,
+    fontSize: 9,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    background: '#fef2f2',
+    color: '#dc2626',
+    border: '1px solid #dc2626',
   },
   kindPlot: {
     background: '#cffafe',

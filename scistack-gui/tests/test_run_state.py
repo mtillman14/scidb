@@ -339,3 +339,87 @@ class TestPerCallSite:
         )
         # Filtered has two producers; the worst (red) wins.
         assert result[var("Filtered")] == "red"
+
+
+# ---------------------------------------------------------------------------
+# Disconnected wirings (deleted required inbound edge) force red and cascade
+# ---------------------------------------------------------------------------
+
+
+class TestDisconnected:
+    def test_disconnected_green_forced_red(self):
+        result = propagate_run_states(
+            fn_own_states={K("f"): "green"},
+            fn_input_params={K("f"): {"x": "Raw"}},
+            fn_outputs={K("f"): {"Out"}},
+            disconnected_fkeys={K("f")},
+        )
+        assert result[fn("f")] == "red"
+        assert result[var("Out")] == "red"
+
+    def test_disconnected_cascades_downstream(self):
+        result = propagate_run_states(
+            fn_own_states={K("A"): "green", K("B"): "green"},
+            fn_input_params={K("A"): {}, K("B"): {"x": "Out"}},
+            fn_outputs={K("A"): {"Out"}, K("B"): {"FinalOut"}},
+            disconnected_fkeys={K("A")},
+        )
+        assert result[fn("A")] == "red"
+        assert result[var("Out")] == "red"
+        assert result[fn("B")] == "red"
+        assert result[var("FinalOut")] == "red"
+
+    def test_disconnected_downstream_node_itself_unaffected_by_others(self):
+        # Disconnecting B (downstream) must not affect A (upstream).
+        result = propagate_run_states(
+            fn_own_states={K("A"): "green", K("B"): "green"},
+            fn_input_params={K("A"): {}, K("B"): {"x": "Out"}},
+            fn_outputs={K("A"): {"Out"}, K("B"): {"FinalOut"}},
+            disconnected_fkeys={K("B")},
+        )
+        assert result[fn("A")] == "green"
+        assert result[var("Out")] == "green"
+        assert result[fn("B")] == "red"
+
+    def test_disconnected_wins_over_pending_constant(self):
+        # A disconnected required input always outranks a staged pending
+        # constant — reconnect first, the staged value doesn't matter yet.
+        result = propagate_run_states(
+            fn_own_states={K("f"): "green"},
+            fn_input_params={K("f"): {}},
+            fn_outputs={K("f"): {"Out"}},
+            fn_constants={K("f"): {"low_hz"}},
+            pending_constants={"low_hz": {42}},
+            disconnected_fkeys={K("f")},
+        )
+        assert result[fn("f")] == "red"
+
+    def test_disconnected_already_red_stays_red(self):
+        result = propagate_run_states(
+            fn_own_states={K("f"): "red"},
+            fn_input_params={K("f"): {}},
+            fn_outputs={K("f"): {"Out"}},
+            disconnected_fkeys={K("f")},
+        )
+        assert result[fn("f")] == "red"
+
+    def test_disconnected_fkey_not_in_own_states_is_ignored(self):
+        # A disconnected fkey with no own-state entry (e.g. invalid output
+        # classes upstream) must not spuriously enter the propagation graph.
+        result = propagate_run_states(
+            fn_own_states={K("f"): "green"},
+            fn_input_params={K("f"): {}},
+            fn_outputs={K("f"): {"Out"}},
+            disconnected_fkeys={K("ghost")},
+        )
+        assert result[fn("f")] == "green"
+        assert K("ghost") not in result
+
+    def test_empty_disconnected_fkeys_is_noop(self):
+        result = propagate_run_states(
+            fn_own_states={K("f"): "green"},
+            fn_input_params={K("f"): {}},
+            fn_outputs={K("f"): {"Out"}},
+            disconnected_fkeys=set(),
+        )
+        assert result[fn("f")] == "green"

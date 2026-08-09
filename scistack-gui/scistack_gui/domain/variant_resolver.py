@@ -89,7 +89,7 @@ def filter_variants(
     targets = [
         v
         for v in fn_variants
-        if any(_constants_match(v["constants"], sel) for sel in selected_variants)
+        if any(constants_match(v["constants"], sel) for sel in selected_variants)
     ]
     if not targets:
         logger.debug(
@@ -289,9 +289,147 @@ def build_schema_kwargs(
         return schema_kwargs
 
 
-def _constants_match(db_constants: dict, selected: dict) -> bool:
+def constants_match(db_constants: dict, selected: dict) -> bool:
     """True if selected is a subset of db_constants (value equality as strings)."""
     return all(str(db_constants.get(k)) == str(v) for k, v in selected.items())
+
+
+def compute_call_id(
+    function_name: str,
+    target: dict,
+    distribute: bool = False,
+    as_table=None,
+) -> str | None:
+    """Deterministic call_id for a target, matching scidb's real
+    ForEachConfig.to_version_keys() shape exactly (see
+    scidb.foreach_config), so a combo hidden before it's ever run lands on
+    the same id as the real record it eventually produces if it is run.
+
+    Returns None (fail-safe: "unknown, don't filter") for a target with an
+    unresolved multi-type input (EachOf) — there's no single call site to
+    hash yet. Hiding a specific combo is scoped to constant-value axes only
+    (see plan-combo-hiding.md).
+    """
+    from scidb.foreach_config import call_id_from_version_keys
+
+    inputs: dict = {}
+    for param, type_val in target.get("input_types", {}).items():
+        if isinstance(type_val, list):
+            if len(type_val) != 1:
+                return None
+            inputs[param] = type_val[0]
+        else:
+            inputs[param] = type_val
+
+    keys: dict = {
+        "__fn": function_name,
+        "__inputs": inputs,
+        "__constants": dict(target.get("constants", {})),
+    }
+    if distribute:
+        keys["__distribute"] = True
+    if as_table:
+        keys["__as_table"] = sorted(as_table) if isinstance(as_table, list) else True
+    return call_id_from_version_keys(keys)
+
+
+def hidden_call_ids_for_fn(hidden_node_ids: set[str], function_name: str) -> set[str]:
+    """Hidden ``fn__{function_name}__{call_id}`` ids for one function, as
+    bare call_ids (the id shape hiding a whole node already uses — see
+    graph_builder.filter_hidden)."""
+    from scistack_gui.domain.graph_builder import parse_fn_node_id
+
+    out: set[str] = set()
+    for nid in hidden_node_ids:
+        parsed = parse_fn_node_id(nid)
+        if parsed is not None and parsed[0] == function_name:
+            out.add(parsed[1])
+    return out
+
+
+def resolve_target_call_id(
+    function_name: str,
+    target: dict,
+    pending_constant_names: set[str],
+    distribute: bool = False,
+    as_table=None,
+) -> str | None:
+    """A target's EFFECTIVE call_id — reuses its real DB-history ``call_id``
+    directly, except when ``apply_pending_overrides`` may have changed its
+    identity (any of its constants share a name with a staged pending
+    value), in which case it's never safe to trust a possibly-stale
+    ``call_id`` field and it's recomputed fresh via ``compute_call_id``.
+    """
+    touched = bool(pending_constant_names & set(target.get("constants", {})))
+    cid = target.get("call_id") if (not touched and target.get("call_id")) else None
+    if cid is None:
+        cid = compute_call_id(function_name, target, distribute=distribute, as_table=as_table)
+    return cid
+
+
+def filter_hidden_targets(
+    targets: list[dict],
+    function_name: str,
+    hidden_call_ids: set[str],
+    pending_constants: dict,
+    distribute: bool = False,
+    as_table=None,
+) -> list[dict]:
+    """Drop targets whose effective call_id (see ``resolve_target_call_id``)
+    is hidden."""
+    if not hidden_call_ids:
+        return targets
+    pending_names = set(pending_constants or {})
+    kept = []
+    for t in targets:
+        cid = resolve_target_call_id(
+            function_name, t, pending_names, distribute=distribute, as_table=as_table
+        )
+        if cid is not None and cid in hidden_call_ids:
+            continue
+        kept.append(t)
+    return kept
+
+
+def filter_disconnected_targets(
+    targets: list[dict],
+    function_name: str,
+    hidden_edge_ids: set[str],
+) -> list[dict]:
+    """Drop targets whose WIRING (function name + variable input/output
+    types — not constants, see graph_builder.wiring_id) has a user-hidden
+    required inbound edge (graph_builder.hide_edge). Unlike
+    ``filter_hidden_targets`` (one constant-value combo at a time), this
+    drops every target sharing the disconnected wiring, since a missing
+    required input makes the WHOLE wiring un-runnable, not just one
+    variant of it. Each execution-service target IS its own call site, so
+    this checks candidate inbound edge ids directly per target rather than
+    going through graph_builder.hidden_wirings' multi-call-site grouping
+    (that path is for the GUI graph endpoint, which has a full agg)."""
+    if not hidden_edge_ids or not targets:
+        return targets
+    from scistack_gui.domain.graph_builder import inbound_edge_candidates, wiring_id
+
+    kept = []
+    for t in targets:
+        input_types = t.get("input_types", {})
+        wid = wiring_id(function_name, input_types, {t.get("output_type")})
+        var_types: list[str] = []
+        for tv in input_types.values():
+            if isinstance(tv, (list, set, tuple)):
+                var_types.extend(tv)
+            else:
+                var_types.append(tv)
+        candidates = inbound_edge_candidates(
+            function_name,
+            wid,
+            var_types=var_types,
+            const_names=t.get("constants", {}).keys(),
+        )
+        if hidden_edge_ids.intersection(candidates):
+            continue
+        kept.append(t)
+    return kept
 
 
 def _coerce(s: str):

@@ -102,6 +102,22 @@ def _ensure_tables(db) -> None:
             node_id VARCHAR PRIMARY KEY
         )
     """)
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_hidden_combos (
+            node_id       VARCHAR PRIMARY KEY,
+            function_name VARCHAR NOT NULL,
+            variant_key   VARCHAR NOT NULL
+        )
+    """)
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_hidden_edges (
+            edge_id       VARCHAR PRIMARY KEY,
+            source        VARCHAR NOT NULL,
+            target        VARCHAR NOT NULL,
+            source_handle VARCHAR,
+            target_handle VARCHAR
+        )
+    """)
     # Add config column if missing (migration for existing DBs).
     try:
         _duck(db)._execute(
@@ -835,6 +851,120 @@ def get_hidden_node_ids(db) -> set[str]:
     _ensure_tables(db)
     rows = _duck(db)._fetchall("SELECT node_id FROM _pipeline_hidden_nodes")
     return {row[0] for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# Hidden combos (one specific constant-value row of a function's Cartesian
+# product, never a whole node) — never deletes data, only hides it. Reuses
+# hide_node/unhide_node for the shared node_id space (fn__{fn}__{call_id}) so
+# a combo hidden before it's ever run and later actually run land on the
+# same id; the structural variant_key is kept alongside so a hidden combo
+# can be shown back (a call_id hash can't be reversed) for the restore UI.
+# ---------------------------------------------------------------------------
+
+
+def hide_combo(db, node_id: str, function_name: str, variant_key: dict) -> None:
+    """Hide one call-site's Cartesian-product row without deleting anything."""
+    _ensure_tables(db)
+    hide_node(db, node_id)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_hidden_combos (node_id, function_name, variant_key) "
+        "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+        [node_id, function_name, json.dumps(variant_key, sort_keys=True)],
+    )
+
+
+def unhide_combo(db, node_id: str) -> None:
+    """Restore a previously hidden combo."""
+    _ensure_tables(db)
+    unhide_node(db, node_id)
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_hidden_combos WHERE node_id = ?", [node_id]
+    )
+
+
+def list_hidden_combos(db, function_name: str) -> list[dict]:
+    """Return hidden combos for one function as {"node_id", "variant_key"}."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT node_id, variant_key FROM _pipeline_hidden_combos "
+        "WHERE function_name = ?",
+        [function_name],
+    )
+    return [
+        {"node_id": node_id, "variant_key": json.loads(variant_key)}
+        for node_id, variant_key in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Hidden edges (user-deleted DB-derived edges) — never deletes data, only
+# hides it, same ethos as hide_node/hide_combo. Hiding an INBOUND edge
+# (variable/constant/pathInput -> function) additionally makes the target
+# function's wiring "disconnected" for run-state and execution purposes
+# (see domain.graph_builder.hidden_wirings) — hiding an OUTBOUND edge
+# (function -> variable) is purely cosmetic. Manual (``manual__``) edges
+# are hard-deleted instead of hidden (see layout_service.delete_edge);
+# this table is for DB-derived edges only.
+# ---------------------------------------------------------------------------
+
+
+def hide_edge(
+    db,
+    edge_id: str,
+    source: str = "",
+    target: str = "",
+    source_handle: "str | None" = None,
+    target_handle: "str | None" = None,
+) -> None:
+    """Mark a DB-derived edge as hidden so build_edges won't recreate it."""
+    logger.info(
+        "[pipeline_store] hide_edge called (edge_id=%r, source=%r, target=%r)",
+        edge_id,
+        source,
+        target,
+    )
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_hidden_edges "
+        "(edge_id, source, target, source_handle, target_handle) "
+        "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        [edge_id, source, target, source_handle, target_handle],
+    )
+
+
+def unhide_edge(db, edge_id: str) -> None:
+    """Restore a previously hidden edge."""
+    logger.info("[pipeline_store] unhide_edge called (edge_id=%r)", edge_id)
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_hidden_edges WHERE edge_id = ?", [edge_id]
+    )
+
+
+def get_hidden_edge_ids(db) -> set[str]:
+    """Return the set of edge IDs the user has explicitly hidden."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall("SELECT edge_id FROM _pipeline_hidden_edges")
+    return {row[0] for row in rows}
+
+
+def list_hidden_edges(db) -> list[dict]:
+    """Hidden edges with enough context to label a restore-list entry."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT edge_id, source, target, source_handle, target_handle "
+        "FROM _pipeline_hidden_edges"
+    )
+    return [
+        {
+            "edge_id": edge_id,
+            "source": source,
+            "target": target,
+            "source_handle": source_handle,
+            "target_handle": target_handle,
+        }
+        for edge_id, source, target, source_handle, target_handle in rows
+    ]
 
 
 # ---------------------------------------------------------------------------

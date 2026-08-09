@@ -59,6 +59,14 @@ interface ContextMenuState {
   fnLabel: string
 }
 
+interface HiddenEdge {
+  edge_id: string
+  source: string
+  target: string
+  source_handle: string | null
+  target_handle: string | null
+}
+
 export default function PipelineDAG() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<Edge>([])
@@ -77,6 +85,8 @@ export default function PipelineDAG() {
   const [extractDraft, setExtractDraft] = useState<{ open: boolean; name: string; error: string }>(
     { open: false, name: '', error: '' }
   )
+  const [hiddenEdges, setHiddenEdges] = useState<HiddenEdge[]>([])
+  const [showHiddenEdges, setShowHiddenEdges] = useState(false)
 
   const fetchPipeline = useCallback(async () => {
     // Fetch pipeline first — _build_graph has a side effect (graduate_manual_node)
@@ -126,6 +136,12 @@ export default function PipelineDAG() {
       // Small delay so React Flow has rendered the nodes before fitting.
       setTimeout(() => fitView({ padding: 0.2 }), 50)
     }
+
+    // Hidden edges are global (not per-scope, same as hidden nodes) —
+    // refreshed alongside the graph so the restore-panel count stays live.
+    callBackend('get_hidden_edges', {}).then(res => {
+      setHiddenEdges((res as { edges: HiddenEdge[] }).edges)
+    })
   }, [setNodes, setEdges, fitView, currentScope])
 
   useEffect(() => {
@@ -181,6 +197,23 @@ export default function PipelineDAG() {
       })
       .catch(err => setExtractDraft(d => ({ ...d, error: (err as Error).message })))
   }, [extractDraft.name, selectedIds, currentScope, bumpGraph])
+
+  const handleRestoreEdge = useCallback((edgeId: string) => {
+    callBackend('unhide_edge', { edge_id: edgeId })
+      .then(() => bumpGraph())
+      .catch(err => window.alert(`Could not restore edge: ${(err as Error).message}`))
+  }, [bumpGraph])
+
+  // Short label for a node id in the restore list — strip prefixes/hashes
+  // rather than showing the raw fn__{fn}__{wiring_id} form.
+  const shortNodeLabel = useCallback((nodeId: string) => {
+    const bare = nodeId.split('::')[0]
+    const m = /^(var|const|pathInput)__(.+)$/.exec(bare)
+    if (m) return m[2]
+    const fm = /^fn__(.+)__[0-9a-f]{16}$/.exec(bare)
+    if (fm) return fm[1]
+    return bare
+  }, [])
 
   // Double-click a pipeline node → descend into the child scope (push the
   // navigation crumb; the crumb carries the binding so the breadcrumb can
@@ -330,6 +363,45 @@ export default function PipelineDAG() {
     }
   }, [bumpGraph])
 
+  // Would connecting source -> target close a cycle in the graph currently
+  // on screen (DB-derived + manual edges)? BFS forward from target — if
+  // source is reachable, target already leads back to source.
+  const wouldCreateCycle = useCallback((source: string, target: string) => {
+    if (source === target) return true
+    const adjacency = new Map<string, string[]>()
+    for (const e of edges) {
+      if (!e.source || !e.target) continue
+      if (!adjacency.has(e.source)) adjacency.set(e.source, [])
+      adjacency.get(e.source)!.push(e.target)
+    }
+    const seen = new Set([target])
+    const queue = [target]
+    while (queue.length) {
+      const current = queue.shift() as string
+      if (current === source) return true
+      for (const next of adjacency.get(current) ?? []) {
+        if (!seen.has(next)) {
+          seen.add(next)
+          queue.push(next)
+        }
+      }
+    }
+    return false
+  }, [edges])
+
+  // Instant client-side guard — rejects the drag before onConnect fires, no
+  // backend round trip. The backend re-checks authoritatively (defense in
+  // depth) since it also knows about edges outside the current scope view.
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
+    const { source, target } = connection
+    if (!source || !target) return false
+    if (wouldCreateCycle(source, target)) {
+      console.warn('[PipelineDAG] rejected connection that would create a cycle', { source, target })
+      return false
+    }
+    return true
+  }, [wouldCreateCycle])
+
   const onConnect = useCallback((connection: Connection) => {
     const edgeId = `manual__${Math.random().toString(36).slice(2, 8)}`
     const edge: Edge = {
@@ -344,19 +416,34 @@ export default function PipelineDAG() {
       target: connection.target,
       source_handle: connection.sourceHandle ?? null,
       target_handle: connection.targetHandle ?? null,
+    }).catch(err => {
+      window.alert(`Could not create connection: ${(err as Error).message}`)
+      setEdges(prev => prev.filter(e => e.id !== edgeId))
     })
   }, [setEdges])
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     for (const change of changes) {
-      if (change.type === 'remove' && change.id.startsWith('manual__')) {
-        callBackend('delete_edge', { edge_id: change.id })
-      }
+      if (change.type !== 'remove') continue
+      // Manual edges hard-delete; DB-derived edges are hidden (never
+      // deleted — build_edges excludes them on every rebuild until
+      // reconnected or restored). Backend decides which based on the id
+      // prefix; the frontend just forwards the removed edge's endpoints so
+      // a hidden DB-derived edge can be labeled in the restore panel.
+      const removed = edges.find(e => e.id === change.id)
+      callBackend('delete_edge', {
+        edge_id: change.id,
+        source: removed?.source,
+        target: removed?.target,
+        source_handle: removed?.sourceHandle ?? null,
+        target_handle: removed?.targetHandle ?? null,
+      }).catch(err => {
+        window.alert(`Could not delete edge: ${(err as Error).message}`)
+        bumpGraph()  // restore the edge — the delete did not happen
+      })
     }
-    // DB-derived edges represent real data — block removal so they don't
-    // flicker away and reappear on the next pipeline refresh.
-    onEdgesChangeBase(changes.filter(c => c.type !== 'remove' || c.id.startsWith('manual__')))
-  }, [onEdgesChangeBase])
+    onEdgesChangeBase(changes)
+  }, [onEdgesChangeBase, edges, bumpGraph])
 
   return (
     <div
@@ -373,6 +460,7 @@ export default function PipelineDAG() {
         onNodeDragStop={onNodeDragStop}
         onNodesDelete={onNodesDelete}
         onConnect={onConnect}
+        isValidConnection={isValidConnection}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
@@ -412,6 +500,38 @@ export default function PipelineDAG() {
                 </div>
               )}
               {extractDraft.error && <div style={styles.extractError}>{extractDraft.error}</div>}
+            </div>
+          </Panel>
+        )}
+        {hiddenEdges.length > 0 && (
+          <Panel position="bottom-left">
+            <div style={styles.hiddenEdgesPanel}>
+              <button
+                style={styles.hiddenEdgesToggle}
+                onClick={() => setShowHiddenEdges(v => !v)}
+                type="button"
+              >
+                {showHiddenEdges ? 'hide' : `${hiddenEdges.length} hidden edge${hiddenEdges.length === 1 ? '' : 's'} — show`}
+              </button>
+              {showHiddenEdges && (
+                <div style={styles.hiddenEdgesList}>
+                  {hiddenEdges.map(he => (
+                    <div key={he.edge_id} style={styles.hiddenEdgeRow}>
+                      <span style={styles.hiddenEdgeText}>
+                        {shortNodeLabel(he.source)} → {shortNodeLabel(he.target)}
+                      </span>
+                      <button
+                        style={styles.hiddenEdgeRestoreBtn}
+                        onClick={() => handleRestoreEdge(he.edge_id)}
+                        type="button"
+                        title="Restore this edge (also unhides — recomputes state fresh from the database)"
+                      >
+                        restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </Panel>
         )}
@@ -482,6 +602,51 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#1a1a2e',
     border: '1px solid #a21caf',
     borderRadius: 6,
+  },
+  hiddenEdgesPanel: {
+    padding: '4px 8px',
+    background: '#1a1a2e',
+    border: '1px solid #dc2626',
+    borderRadius: 6,
+  },
+  hiddenEdgesToggle: {
+    padding: '3px 8px',
+    background: 'transparent',
+    color: '#f87171',
+    border: 'none',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 11,
+  },
+  hiddenEdgesList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    marginTop: 4,
+    maxHeight: 140,
+    overflowY: 'auto',
+  },
+  hiddenEdgeRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  hiddenEdgeText: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+    color: '#ccc',
+    whiteSpace: 'nowrap',
+  },
+  hiddenEdgeRestoreBtn: {
+    padding: '2px 6px',
+    background: '#374151',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 3,
+    cursor: 'pointer',
+    fontSize: 10,
+    flexShrink: 0,
   },
   extractForm: {
     display: 'flex',

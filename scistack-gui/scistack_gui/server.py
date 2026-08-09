@@ -322,9 +322,11 @@ def _h_delete_layout(params):
 
 
 def _h_put_edge(params):
+    from scistack_gui.db import get_db
     from scistack_gui.services.layout_service import put_edge
 
     return put_edge(
+        get_db(),
         params["edge_id"],
         params["source"],
         params["target"],
@@ -334,9 +336,31 @@ def _h_put_edge(params):
 
 
 def _h_delete_edge(params):
+    from scistack_gui.db import get_db
     from scistack_gui.services.layout_service import delete_edge
 
-    return delete_edge(params["edge_id"])
+    return delete_edge(
+        get_db(),
+        params["edge_id"],
+        params.get("source", ""),
+        params.get("target", ""),
+        params.get("source_handle"),
+        params.get("target_handle"),
+    )
+
+
+def _h_unhide_edge(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import unhide_edge
+
+    return unhide_edge(get_db(), params["edge_id"])
+
+
+def _h_get_hidden_edges(_params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import get_hidden_edges
+
+    return get_hidden_edges(get_db())
 
 
 def _h_put_pending_constant(params):
@@ -355,6 +379,29 @@ def _h_delete_pending_constant(params):
     result = delete_pending_constant(params["name"], params["value"])
     notify("dag_updated", {})
     return result
+
+
+def _h_hide_combo(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import hide_variant_combo
+
+    return hide_variant_combo(
+        get_db(), params["function_name"], params.get("node_id"), params["variant_key"]
+    )
+
+
+def _h_unhide_combo(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import unhide_variant_combo
+
+    return unhide_variant_combo(get_db(), params["node_id"])
+
+
+def _h_list_hidden_combos(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import get_hidden_combos
+
+    return get_hidden_combos(get_db(), params["function_name"])
 
 
 def _h_create_constant(params):
@@ -655,8 +702,13 @@ METHODS = {
     "delete_layout": _h_delete_layout,
     "put_edge": _h_put_edge,
     "delete_edge": _h_delete_edge,
+    "unhide_edge": _h_unhide_edge,
+    "get_hidden_edges": _h_get_hidden_edges,
     "put_pending_constant": _h_put_pending_constant,
     "delete_pending_constant": _h_delete_pending_constant,
+    "hide_combo": _h_hide_combo,
+    "unhide_combo": _h_unhide_combo,
+    "list_hidden_combos": _h_list_hidden_combos,
     "create_constant": _h_create_constant,
     "delete_constant": _h_delete_constant,
     "create_path_input": _h_create_path_input,

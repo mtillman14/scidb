@@ -1200,6 +1200,35 @@ class TestDeriveTargetForNode:
             _discard_compiled(built)
             client.delete("/api/constants/low_hz/pending/42")
 
+    def test_compile_excludes_hidden_combo(self, client):
+        """A hidden combo must never compile into a pipeline step -- Run
+        Pipeline and plan-preview both go through build_backend_pipeline,
+        which previously never consulted the hidden set at all (see
+        plan-combo-hiding.md)."""
+        from scistack_gui import pipeline_store
+        from scistack_gui.db import get_db
+        from scistack_gui.domain.graph_builder import fn_node_id
+        from scistack_gui.services.execution_service import (
+            _discard_compiled,
+            build_backend_pipeline,
+            resolve_combo_call_ids,
+        )
+
+        db = get_db()
+        call_ids = resolve_combo_call_ids(db, "bandpass_filter", None, {"low_hz": "20"})
+        assert call_ids, "expected the seeded low_hz=20 combo to resolve to a real call_id"
+        for cid in call_ids:
+            pipeline_store.hide_combo(
+                db, fn_node_id("bandpass_filter", cid), "bandpass_filter", {"low_hz": "20"}
+            )
+
+        built: dict = {}
+        pipe = build_backend_pipeline(db, "main", built)
+        try:
+            assert "bandpass_filter" not in [s.name for s in pipe.steps]
+        finally:
+            _discard_compiled(built)
+
     def test_plan_previews_staged_variant_as_red(self, client):
         """The plan dialog shows what materializing the staged value will
         run: the overridden variant has no records yet -> red, full grid."""

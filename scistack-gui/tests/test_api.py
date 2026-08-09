@@ -381,6 +381,238 @@ class TestEdgesEndpoints:
         r = client.delete("/api/edges/ghost_edge")
         assert r.status_code == 200
 
+    def test_put_edge_rejects_self_loop(self, client):
+        r = client.put(
+            "/api/edges/e_self",
+            json={
+                "source": "var__RawSignal",
+                "target": "var__RawSignal",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        )
+        assert r.status_code == 400
+        assert "cycle" in r.json()["detail"]
+        edges = client.get("/api/pipeline").json()["edges"]
+        assert not any(e["id"] == "e_self" for e in edges)
+
+    def test_put_edge_rejects_transitive_manual_cycle(self, client):
+        # n1 -> n2 -> n3 already wired manually; closing n3 -> n1 would
+        # create a cycle purely through manual edges.
+        client.put(
+            "/api/edges/e_n1_n2",
+            json={"source": "n1", "target": "n2", "source_handle": None, "target_handle": None},
+        )
+        client.put(
+            "/api/edges/e_n2_n3",
+            json={"source": "n2", "target": "n3", "source_handle": None, "target_handle": None},
+        )
+        r = client.put(
+            "/api/edges/e_n3_n1",
+            json={"source": "n3", "target": "n1", "source_handle": None, "target_handle": None},
+        )
+        assert r.status_code == 400
+        assert "cycle" in r.json()["detail"]
+        edges = client.get("/api/pipeline").json()["edges"]
+        assert not any(e["id"] == "e_n3_n1" for e in edges)
+
+    def test_put_edge_upsert_of_same_id_is_not_a_self_cycle(self, client):
+        # Re-PUTting the SAME edge_id with a different source/target is an
+        # update, not a new edge — the edge's own stale row must not count
+        # against it when checking reachability.
+        client.put(
+            "/api/edges/e_update",
+            json={"source": "p1", "target": "p2", "source_handle": None, "target_handle": None},
+        )
+        r = client.put(
+            "/api/edges/e_update",
+            json={"source": "p2", "target": "p1", "source_handle": None, "target_handle": None},
+        )
+        assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Deleting a DB-derived edge disconnects the wiring: red, un-runnable,
+# reconnecting the exact same nodes restores it fresh from real DB state.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+class TestDisconnectedEdges:
+    def _find_edge(self, client, source, target):
+        edges = client.get("/api/pipeline").json()["edges"]
+        return next(e for e in edges if e["source"] == source and e["target"] == target)
+
+    def _delete(self, client, edge):
+        return client.request(
+            "DELETE",
+            f"/api/edges/{edge['id']}",
+            json={"source": edge["source"], "target": edge["target"]},
+        )
+
+    def test_delete_var_input_edge_reddens_and_marks_disconnected(self, client, bp_node_id):
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        r = self._delete(client, edge)
+        assert r.status_code == 200
+
+        data = client.get("/api/pipeline").json()
+        assert not any(e["id"] == edge["id"] for e in data["edges"])
+        node = next(n for n in data["nodes"] if n["id"] == bp_node_id)
+        assert node["data"]["run_state"] == "red"
+        assert node["data"].get("disconnected") is True
+
+    def test_delete_var_input_edge_reddens_downstream_variable(self, client, bp_node_id):
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, edge)
+
+        nodes = client.get("/api/pipeline").json()["nodes"]
+        out_node = next(n for n in nodes if n["id"] == "var__FilteredSignal")
+        assert out_node["data"]["run_state"] == "red"
+
+    def test_delete_const_input_edge_also_disconnects(self, client, bp_node_id):
+        edge = self._find_edge(client, "const__low_hz", bp_node_id)
+        self._delete(client, edge)
+
+        nodes = client.get("/api/pipeline").json()["nodes"]
+        node = next(n for n in nodes if n["id"] == bp_node_id)
+        assert node["data"]["run_state"] == "red"
+        assert node["data"].get("disconnected") is True
+
+    def test_delete_output_edge_is_cosmetic_only(self, client, bp_node_id):
+        # fn -> var (output) hides never disconnect — the data still exists.
+        edge = self._find_edge(client, bp_node_id, "var__FilteredSignal")
+        self._delete(client, edge)
+
+        data = client.get("/api/pipeline").json()
+        assert not any(e["id"] == edge["id"] for e in data["edges"])
+        node = next(n for n in data["nodes"] if n["id"] == bp_node_id)
+        assert node["data"]["run_state"] == "green"
+        assert not node["data"].get("disconnected")
+
+    def test_reconnect_same_edge_unhides_original_and_restores_green(self, client, bp_node_id):
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        original_id = edge["id"]
+        self._delete(client, edge)
+        assert not any(
+            e["id"] == original_id for e in client.get("/api/pipeline").json()["edges"]
+        )
+
+        # Reconnect the SAME two nodes via a brand-new client-chosen id —
+        # backend must recognize the match and unhide the ORIGINAL edge
+        # instead of creating a redundant manual one.
+        r = client.put(
+            "/api/edges/manual__reconnect1",
+            json={
+                "source": "var__RawSignal",
+                "target": bp_node_id,
+                "source_handle": None,
+                "target_handle": None,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json().get("unhidden") == original_id
+
+        data = client.get("/api/pipeline").json()
+        assert any(e["id"] == original_id for e in data["edges"])
+        assert not any(e["id"] == "manual__reconnect1" for e in data["edges"])
+        node = next(n for n in data["nodes"] if n["id"] == bp_node_id)
+        assert node["data"]["run_state"] == "green"
+        assert not node["data"].get("disconnected")
+
+    def test_reconnect_different_source_creates_new_manual_edge_instead(
+        self, client, bp_node_id
+    ):
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, edge)
+
+        # A genuinely different source (never wired to this fn) must NOT
+        # match the hidden edge — falls through to a normal manual edge.
+        r = client.put(
+            "/api/edges/manual__newconst",
+            json={
+                "source": "const__brand_new_constant",
+                "target": bp_node_id,
+                "source_handle": None,
+                "target_handle": "const__brand_new_constant",
+            },
+        )
+        assert r.status_code == 200
+        assert "unhidden" not in r.json()
+        data = client.get("/api/pipeline").json()
+        assert any(e["id"] == "manual__newconst" for e in data["edges"])
+
+    def test_manual_edge_delete_still_hard_deletes_not_hides(self, client):
+        client.put(
+            "/api/edges/manual__x",
+            json={"source": "A", "target": "B", "source_handle": None, "target_handle": None},
+        )
+        r = client.request("DELETE", "/api/edges/manual__x")
+        assert r.status_code == 200
+        layout = client.get("/api/layout").json()
+        assert not any(e["id"] == "manual__x" for e in layout["manual_edges"])
+        hidden = client.get("/api/edges/hidden").json()["edges"]
+        assert not any(h["edge_id"] == "manual__x" for h in hidden)
+
+    def test_hidden_edges_list_and_unhide_endpoint(self, client, bp_node_id):
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, edge)
+
+        hidden = client.get("/api/edges/hidden").json()["edges"]
+        assert any(h["edge_id"] == edge["id"] for h in hidden)
+
+        r = client.post(f"/api/edges/{edge['id']}/unhide")
+        assert r.status_code == 200
+        hidden_after = client.get("/api/edges/hidden").json()["edges"]
+        assert not any(h["edge_id"] == edge["id"] for h in hidden_after)
+
+        # Unhiding restores the ORIGINAL edge and green state, same as the
+        # reconnect-via-drag path.
+        data = client.get("/api/pipeline").json()
+        assert any(e["id"] == edge["id"] for e in data["edges"])
+        node = next(n for n in data["nodes"] if n["id"] == bp_node_id)
+        assert node["data"]["run_state"] == "green"
+
+    def test_run_blocked_when_disconnected(self, client, bp_node_id, monkeypatch):
+        from scistack_gui.api import run as run_api
+
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, edge)
+
+        captured = []
+        monkeypatch.setattr(
+            run_api, "for_each", lambda *a, **k: captured.append(k) or None
+        )
+
+        r = client.post(
+            "/api/run", json={"function_name": "bandpass_filter", "variants": []}
+        )
+        assert r.status_code == 200
+        _wait_for_threads("Thread-")
+        assert captured == [], "disconnected function must never reach for_each"
+
+    def test_run_blocked_emits_explicit_disconnected_error(
+        self, client, bp_node_id, monkeypatch
+    ):
+        from scistack_gui.api import run as run_api
+
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, edge)
+
+        emitted: list[dict] = []
+        monkeypatch.setattr(run_api, "push_message", lambda msg: emitted.append(msg))
+
+        r = client.post(
+            "/api/run", json={"function_name": "bandpass_filter", "variants": []}
+        )
+        assert r.status_code == 200
+        _wait_for_threads("Thread-")
+
+        done = [m for m in emitted if m.get("type") == "run_done"]
+        assert len(done) == 1
+        assert done[0]["success"] is False
+        assert "disconnected" in done[0]["error"]
+        assert "signal" in done[0]["error"]
+
 
 # ---------------------------------------------------------------------------
 # /api/variables
@@ -603,6 +835,51 @@ class TestRunEndpoint:
         assert captured.get("schema_keys") == list(
             _gui_db.get_db().dataset_schema_keys
         )
+
+    def test_hidden_combo_excluded_from_run(
+        self, client, monkeypatch, populated_db
+    ):
+        """A hidden combo must never reach for_each -- the execution-time
+        enforcement this feature closes (hiding was previously
+        display-only; see plan-combo-hiding.md).
+
+        Hides by the combo's REAL call_id (via resolve_combo_call_ids),
+        not the canvas node's wiring_id (bp_node_id) -- wiring_id excludes
+        constants so it's a different hash from the real per-combo call_id
+        and would never match."""
+        from scistack_gui import pipeline_store
+        from scistack_gui.api import run as run_api
+        from scistack_gui.domain.graph_builder import fn_node_id
+        from scistack_gui.services.execution_service import resolve_combo_call_ids
+
+        call_ids = resolve_combo_call_ids(
+            populated_db, "bandpass_filter", None, {"low_hz": "20"}
+        )
+        assert call_ids, "expected the seeded low_hz=20 combo to resolve to a real call_id"
+        for cid in call_ids:
+            pipeline_store.hide_combo(
+                populated_db,
+                fn_node_id("bandpass_filter", cid),
+                "bandpass_filter",
+                {"low_hz": "20"},
+            )
+
+        captured = []
+
+        def fake_for_each(*args, **kwargs):
+            captured.append(kwargs)
+            return None
+
+        monkeypatch.setattr(run_api, "for_each", fake_for_each)
+
+        r = client.post(
+            "/api/run",
+            json={"function_name": "bandpass_filter", "variants": []},
+        )
+        assert r.status_code == 200
+        _wait_for_threads("Thread-")
+
+        assert captured == [], "hidden combo must never reach for_each"
 
     def test_unknown_function_still_returns_200_with_run_id(self, client):
         """

@@ -102,7 +102,8 @@
       "Bash(awk '{print $1}')",
       "Bash(ruff --version)",
       "Bash(echo \"exit:$?\")",
-      "Bash(xargs -I{} echo {})"
+      "Bash(xargs -I{} echo {})",
+      "Bash(xargs -n1 basename)"
     ]
   }
 }

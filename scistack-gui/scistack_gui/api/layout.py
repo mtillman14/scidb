@@ -32,6 +32,17 @@ class EdgeCreate(BaseModel):
     target_handle: str | None = None
 
 
+class EdgeDelete(BaseModel):
+    # Optional: the frontend already has the removed edge's endpoints in
+    # local React Flow state — passed through so a hidden DB-derived edge
+    # can be labeled in the restore panel. Absent for edges deleted some
+    # other way (defaults keep the DELETE body optional).
+    source: str = ""
+    target: str = ""
+    source_handle: str | None = None
+    target_handle: str | None = None
+
+
 router = APIRouter()
 
 
@@ -135,12 +146,22 @@ def post_deep_copy_path_input(node_id: str):
 
 
 @router.put("/edges/{edge_id}")
-def put_edge(edge_id: str, body: EdgeCreate):
+def put_edge(
+    edge_id: str, body: EdgeCreate, db: DatabaseManager = Depends(get_db)
+):
     from scistack_gui.services.layout_service import put_edge as _put
 
-    return _put(
-        edge_id, body.source, body.target, body.source_handle, body.target_handle
-    )
+    try:
+        return _put(
+            db,
+            edge_id,
+            body.source,
+            body.target,
+            body.source_handle,
+            body.target_handle,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.put("/layout/{node_id}/config")
@@ -153,7 +174,25 @@ def put_node_config(
 
 
 @router.delete("/edges/{edge_id}")
-def delete_edge(edge_id: str):
+def delete_edge(
+    edge_id: str, body: EdgeDelete = EdgeDelete(), db: DatabaseManager = Depends(get_db)
+):
     from scistack_gui.services.layout_service import delete_edge as _del
 
-    return _del(edge_id)
+    return _del(
+        db, edge_id, body.source, body.target, body.source_handle, body.target_handle
+    )
+
+
+@router.post("/edges/{edge_id}/unhide")
+def unhide_edge(edge_id: str, db: DatabaseManager = Depends(get_db)):
+    from scistack_gui.services.layout_service import unhide_edge as _unhide
+
+    return _unhide(db, edge_id)
+
+
+@router.get("/edges/hidden")
+def get_hidden_edges(db: DatabaseManager = Depends(get_db)):
+    from scistack_gui.services.layout_service import get_hidden_edges as _get
+
+    return _get(db)

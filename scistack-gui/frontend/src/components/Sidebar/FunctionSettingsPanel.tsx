@@ -20,6 +20,11 @@ interface VariantRow {
   [constantName: string]: string
 }
 
+interface HiddenCombo {
+  node_id: string
+  variant_key: Record<string, string>
+}
+
 export interface SchemaFilter {
   [key: string]: unknown[]  // schema key → selected values
 }
@@ -124,6 +129,8 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
   const { setNodes } = useReactFlow()
   const [schema, setSchema] = useState<SchemaInfo | null>(null)
   const [variableNames, setVariableNames] = useState<string[]>([])
+  const [hiddenCombos, setHiddenCombos] = useState<HiddenCombo[]>([])
+  const [showHidden, setShowHidden] = useState(false)
 
   useEffect(() => {
     callBackend('get_schema')
@@ -136,6 +143,45 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
       })
       .catch(console.error)
   }, [])
+
+  const refetchHidden = useCallback(() => {
+    callBackend('list_hidden_combos', { function_name: label })
+      .then(d => setHiddenCombos((d as { combos: HiddenCombo[] }).combos))
+      .catch(console.error)
+  }, [label])
+
+  useEffect(() => {
+    refetchHidden()
+  }, [refetchHidden])
+
+  // Only the constant axes matter for hide/restore matching — a hidden
+  // combo is scoped to constant values, never to multi-type input axes
+  // (see plan-combo-hiding.md's v1 scope cut).
+  const rowConstants = useCallback(
+    (row: VariantRow) => Object.fromEntries(constantNames.map(n => [n, row[n]])),
+    [constantNames]
+  )
+  const matchingHidden = useCallback(
+    (row: VariantRow) => {
+      const rc = rowConstants(row)
+      return hiddenCombos.find(h =>
+        constantNames.every(n => String(h.variant_key[n]) === String(rc[n]))
+      )
+    },
+    [hiddenCombos, constantNames, rowConstants]
+  )
+
+  const hideRow = useCallback((row: VariantRow) => {
+    callBackend('hide_combo', { function_name: label, node_id: id, variant_key: rowConstants(row) })
+      .then(refetchHidden)
+      .catch(console.error)
+  }, [label, id, rowConstants, refetchHidden])
+
+  const unhideCombo = useCallback((nodeId: string) => {
+    callBackend('unhide_combo', { node_id: nodeId })
+      .then(refetchHidden)
+      .catch(console.error)
+  }, [refetchHidden])
 
   // Helper to update function node data and persist config to backend.
   const updateNodeData = useCallback((patch: Record<string, unknown>) => {
@@ -257,6 +303,13 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
 
   // All variant column names (constants + multi-type inputs)
   const allVariantNames = [...constantNames, ...inputTypeNames]
+  // Hiding a specific combo only supports constant-value axes (see
+  // plan-combo-hiding.md) \u2014 a row whose uniqueness comes from an
+  // input-type choice has no computable call_id to hide by yet.
+  const hideDisabledReason = inputTypeNames.length > 0
+    ? 'Hiding one combo isn\u2019t supported for multi-type input rows yet'
+    : undefined
+  const visibleVariants = showHidden ? variants : variants.filter(row => !matchingHidden(row))
 
   return (
     <div style={styles.root}>
@@ -284,23 +337,53 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
                     ...(inputTypeNames.includes(name) ? { color: '#6bb5f0' } : {}),
                   }}>{name}</th>
                 ))}
+                <th style={styles.th} />
               </tr>
             </thead>
             <tbody>
-              {variants.map((row, i) => (
-                <tr key={i} style={styles.variantRow}>
-                  {allVariantNames.map(name => (
-                    <td key={name} style={styles.td}>
-                      <span style={{
-                        ...styles.pill,
-                        ...(inputTypeNames.includes(name) ? { color: '#6bb5f0', background: '#1a2a3a' } : {}),
-                      }}>{row[name] ?? '\u2014'}</span>
+              {visibleVariants.map((row, i) => {
+                const hidden = matchingHidden(row)
+                return (
+                  <tr key={i} style={styles.variantRow}>
+                    {allVariantNames.map(name => (
+                      <td key={name} style={styles.td}>
+                        <span style={{
+                          ...styles.pill,
+                          ...(inputTypeNames.includes(name) ? { color: '#6bb5f0', background: '#1a2a3a' } : {}),
+                          ...(hidden ? { opacity: 0.5 } : {}),
+                        }}>{row[name] ?? '\u2014'}</span>
+                      </td>
+                    ))}
+                    <td style={styles.td}>
+                      {hidden ? (
+                        <button
+                          style={styles.hideBtn}
+                          onClick={() => unhideCombo(hidden.node_id)}
+                          title="Restore this combo"
+                        >restore</button>
+                      ) : (
+                        <button
+                          style={{
+                            ...styles.hideBtn,
+                            ...(hideDisabledReason ? { opacity: 0.4, cursor: 'default', textDecoration: 'none' } : {}),
+                          }}
+                          disabled={!!hideDisabledReason}
+                          onClick={() => hideRow(row)}
+                          title={hideDisabledReason ?? 'Hide this combo (never deletes data \u2014 excludes it from runs and can be restored)'}
+                        >hide</button>
+                      )}
                     </td>
-                  ))}
-                </tr>
-              ))}
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
+        )}
+
+        {hiddenCombos.length > 0 && (
+          <button style={styles.showHiddenToggle} onClick={() => setShowHidden(s => !s)}>
+            {showHidden ? 'hide restored rows' : `${hiddenCombos.length} hidden \u2014 show`}
+          </button>
         )}
       </section>
 
@@ -596,6 +679,24 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontSize: 11,
     color: '#b2ded9',
+  },
+  hideBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#7b68ee',
+    fontSize: 10,
+    cursor: 'pointer',
+    padding: '1px 4px',
+    textDecoration: 'underline',
+  },
+  showHiddenToggle: {
+    background: 'none',
+    border: 'none',
+    color: '#666',
+    fontSize: 10,
+    fontStyle: 'italic',
+    cursor: 'pointer',
+    padding: '4px 0 0 0',
   },
   addFilterBtn: {
     background: 'none',

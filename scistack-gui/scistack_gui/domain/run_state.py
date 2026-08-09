@@ -25,6 +25,7 @@ def propagate_run_states(
     fn_outputs: dict[FnKey, set],
     fn_constants: dict[FnKey, set] | None = None,
     pending_constants: dict[str, set] | None = None,
+    disconnected_fkeys: set[FnKey] | None = None,
 ) -> dict[str, str]:
     """Propagate run states through the DAG, per for_each call site.
 
@@ -39,6 +40,13 @@ def propagate_run_states(
         fn_outputs: {(fn_name, call_id): {output_type_name, ...}}.
         fn_constants: {(fn_name, call_id): {constant_param_name, ...}} — optional.
         pending_constants: {constant_name: {pending_value, ...}} — optional.
+        disconnected_fkeys: {(fn_name, call_id), ...} — call sites whose
+            wiring has a user-hidden required inbound edge (see
+            graph_builder.hidden_wirings/wiring_disconnected_fkeys). Forced
+            to "red" regardless of their own DB state (a disconnected input
+            always wins over pending/green) — the DAG loop below then
+            cascades that redness downstream through var_state exactly like
+            any other red own-state, no separate cascade needed.
 
     Returns:
         {node_id: "green"|"pending"|"red"} for fn__ and var__ nodes, where
@@ -82,6 +90,26 @@ def propagate_run_states(
             )
     else:
         logger.debug("[run_state] no pending constants to check")
+
+    # Disconnected wins over everything else — a call site missing a
+    # required inbound edge is forced red even if it was green or staged
+    # pending, before propagation so the cascade below sees it as red.
+    if disconnected_fkeys:
+        forced = 0
+        for fkey in disconnected_fkeys:
+            if fkey not in fn_own_state:
+                continue
+            if fn_own_state[fkey] != "red":
+                logger.debug(
+                    "[run_state] forcing %s red: disconnected required input", fkey
+                )
+                forced += 1
+            fn_own_state[fkey] = "red"
+        if forced:
+            logger.info(
+                "[run_state] forced %d node(s) red due to disconnected input(s)",
+                forced,
+            )
 
     # --- DAG propagation ---
     # var_producers[var_type] = set of FnKeys producing this variable.

@@ -16,6 +16,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from scidb.database import DatabaseManager
 
 from scistack_gui import layout as layout_store
@@ -235,6 +236,7 @@ def _compute_run_states(
     fn_outputs: dict[tuple, set],
     fn_constants: dict[tuple, set] | None = None,
     pending_constants: dict[str, set] | None = None,
+    disconnected_fkeys: set[tuple] | None = None,
 ) -> dict[str, str]:
     """
     Compute run_state for every function and variable node.
@@ -247,6 +249,10 @@ def _compute_run_states(
       Calls scihist.check_multiple_nodes_state() for all nodes in batch.
 
     Pass 2 — propagate staleness through the DAG (delegated to domain layer).
+      ``disconnected_fkeys`` (call sites with a user-hidden required inbound
+      edge — see domain.graph_builder.hidden_wirings/wiring_disconnected_fkeys)
+      forces those call sites red regardless of DB freshness, cascading
+      downstream through the same propagation.
 
     Returns {node_id: "green"|"pending"|"red"} for fn__ and var__ nodes
     ("pending" is GUI-only: an unrun pending constant value staged in the
@@ -324,6 +330,7 @@ def _compute_run_states(
         fn_outputs,
         fn_constants,
         pending_constants,
+        disconnected_fkeys,
     )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
@@ -363,6 +370,8 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
 
     hidden_ids = _ps.get_hidden_node_ids(db)
     logger.debug("[pipeline] loaded %d hidden node IDs", len(hidden_ids))
+    hidden_edge_ids = _ps.get_hidden_edge_ids(db)
+    logger.debug("[pipeline] loaded %d hidden edge IDs", len(hidden_edge_ids))
 
     # --- Fetch aggregated data from scidb (replaces steps 2-5) ---
     logger.info("[pipeline] Fetching aggregated variants from scidb")
@@ -422,7 +431,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     pending_constants = layout_store.get_pending_constants()
     logger.debug("[pipeline] loaded %d pending constant(s)", len(pending_constants))
     pending_constants, removals = gb.auto_clean_pending_constants(
-        pending_constants, agg.const_counts
+        pending_constants, agg
     )
     for const_name, pval in removals:
         layout_store.remove_pending_constant(const_name, pval)
@@ -430,6 +439,24 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         logger.debug(
             "[pipeline] removed %d pending constant value(s) that are now in database",
             len(removals),
+        )
+
+    # --- Disconnected wirings (hidden required inbound edges) ---
+    # Computed on the PRE-GROUPING agg — every call site sharing a wiring
+    # recomputes the same wiring_id regardless of grouping (see
+    # graph_builder.hidden_wirings). Drives both run-state forcing below
+    # and the per-node "disconnected" flag attached to function nodes.
+    disconnected_wirings = gb.hidden_wirings(
+        agg.fn_input_params, agg.fn_outputs, agg.fn_constants, agg.path_inputs, hidden_edge_ids
+    )
+    disconnected_fkeys = gb.wiring_disconnected_fkeys(
+        agg.fn_input_params, agg.fn_outputs, disconnected_wirings
+    )
+    if disconnected_wirings:
+        logger.info(
+            "[pipeline] %d wiring(s) disconnected: %s",
+            len(disconnected_wirings),
+            sorted(disconnected_wirings),
         )
 
     # --- Compute run states (per call site — state never blurs) ---
@@ -440,6 +467,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         agg.fn_outputs,
         agg.fn_constants,
         pending_constants,
+        disconnected_fkeys,
     )
     logger.info("[pipeline] computed run states for %d nodes", len(run_states))
 
@@ -589,6 +617,23 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         fn_node_count,
     )
 
+    # --- Tag disconnected function nodes ---
+    # By this point agg is wiring-grouped, so function node ids are exactly
+    # fn__{fn_name}__{wiring_id} — directly comparable to disconnected_wirings
+    # with no further translation. Visual/state only (see run_state above
+    # for the actual color); execution_service enforces un-runnability
+    # independently at run time.
+    if disconnected_wirings:
+        tagged = 0
+        for node in nodes:
+            if node["type"] != "functionNode":
+                continue
+            parsed = gb.parse_fn_node_id(node["id"])
+            if parsed is not None and parsed in disconnected_wirings:
+                node["data"]["disconnected"] = True
+                tagged += 1
+        logger.debug("[pipeline] tagged %d function node(s) disconnected", tagged)
+
     # --- Build edges (pure) ---
     logger.info("[pipeline] Building edges (delegating to graph_builder)")
     manual_edges_list = manual_edges_for_fn_lookup
@@ -600,6 +645,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         manual_edges_list,
         hidden_ids,
         matlab_param_to_class=matlab_param_to_class,
+        hidden_edge_ids=hidden_edge_ids,
     )
     logger.info("[pipeline] built %d edges", len(edges))
 
@@ -984,3 +1030,33 @@ async def remove_pending_constant_value(name: str, value: str):
     delete_pending_constant(name, value)
     await ws.broadcast({"type": "dag_updated"})
     return {"ok": True}
+
+
+class HideComboRequest(BaseModel):
+    node_id: str | None = None
+    variant_key: dict
+
+
+@router.post("/functions/{function_name}/hidden_combos")
+def hide_combo(
+    function_name: str,
+    body: HideComboRequest,
+    db: DatabaseManager = Depends(get_db),
+):
+    from scistack_gui.services.layout_service import hide_variant_combo
+
+    return hide_variant_combo(db, function_name, body.node_id, body.variant_key)
+
+
+@router.delete("/functions/hidden_combos/{node_id}")
+def unhide_combo(node_id: str, db: DatabaseManager = Depends(get_db)):
+    from scistack_gui.services.layout_service import unhide_variant_combo
+
+    return unhide_variant_combo(db, node_id)
+
+
+@router.get("/functions/{function_name}/hidden_combos")
+def list_hidden_combos(function_name: str, db: DatabaseManager = Depends(get_db)):
+    from scistack_gui.services.layout_service import get_hidden_combos
+
+    return get_hidden_combos(db, function_name)

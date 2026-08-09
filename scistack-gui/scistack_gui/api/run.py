@@ -225,13 +225,27 @@ def _run_in_thread(
         run_id,
     )
     if not fn_variants:
+        from scistack_gui.services.execution_service import disconnected_reason
+
+        reason = disconnected_reason(db, function_name, node_id)
+        error = (
+            f"'{function_name}' can't run: {reason}."
+            if reason
+            else f"No pipeline history or output connections found for '{function_name}'. "
+            "Connect it to an output variable node first."
+        )
+        logger.info(
+            "[run_thread] no targets for '%s' (run_id=%s): %s",
+            function_name,
+            run_id,
+            error,
+        )
         push_message(
             {
                 "type": "run_done",
                 "run_id": run_id,
                 "success": False,
-                "error": f"No pipeline history or output connections found for '{function_name}'. "
-                "Connect it to an output variable node first.",
+                "error": error,
             }
         )
         with _active_runs_lock:
@@ -301,6 +315,33 @@ def _run_in_thread(
         opt_as_table,
         run_id,
     )
+
+    # Hidden combos (see plan-combo-hiding.md) — never delete data, just
+    # exclude a specific already-hidden Cartesian-product row from actually
+    # running, using THIS chokepoint's own distribute/as_table so a hidden
+    # pending combo's stored call_id stays consistent with what would
+    # actually execute here.
+    from scistack_gui.domain.variant_resolver import (
+        filter_hidden_targets,
+        hidden_call_ids_for_fn,
+    )
+
+    hidden_ids = _ps.get_hidden_node_ids(db)
+    before_hidden_filter = len(unique_targets)
+    unique_targets = filter_hidden_targets(
+        unique_targets,
+        function_name,
+        hidden_call_ids_for_fn(hidden_ids, function_name),
+        pending_consts,
+        distribute=opt_distribute,
+        as_table=opt_as_table,
+    )
+    if len(unique_targets) != before_hidden_filter:
+        logger.info(
+            "[run_thread] %d target(s) excluded as hidden (run_id=%s)",
+            before_hidden_filter - len(unique_targets),
+            run_id,
+        )
 
     # Schema iteration is handled by for_each via schema_filter/schema_level —
     # but for_each ONLY auto-iterates when one of them is set. With both None

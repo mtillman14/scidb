@@ -16,11 +16,18 @@ from scistack_gui.domain.graph_builder import (
     build_manual_node,
     build_path_input_nodes,
     build_variable_nodes,
+    candidate_edge_id,
     filter_hidden,
+    find_cycle,
     fn_node_id,
+    hidden_wirings,
+    inbound_edge_candidates,
     merge_manual_nodes,
     overlay_saved_path_inputs,
     parse_path_input,
+    wiring_disconnected_fkeys,
+    wiring_id,
+    wirings_downstream_of,
 )
 
 # ---------------------------------------------------------------------------
@@ -304,25 +311,95 @@ class TestFilterHidden:
 
 
 class TestAutoCleanPendingConstants:
+    def _one_wiring_agg(self, hz_value=20):
+        variants = [
+            _variant(
+                "bandpass",
+                "Filtered",
+                inputs={"signal": "Raw"},
+                constants={"hz": hz_value},
+            ),
+        ]
+        return aggregate_variants(variants, listed_var_names=set())
+
     def test_removes_value_already_in_db(self):
         pending = {"hz": {"20", "30"}}
-        const_counts = {"hz": {"20": 5}}
-        cleaned, removals = auto_clean_pending_constants(pending, const_counts)
+        agg = self._one_wiring_agg(hz_value=20)
+        cleaned, removals = auto_clean_pending_constants(pending, agg)
         assert "20" not in cleaned["hz"]
         assert "30" in cleaned["hz"]
         assert ("hz", "20") in removals
 
     def test_nothing_to_clean(self):
         pending = {"hz": {"99"}}
-        const_counts = {"hz": {"20": 5}}
-        cleaned, removals = auto_clean_pending_constants(pending, const_counts)
+        agg = self._one_wiring_agg(hz_value=20)
+        cleaned, removals = auto_clean_pending_constants(pending, agg)
         assert cleaned["hz"] == {"99"}
         assert removals == []
 
     def test_empty_pending(self):
-        cleaned, removals = auto_clean_pending_constants({}, {"hz": {"20": 5}})
+        agg = self._one_wiring_agg(hz_value=20)
+        cleaned, removals = auto_clean_pending_constants({}, agg)
         assert cleaned == {}
+
+    def test_no_consuming_wiring_never_cleans(self):
+        """A constant with no real call site yet must never be auto-cleaned —
+        an empty required-groups set is a vacuous match, not a real one."""
+        pending = {"hz": {"20"}}
+        agg = aggregate_variants([], listed_var_names=set())
+        cleaned, removals = auto_clean_pending_constants(pending, agg)
+        assert cleaned["hz"] == {"20"}
         assert removals == []
+
+    def test_does_not_clean_until_every_sibling_wiring_has_run(self):
+        """Regression: two function nodes share a name (compute_rolling_vo2)
+        but are wired to different inputs/outputs (RawVO2->RollingVO2 vs.
+        RawHeartRate->RollingHR) and both consume the same constant. Once
+        ONE wiring runs with the new value, the value must stay pending for
+        the OTHER wiring — it hasn't been re-run and would otherwise
+        silently drop its (correct) pending/yellow indicator."""
+        variants = [
+            _variant(
+                "compute_rolling_vo2",
+                "RollingVO2",
+                inputs={"signal": "RawVO2"},
+                constants={"window_seconds": 60},
+            ),
+            _variant(
+                "compute_rolling_vo2",
+                "RollingHR",
+                inputs={"signal": "RawHeartRate"},
+                constants={"window_seconds": 30},
+            ),
+        ]
+        agg = aggregate_variants(variants, listed_var_names=set())
+        pending = {"window_seconds": {"60"}}
+        cleaned, removals = auto_clean_pending_constants(pending, agg)
+        assert cleaned["window_seconds"] == {"60"}
+        assert removals == []
+
+    def test_cleans_once_every_sibling_wiring_has_run(self):
+        """Once BOTH wirings have a real record at the staged value, it's
+        safe to auto-clean."""
+        variants = [
+            _variant(
+                "compute_rolling_vo2",
+                "RollingVO2",
+                inputs={"signal": "RawVO2"},
+                constants={"window_seconds": 60},
+            ),
+            _variant(
+                "compute_rolling_vo2",
+                "RollingHR",
+                inputs={"signal": "RawHeartRate"},
+                constants={"window_seconds": 60},
+            ),
+        ]
+        agg = aggregate_variants(variants, listed_var_names=set())
+        pending = {"window_seconds": {"60"}}
+        cleaned, removals = auto_clean_pending_constants(pending, agg)
+        assert cleaned["window_seconds"] == set()
+        assert ("window_seconds", "60") in removals
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +763,313 @@ class TestBuildEdges:
             if e["source"] == "var__Raw" and e["target"].startswith("fn__f__")
         }
         assert targets == {f"fn__f__{cid_a}", f"fn__f__{cid_b}"}
+
+    # --- hidden_edge_ids: excluded from rendering, never affects other categories ---
+
+    def test_hidden_var_to_fn_edge_excluded(self):
+        edges = build_edges(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={},
+            manual_edges=[],
+            hidden_ids=set(),
+            hidden_edge_ids={f"e__Raw__f__{self.F_CID}"},
+        )
+        assert not any(e["source"] == "var__Raw" for e in edges)
+
+    def test_hidden_fn_to_var_edge_excluded(self):
+        edges = build_edges(
+            fn_input_params={},
+            fn_outputs={self.F_KEY: {"Out"}},
+            const_fns={},
+            path_inputs={},
+            manual_edges=[],
+            hidden_ids=set(),
+            hidden_edge_ids={f"e__f__{self.F_CID}__Out"},
+        )
+        assert not any(e["target"] == "var__Out" for e in edges)
+
+    def test_hidden_const_to_fn_edge_excluded(self):
+        edges = build_edges(
+            fn_input_params={},
+            fn_outputs={},
+            const_fns={"hz": {self.F_KEY}},
+            path_inputs={},
+            manual_edges=[],
+            hidden_ids=set(),
+            hidden_edge_ids={f"e__hz__f__{self.F_CID}"},
+        )
+        assert not any(e["source"] == "const__hz" for e in edges)
+
+    def test_hidden_path_input_to_fn_edge_excluded(self):
+        edges = build_edges(
+            fn_input_params={},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={
+                "mypath": {
+                    "template": "",
+                    "root_folder": None,
+                    "functions": {self.F_KEY},
+                }
+            },
+            manual_edges=[],
+            hidden_ids=set(),
+            hidden_edge_ids={f"e__mypath__f__{self.F_CID}"},
+        )
+        assert not any(e["source"] == "pathInput__mypath" for e in edges)
+
+    def test_hidden_edge_id_only_excludes_matching_edge(self):
+        # Hiding the var->fn edge id must not touch the const->fn edge on
+        # the SAME function.
+        edges = build_edges(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            const_fns={"hz": {self.F_KEY}},
+            path_inputs={},
+            manual_edges=[],
+            hidden_ids=set(),
+            hidden_edge_ids={f"e__Raw__f__{self.F_CID}"},
+        )
+        assert not any(e["source"] == "var__Raw" for e in edges)
+        assert any(e["source"] == "const__hz" for e in edges)
+
+    def test_hidden_edge_ids_none_defaults_to_no_filtering(self):
+        edges = build_edges(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={},
+            manual_edges=[],
+            hidden_ids=set(),
+        )
+        assert any(e["source"] == "var__Raw" for e in edges)
+
+
+# ---------------------------------------------------------------------------
+# Disconnected wirings — hidden_wirings, wiring_disconnected_fkeys,
+# wirings_downstream_of, candidate_edge_id, inbound_edge_candidates
+# ---------------------------------------------------------------------------
+
+
+class TestInboundEdgeCandidates:
+    def test_builds_all_three_categories(self):
+        ids = inbound_edge_candidates(
+            "f", "wid123", var_types=["Raw"], const_names=["hz"], path_names=["p"]
+        )
+        assert ids == ["e__Raw__f__wid123", "e__hz__f__wid123", "e__p__f__wid123"]
+
+    def test_empty_by_default(self):
+        assert inbound_edge_candidates("f", "wid123") == []
+
+
+class TestHiddenWirings:
+    F_CID = _cid("f-call")
+    F_KEY = ("f", F_CID)
+
+    def test_hidden_var_input_marks_wiring(self):
+        wid = wiring_id("f", {"signal": "Raw"}, set())
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            fn_constants={},
+            path_inputs={},
+            hidden_edge_ids={f"e__Raw__f__{wid}"},
+        )
+        assert result == {("f", wid)}
+
+    def test_hidden_const_input_marks_wiring(self):
+        wid = wiring_id("f", {}, set())
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {}},
+            fn_outputs={},
+            fn_constants={self.F_KEY: {"hz"}},
+            path_inputs={},
+            hidden_edge_ids={f"e__hz__f__{wid}"},
+        )
+        assert result == {("f", wid)}
+
+    def test_hidden_path_input_marks_wiring(self):
+        wid = wiring_id("f", {}, set())
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {}},
+            fn_outputs={},
+            fn_constants={},
+            path_inputs={"mypath": {"functions": {self.F_KEY}}},
+            hidden_edge_ids={f"e__mypath__f__{wid}"},
+        )
+        assert result == {("f", wid)}
+
+    def test_hidden_output_edge_does_not_mark_wiring(self):
+        # fn -> var (output) hides are cosmetic only — never disconnect.
+        wid = wiring_id("f", {}, {"Out"})
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {}},
+            fn_outputs={self.F_KEY: {"Out"}},
+            fn_constants={},
+            path_inputs={},
+            hidden_edge_ids={f"e__f__{wid}__Out"},
+        )
+        assert result == set()
+
+    def test_no_hidden_edges_is_empty(self):
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            fn_constants={},
+            path_inputs={},
+            hidden_edge_ids=set(),
+        )
+        assert result == set()
+
+    def test_every_call_site_of_a_wiring_recomputes_same_wiring(self):
+        # Two call sites (different constant values) of the SAME wiring —
+        # hiding the shared var input marks the wiring once, not per-call-site.
+        ka, kb = ("f", _cid("a")), ("f", _cid("b"))
+        wid = wiring_id("f", {"signal": "Raw"}, set())
+        result = hidden_wirings(
+            fn_input_params={ka: {"signal": "Raw"}, kb: {"signal": "Raw"}},
+            fn_outputs={},
+            fn_constants={},
+            path_inputs={},
+            hidden_edge_ids={f"e__Raw__f__{wid}"},
+        )
+        assert result == {("f", wid)}
+
+
+class TestWiringDisconnectedFkeys:
+    def test_maps_wirings_back_to_call_sites(self):
+        ka, kb = ("f", _cid("a")), ("f", _cid("b"))
+        wid = wiring_id("f", {"signal": "Raw"}, set())
+        result = wiring_disconnected_fkeys(
+            fn_input_params={ka: {"signal": "Raw"}, kb: {"signal": "Raw"}},
+            fn_outputs={},
+            wirings={("f", wid)},
+        )
+        assert result == {ka, kb}
+
+    def test_unrelated_wiring_not_included(self):
+        ka = ("f", _cid("a"))
+        other_wid = wiring_id("f", {"signal": "Other"}, set())
+        result = wiring_disconnected_fkeys(
+            fn_input_params={ka: {"signal": "Raw"}},
+            fn_outputs={},
+            wirings={("f", other_wid)},
+        )
+        assert result == set()
+
+    def test_empty_wirings_is_empty(self):
+        result = wiring_disconnected_fkeys(
+            fn_input_params={("f", _cid()): {}}, fn_outputs={}, wirings=set()
+        )
+        assert result == set()
+
+
+class TestWiringsDownstreamOf:
+    def test_direct_consumer_marked_downstream(self):
+        a_key, b_key = ("A", _cid("a")), ("B", _cid("b"))
+        wid_a = wiring_id("A", {}, {"Out"})
+        wid_b = wiring_id("B", {"x": "Out"}, set())
+        result = wirings_downstream_of(
+            fn_input_params={a_key: {}, b_key: {"x": "Out"}},
+            fn_outputs={a_key: {"Out"}, b_key: set()},
+            seed_wirings={("A", wid_a)},
+        )
+        assert result == {("B", wid_b)}
+
+    def test_transitive_chain_marked_downstream(self):
+        a_key = ("A", _cid("a"))
+        b_key = ("B", _cid("b"))
+        c_key = ("C", _cid("c"))
+        wid_a = wiring_id("A", {}, {"Mid"})
+        wid_b = wiring_id("B", {"x": "Mid"}, {"Final"})
+        wid_c = wiring_id("C", {"y": "Final"}, set())
+        result = wirings_downstream_of(
+            fn_input_params={a_key: {}, b_key: {"x": "Mid"}, c_key: {"y": "Final"}},
+            fn_outputs={a_key: {"Mid"}, b_key: {"Final"}, c_key: set()},
+            seed_wirings={("A", wid_a)},
+        )
+        assert result == {("B", wid_b), ("C", wid_c)}
+
+    def test_seed_itself_excluded_from_result(self):
+        # A both produces AND consumes "Out" (self-referencing wiring) — a
+        # naive BFS would re-add the seed to its own downstream set.
+        a_key = ("A", _cid("a"))
+        wid_a = wiring_id("A", {"x": "Out"}, {"Out"})
+        result = wirings_downstream_of(
+            fn_input_params={a_key: {"x": "Out"}},
+            fn_outputs={a_key: {"Out"}},
+            seed_wirings={("A", wid_a)},
+        )
+        assert result == set()
+
+    def test_unrelated_wiring_not_marked(self):
+        a_key = ("A", _cid("a"))
+        unrelated_key = ("U", _cid("u"))
+        wid_a = wiring_id("A", {}, {"Out"})
+        wid_u = wiring_id("U", {}, {"Unrelated"})
+        result = wirings_downstream_of(
+            fn_input_params={a_key: {}, unrelated_key: {}},
+            fn_outputs={a_key: {"Out"}, unrelated_key: {"Unrelated"}},
+            seed_wirings={("A", wid_a)},
+        )
+        assert ("U", wid_u) not in result
+
+    def test_empty_seed_is_empty(self):
+        assert wirings_downstream_of({}, {}, set()) == set()
+
+
+class TestCandidateEdgeId:
+    F_CID = _cid("f-call")
+    F_NODE = f"fn__f__{F_CID}"
+
+    def test_var_to_fn(self):
+        assert candidate_edge_id("var__Raw", self.F_NODE) == f"e__Raw__f__{self.F_CID}"
+
+    def test_const_to_fn(self):
+        assert candidate_edge_id("const__hz", self.F_NODE) == f"e__hz__f__{self.F_CID}"
+
+    def test_path_input_to_fn(self):
+        assert (
+            candidate_edge_id("pathInput__mypath", self.F_NODE)
+            == f"e__mypath__f__{self.F_CID}"
+        )
+
+    def test_fn_to_var(self):
+        assert (
+            candidate_edge_id(self.F_NODE, "var__Out") == f"e__f__{self.F_CID}__Out"
+        )
+
+    def test_matches_build_edges_own_id_construction(self):
+        # candidate_edge_id must never drift from what build_edges actually
+        # produces — round-trip through a real build_edges call.
+        f_key = ("f", self.F_CID)
+        edges = build_edges(
+            fn_input_params={f_key: {"signal": "Raw"}},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={},
+            manual_edges=[],
+            hidden_ids=set(),
+        )
+        real_id = next(e["id"] for e in edges if e["source"] == "var__Raw")
+        assert candidate_edge_id("var__Raw", self.F_NODE) == real_id
+
+    def test_placement_qualified_target_stripped(self):
+        placed = f"{self.F_NODE}::main"
+        assert (
+            candidate_edge_id("var__Raw", placed) == f"e__Raw__f__{self.F_CID}"
+        )
+
+    def test_two_opaque_ids_returns_none(self):
+        assert candidate_edge_id("uuid-a", "uuid-b") is None
+
+    def test_var_to_non_fn_target_returns_none(self):
+        assert candidate_edge_id("var__Raw", "const__hz") is None
+
+    def test_two_fn_nodes_returns_none(self):
+        assert candidate_edge_id(self.F_NODE, f"fn__g__{_cid('g')}") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1119,3 +1503,53 @@ class TestLegacyMigrationHelpers:
 
         assert {r["id"] for r in rewrites} == {"m1", "m2"}
         assert all(self.GROUP in (r["source"], r["target"]) for r in rewrites)
+
+
+# ---------------------------------------------------------------------------
+# find_cycle
+# ---------------------------------------------------------------------------
+
+
+class TestFindCycle:
+    def test_no_edges_no_cycle(self):
+        assert find_cycle([], "a", "b") is None
+
+    def test_self_loop_is_a_cycle(self):
+        assert find_cycle([], "a", "a") == ["a", "a"]
+
+    def test_disjoint_edges_no_cycle(self):
+        edges = [{"source": "a", "target": "b"}, {"source": "c", "target": "d"}]
+        assert find_cycle(edges, "b", "c") is None
+
+    def test_direct_two_node_cycle(self):
+        # a -> b already exists; adding b -> a would close it.
+        edges = [{"source": "a", "target": "b"}]
+        path = find_cycle(edges, "b", "a")
+        assert path == ["b", "a", "b"]
+
+    def test_transitive_cycle_detected(self):
+        # a -> b -> c already exists; adding c -> a would close it.
+        edges = [
+            {"source": "a", "target": "b"},
+            {"source": "b", "target": "c"},
+        ]
+        path = find_cycle(edges, "c", "a")
+        assert path == ["c", "a", "b", "c"]
+
+    def test_reverse_direction_is_not_a_cycle(self):
+        # a -> b exists; adding a -> b again (or a totally different forward
+        # edge) is not a cycle just because both touch the same nodes.
+        edges = [{"source": "a", "target": "b"}]
+        assert find_cycle(edges, "a", "c") is None
+
+    def test_mixed_db_derived_and_manual_edges(self):
+        # Real DB-derived data-wiring: fn output feeds a variable that's
+        # already consumed as this fn's own input (data-lineage edge). A
+        # NEW manual edge from that variable back to the function's input
+        # would close the loop even though no OTHER manual edge is involved.
+        edges = [
+            {"source": "fn__f__abc123", "target": "var__Out"},
+            {"source": "var__In", "target": "fn__f__abc123"},
+        ]
+        path = find_cycle(edges, "var__Out", "var__In")
+        assert path == ["var__Out", "var__In", "fn__f__abc123", "var__Out"]
