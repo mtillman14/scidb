@@ -1,63 +1,31 @@
 {
   "positions": {
     "main": {
-      "fn__stat_vo2_summary__s31rc6": {
-        "x": 1315.4597430832393,
-        "y": 277.70263288724055
+      "fn__compute_rolling_vo2__e079fd03657ef922::main": {
+        "x": 450.0,
+        "y": 216.0
       },
-      "use_0d9b78c16eac": {
-        "x": 642.5104904636258,
-        "y": 243.3710642327957
-      }
-    },
-    "pipe_98ec7cbf1d4d": {
-      "var__RawVO2::pipe_98ec7cbf1d4d": {
-        "x": 528.2088919090779,
-        "y": 200.63121385025335
+      "const__window_seconds::main": {
+        "x": 224.5808426921555,
+        "y": 240.96095853642203
       },
-      "var__RollingVO2::pipe_98ec7cbf1d4d": {
-        "x": 1042.8693047923775,
-        "y": 294.07903949573046
+      "const__sample_interval::main": {
+        "x": 209.23118598520597,
+        "y": 311.6340704246446
       },
-      "const__sample_interval::pipe_98ec7cbf1d4d": {
-        "x": 535.1826102408297,
-        "y": 347.7766706502211
+      "var__RawVO2::main": {
+        "x": 221.00567104563032,
+        "y": 121.3111368932453
       },
-      "const__window_seconds::pipe_98ec7cbf1d4d": {
-        "x": 543.2916453758443,
-        "y": 270.36839716777354
-      },
-      "fn__compute_rolling_vo2__e079fd03657ef922::pipe_98ec7cbf1d4d": {
-        "x": 763.0,
-        "y": 304.0
-      }
-    },
-    "pipe_cce1b9513724": {
-      "var__RawVO2::pipe_cce1b9513724": {
-        "x": 488.20889190907786,
-        "y": 160.63121385025335
-      },
-      "var__RollingVO2::pipe_cce1b9513724": {
-        "x": 1002.8693047923775,
-        "y": 254.07903949573046
-      },
-      "const__sample_interval::pipe_cce1b9513724": {
-        "x": 495.1826102408297,
-        "y": 307.7766706502211
-      },
-      "const__window_seconds::pipe_cce1b9513724": {
-        "x": 503.29164537584427,
-        "y": 230.36839716777354
-      },
-      "fn__compute_rolling_vo2__e079fd03657ef922::pipe_cce1b9513724": {
-        "x": 723.0,
-        "y": 264.0
+      "var__RollingVO2::main": {
+        "x": 687.8765313981309,
+        "y": 226.25000000000003
       }
     }
   },
   "constants": [
-    "window_seconds",
-    "sample_interval"
+    "sample_interval",
+    "window_seconds"
   ],
   "path_inputs": [],
   "positions_scoped": true,

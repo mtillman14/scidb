@@ -213,8 +213,12 @@ def group_call_sites_by_wiring(
 
     Returns:
         (grouped AggregatedData,
-         node_states — run_states re-keyed to group node ids, group state =
-         worst member state (red < pending < green), var__ entries kept,
+         node_states — run_states re-keyed to group node ids, group own
+         state = worst member state (red < pending < green — including any
+         synthesized pending row), re-propagated through the DAG (domain.
+         run_state.propagate_run_states) on the GROUPED wiring so a staged
+         pending value cascades to every downstream var__/fn__ node, not
+         just the group it was staged on,
          member_map — {group_node_id: [legacy member node ids]} for the
          one-time position/edge adoption).
     """
@@ -262,10 +266,17 @@ def group_call_sites_by_wiring(
         }
 
     # Staged pending values: a synthesized row per (constant, value) on
-    # every group that uses the constant — no call site exists yet.
+    # every group that uses the constant and hasn't already run it — a
+    # group whose own real call sites already cover this exact value
+    # (e.g. it just got run) must not be re-flagged pending merely because
+    # a SIBLING wiring sharing the same constant node hasn't caught up yet
+    # (see pending_value_group_coverage / auto_clean_pending_constants).
+    coverage = pending_value_group_coverage(pending_constants, agg)
     for gkey in list(grouped.fn_constants.keys()):
         for const_name in sorted(grouped.fn_constants[gkey]):
             for pval in sorted(pending_constants.get(const_name, set())):
+                if gkey in coverage.get((const_name, pval), set()):
+                    continue
                 grouped.fn_variants_map[gkey].append(
                     {
                         "constants": {const_name: pval},
@@ -276,13 +287,25 @@ def group_call_sites_by_wiring(
                 if "pending" not in group_member_states[gkey]:
                     group_member_states[gkey].append("pending")
 
-    # Group node state = worst member state.
-    node_states = {k: v for k, v in run_states.items() if not k.startswith("fn__")}
-    for (fn, wid), states in group_member_states.items():
-        if states:
-            node_states[fn_node_id(fn, wid)] = min(
-                states, key=lambda s: _STATE_WORST_ORDER.get(s, 0)
-            )
+    # Group own state = worst member state (including any synthesized
+    # pending row) — then re-propagated through the DAG on the GROUPED
+    # wiring so a staged pending value cascades downstream to every
+    # var__/fn__ node that depends on it, not just the group it was staged
+    # on. A plain "worst member state" assignment (the old approach) only
+    # ever set the group's OWN node — a pending row on bandpass_filter
+    # never reached var__FilteredSignal, since pass 1's DAG propagation
+    # (domain.api.pipeline._compute_run_states) necessarily runs BEFORE
+    # this staged row even exists.
+    from scistack_gui.domain.run_state import propagate_run_states
+
+    group_own_states = {
+        gkey: min(states, key=lambda s: _STATE_WORST_ORDER.get(s, 0))
+        for gkey, states in group_member_states.items()
+        if states
+    }
+    node_states = propagate_run_states(
+        group_own_states, grouped.fn_input_params, grouped.fn_outputs
+    )
 
     n_groups = len(grouped.fn_input_params)
     n_sites = len(agg.fn_input_params)
@@ -492,18 +515,38 @@ def aggregate_variants(
     return agg
 
 
-def filter_hidden(agg: AggregatedData, hidden_ids: set[str]) -> AggregatedData:
+def filter_hidden(
+    agg: AggregatedData, hidden_ids: set[str], strip_var_type_values: bool = True
+) -> AggregatedData:
     """Remove hidden nodes from the aggregated data (mutates in place).
 
     Args:
         agg: Aggregated data to filter.
         hidden_ids: Set of node IDs the user has explicitly deleted.
+        strip_var_type_values: Whether to also scrub hidden variable TYPES out
+            of ``fn_outputs``/``fn_input_params`` VALUES for every surviving
+            call site (as opposed to only dropping dict entries for call
+            sites that are themselves hidden by fn id). Callers computing
+            ``wiring_id`` (graph_builder.wiring_id — hashes fn name +
+            input/output var types) from this agg MUST pass False: a
+            function's wiring — and therefore its canvas node id, which
+            anchors its saved scope placement/position — must stay stable
+            regardless of which of its already-produced variables the user
+            has hidden in this particular scope's view, or the node loses
+            its placement and disappears from non-root scopes the moment one
+            of its output leaves is hidden (see plan-scope-hidden-nodes-edges
+            postmortem). Pass True (the default) once identity has already
+            been fixed by grouping, to strip phantom hidden ports for
+            display.
 
     Returns:
         The same AggregatedData, mutated.
     """
     logger.info(
-        "[graph_builder] filter_hidden: filtering %d hidden node(s)", len(hidden_ids)
+        "[graph_builder] filter_hidden: filtering %d hidden node(s) "
+        "(strip_var_type_values=%s)",
+        len(hidden_ids),
+        strip_var_type_values,
     )
 
     hidden_var_types = {
@@ -527,15 +570,16 @@ def filter_hidden(agg: AggregatedData, hidden_ids: set[str]) -> AggregatedData:
 
     agg.all_var_types -= hidden_var_types
 
-    for fkey in list(agg.fn_outputs.keys()):
-        agg.fn_outputs[fkey] -= hidden_var_types
+    if strip_var_type_values:
+        for fkey in list(agg.fn_outputs.keys()):
+            agg.fn_outputs[fkey] -= hidden_var_types
 
-    for fkey in list(agg.fn_input_params.keys()):
-        agg.fn_input_params[fkey] = {
-            p: t
-            for p, t in agg.fn_input_params[fkey].items()
-            if t not in hidden_var_types
-        }
+        for fkey in list(agg.fn_input_params.keys()):
+            agg.fn_input_params[fkey] = {
+                p: t
+                for p, t in agg.fn_input_params[fkey].items()
+                if t not in hidden_var_types
+            }
 
     for fkey in hidden_fkeys:
         agg.fn_input_params.pop(fkey, None)
@@ -585,38 +629,63 @@ def _fkey_has_constant_value(
     )
 
 
+def pending_value_group_coverage(
+    pending_constants: dict[str, set[str]],
+    agg: "AggregatedData",
+) -> dict[tuple[str, str], set[tuple[str, str]]]:
+    """For every staged (constant, pending_value) pair, the set of wiring
+    groups (see ``_wiring_group_key``) that already have a REAL call site
+    recording that exact value.
+
+    A constant can feed multiple function nodes that share a function name
+    but are wired to different inputs/outputs (e.g. compute_rolling_vo2 fed
+    by RawVO2 in one node, RawHeartRate in another — each its own canvas
+    node/wiring, see group_call_sites_by_wiring). Shared by
+    ``auto_clean_pending_constants`` (deciding when a value is no longer
+    pending ANYWHERE) and ``group_call_sites_by_wiring`` (deciding whether
+    to synthesize a staged row for one SPECIFIC wiring, even while the
+    value is still pending for a sibling one).
+
+    Returns:
+        {(const_name, pending_value): {wiring_group_key, ...}}
+    """
+    coverage: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for const_name, pvals in pending_constants.items():
+        consuming_fkeys = agg.const_fns.get(const_name, set())
+        for pval in pvals:
+            coverage[(const_name, pval)] = {
+                _wiring_group_key(agg, fkey)
+                for fkey in consuming_fkeys
+                if _fkey_has_constant_value(agg, fkey, const_name, pval)
+            }
+    return coverage
+
+
 def auto_clean_pending_constants(
     pending_constants: dict[str, set[str]],
     agg: "AggregatedData",
 ) -> tuple[dict[str, set[str]], list[tuple[str, str]]]:
     """Remove pending values once every wiring that consumes them has run.
 
-    A constant can feed multiple function nodes that share a function name
-    but are wired to different inputs/outputs (e.g. compute_rolling_vo2 fed
-    by RawVO2 in one node, RawHeartRate in another — each its own canvas
-    node/wiring, see group_call_sites_by_wiring). A naive "is this value in
-    the DB anywhere" check blurs across those wirings: as soon as ONE of
-    them ran with the new value, the check saw the value in the DB and
-    cleared the pending flag for ALL of them — silently un-marking the
-    OTHER (never re-run) wiring as no-longer-pending, even though it's
-    still showing its old, stale value. Removal must wait until every
-    wiring group that references the constant has its own real call site
-    recording that exact value.
+    A naive "is this value in the DB anywhere" check blurs across wirings
+    that share a constant node: as soon as ONE of them ran with the new
+    value, the check saw the value in the DB and cleared the pending flag
+    for ALL of them — silently un-marking the OTHER (never re-run) wiring
+    as no-longer-pending, even though it's still showing its old, stale
+    value. Removal must wait until every wiring group that references the
+    constant has its own real call site recording that exact value.
 
     Returns:
         Tuple of (cleaned pending_constants, list of (name, value) to remove from DB).
     """
     removals: list[tuple[str, str]] = []
+    coverage = pending_value_group_coverage(pending_constants, agg)
     for const_name in list(pending_constants.keys()):
         consuming_fkeys = agg.const_fns.get(const_name, set())
         required_groups = {_wiring_group_key(agg, fkey) for fkey in consuming_fkeys}
         still_pending: set[str] = set()
         for pval in pending_constants[const_name]:
-            covered_groups = {
-                _wiring_group_key(agg, fkey)
-                for fkey in consuming_fkeys
-                if _fkey_has_constant_value(agg, fkey, const_name, pval)
-            }
+            covered_groups = coverage[(const_name, pval)]
             # required_groups being empty means no real call site references
             # this constant yet — never auto-clean on that vacuous truth.
             if required_groups and required_groups <= covered_groups:
@@ -786,8 +855,22 @@ def build_function_nodes(
     # Sort by (fn_name, call_id) for stable output across runs.
     for fkey in sorted(fn_input_params.keys()):
         fn, cid = fkey
-        input_params = dict(sorted(fn_input_params[fkey].items()))
-        constant_params = sorted(fn_constants.get(fkey, set()))
+        # Order by registry signature declaration order (falling back to
+        # alphabetical for any param not in the signature, e.g. stale DB
+        # data) so DB-derived handle order matches the manual-node path,
+        # which already orders by signature (pipeline.py _fn_params_from_registry).
+        sig_order = fn_params_map.get(fn, [])
+        order_key = {name: i for i, name in enumerate(sig_order)}
+        input_params = dict(
+            sorted(
+                fn_input_params[fkey].items(),
+                key=lambda kv: (order_key.get(kv[0], len(sig_order)), kv[0]),
+            )
+        )
+        constant_params = sorted(
+            fn_constants.get(fkey, set()),
+            key=lambda name: (order_key.get(name, len(sig_order)), name),
+        )
 
         # Fill in any params the DB didn't capture.
         known = set(input_params) | set(constant_params)
@@ -1099,40 +1182,130 @@ def inbound_edge_candidates(
     )
 
 
+def inbound_edge_candidates_by_handle(
+    fn: str, wid: str, input_params: dict, const_names=(), path_names=()
+) -> dict[str, str]:
+    """Same candidate inbound edge ids as ``inbound_edge_candidates``, but
+    mapped to the ``target_handle`` each one feeds (``in__{param}`` /
+    ``const__{name}``) — the id shape alone doesn't say WHICH input a hidden
+    edge blocks, and callers reconciling hidden edges against manual
+    reconnects need that to check per-handle coverage rather than a flat
+    yes/no (see hidden_wirings, variant_resolver.filter_disconnected_targets).
+
+    ``input_params``: {param_name: var_type-or-list-of-var_types}, same
+    shape as a call site's ``fn_input_params`` entry / a DB variant's
+    ``input_types``. A list-valued param contributes one candidate per
+    element, all mapped to that param's single handle.
+    """
+    result: dict[str, str] = {}
+    for param_name, type_val in input_params.items():
+        handle = f"in__{param_name}"
+        types = type_val if isinstance(type_val, (list, set, tuple)) else [type_val]
+        for vt in types:
+            result[f"e__{vt}__{fn}__{wid}"] = handle
+    for cname in const_names:
+        result[f"e__{cname}__{fn}__{wid}"] = f"const__{cname}"
+    for pname in path_names:
+        result[f"e__{pname}__{fn}__{wid}"] = f"in__{pname}"
+    return result
+
+
+def manual_edge_handle_index(
+    manual_edges: "list[dict] | tuple",
+) -> dict[tuple[str, str, str], dict]:
+    """Index manual edges by the (fn_name, wiring_id, target_handle) call
+    site they currently feed — the "is this exact input handle covered by
+    a manual reconnect?" lookup used by hidden_wirings/
+    filter_disconnected_targets to stop treating a hidden DB-derived edge
+    as disconnected once the user has manually wired a replacement onto
+    the same handle. Matches by parsing each edge's ``target`` the same
+    way execution_service.derive_fn_targets already matches manual edges
+    to function nodes (parse_fn_node_id, which strips any placement
+    suffix first) — so a bare, wiring-grouped, or scope-placed target id
+    all resolve to the same (fn_name, wiring_id) key.
+    """
+    index: dict[tuple[str, str, str], dict] = {}
+    for edge in manual_edges:
+        handle = edge.get("targetHandle")
+        target = edge.get("target")
+        if not handle or not target:
+            continue
+        parsed = parse_fn_node_id(target)
+        if parsed is None:
+            continue
+        index[(parsed[0], parsed[1], handle)] = edge
+    logger.debug("[graph_builder] manual_edge_handle_index: indexed %d edge(s)", len(index))
+    return index
+
+
 def hidden_wirings(
     fn_input_params: dict[FnKey, dict],
     fn_outputs: dict[FnKey, set],
     fn_constants: dict[FnKey, set],
     path_inputs: dict[str, dict],
     hidden_edge_ids: set[str],
+    manual_edges: "list[dict] | tuple" = (),
 ) -> set[tuple[str, str]]:
-    """(fn_name, wiring_id) pairs with at least one hidden inbound edge.
+    """(fn_name, wiring_id) pairs with at least one hidden inbound edge that
+    is NOT currently covered by a manual reconnect.
 
     Reconstructs each call site's candidate inbound edge ids the same way
     build_edges does (without needing edges to already exist) and checks
     them against ``hidden_edge_ids``. Works on the PRE-GROUPING agg (raw
     per-call-site FnKeys) — every call site sharing a wiring recomputes
     the same wiring_id, so the result is correct regardless of grouping.
+
+    A hidden inbound edge only keeps its wiring "disconnected" if the
+    target_handle it fed still has no manual edge wired onto it — the user
+    reconnecting a DIFFERENT variable to the same handle (not the same
+    source, which layout_service.put_edge already auto-unhides) must clear
+    the disconnected state too. A wiring with MULTIPLE hidden handles stays
+    disconnected until every one of them is covered (partial reconnection
+    doesn't make it runnable) — see manual_edge_handle_index.
     """
     if not hidden_edge_ids:
         return set()
+    manual_index = manual_edge_handle_index(manual_edges)
     result: set[tuple[str, str]] = set()
     for fkey, params in fn_input_params.items():
         fn, _cid = fkey
         wid = wiring_id(fn, params, fn_outputs.get(fkey, set()))
-        candidates = inbound_edge_candidates(
-            fn, wid, var_types=params.values(), const_names=fn_constants.get(fkey, set())
+        handle_map = inbound_edge_candidates_by_handle(
+            fn, wid, params, const_names=fn_constants.get(fkey, set())
         )
-        if hidden_edge_ids.intersection(candidates):
+        hidden_handles = {h for cid_, h in handle_map.items() if cid_ in hidden_edge_ids}
+        if not hidden_handles:
+            continue
+        uncovered = [h for h in hidden_handles if (fn, wid, h) not in manual_index]
+        if uncovered:
             result.add((fn, wid))
+        else:
+            logger.info(
+                "[graph_builder] wiring (%s, %s) reconnected via manual edge(s) "
+                "covering %s — clearing disconnected state",
+                fn,
+                wid,
+                sorted(hidden_handles),
+            )
     for param_name, pi in path_inputs.items():
         for fkey in pi["functions"]:
             fn, _cid = fkey
             wid = wiring_id(
                 fn, fn_input_params.get(fkey, {}), fn_outputs.get(fkey, set())
             )
-            if f"e__{param_name}__{fn}__{wid}" in hidden_edge_ids:
-                result.add((fn, wid))
+            handle = f"in__{param_name}"
+            if f"e__{param_name}__{fn}__{wid}" not in hidden_edge_ids:
+                continue
+            if (fn, wid, handle) in manual_index:
+                logger.info(
+                    "[graph_builder] wiring (%s, %s) pathInput '%s' reconnected via "
+                    "manual edge — clearing disconnected state",
+                    fn,
+                    wid,
+                    param_name,
+                )
+                continue
+            result.add((fn, wid))
     if result:
         logger.info("[graph_builder] hidden_wirings: %s", sorted(result))
     return result

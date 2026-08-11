@@ -55,12 +55,17 @@ class TestHiddenCombos:
         """Calling the OLD whole-node unhide_node directly (bypassing
         unhide_combo) doesn't clean up _pipeline_hidden_combos -- documents
         that callers must go through unhide_combo, not unhide_node, to
-        restore a hidden combo."""
+        restore a hidden combo. get_hidden_node_ids always unions in
+        _pipeline_hidden_combos (plan-scope-hidden-nodes-edges.md) precisely
+        so this half-restore can't make the node silently reappear on
+        canvas while the restore panel still lists it as hidden -- it must
+        still report the node hidden until unhide_combo cleans up both
+        tables."""
         db = populated_db
         node_id = "fn__bandpass_filter__abc123"
         pipeline_store.hide_combo(db, node_id, "bandpass_filter", {"low_hz": "20"})
         pipeline_store.unhide_node(db, node_id)
-        assert node_id not in pipeline_store.get_hidden_node_ids(db)
+        assert node_id in pipeline_store.get_hidden_node_ids(db)
         assert pipeline_store.list_hidden_combos(db, "bandpass_filter") == [
             {"node_id": node_id, "variant_key": {"low_hz": "20"}}
         ]
@@ -136,3 +141,89 @@ class TestHiddenEdges:
     def test_get_hidden_edge_ids_empty_by_default(self, populated_db):
         db = populated_db
         assert pipeline_store.get_hidden_edge_ids(db) == set()
+
+
+class TestScopedHiding:
+    """hide_node/hide_edge are scoped per pipeline_id (plan-scope-hidden-
+    nodes-edges.md) -- a canonical id is scope-INDEPENDENT (graph_builder.
+    wiring_id hashes only fn name + input/output shape), so two pipeline
+    scopes can independently place the SAME id; hiding it in one must not
+    hide it in the other. ``pipeline_id=None`` on the getters still returns
+    every scope's hidden ids unioned, for the (not yet scope-aware)
+    execution-readiness callers."""
+
+    NODE_ID = "var__FilteredSignal"
+    EDGE_ID = "e__RawSignal__bandpass_filter__abc123"
+
+    def test_hide_node_scoped_to_one_pipeline(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_node(db, self.NODE_ID, "pipe_a")
+        assert self.NODE_ID in pipeline_store.get_hidden_node_ids(db, "pipe_a")
+        assert self.NODE_ID not in pipeline_store.get_hidden_node_ids(db, "main")
+        assert self.NODE_ID not in pipeline_store.get_hidden_node_ids(db, "pipe_b")
+        # Unscoped getter still sees it (execution-path compatibility).
+        assert self.NODE_ID in pipeline_store.get_hidden_node_ids(db)
+
+    def test_hide_node_in_two_scopes_independently(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_node(db, self.NODE_ID, "pipe_a")
+        pipeline_store.hide_node(db, self.NODE_ID, "pipe_b")
+        pipeline_store.unhide_node(db, self.NODE_ID, "pipe_a")
+        # Unhiding in pipe_a must not affect pipe_b's independent hide.
+        assert self.NODE_ID not in pipeline_store.get_hidden_node_ids(db, "pipe_a")
+        assert self.NODE_ID in pipeline_store.get_hidden_node_ids(db, "pipe_b")
+
+    def test_unhide_nodes_by_prefix_scoped(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_node(db, "fn__bandpass_filter__abc123", "pipe_a")
+        pipeline_store.hide_node(db, "fn__bandpass_filter__def456", "pipe_b")
+        pipeline_store.unhide_nodes_by_prefix(db, "fn__bandpass_filter__", "pipe_a")
+        assert pipeline_store.get_hidden_node_ids(db, "pipe_a") == set()
+        assert "fn__bandpass_filter__def456" in pipeline_store.get_hidden_node_ids(
+            db, "pipe_b"
+        )
+
+    def test_hide_edge_scoped_to_one_pipeline(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_edge(
+            db, self.EDGE_ID, "var__RawSignal", "fn__bandpass_filter__abc123",
+            pipeline_id="pipe_a",
+        )
+        assert self.EDGE_ID in pipeline_store.get_hidden_edge_ids(db, "pipe_a")
+        assert self.EDGE_ID not in pipeline_store.get_hidden_edge_ids(db, "main")
+        assert self.EDGE_ID in pipeline_store.get_hidden_edge_ids(db)  # unscoped union
+
+    def test_unhide_edge_scoped_leaves_other_scope_hidden(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_edge(
+            db, self.EDGE_ID, "var__RawSignal", "fn__bandpass_filter__abc123",
+            pipeline_id="pipe_a",
+        )
+        pipeline_store.hide_edge(
+            db, self.EDGE_ID, "var__RawSignal", "fn__bandpass_filter__abc123",
+            pipeline_id="pipe_b",
+        )
+        pipeline_store.unhide_edge(db, self.EDGE_ID, "pipe_a")
+        assert self.EDGE_ID not in pipeline_store.get_hidden_edge_ids(db, "pipe_a")
+        assert self.EDGE_ID in pipeline_store.get_hidden_edge_ids(db, "pipe_b")
+
+    def test_list_hidden_edges_scoped(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_edge(
+            db, self.EDGE_ID, "var__RawSignal", "fn__bandpass_filter__abc123",
+            pipeline_id="pipe_a",
+        )
+        assert len(pipeline_store.list_hidden_edges(db, "pipe_a")) == 1
+        assert pipeline_store.list_hidden_edges(db, "pipe_b") == []
+        assert len(pipeline_store.list_hidden_edges(db)) == 1  # unscoped union
+
+    def test_combo_hide_still_visible_in_every_scope(self, populated_db):
+        """Pending-constant combo hides remain intentionally global (not
+        yet scoped -- see plan-scope-hidden-nodes-edges.md follow-up), so
+        a combo hidden via hide_combo must still show up for ANY scope's
+        get_hidden_node_ids, not just 'main'."""
+        db = populated_db
+        node_id = "fn__bandpass_filter__abc123"
+        pipeline_store.hide_combo(db, node_id, "bandpass_filter", {"low_hz": "20"})
+        assert node_id in pipeline_store.get_hidden_node_ids(db, "pipe_a")
+        assert node_id in pipeline_store.get_hidden_node_ids(db, "main")

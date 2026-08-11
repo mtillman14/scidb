@@ -273,10 +273,16 @@ def write_manual_node(
     logger.info("[layout] Writing node metadata to DuckDB")
     db = get_db()
     pipeline_store.write_manual_node(db, node_id, node_type, label, pipeline_id)
-    # If the user is re-adding a node that was previously hidden, unhide it.
+    # If the user is re-adding a node that was previously hidden, unhide it
+    # — scoped to THIS pipeline_id only, so re-adding a node here doesn't
+    # resurrect another hypothesis pipeline's independent placement of the
+    # same shared wiring (see plan-scope-hidden-nodes-edges.md).
     # Also unhide the canonical DB-derived ID for this type/label.
-    logger.info("[layout] Unhiding node (in case it was previously deleted)")
-    pipeline_store.unhide_node(db, node_id)
+    logger.info(
+        "[layout] Unhiding node in scope=%r (in case it was previously deleted)",
+        pipeline_id,
+    )
+    pipeline_store.unhide_node(db, node_id, pipeline_id)
     prefix_map = {
         "variableNode": "var__",
         "functionNode": "fn__",
@@ -294,13 +300,13 @@ def write_manual_node(
             # DB-derived function nodes use composite ``fn__{label}__{call_id}``
             # IDs — there can be multiple canonical nodes per label.  Unhide
             # every call-site node sharing the label.
-            pipeline_store.unhide_nodes_by_prefix(db, f"fn__{label}__")
+            pipeline_store.unhide_nodes_by_prefix(db, f"fn__{label}__", pipeline_id)
             # Also unhide the legacy fn__{label} form for older layouts.
-            pipeline_store.unhide_node(db, f"fn__{label}")
+            pipeline_store.unhide_node(db, f"fn__{label}", pipeline_id)
             logger.debug("[layout] Unhid all function nodes with label=%r", label)
         else:
             canonical_id = f"{prefix}{label}"
-            pipeline_store.unhide_node(db, canonical_id)
+            pipeline_store.unhide_node(db, canonical_id, pipeline_id)
             logger.debug("[layout] Unhid canonical node %r", canonical_id)
     logger.info("[layout] Manual node written successfully")
 
@@ -314,27 +320,39 @@ def delete_node(node_id: str) -> None:
 
     For DB-derived nodes (var__, fn__, const__, pathInput__), also mark them
     as hidden so _build_graph won't recreate them from pipeline history.
-    Hiding is deliberately GLOBAL (not per-placement) — the id passed in
-    may be placement-qualified (the frontend renders whatever id a
-    graduated node resolved to in its own scope), so it's stripped to the
-    bare canonical id before being stored/matched, since
+    Hiding is scoped to the SCOPE ``node_id`` currently belongs to (resolved
+    via domain.scope_filter.node_scope, the same "what scope is this node
+    in" logic every other consumer trusts) — not global — so a delete in
+    one pipeline never hides another pipeline's independent placement of
+    the same shared wiring (graph_builder.wiring_id is scope-independent by
+    design; see plan-scope-hidden-nodes-edges.md). The id is stripped to
+    the bare canonical id before being stored/matched, since
     domain.graph_builder.filter_hidden checks bare prefixes.
     """
     from scistack_gui.domain.graph_builder import strip_placement
+    from scistack_gui.domain.scope_filter import node_scope
 
     logger.info("[layout] delete_node called (node_id=%r)", node_id)
+    db = get_db()
+    # Resolve scope BEFORE removing the position — node_scope's fallback
+    # for a bare (not placement-qualified) id scans saved positions.
+    manual_nodes = pipeline_store.get_manual_nodes(db)
+    positions_by_scope = read_positions_by_scope()
+    scope_id = node_scope(node_id, manual_nodes, positions_by_scope)
     logger.info("[layout] Removing position from JSON")
     data = _load()
     for scope in data["positions"].values():
         scope.pop(node_id, None)
     _save(data)
     logger.info("[layout] Deleting node metadata from DuckDB")
-    db = get_db()
     pipeline_store.delete_node(db, node_id)
     # Hide DB-derived nodes so they don't reappear from list_pipeline_variants().
     bare_id = strip_placement(node_id)
-    logger.info("[layout] Marking node as hidden (so it won't be auto-recreated)")
-    pipeline_store.hide_node(db, bare_id)
+    logger.info(
+        "[layout] Marking node as hidden in scope=%r (so it won't be auto-recreated there)",
+        scope_id,
+    )
+    pipeline_store.hide_node(db, bare_id, scope_id)
     logger.info("[layout] Node deleted successfully")
 
 

@@ -99,9 +99,50 @@ def _ensure_tables(db) -> None:
     """)
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_nodes (
-            node_id VARCHAR PRIMARY KEY
+            pipeline_id VARCHAR NOT NULL DEFAULT 'main',
+            node_id     VARCHAR NOT NULL,
+            PRIMARY KEY (pipeline_id, node_id)
         )
     """)
+    # Scoping migration: this table originally keyed on node_id ALONE (one
+    # hide record per canonical id, GLOBAL across every pipeline scope) —
+    # wrong once two hypothesis pipelines can independently place the SAME
+    # canonical id (graph_builder.wiring_id is scope-independent by design;
+    # see plan-scope-hidden-nodes-edges.md). A single-column PK can't hold
+    # one row per (scope, id), so recreate with the composite key,
+    # backfilling existing rows to the root scope (their only prior
+    # meaning). Self-limiting like every other ALTER migration in this
+    # file: the ADD COLUMN fails (column already exists) on every call
+    # after the first, including for a freshly-created table above.
+    try:
+        _duck(db)._execute(
+            "ALTER TABLE _pipeline_hidden_nodes ADD COLUMN pipeline_id VARCHAR DEFAULT 'main'"
+        )
+        old_rows = _duck(db)._fetchall(
+            "SELECT node_id, pipeline_id FROM _pipeline_hidden_nodes"
+        )
+        _duck(db)._execute("DROP TABLE _pipeline_hidden_nodes")
+        _duck(db)._execute("""
+            CREATE TABLE _pipeline_hidden_nodes (
+                pipeline_id VARCHAR NOT NULL DEFAULT 'main',
+                node_id     VARCHAR NOT NULL,
+                PRIMARY KEY (pipeline_id, node_id)
+            )
+        """)
+        for node_id, pid in old_rows:
+            _duck(db)._execute(
+                "INSERT INTO _pipeline_hidden_nodes (pipeline_id, node_id) "
+                "VALUES (?, ?) ON CONFLICT DO NOTHING",
+                [pid or ROOT_PIPELINE_ID, node_id],
+            )
+        logger.info(
+            "[pipeline_store] scoping migration: recreated _pipeline_hidden_nodes "
+            "with composite (pipeline_id, node_id) key (%d row(s) backfilled to '%s')",
+            len(old_rows),
+            ROOT_PIPELINE_ID,
+        )
+    except Exception:
+        pass  # Already migrated (composite key exists), or freshly created above.
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_combos (
             node_id       VARCHAR PRIMARY KEY,
@@ -111,13 +152,51 @@ def _ensure_tables(db) -> None:
     """)
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_edges (
-            edge_id       VARCHAR PRIMARY KEY,
+            pipeline_id   VARCHAR NOT NULL DEFAULT 'main',
+            edge_id       VARCHAR NOT NULL,
             source        VARCHAR NOT NULL,
             target        VARCHAR NOT NULL,
             source_handle VARCHAR,
-            target_handle VARCHAR
+            target_handle VARCHAR,
+            PRIMARY KEY (pipeline_id, edge_id)
         )
     """)
+    # Same scoping migration as _pipeline_hidden_nodes above, for edges.
+    try:
+        _duck(db)._execute(
+            "ALTER TABLE _pipeline_hidden_edges ADD COLUMN pipeline_id VARCHAR DEFAULT 'main'"
+        )
+        old_edge_rows = _duck(db)._fetchall(
+            "SELECT edge_id, source, target, source_handle, target_handle, "
+            "pipeline_id FROM _pipeline_hidden_edges"
+        )
+        _duck(db)._execute("DROP TABLE _pipeline_hidden_edges")
+        _duck(db)._execute("""
+            CREATE TABLE _pipeline_hidden_edges (
+                pipeline_id   VARCHAR NOT NULL DEFAULT 'main',
+                edge_id       VARCHAR NOT NULL,
+                source        VARCHAR NOT NULL,
+                target        VARCHAR NOT NULL,
+                source_handle VARCHAR,
+                target_handle VARCHAR,
+                PRIMARY KEY (pipeline_id, edge_id)
+            )
+        """)
+        for edge_id, source, target, source_handle, target_handle, pid in old_edge_rows:
+            _duck(db)._execute(
+                "INSERT INTO _pipeline_hidden_edges (pipeline_id, edge_id, "
+                "source, target, source_handle, target_handle) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                [pid or ROOT_PIPELINE_ID, edge_id, source, target, source_handle, target_handle],
+            )
+        logger.info(
+            "[pipeline_store] scoping migration: recreated _pipeline_hidden_edges "
+            "with composite (pipeline_id, edge_id) key (%d row(s) backfilled to '%s')",
+            len(old_edge_rows),
+            ROOT_PIPELINE_ID,
+        )
+    except Exception:
+        pass  # Already migrated (composite key exists), or freshly created above.
     # Add config column if missing (migration for existing DBs).
     try:
         _duck(db)._execute(
@@ -881,41 +960,70 @@ def hide_hypothesis(db, pipeline_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def hide_node(db, node_id: str) -> None:
-    """Mark a DB-derived node as hidden so _build_graph won't recreate it."""
+def hide_node(db, node_id: str, pipeline_id: str = ROOT_PIPELINE_ID) -> None:
+    """Mark a DB-derived node as hidden IN ``pipeline_id`` so that scope's
+    _build_graph won't recreate it — a canonical id shared by another
+    pipeline scope's independent placement of the same wiring (see
+    graph_builder.wiring_id) is untouched (plan-scope-hidden-nodes-edges.md).
+    """
     _ensure_tables(db)
     _duck(db)._execute(
-        "INSERT INTO _pipeline_hidden_nodes (node_id) VALUES (?) "
+        "INSERT INTO _pipeline_hidden_nodes (pipeline_id, node_id) VALUES (?, ?) "
         "ON CONFLICT DO NOTHING",
-        [node_id],
+        [pipeline_id, node_id],
     )
 
 
-def unhide_node(db, node_id: str) -> None:
-    """Remove a node from the hidden list (e.g. when user re-adds it)."""
+def unhide_node(db, node_id: str, pipeline_id: str = ROOT_PIPELINE_ID) -> None:
+    """Remove a node from ``pipeline_id``'s hidden list (e.g. re-added there)."""
     _duck(db)._execute(
-        "DELETE FROM _pipeline_hidden_nodes WHERE node_id = ?", [node_id]
+        "DELETE FROM _pipeline_hidden_nodes WHERE pipeline_id = ? AND node_id = ?",
+        [pipeline_id, node_id],
     )
 
 
-def unhide_nodes_by_prefix(db, prefix: str) -> None:
-    """Remove all hidden nodes whose IDs start with ``prefix``.
+def unhide_nodes_by_prefix(
+    db, prefix: str, pipeline_id: str = ROOT_PIPELINE_ID
+) -> None:
+    """Remove all of ``pipeline_id``'s hidden nodes whose IDs start with
+    ``prefix``.
 
     Used when a user re-adds a function node by label: composite DB-derived
     IDs (``fn__{label}__{call_id}``) don't match a single canonical ID, so
     we unhide every call-site node sharing the prefix.
     """
     _duck(db)._execute(
-        "DELETE FROM _pipeline_hidden_nodes WHERE node_id LIKE ?",
-        [prefix + "%"],
+        "DELETE FROM _pipeline_hidden_nodes WHERE pipeline_id = ? AND node_id LIKE ?",
+        [pipeline_id, prefix + "%"],
     )
 
 
-def get_hidden_node_ids(db) -> set[str]:
-    """Return the set of node IDs that the user has explicitly deleted."""
+def get_hidden_node_ids(db, pipeline_id: "str | None" = None) -> set[str]:
+    """Return the set of node IDs hidden in ``pipeline_id``.
+
+    ``pipeline_id=None`` (default) returns every scope's hidden ids unioned
+    — for callers that intentionally check hidden-ness independent of scope
+    (currently the execution/run-readiness path, which is not yet
+    scope-aware — see plan-scope-hidden-nodes-edges.md follow-up). Canvas
+    rendering (api.pipeline._build_graph) passes its own scope so a delete
+    in one pipeline never hides a shared-wiring node in another.
+
+    Pending-constant combo hides (_pipeline_hidden_combos) remain globally
+    scoped by design (deferred, same follow-up) and are always unioned in
+    regardless of ``pipeline_id`` so that existing behavior is unchanged.
+    """
     _ensure_tables(db)
-    rows = _duck(db)._fetchall("SELECT node_id FROM _pipeline_hidden_nodes")
-    return {row[0] for row in rows}
+    if pipeline_id is None:
+        rows = _duck(db)._fetchall("SELECT node_id FROM _pipeline_hidden_nodes")
+    else:
+        rows = _duck(db)._fetchall(
+            "SELECT node_id FROM _pipeline_hidden_nodes WHERE pipeline_id = ?",
+            [pipeline_id],
+        )
+    hidden = {row[0] for row in rows}
+    combo_rows = _duck(db)._fetchall("SELECT node_id FROM _pipeline_hidden_combos")
+    hidden.update(row[0] for row in combo_rows)
+    return hidden
 
 
 # ---------------------------------------------------------------------------
@@ -981,45 +1089,76 @@ def hide_edge(
     target: str = "",
     source_handle: "str | None" = None,
     target_handle: "str | None" = None,
+    pipeline_id: str = ROOT_PIPELINE_ID,
 ) -> None:
-    """Mark a DB-derived edge as hidden so build_edges won't recreate it."""
+    """Mark a DB-derived edge as hidden IN ``pipeline_id`` so that scope's
+    build_edges won't recreate it — an edge id shared by another pipeline
+    scope's independent placement of the same wiring is untouched (see
+    hide_node and plan-scope-hidden-nodes-edges.md)."""
     logger.info(
-        "[pipeline_store] hide_edge called (edge_id=%r, source=%r, target=%r)",
+        "[pipeline_store] hide_edge called (edge_id=%r, source=%r, target=%r, "
+        "pipeline_id=%r)",
         edge_id,
         source,
         target,
+        pipeline_id,
     )
     _ensure_tables(db)
     _duck(db)._execute(
         "INSERT INTO _pipeline_hidden_edges "
-        "(edge_id, source, target, source_handle, target_handle) "
-        "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-        [edge_id, source, target, source_handle, target_handle],
+        "(pipeline_id, edge_id, source, target, source_handle, target_handle) "
+        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        [pipeline_id, edge_id, source, target, source_handle, target_handle],
     )
 
 
-def unhide_edge(db, edge_id: str) -> None:
-    """Restore a previously hidden edge."""
-    logger.info("[pipeline_store] unhide_edge called (edge_id=%r)", edge_id)
+def unhide_edge(db, edge_id: str, pipeline_id: str = ROOT_PIPELINE_ID) -> None:
+    """Restore a previously hidden edge in ``pipeline_id``."""
+    logger.info(
+        "[pipeline_store] unhide_edge called (edge_id=%r, pipeline_id=%r)",
+        edge_id,
+        pipeline_id,
+    )
     _duck(db)._execute(
-        "DELETE FROM _pipeline_hidden_edges WHERE edge_id = ?", [edge_id]
+        "DELETE FROM _pipeline_hidden_edges WHERE pipeline_id = ? AND edge_id = ?",
+        [pipeline_id, edge_id],
     )
 
 
-def get_hidden_edge_ids(db) -> set[str]:
-    """Return the set of edge IDs the user has explicitly hidden."""
+def get_hidden_edge_ids(db, pipeline_id: "str | None" = None) -> set[str]:
+    """Return the set of edge IDs hidden in ``pipeline_id``.
+
+    ``pipeline_id=None`` (default) returns every scope's hidden ids unioned
+    — see get_hidden_node_ids for why (same execution-path caveat)."""
     _ensure_tables(db)
-    rows = _duck(db)._fetchall("SELECT edge_id FROM _pipeline_hidden_edges")
+    if pipeline_id is None:
+        rows = _duck(db)._fetchall("SELECT edge_id FROM _pipeline_hidden_edges")
+    else:
+        rows = _duck(db)._fetchall(
+            "SELECT edge_id FROM _pipeline_hidden_edges WHERE pipeline_id = ?",
+            [pipeline_id],
+        )
     return {row[0] for row in rows}
 
 
-def list_hidden_edges(db) -> list[dict]:
-    """Hidden edges with enough context to label a restore-list entry."""
+def list_hidden_edges(db, pipeline_id: "str | None" = None) -> list[dict]:
+    """Hidden edges with enough context to label a restore-list entry.
+
+    ``pipeline_id=None`` (default) lists every scope's hidden edges; pass a
+    scope to restrict to just that pipeline's own hidden edges (the restore
+    panel — see plan-scope-hidden-nodes-edges.md)."""
     _ensure_tables(db)
-    rows = _duck(db)._fetchall(
-        "SELECT edge_id, source, target, source_handle, target_handle "
-        "FROM _pipeline_hidden_edges"
-    )
+    if pipeline_id is None:
+        rows = _duck(db)._fetchall(
+            "SELECT edge_id, source, target, source_handle, target_handle "
+            "FROM _pipeline_hidden_edges"
+        )
+    else:
+        rows = _duck(db)._fetchall(
+            "SELECT edge_id, source, target, source_handle, target_handle "
+            "FROM _pipeline_hidden_edges WHERE pipeline_id = ?",
+            [pipeline_id],
+        )
     return [
         {
             "edge_id": edge_id,

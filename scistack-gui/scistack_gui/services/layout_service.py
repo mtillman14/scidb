@@ -103,6 +103,7 @@ def put_edge(
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store
     from scistack_gui.domain.graph_builder import candidate_edge_id, find_cycle
+    from scistack_gui.domain.scope_filter import node_scope
 
     logger.info(
         "[layout_service] put_edge called (edge_id=%r, source=%r, target=%r, source_handle=%r, target_handle=%r)",
@@ -118,17 +119,25 @@ def put_edge(
     # graph_builder.candidate_edge_id), unhide the ORIGINAL edge instead of
     # creating a redundant manual one. This is what makes delete+reconnect
     # idempotent: state/execution recompute fresh from the real DB history
-    # under the original edge id, not a new manual-edge id.
+    # under the original edge id, not a new manual-edge id. Scoped to the
+    # connection's own scope (derived from its endpoints, same as
+    # delete_edge below) so reconnecting in one pipeline never unhides
+    # another pipeline's independent placement of the same shared wiring.
     candidate = candidate_edge_id(source, target)
-    if candidate is not None and candidate in pipeline_store.get_hidden_edge_ids(db):
-        logger.info(
-            "[layout_service] put_edge: reconnecting hidden DB-derived edge %r "
-            "— unhiding instead of creating a manual edge",
-            candidate,
-        )
-        pipeline_store.unhide_edge(db, candidate)
-        _notify_dag_updated()
-        return {"ok": True, "unhidden": candidate}
+    if candidate is not None:
+        manual_nodes = pipeline_store.get_manual_nodes(db)
+        positions_by_scope = layout_store.read_positions_by_scope()
+        scope_id = node_scope(target, manual_nodes, positions_by_scope)
+        if candidate in pipeline_store.get_hidden_edge_ids(db, scope_id):
+            logger.info(
+                "[layout_service] put_edge: reconnecting hidden DB-derived edge %r "
+                "in scope=%r — unhiding instead of creating a manual edge",
+                candidate,
+                scope_id,
+            )
+            pipeline_store.unhide_edge(db, candidate, scope_id)
+            _notify_dag_updated()
+            return {"ok": True, "unhidden": candidate}
 
     # Checked against manual edges only (not the full DB-derived data-lineage
     # graph): computing that graph (domain.pipeline_service.get_pipeline_graph
@@ -175,6 +184,7 @@ def delete_edge(
 ) -> dict:
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store
+    from scistack_gui.domain.scope_filter import node_scope
 
     logger.info("[layout_service] delete_edge called (edge_id=%r)", edge_id)
     # Whether an edge is "manual" is decided by ACTUAL membership in the
@@ -190,26 +200,49 @@ def delete_edge(
     else:
         # DB-derived edge: never delete data, only hide it — build_edges
         # excludes it on every rebuild until unhide_edge (see put_edge's
-        # reconnect-detection) or the restore panel brings it back.
-        pipeline_store.hide_edge(db, edge_id, source, target, source_handle, target_handle)
+        # reconnect-detection) or the restore panel brings it back. Scoped
+        # to the edge's own scope (derived from its endpoints — same
+        # canonical id shared by another pipeline's independent placement
+        # of this wiring must stay visible there; see
+        # plan-scope-hidden-nodes-edges.md).
+        manual_nodes = pipeline_store.get_manual_nodes(db)
+        positions_by_scope = layout_store.read_positions_by_scope()
+        scope_id = (
+            node_scope(target, manual_nodes, positions_by_scope)
+            if target
+            else node_scope(source, manual_nodes, positions_by_scope)
+            if source
+            else pipeline_store.ROOT_PIPELINE_ID
+        )
+        logger.info(
+            "[layout_service] delete_edge: hiding DB-derived edge in scope=%r",
+            scope_id,
+        )
+        pipeline_store.hide_edge(
+            db, edge_id, source, target, source_handle, target_handle, scope_id
+        )
         logger.info("[layout_service] DB-derived edge hidden")
     _notify_dag_updated()
     return {"ok": True}
 
 
-def unhide_edge(db, edge_id: str) -> dict:
+def unhide_edge(db, edge_id: str, pipeline_id: str = "main") -> dict:
     from scistack_gui import pipeline_store
 
-    logger.info("[layout_service] unhide_edge called (edge_id=%r)", edge_id)
-    pipeline_store.unhide_edge(db, edge_id)
+    logger.info(
+        "[layout_service] unhide_edge called (edge_id=%r, pipeline_id=%r)",
+        edge_id,
+        pipeline_id,
+    )
+    pipeline_store.unhide_edge(db, edge_id, pipeline_id)
     _notify_dag_updated()
     return {"ok": True}
 
 
-def get_hidden_edges(db) -> dict:
+def get_hidden_edges(db, pipeline_id: "str | None" = None) -> dict:
     from scistack_gui import pipeline_store
 
-    return {"edges": pipeline_store.list_hidden_edges(db)}
+    return {"edges": pipeline_store.list_hidden_edges(db, pipeline_id)}
 
 
 def get_constants() -> list[str]:

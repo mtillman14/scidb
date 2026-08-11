@@ -174,10 +174,21 @@ def extract_to_submodule(pipeline_id: str, node_ids: list[str], name: str) -> di
     from the kept node to the placed pipeline node's port, purely for
     visual continuity (matching how a hand-built submodule is normally
     wired: variable nodes connect to `in__{type}`/`out__{type}` handles).
-    A boundary edge whose kept side isn't a variable-type node has no
-    expressible port and is left without a visual replacement (rare/
-    unsupported wiring) — it still contributes to the interface via the
-    mechanism above.
+
+    Every boundary edge is var<->fn (never var<->var or fn<->fn), but
+    EITHER side may be the one that moved — a selection can carry a
+    variable node into the submodule while leaving a downstream function
+    behind (e.g. a leaf variable used by one function outside the
+    extracted set), not just the reverse. So the variable label is looked
+    up on the KEPT side first, falling back to the MOVED side when the
+    kept side isn't a variable-type node itself. The in__/out__ direction
+    on the placed node's port still follows which side moved (moved-as-
+    source -> out__, moved-as-target -> in__), since that describes flow
+    across the new scope boundary regardless of which endpoint supplied
+    the label. A boundary edge where NEITHER side is a variable-type node
+    has no expressible port and is left without a visual replacement
+    (rare/unsupported wiring) — it still contributes to the interface via
+    the mechanism above.
     """
     import uuid
 
@@ -212,27 +223,29 @@ def extract_to_submodule(pipeline_id: str, node_ids: list[str], name: str) -> di
             continue  # both moved (internal) or neither (irrelevant) — untouched
 
         if src_moved:
-            var_label = node_id_to_var_label(tgt, {}, manual_nodes)
-            if var_label is None:
-                logger.warning(
-                    "[scope_service] extract_to_submodule: boundary edge "
-                    "%s -> %s has no variable-type node on the kept side; "
-                    "no visual replacement added", src, tgt,
-                )
-                continue
+            kept_id, moved_id = tgt, src
+        else:
+            kept_id, moved_id = src, tgt
+        # Kept side first (the common case: a function moved, its
+        # connected variable stayed put); fall back to the moved side
+        # (e.g. a variable itself moved, leaving a downstream function
+        # behind) — either endpoint may be the variable-type one.
+        var_label = node_id_to_var_label(kept_id, {}, manual_nodes)
+        if var_label is None:
+            var_label = node_id_to_var_label(moved_id, {}, manual_nodes)
+        if var_label is None:
+            logger.warning(
+                "[scope_service] extract_to_submodule: boundary edge "
+                "%s -> %s has no variable-type node on either side; "
+                "no visual replacement added", src, tgt,
+            )
+            continue
+        if src_moved:
             new_edges.append({
                 "source": "__NEW_USE__", "target": tgt,
                 "sourceHandle": f"out__{var_label}", "targetHandle": e.get("targetHandle"),
             })
         else:
-            var_label = node_id_to_var_label(src, {}, manual_nodes)
-            if var_label is None:
-                logger.warning(
-                    "[scope_service] extract_to_submodule: boundary edge "
-                    "%s -> %s has no variable-type node on the kept side; "
-                    "no visual replacement added", src, tgt,
-                )
-                continue
             new_edges.append({
                 "source": src, "target": "__NEW_USE__",
                 "sourceHandle": e.get("sourceHandle"), "targetHandle": f"in__{var_label}",

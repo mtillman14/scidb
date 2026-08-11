@@ -138,73 +138,50 @@ class TestChainedFunctions:
 
 
 # ---------------------------------------------------------------------------
-# Pending constants downgrade green → pending
+# Pending constants are NOT a DAG-propagation concern
 # ---------------------------------------------------------------------------
+#
+# A real, recorded call site's own state is green or red on its merits,
+# full stop — propagate_run_states doesn't know about staged/pending
+# constant values at all anymore (that used to blur a call site to
+# "pending" just because SOME sibling wiring sharing the same constant
+# node had an unrun value, including — worse — the exact call site that
+# had just been run to satisfy it). "pending" for an unrun combo is
+# represented purely by the synthesized staged row that
+# graph_builder.group_call_sites_by_wiring adds for that not-yet-existing
+# combo — see test_graph_builder.py's TestGroupCallSitesByWiring and
+# TestFkeyPendingCoverage for that half of the behavior.
 
 
-class TestPendingConstants:
-    def test_green_downgraded_when_pending_constant_exists(self):
+class TestPendingConstantsNotPropagated:
+    def test_green_stays_green_regardless_of_extra_kwargs_removed(self):
+        """propagate_run_states no longer accepts fn_constants /
+        pending_constants at all — a real green call site is simply
+        green."""
         result = propagate_run_states(
             fn_own_states={K("f"): "green"},
             fn_input_params={K("f"): {}},
             fn_outputs={K("f"): {"Out"}},
-            fn_constants={K("f"): {"low_hz"}},
-            pending_constants={"low_hz": {42}},
-        )
-        assert result[fn("f")] == "pending"
-        assert result[var("Out")] == "pending"
-
-    def test_no_downgrade_when_pending_constant_empty(self):
-        result = propagate_run_states(
-            fn_own_states={K("f"): "green"},
-            fn_input_params={K("f"): {}},
-            fn_outputs={K("f"): {"Out"}},
-            fn_constants={K("f"): {"low_hz"}},
-            pending_constants={"low_hz": set()},
         )
         assert result[fn("f")] == "green"
+        assert result[var("Out")] == "green"
 
-    def test_no_downgrade_when_constant_not_pending(self):
-        result = propagate_run_states(
-            fn_own_states={K("f"): "green"},
-            fn_input_params={K("f"): {}},
-            fn_outputs={K("f"): {"Out"}},
-            fn_constants={K("f"): {"low_hz"}},
-            pending_constants={},
-        )
-        assert result[fn("f")] == "green"
-
-    def test_already_red_not_downgraded_further(self):
-        result = propagate_run_states(
-            fn_own_states={K("f"): "red"},
-            fn_input_params={K("f"): {}},
-            fn_outputs={K("f"): {"Out"}},
-            fn_constants={K("f"): {"low_hz"}},
-            pending_constants={"low_hz": {99}},
-        )
-        # Still red, not some other value.
-        assert result[fn("f")] == "red"
-
-    def test_pending_constant_propagates_to_downstream_function(self):
+    def test_two_sibling_wirings_each_keep_their_own_true_state(self):
+        """Regression for the bug where two function nodes sharing a
+        constant (e.g. compute_rolling_vo2 fed by two different signals)
+        both got stuck on "pending" until BOTH had (re)run a newly staged
+        constant value — even the one that had just been run itself. Real
+        call sites never blur into each other here; the "pending" nudge
+        for the unrun sibling combo is a graph_builder display concern,
+        not a DAG-propagation one.
+        """
         result = propagate_run_states(
             fn_own_states={K("A"): "green", K("B"): "green"},
-            fn_input_params={K("A"): {}, K("B"): {"x": "Out"}},
-            fn_outputs={K("A"): {"Out"}, K("B"): {"Final"}},
-            fn_constants={K("A"): {"low_hz"}},
-            pending_constants={"low_hz": {20}},
+            fn_input_params={K("A"): {}, K("B"): {}},
+            fn_outputs={K("A"): {"OutA"}, K("B"): {"OutB"}},
         )
-        assert result[fn("A")] == "pending"
-        assert result[fn("B")] == "pending"
-
-    def test_none_fn_constants_is_safe(self):
-        result = propagate_run_states(
-            fn_own_states={K("f"): "green"},
-            fn_input_params={K("f"): {}},
-            fn_outputs={K("f"): {"Out"}},
-            fn_constants=None,
-            pending_constants={"x": {1}},
-        )
-        assert result[fn("f")] == "green"
+        assert result[fn("A")] == "green"
+        assert result[fn("B")] == "green"
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +278,6 @@ class TestEdgeCases:
             fn_own_states=original,
             fn_input_params={K("f"): {}},
             fn_outputs={K("f"): set()},
-            fn_constants={K("f"): {"k"}},
-            pending_constants={"k": {1}},
         )
         assert original[K("f")] == "green"
 
@@ -380,19 +355,6 @@ class TestDisconnected:
         assert result[fn("A")] == "green"
         assert result[var("Out")] == "green"
         assert result[fn("B")] == "red"
-
-    def test_disconnected_wins_over_pending_constant(self):
-        # A disconnected required input always outranks a staged pending
-        # constant — reconnect first, the staged value doesn't matter yet.
-        result = propagate_run_states(
-            fn_own_states={K("f"): "green"},
-            fn_input_params={K("f"): {}},
-            fn_outputs={K("f"): {"Out"}},
-            fn_constants={K("f"): {"low_hz"}},
-            pending_constants={"low_hz": {42}},
-            disconnected_fkeys={K("f")},
-        )
-        assert result[fn("f")] == "red"
 
     def test_disconnected_already_red_stays_red(self):
         result = propagate_run_states(

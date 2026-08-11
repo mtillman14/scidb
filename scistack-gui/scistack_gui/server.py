@@ -365,14 +365,14 @@ def _h_unhide_edge(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.layout_service import unhide_edge
 
-    return unhide_edge(get_db(), params["edge_id"])
+    return unhide_edge(get_db(), params["edge_id"], params.get("pipeline_id", "main"))
 
 
-def _h_get_hidden_edges(_params):
+def _h_get_hidden_edges(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.layout_service import get_hidden_edges
 
-    return get_hidden_edges(get_db())
+    return get_hidden_edges(get_db(), params.get("pipeline_id"))
 
 
 def _h_put_pending_constant(params):

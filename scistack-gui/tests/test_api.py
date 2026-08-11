@@ -613,6 +613,126 @@ class TestDisconnectedEdges:
         assert "disconnected" in done[0]["error"]
         assert "signal" in done[0]["error"]
 
+    def test_reconnect_different_variable_clears_disconnected_and_run_state(
+        self, client, bp_node_id
+    ):
+        # Regression: deleting the signal edge then manually wiring a
+        # DIFFERENT variable onto the same in__signal handle must clear
+        # the disconnected/red state — it used to stay stuck forever
+        # because the disconnected check never looked at manual edges.
+        import numpy as np
+        from scidb import BaseVariable
+
+        class OtherSignal4(BaseVariable):
+            pass
+
+        OtherSignal4.save(np.zeros(5), subject=1, session="pre")
+
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, edge)
+
+        r = client.put(
+            "/api/edges/manual__reconnect4",
+            json={
+                "source": "var__OtherSignal4",
+                "target": bp_node_id,
+                "source_handle": None,
+                "target_handle": "in__signal",
+            },
+        )
+        assert r.status_code == 200
+
+        data = client.get("/api/pipeline").json()
+        node = next(n for n in data["nodes"] if n["id"] == bp_node_id)
+        assert not node["data"].get("disconnected")
+        assert node["data"]["run_state"] != "red"
+
+    def test_reconnect_different_variable_unblocks_run_and_uses_new_input(
+        self, client, bp_node_id, monkeypatch
+    ):
+        import numpy as np
+        from scidb import BaseVariable
+
+        from scistack_gui.api import run as run_api
+
+        class OtherSignal5(BaseVariable):
+            pass
+
+        OtherSignal5.save(np.zeros(5), subject=1, session="pre")
+
+        edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, edge)
+        client.put(
+            "/api/edges/manual__reconnect5",
+            json={
+                "source": "var__OtherSignal5",
+                "target": bp_node_id,
+                "source_handle": None,
+                "target_handle": "in__signal",
+            },
+        )
+
+        captured = []
+        monkeypatch.setattr(
+            run_api, "for_each", lambda *a, **k: captured.append(k) or None
+        )
+
+        r = client.post(
+            "/api/run", json={"function_name": "bandpass_filter", "variants": []}
+        )
+        assert r.status_code == 200
+        _wait_for_threads("Thread-")
+
+        assert len(captured) == 1, "reconnected function must run, not stay blocked"
+        assert captured[0]["inputs"]["signal"] is OtherSignal5
+
+    def test_reconnect_only_one_of_two_disconnected_inputs_stays_blocked(
+        self, client, bp_node_id, monkeypatch
+    ):
+        # Partial reconnection: signal gets a new variable, but low_hz's
+        # hidden const edge is left untouched — the node must stay
+        # disconnected/blocked until BOTH are reconnected.
+        import numpy as np
+        from scidb import BaseVariable
+
+        from scistack_gui.api import run as run_api
+
+        class OtherSignal6(BaseVariable):
+            pass
+
+        OtherSignal6.save(np.zeros(5), subject=1, session="pre")
+
+        var_edge = self._find_edge(client, "var__RawSignal", bp_node_id)
+        self._delete(client, var_edge)
+        const_edge = self._find_edge(client, "const__low_hz", bp_node_id)
+        self._delete(client, const_edge)
+
+        client.put(
+            "/api/edges/manual__reconnect6",
+            json={
+                "source": "var__OtherSignal6",
+                "target": bp_node_id,
+                "source_handle": None,
+                "target_handle": "in__signal",
+            },
+        )
+
+        data = client.get("/api/pipeline").json()
+        node = next(n for n in data["nodes"] if n["id"] == bp_node_id)
+        assert node["data"].get("disconnected") is True
+        assert node["data"]["run_state"] == "red"
+
+        captured = []
+        monkeypatch.setattr(
+            run_api, "for_each", lambda *a, **k: captured.append(k) or None
+        )
+        r = client.post(
+            "/api/run", json={"function_name": "bandpass_filter", "variants": []}
+        )
+        assert r.status_code == 200
+        _wait_for_threads("Thread-")
+        assert captured == [], "partially-reconnected function must stay blocked"
+
 
 # ---------------------------------------------------------------------------
 # /api/variables

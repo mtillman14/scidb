@@ -23,8 +23,6 @@ def propagate_run_states(
     fn_own_states: dict[FnKey, str],
     fn_input_params: dict[FnKey, dict],
     fn_outputs: dict[FnKey, set],
-    fn_constants: dict[FnKey, set] | None = None,
-    pending_constants: dict[str, set] | None = None,
     disconnected_fkeys: set[FnKey] | None = None,
 ) -> dict[str, str]:
     """Propagate run states through the DAG, per for_each call site.
@@ -38,8 +36,6 @@ def propagate_run_states(
         fn_own_states: {(fn_name, call_id): "green"|"pending"|"red"}.
         fn_input_params: {(fn_name, call_id): {param_name: variable_type_name}}.
         fn_outputs: {(fn_name, call_id): {output_type_name, ...}}.
-        fn_constants: {(fn_name, call_id): {constant_param_name, ...}} — optional.
-        pending_constants: {constant_name: {pending_value, ...}} — optional.
         disconnected_fkeys: {(fn_name, call_id), ...} — call sites whose
             wiring has a user-hidden required inbound edge (see
             graph_builder.hidden_wirings/wiring_disconnected_fkeys). Forced
@@ -55,7 +51,15 @@ def propagate_run_states(
     State vocabulary: scidb node state is BINARY (green/red). "pending" is
     a GUI-ONLY third state meaning "a change staged in the GUI (an unrun
     pending constant value) — nothing in the database yet"; it never comes
-    from scidb.
+    from scidb. A *real* call site's own state is never downgraded to
+    "pending" here — a recorded, executed combo is either green or red on
+    its own merits, full stop. "pending" for an unrun constant-value combo
+    is represented purely by the SYNTHESIZED staged row that
+    graph_builder.group_call_sites_by_wiring adds for that (not yet
+    existing) combo; the real combo sitting next to it keeps its own true
+    state, so "the old variant is green, the new unrun one is yellow"
+    displays correctly instead of blurring into one color for the whole
+    node (see graph_builder.pending_value_group_coverage).
     """
     logger.info(
         "[run_state] propagate_run_states: processing %d function call site(s)",
@@ -64,32 +68,6 @@ def propagate_run_states(
 
     # Make a mutable copy so we don't modify the caller's dict.
     fn_own_state = dict(fn_own_states)
-
-    # Downgrade "green" → "pending" for call sites that have unrun pending
-    # constant values.  fn_constants is keyed per call site, so a call site
-    # that doesn't use the pending constant is unaffected.
-    logger.debug("[run_state] Checking for pending constants that affect green nodes")
-    if fn_constants and pending_constants:
-        downgrade_count = 0
-        for fkey in fn_own_state:
-            if fn_own_state[fkey] == "green":
-                for const_name in fn_constants.get(fkey, set()):
-                    if pending_constants.get(const_name):
-                        logger.debug(
-                            "[run_state] downgrading %s green→pending: pending constant %r",
-                            fkey,
-                            const_name,
-                        )
-                        fn_own_state[fkey] = "pending"
-                        downgrade_count += 1
-                        break
-        if downgrade_count > 0:
-            logger.debug(
-                "[run_state] downgraded %d node(s) due to pending constants",
-                downgrade_count,
-            )
-    else:
-        logger.debug("[run_state] no pending constants to check")
 
     # Disconnected wins over everything else — a call site missing a
     # required inbound edge is forced red even if it was green or staged

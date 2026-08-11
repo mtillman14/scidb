@@ -184,15 +184,23 @@ def delete_edge(
     )
 
 
+class UnhideEdgeRequest(BaseModel):
+    pipeline_id: str = "main"
+
+
 @router.post("/edges/{edge_id}/unhide")
-def unhide_edge(edge_id: str, db: DatabaseManager = Depends(get_db)):
+def unhide_edge(
+    edge_id: str,
+    body: UnhideEdgeRequest = UnhideEdgeRequest(),
+    db: DatabaseManager = Depends(get_db),
+):
     from scistack_gui.services.layout_service import unhide_edge as _unhide
 
-    return _unhide(db, edge_id)
+    return _unhide(db, edge_id, body.pipeline_id)
 
 
 @router.get("/edges/hidden")
-def get_hidden_edges(db: DatabaseManager = Depends(get_db)):
+def get_hidden_edges(pipeline_id: str | None = None, db: DatabaseManager = Depends(get_db)):
     from scistack_gui.services.layout_service import get_hidden_edges as _get
 
-    return _get(db)
+    return _get(db, pipeline_id)

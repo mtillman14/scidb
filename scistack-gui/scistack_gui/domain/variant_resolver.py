@@ -395,40 +395,85 @@ def filter_disconnected_targets(
     targets: list[dict],
     function_name: str,
     hidden_edge_ids: set[str],
+    manual_edges: "list[dict] | tuple" = (),
+    manual_nodes: "dict[str, dict] | None" = None,
 ) -> list[dict]:
     """Drop targets whose WIRING (function name + variable input/output
     types — not constants, see graph_builder.wiring_id) has a user-hidden
-    required inbound edge (graph_builder.hide_edge). Unlike
-    ``filter_hidden_targets`` (one constant-value combo at a time), this
-    drops every target sharing the disconnected wiring, since a missing
-    required input makes the WHOLE wiring un-runnable, not just one
-    variant of it. Each execution-service target IS its own call site, so
-    this checks candidate inbound edge ids directly per target rather than
-    going through graph_builder.hidden_wirings' multi-call-site grouping
-    (that path is for the GUI graph endpoint, which has a full agg)."""
+    required inbound edge (graph_builder.hide_edge) that ISN'T covered by a
+    manual reconnect. Unlike ``filter_hidden_targets`` (one constant-value
+    combo at a time), this considers every hidden handle on the disconnected
+    wiring, since a missing required input makes the WHOLE wiring
+    un-runnable, not just one variant of it. Each execution-service target
+    IS its own call site, so this checks candidate inbound edge ids
+    directly per target rather than going through graph_builder.
+    hidden_wirings' multi-call-site grouping (that path is for the GUI
+    graph endpoint, which has a full agg).
+
+    If a target's hidden handle(s) are ALL covered by a manual edge (see
+    graph_builder.manual_edge_handle_index), the target is kept but with
+    those handles' ``input_types`` SUBSTITUTED for the manually-wired
+    variable's type — the original DB target's recorded input is stale
+    (that historical call was never run with the new variable), so
+    re-admitting it unchanged would run the wrong thing. Any stale
+    ``call_id`` on the target is dropped so it gets recomputed fresh from
+    the substituted input_types (variant_resolver.compute_call_id). A
+    target with even one hidden handle NOT covered by a manual edge is
+    still dropped entirely — partial reconnection doesn't make a wiring
+    runnable."""
     if not hidden_edge_ids or not targets:
         return targets
-    from scistack_gui.domain.graph_builder import inbound_edge_candidates, wiring_id
+    from scistack_gui.domain.edge_resolver import node_id_to_var_label
+    from scistack_gui.domain.graph_builder import (
+        inbound_edge_candidates_by_handle,
+        manual_edge_handle_index,
+        wiring_id,
+    )
 
+    manual_index = manual_edge_handle_index(manual_edges)
+    manual_nodes = manual_nodes or {}
     kept = []
     for t in targets:
         input_types = t.get("input_types", {})
         wid = wiring_id(function_name, input_types, {t.get("output_type")})
-        var_types: list[str] = []
-        for tv in input_types.values():
-            if isinstance(tv, (list, set, tuple)):
-                var_types.extend(tv)
-            else:
-                var_types.append(tv)
-        candidates = inbound_edge_candidates(
+        handle_map = inbound_edge_candidates_by_handle(
             function_name,
             wid,
-            var_types=var_types,
+            input_types,
             const_names=t.get("constants", {}).keys(),
         )
-        if hidden_edge_ids.intersection(candidates):
+        hidden_handles = {h for cid_, h in handle_map.items() if cid_ in hidden_edge_ids}
+        if not hidden_handles:
+            kept.append(t)
             continue
-        kept.append(t)
+        uncovered = [h for h in hidden_handles if (function_name, wid, h) not in manual_index]
+        if uncovered:
+            logger.debug(
+                "[variant_resolver] target for '%s' (wiring %s) stays excluded — "
+                "hidden handle(s) %s not covered by a manual edge",
+                function_name,
+                wid,
+                sorted(uncovered),
+            )
+            continue
+        new_input_types = dict(input_types)
+        for h in hidden_handles:
+            if not h.startswith("in__"):
+                continue  # const__ handles: same-source-only reconnect, no value to swap.
+            source = manual_index[(function_name, wid, h)].get("source", "")
+            var_label = node_id_to_var_label(source, {}, manual_nodes)
+            if var_label:
+                new_input_types[h[len("in__") :]] = var_label
+        new_target = {**t, "input_types": new_input_types}
+        new_target.pop("call_id", None)
+        logger.info(
+            "[variant_resolver] target for '%s' (wiring %s) reconnected via manual "
+            "edge(s) — substituting input_types=%s",
+            function_name,
+            wid,
+            new_input_types,
+        )
+        kept.append(new_target)
     return kept
 
 

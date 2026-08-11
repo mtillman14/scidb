@@ -80,7 +80,7 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     if hidden_edge_ids and fn_variants:
         before = len(fn_variants)
         fn_variants = filter_disconnected_targets(
-            fn_variants, function_name, hidden_edge_ids
+            fn_variants, function_name, hidden_edge_ids, all_edges, manual_nodes
         )
         if len(fn_variants) != before:
             logger.info(
@@ -239,7 +239,9 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
         from scistack_gui.domain.variant_resolver import filter_disconnected_targets
 
         before = len(matching)
-        matching = filter_disconnected_targets(matching, function_name, hidden_edge_ids)
+        matching = filter_disconnected_targets(
+            matching, function_name, hidden_edge_ids, all_edges, manual_nodes
+        )
         if len(matching) != before:
             logger.info(
                 "[execution] node %s ('%s'): %d target(s) excluded — disconnected wiring",
@@ -330,7 +332,7 @@ def disconnected_reason(db, function_name: str, node_id: "str | None" = None) ->
     """
     from scistack_gui import pipeline_store
     from scistack_gui.domain.graph_builder import (
-        inbound_edge_candidates,
+        manual_edge_handle_index,
         parse_fn_node_id,
         wiring_id,
     )
@@ -338,6 +340,8 @@ def disconnected_reason(db, function_name: str, node_id: "str | None" = None) ->
     hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
     if not hidden_edge_ids:
         return None
+
+    manual_index = manual_edge_handle_index(pipeline_store.get_manual_edges(db))
 
     node_wiring = None
     if node_id:
@@ -352,19 +356,13 @@ def disconnected_reason(db, function_name: str, node_id: "str | None" = None) ->
         wid = wiring_id(function_name, v["input_types"], {v["output_type"]})
         if node_wiring is not None and wid != node_wiring:
             continue
-        var_types = []
-        for tv in v["input_types"].values():
-            if isinstance(tv, (list, set, tuple)):
-                var_types.extend(tv)
-            else:
-                var_types.append(tv)
         for pname, vtype in v["input_types"].items():
             candidate = f"e__{vtype}__{function_name}__{wid}"
-            if candidate in hidden_edge_ids:
+            if candidate in hidden_edge_ids and (function_name, wid, f"in__{pname}") not in manual_index:
                 return f"input '{pname}' is disconnected — reconnect it before running"
         for cname in v.get("constants", {}).keys():
             candidate = f"e__{cname}__{function_name}__{wid}"
-            if candidate in hidden_edge_ids:
+            if candidate in hidden_edge_ids and (function_name, wid, f"const__{cname}") not in manual_index:
                 return f"input '{cname}' is disconnected — reconnect it before running"
     return None
 
@@ -400,7 +398,11 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
         for param_name, pi_data in scidb_agg["path_inputs"].items()
     }
 
-    seed = hidden_wirings(fn_input_params, fn_outputs, fn_constants, path_inputs, hidden_edge_ids)
+    manual_edges = pipeline_store.get_manual_edges(db)
+    seed = hidden_wirings(
+        fn_input_params, fn_outputs, fn_constants, path_inputs, hidden_edge_ids,
+        manual_edges=manual_edges,
+    )
     if not seed:
         return []
     downstream = wirings_downstream_of(fn_input_params, fn_outputs, seed)
@@ -421,6 +423,10 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
             "skip_reason": reason,
         }
 
+    from scistack_gui.domain.graph_builder import manual_edge_handle_index
+
+    manual_index = manual_edge_handle_index(manual_edges)
+
     entries: list[dict] = []
     seen_labels: set[str] = set()
     for fn, wid in sorted(seed):
@@ -432,11 +438,17 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
             if fkey[0] != fn:
                 continue
             for pname, vtype in params.items():
-                if f"e__{vtype}__{fn}__{wid}" in hidden_edge_ids:
+                if (
+                    f"e__{vtype}__{fn}__{wid}" in hidden_edge_ids
+                    and (fn, wid, f"in__{pname}") not in manual_index
+                ):
                     reason = f"input '{pname}' disconnected"
                     break
             for cname in fn_constants.get(fkey, set()):
-                if f"e__{cname}__{fn}__{wid}" in hidden_edge_ids:
+                if (
+                    f"e__{cname}__{fn}__{wid}" in hidden_edge_ids
+                    and (fn, wid, f"const__{cname}") not in manual_index
+                ):
                     reason = f"input '{cname}' disconnected"
                     break
         entries.append(_entry(fn, reason))
@@ -554,49 +566,82 @@ def _build_inputs(target: dict):
     return inputs
 
 
-def _scope_function_labels(db, pipeline_id: str) -> list[str]:
-    """Distinct function labels whose nodes live in ``pipeline_id`` —
-    manual function nodes by pipeline_id, DB-derived fn__ nodes by where
-    their position is saved (same membership rule as the canvas)."""
+def _scope_function_node_ids(db, pipeline_id: str) -> list[tuple[str, str]]:
+    """Distinct (node_id, function_label) pairs whose nodes live in
+    ``pipeline_id`` — manual function nodes by pipeline_id, DB-derived
+    fn__ nodes by where their position is saved (same membership rule as
+    the canvas).
+
+    One entry per WIRING, not per function name: the same function name
+    can have more than one independent wiring on a canvas at once (e.g.
+    compute_rolling_vo2 fed by RawVO2 in one node and by RawHeartRate in
+    another — see api/pipeline.py's wiring-conflict guard). Collapsing to
+    distinct names here would make ``build_backend_pipeline`` derive
+    targets by name (``derive_fn_targets``, which resolves across EVERY
+    wiring sharing that name) instead of by the exact node
+    (``derive_target_for_node``) — silently pipeline-running a sibling
+    wiring's real DB history that isn't even the one on screen, and
+    resurrecting a stale node for it once the run lands. See
+    derive_target_for_node's docstring for the same bug, previously fixed
+    for the single-node Run path but not this one.
+    """
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store
-    from scistack_gui.domain.graph_builder import parse_fn_node_id
+    from scistack_gui.domain.graph_builder import (
+        fn_node_id,
+        parse_fn_node_id,
+        wiring_id,
+    )
     from scistack_gui.domain.scope_filter import node_scope
 
     manual_nodes = pipeline_store.get_manual_nodes(db)
     positions_by_scope = layout_store.read_positions_by_scope()
 
-    labels: list[str] = []
+    seen: set[str] = set()
+    node_ids: list[tuple[str, str]] = []
+
+    def _add(nid: str, label: str) -> None:
+        if nid not in seen:
+            seen.add(nid)
+            node_ids.append((nid, label))
+
     for nid, meta in manual_nodes.items():
         if (
             meta.get("type") == "functionNode"
             and (meta.get("pipeline_id") or "main") == pipeline_id
         ):
-            if meta["label"] not in labels:
-                labels.append(meta["label"])
+            _add(nid, meta["label"])
+    placed_wirings: set[tuple[str, str]] = set()
     for _scope_id, positions in positions_by_scope.items():
         for nid in positions:
             parsed = parse_fn_node_id(nid)
             if parsed is None or nid in manual_nodes:
                 continue
+            placed_wirings.add(parsed)
             if node_scope(nid, manual_nodes, positions_by_scope) == pipeline_id:
-                if parsed[0] not in labels:
-                    labels.append(parsed[0])
-    # DB-derived fn nodes with NO saved position default to root. Position
-    # keys are wiring-grouped node ids (or legacy call-site ids before the
-    # one-time migration), so "placed" is judged by parsed fn NAME — the
-    # same granularity derivation works at.
+                _add(nid, parsed[0])
+    # DB-derived wirings with NO saved position default to root — one
+    # entry per distinct (fn_name, wiring_id) among the unplaced variants,
+    # not one per fn_name (a name can have several unplaced wirings at
+    # once, each needing its own step).
     if pipeline_id == "main":
-        placed_fns = set()
-        for positions in positions_by_scope.values():
-            for nid in positions:
-                parsed = parse_fn_node_id(nid)
-                if parsed is not None:
-                    placed_fns.add(parsed[0])
         for v in db.list_pipeline_variants():
             fn = v["function_name"]
-            if fn not in placed_fns and fn not in labels:
-                labels.append(fn)
+            wid = wiring_id(fn, v["input_types"], {v["output_type"]})
+            if (fn, wid) not in placed_wirings:
+                _add(fn_node_id(fn, wid), fn)
+    return node_ids
+
+
+def _scope_function_labels(db, pipeline_id: str) -> list[str]:
+    """Distinct function labels represented in ``pipeline_id`` — for
+    reporting only (e.g. the disconnected-steps summary), where
+    collapsing sibling wirings of the same name to one label is fine.
+    Execution must stay wiring-scoped — see _scope_function_node_ids."""
+    labels: list[str] = []
+    for _nid, label in _scope_function_node_ids(db, pipeline_id):
+        if label not in labels:
+            labels.append(label)
     return labels
 
 
@@ -654,7 +699,7 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
     # rather than mis-hiding a different combo.
     hidden_ids = pipeline_store.get_hidden_node_ids(db)
 
-    for fn_label in _scope_function_labels(db, pipeline_id):
+    for node_id, fn_label in _scope_function_node_ids(db, pipeline_id):
         try:
             fn = registry.get_function(fn_label)
         except KeyError:
@@ -664,8 +709,12 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
                 fn_label,
             )
             continue
+        # Scoped to THIS node's own wiring (derive_target_for_node), never
+        # every node/call site sharing fn_label — see
+        # _scope_function_node_ids for why (same fix as the single-node
+        # Run path's node_id-scoped derivation in api/run.py).
         targets = apply_pending_overrides(
-            derive_fn_targets(db, fn_label), pending_consts
+            derive_target_for_node(db, node_id), pending_consts
         )
         targets = filter_hidden_targets(
             targets,

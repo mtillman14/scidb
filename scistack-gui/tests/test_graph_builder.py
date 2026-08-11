@@ -25,6 +25,7 @@ from scistack_gui.domain.graph_builder import (
     merge_manual_nodes,
     overlay_saved_path_inputs,
     parse_path_input,
+    pending_value_group_coverage,
     wiring_disconnected_fkeys,
     wiring_id,
     wirings_downstream_of,
@@ -304,6 +305,59 @@ class TestFilterHidden:
         filter_hidden(agg, set())
         assert agg.all_var_types == before_vars
 
+    def test_strip_var_type_values_false_preserves_fn_outputs(self):
+        """strip_var_type_values=False: hiding an output var must NOT scrub
+        it out of fn_outputs — required so wiring_id (computed from
+        fn_outputs downstream) stays stable when the caller hides one of a
+        function's own output variables."""
+        agg = self._agg()
+        bp_key = _fkey("bandpass", inputs={"signal": "Raw"}, constants={"hz": 20})
+        filter_hidden(agg, {"var__Filtered"}, strip_var_type_values=False)
+        assert "Filtered" in agg.fn_outputs.get(bp_key, set())
+
+    def test_strip_var_type_values_false_preserves_fn_input_params(self):
+        agg = self._agg()
+        bp_key = _fkey("bandpass", inputs={"signal": "Raw"}, constants={"hz": 20})
+        filter_hidden(agg, {"var__Raw"}, strip_var_type_values=False)
+        assert agg.fn_input_params.get(bp_key, {}).get("signal") == "Raw"
+
+    def test_strip_var_type_values_false_still_removes_all_var_types(self):
+        """all_var_types is display-only (never feeds wiring_id) — safe to
+        strip regardless of strip_var_type_values."""
+        agg = self._agg()
+        filter_hidden(agg, {"var__Raw"}, strip_var_type_values=False)
+        assert "Raw" not in agg.all_var_types
+
+    def test_strip_var_type_values_false_still_removes_hidden_fn(self):
+        """Explicitly-hidden function call sites must still drop out
+        regardless of strip_var_type_values — only the VALUE-level var-type
+        scrubbing on surviving call sites is gated."""
+        agg = self._agg()
+        bp_key = _fkey("bandpass", inputs={"signal": "Raw"}, constants={"hz": 20})
+        filter_hidden(agg, {fn_node_id(*bp_key)}, strip_var_type_values=False)
+        assert bp_key not in agg.fn_input_params
+        assert bp_key not in agg.fn_outputs
+
+    def test_hiding_output_var_does_not_change_wiring_id(self):
+        """Regression: hiding a function's own output variable node must not
+        change the function's wiring_id, or the canvas node loses its saved
+        scope placement and vanishes from non-root scopes (the bug this
+        param exists to fix)."""
+        agg = self._agg()
+        bp_key = _fkey("bandpass", inputs={"signal": "Raw"}, constants={"hz": 20})
+        before_wid = wiring_id(
+            "bandpass",
+            agg.fn_input_params[bp_key],
+            agg.fn_outputs[bp_key],
+        )
+        filter_hidden(agg, {"var__Filtered"}, strip_var_type_values=False)
+        after_wid = wiring_id(
+            "bandpass",
+            agg.fn_input_params[bp_key],
+            agg.fn_outputs[bp_key],
+        )
+        assert before_wid == after_wid
+
 
 # ---------------------------------------------------------------------------
 # auto_clean_pending_constants
@@ -400,6 +454,51 @@ class TestAutoCleanPendingConstants:
         cleaned, removals = auto_clean_pending_constants(pending, agg)
         assert cleaned["window_seconds"] == set()
         assert ("window_seconds", "60") in removals
+
+
+# ---------------------------------------------------------------------------
+# pending_value_group_coverage
+# ---------------------------------------------------------------------------
+
+
+class TestPendingValueGroupCoverage:
+    def _sibling_wiring_agg(self, *, vo2_hz=60, hr_hz=30):
+        """Same fn name, two different wirings (RawVO2->RollingVO2 vs.
+        RawHeartRate->RollingHR), sharing the constant `window_seconds` —
+        the exact shape from the reported bug: running one shouldn't leave
+        it waiting on the other."""
+        variants = [
+            _variant(
+                "compute_rolling_vo2",
+                "RollingVO2",
+                inputs={"signal": "RawVO2"},
+                constants={"window_seconds": vo2_hz},
+            ),
+            _variant(
+                "compute_rolling_vo2",
+                "RollingHR",
+                inputs={"signal": "RawHeartRate"},
+                constants={"window_seconds": hr_hz},
+            ),
+        ]
+        agg = aggregate_variants(variants, listed_var_names=set())
+        return agg
+
+    def test_group_coverage_scoped_per_wiring(self):
+        agg = self._sibling_wiring_agg(vo2_hz=25, hr_hz=30)
+        coverage = pending_value_group_coverage({"window_seconds": {"25"}}, agg)
+        covered_groups = coverage[("window_seconds", "25")]
+        assert covered_groups == {
+            (
+                "compute_rolling_vo2",
+                wiring_id("compute_rolling_vo2", {"signal": "RawVO2"}, {"RollingVO2"}),
+            )
+        }
+
+    def test_no_coverage_when_no_wiring_has_run_it(self):
+        agg = self._sibling_wiring_agg(vo2_hz=60, hr_hz=30)
+        coverage = pending_value_group_coverage({"window_seconds": {"25"}}, agg)
+        assert coverage[("window_seconds", "25")] == set()
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +691,27 @@ class TestBuildFunctionNodes:
     def test_output_types_sorted(self):
         nodes = self._make(fn_outputs={self.BP_KEY: {"C", "A", "B"}})
         assert nodes[0]["data"]["output_types"] == ["A", "B", "C"]
+
+    def test_constant_params_ordered_by_signature_not_alphabetically(self):
+        # Regression: compute_rolling_vo2(signal, window_seconds, sample_interval)
+        # — alphabetical sort would put sample_interval before window_seconds,
+        # flipping the order from what the manual (pre-run) node showed.
+        nodes = self._make(
+            fn_constants={self.BP_KEY: {"window_seconds", "sample_interval"}},
+            fn_params_map={"bandpass": ["signal", "window_seconds", "sample_interval"]},
+        )
+        assert nodes[0]["data"]["constant_params"] == [
+            "window_seconds",
+            "sample_interval",
+        ]
+
+    def test_input_params_ordered_by_signature_not_alphabetically(self):
+        nodes = self._make(
+            fn_input_params={self.BP_KEY: {"zeta": "Z", "alpha": "A"}},
+            fn_constants={},
+            fn_params_map={"bandpass": ["zeta", "alpha"]},
+        )
+        assert list(nodes[0]["data"]["input_params"].keys()) == ["zeta", "alpha"]
 
     def test_two_call_sites_produce_two_nodes(self):
         cid_a, cid_b = _cid("a"), _cid("b")
@@ -936,6 +1056,87 @@ class TestHiddenWirings:
             hidden_edge_ids={f"e__Raw__f__{wid}"},
         )
         assert result == {("f", wid)}
+
+    def test_manual_reconnect_to_same_handle_clears_disconnected(self):
+        # A manual edge onto the SAME handle (in__signal) a hidden inbound
+        # edge used to feed — even with a DIFFERENT source variable — must
+        # clear the disconnected state (the "stuck disconnected" bug).
+        wid = wiring_id("f", {"signal": "Raw"}, set())
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            fn_constants={},
+            path_inputs={},
+            hidden_edge_ids={f"e__Raw__f__{wid}"},
+            manual_edges=[
+                {
+                    "target": fn_node_id("f", wid),
+                    "targetHandle": "in__signal",
+                    "source": "var__Other",
+                }
+            ],
+        )
+        assert result == set()
+
+    def test_manual_reconnect_to_different_handle_stays_disconnected(self):
+        # A manual edge onto an UNRELATED handle does not cover the hidden
+        # one — the wiring must stay disconnected.
+        wid = wiring_id("f", {"signal": "Raw"}, set())
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            fn_constants={},
+            path_inputs={},
+            hidden_edge_ids={f"e__Raw__f__{wid}"},
+            manual_edges=[
+                {
+                    "target": fn_node_id("f", wid),
+                    "targetHandle": "in__other_param",
+                    "source": "var__Other",
+                }
+            ],
+        )
+        assert result == {("f", wid)}
+
+    def test_partial_reconnection_stays_disconnected(self):
+        # Two hidden handles (var + const); only the var one is covered by
+        # a manual edge. The wiring must stay disconnected until BOTH are.
+        wid = wiring_id("f", {"signal": "Raw"}, set())
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            fn_constants={self.F_KEY: {"hz"}},
+            path_inputs={},
+            hidden_edge_ids={f"e__Raw__f__{wid}", f"e__hz__f__{wid}"},
+            manual_edges=[
+                {
+                    "target": fn_node_id("f", wid),
+                    "targetHandle": "in__signal",
+                    "source": "var__Other",
+                }
+            ],
+        )
+        assert result == {("f", wid)}
+
+    def test_manual_edge_scope_suffixed_target_still_matches(self):
+        # A manual edge targeting a scope-placed node id (canonical id ::
+        # pipeline_id) must still be recognized as covering the handle.
+        wid = wiring_id("f", {"signal": "Raw"}, set())
+        result = hidden_wirings(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            fn_constants={},
+            path_inputs={},
+            hidden_edge_ids={f"e__Raw__f__{wid}"},
+            manual_edges=[
+                {
+                    "target": f"{fn_node_id('f', wid)}::pipe_xyz",
+                    "targetHandle": "in__signal",
+                    "source": "var__Other",
+                }
+            ],
+        )
+        assert result == set()
 
 
 class TestWiringDisconnectedFkeys:
@@ -1454,6 +1655,46 @@ class TestGroupCallSitesByWiring:
         ]
         # A green group with a staged value downgrades to pending, not red.
         assert node_states[fn_node_id("bp", wid)] == "pending"
+
+    def test_group_already_covering_staged_value_stays_green(self):
+        """Regression for the bug where running one of two compute_rolling_vo2
+        nodes (sharing a constant, different signals) left it stuck on
+        "pending" until the sibling node was also (re)run. Once a group's
+        OWN real member already recorded the newly-staged value, that
+        group must not get a synthesized pending row for it — only the
+        sibling wiring that hasn't run it yet should."""
+        vo2 = ("compute_rolling_vo2", "a" * 16)
+        hr = ("compute_rolling_vo2", "b" * 16)
+        agg = AggregatedData()
+        agg.fn_input_params[vo2] = {"signal": "RawVO2"}
+        agg.fn_outputs[vo2] = {"RollingVO2"}
+        agg.fn_constants[vo2] = {"window_seconds"}
+        agg.fn_variants_map[vo2] = [{"constants": {"window_seconds": "25"}}]
+        agg.fn_input_params[hr] = {"signal": "RawHeartRate"}
+        agg.fn_outputs[hr] = {"RollingHR"}
+        agg.fn_constants[hr] = {"window_seconds"}
+        agg.fn_variants_map[hr] = [{"constants": {"window_seconds": "30"}}]
+        agg.const_fns["window_seconds"] = {vo2, hr}
+        states = {fn_node_id(*vo2): "green", fn_node_id(*hr): "green"}
+
+        grouped, node_states, _ = group_call_sites_by_wiring(
+            agg, states, pending_constants={"window_seconds": {"25"}}
+        )
+
+        vo2_wid = wiring_id(
+            "compute_rolling_vo2", {"signal": "RawVO2"}, {"RollingVO2"}
+        )
+        hr_wid = wiring_id(
+            "compute_rolling_vo2", {"signal": "RawHeartRate"}, {"RollingHR"}
+        )
+        vo2_rows = grouped.fn_variants_map[("compute_rolling_vo2", vo2_wid)]
+        hr_rows = grouped.fn_variants_map[("compute_rolling_vo2", hr_wid)]
+        # VO2 already ran 25 -> no synthesized staged row, node stays green.
+        assert not any(r.get("staged") for r in vo2_rows)
+        assert node_states[fn_node_id("compute_rolling_vo2", vo2_wid)] == "green"
+        # HR hasn't run 25 -> gets the staged row and downgrades to pending.
+        assert any(r.get("staged") for r in hr_rows)
+        assert node_states[fn_node_id("compute_rolling_vo2", hr_wid)] == "pending"
 
 
 class TestLegacyMigrationHelpers:

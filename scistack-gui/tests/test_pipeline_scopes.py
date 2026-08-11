@@ -847,6 +847,159 @@ class TestDuplicatePipeline:
         assert r.status_code == 400
 
 
+class TestScopedNodeEdgeHiding:
+    """Regression tests for plan-scope-hidden-nodes-edges.md: a hidden
+    canonical node/edge (var__/fn__/const__/pathInput__, and its
+    e__{fn}__{wiring_id}__{...} edges) used to be recorded and read back
+    GLOBALLY, not per pipeline scope. Since graph_builder.wiring_id is
+    scope-independent by design (two pipelines with identical, unedited
+    wiring compute the exact same canonical id — that sharing is
+    intentional, see duplicate_pipeline's docstring), deleting/re-adding a
+    node in one hypothesis pipeline used to bleed into every OTHER
+    hypothesis pipeline sharing that same wiring."""
+
+    @staticmethod
+    def _nodes(client, pipeline_id):
+        return client.get("/api/pipeline", params={"pipeline_id": pipeline_id}).json()[
+            "nodes"
+        ]
+
+    @classmethod
+    def _labels(cls, client, pipeline_id):
+        return {
+            (n["type"], n["data"]["label"]) for n in cls._nodes(client, pipeline_id)
+        }
+
+    @classmethod
+    def _node_id(cls, client, pipeline_id, node_type, label):
+        return next(
+            n["id"]
+            for n in cls._nodes(client, pipeline_id)
+            if n["type"] == node_type and n["data"]["label"] == label
+        )
+
+    def test_delete_in_duplicate_does_not_hide_in_original(self, client):
+        r = client.post("/api/pipelines/main/duplicate", json={"name": "main_copy"})
+        assert r.status_code == 200
+        copy_pid = r.json()["pipeline_id"]
+
+        copy_node_id = self._node_id(client, copy_pid, "variableNode", "FilteredSignal")
+        r = client.delete(f"/api/layout/{copy_node_id}")
+        assert r.status_code == 200
+
+        # The copy no longer shows it...
+        assert ("variableNode", "FilteredSignal") not in self._labels(client, copy_pid)
+        # ...but the ORIGINAL still does — used to fail: the delete hid the
+        # node (and its edges) globally, removing it from every scope
+        # sharing the wiring.
+        assert ("variableNode", "FilteredSignal") in self._labels(client, "main")
+        assert ("functionNode", "bandpass_filter") in self._labels(client, "main")
+
+    def test_readd_in_one_scope_does_not_unhide_in_another(self, client):
+        r = client.post("/api/pipelines/main/duplicate", json={"name": "main_copy"})
+        assert r.status_code == 200
+        copy_pid = r.json()["pipeline_id"]
+
+        # Delete FilteredSignal from BOTH scopes independently — a clean
+        # baseline where it's hidden everywhere.
+        copy_node_id = self._node_id(client, copy_pid, "variableNode", "FilteredSignal")
+        assert client.delete(f"/api/layout/{copy_node_id}").status_code == 200
+        main_node_id = self._node_id(client, "main", "variableNode", "FilteredSignal")
+        assert client.delete(f"/api/layout/{main_node_id}").status_code == 200
+
+        assert ("variableNode", "FilteredSignal") not in self._labels(client, "main")
+        assert ("variableNode", "FilteredSignal") not in self._labels(client, copy_pid)
+
+        # Re-add it to `main` only, unconnected — mirrors the bug report.
+        r = client.put(
+            "/api/layout/var__FilteredSignal__readded",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "variableNode",
+                "label": "FilteredSignal",
+                "pipeline_id": "main",
+            },
+        )
+        assert r.status_code == 200
+
+        assert ("variableNode", "FilteredSignal") in self._labels(client, "main")
+        # The copy must stay untouched — re-adding in main used to unhide
+        # (and re-wire) the shared canonical id everywhere too.
+        assert ("variableNode", "FilteredSignal") not in self._labels(client, copy_pid)
+
+    def test_delete_edge_in_duplicate_does_not_hide_in_original(self, client):
+        r = client.post("/api/pipelines/main/duplicate", json={"name": "main_copy"})
+        assert r.status_code == 200
+        copy_pid = r.json()["pipeline_id"]
+
+        # duplicate_pipeline copies the wiring as a fresh MANUAL edge, which
+        # then graduates in place (rewired, not removed — see
+        # pipeline_store.graduate_manual_node) alongside the real DB-derived
+        # edge for the same connection, so two edges into FilteredSignal
+        # coexist in the copy. Target the DB-derived one specifically (its
+        # id is deterministic — e__{fn}__{wiring_id}__{out_type} — see
+        # graph_builder.build_edges) since that's the one this fix scopes;
+        # the leftover manual duplicate is a separate, unrelated mechanism.
+        copy_edges = client.get(
+            "/api/pipeline", params={"pipeline_id": copy_pid}
+        ).json()["edges"]
+        fs_id = self._node_id(client, copy_pid, "variableNode", "FilteredSignal")
+        db_edge = next(
+            e for e in copy_edges if e["target"] == fs_id and e["id"].startswith("e__")
+        )
+
+        r = client.request(
+            "DELETE",
+            f"/api/edges/{db_edge['id']}",
+            json={"source": db_edge["source"], "target": db_edge["target"]},
+        )
+        assert r.status_code == 200
+
+        copy_edges_after = client.get(
+            "/api/pipeline", params={"pipeline_id": copy_pid}
+        ).json()["edges"]
+        assert not any(e["id"] == db_edge["id"] for e in copy_edges_after)
+
+        # The original's own bandpass_filter -> FilteredSignal DB-derived
+        # edge must still be there — used to fail: hiding it in the copy
+        # hid the same bare edge id everywhere.
+        main_fs_id = self._node_id(client, "main", "variableNode", "FilteredSignal")
+        main_edges = client.get("/api/pipeline").json()["edges"]
+        assert any(
+            e["target"] == main_fs_id and e["id"] == db_edge["id"]
+            for e in main_edges
+        )
+
+    def test_delete_output_var_does_not_delete_its_producing_fn(self, client):
+        """Regression: deleting a leaf OUTPUT variable node used to also
+        wipe out the function node that produces it, in the SAME scope.
+
+        Root cause — graph_builder.filter_hidden stripped the hidden output
+        type out of fn_outputs BEFORE graph_builder.wiring_id was computed
+        for grouping, so the function's canonical node id (which encodes
+        wiring_id) changed the instant its output was hidden. The node's
+        saved scope placement was recorded under the OLD id, so the
+        renamed node resolved to no placement in a non-root scope and
+        vanished from the view entirely — see graph_builder.filter_hidden's
+        strip_var_type_values docstring for the fix."""
+        r = client.post("/api/pipelines/main/duplicate", json={"name": "main_copy"})
+        assert r.status_code == 200
+        copy_pid = r.json()["pipeline_id"]
+
+        assert ("functionNode", "bandpass_filter") in self._labels(client, copy_pid)
+
+        copy_node_id = self._node_id(client, copy_pid, "variableNode", "FilteredSignal")
+        r = client.delete(f"/api/layout/{copy_node_id}")
+        assert r.status_code == 200
+
+        copy_labels = self._labels(client, copy_pid)
+        assert ("variableNode", "FilteredSignal") not in copy_labels
+        # The function that PRODUCES FilteredSignal must survive the
+        # deletion of its output leaf — only the leaf itself is hidden.
+        assert ("functionNode", "bandpass_filter") in copy_labels
+
+
 class TestDuplicateHypothesis:
     def test_duplicate_tags_copy_as_hypothesis(self, client):
         pid = client.post("/api/hypotheses", json={"name": "gait symmetry"}).json()[
@@ -916,6 +1069,60 @@ class TestExtractToSubmodule:
         node = next(n for n in graph["nodes"] if n["id"] == use_id)
         assert node["data"]["inputs"] == ["RawSignal"]
         assert node["data"]["outputs"] == ["FilteredSignal"]
+
+    def test_extract_boundary_edge_where_moved_side_is_the_variable(self, client):
+        """Regression: a selection can carry a variable node into the
+        submodule while its downstream consuming function stays behind
+        (e.g. RollingVO2 + its producer moved into "rolling_vo2", while
+        stat_vo2_summary stayed on main). The kept side of that boundary
+        edge is a FUNCTION, not a variable — the label must be looked up
+        on the MOVED side instead, or the connection is silently dropped.
+        """
+        client.put("/api/layout/mv_in", json={
+            "x": 0, "y": 0, "node_type": "variableNode", "label": "RawSignal",
+        })
+        client.put("/api/layout/mf_proc", json={
+            "x": 10, "y": 0, "node_type": "functionNode", "label": "custom_proc",
+        })
+        client.put("/api/layout/mv_out", json={
+            "x": 20, "y": 0, "node_type": "variableNode", "label": "RollingVO2",
+        })
+        client.put("/api/layout/mf_summary", json={
+            "x": 30, "y": 0, "node_type": "functionNode", "label": "stat_vo2_summary",
+        })
+        client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_proc"})
+        client.put("/api/edges/e_out", json={"source": "mf_proc", "target": "mv_out"})
+        client.put("/api/edges/e_downstream", json={
+            "source": "mv_out", "target": "mf_summary", "target_handle": "in__RollingVO2",
+        })
+
+        r = client.post(
+            "/api/pipelines/main/extract",
+            json={"node_ids": ["mv_in", "mf_proc", "mv_out"], "name": "rolling_vo2"},
+        )
+        assert r.status_code == 200
+        pid, use_id = r.json()["pipeline_id"], r.json()["use_id"]
+
+        db = get_db()
+        # stat_vo2_summary stayed on main; the other three moved.
+        assert set(ps.get_manual_nodes(db, "main")) == {"mf_summary", use_id}
+
+        # The original boundary edge (mv_out -> mf_summary) is unchanged,
+        # plus a NEW edge from the placed pipeline node's output port
+        # replaces it for visual continuity on main's canvas.
+        edges = ps.get_manual_edges(db)
+        assert {
+            "id": "e_downstream", "source": "mv_out", "target": "mf_summary",
+            "targetHandle": "in__RollingVO2",
+        } in edges
+        replacement = [e for e in edges if e["source"] == use_id and e["target"] == "mf_summary"]
+        assert len(replacement) == 1
+        assert replacement[0]["sourceHandle"] == "out__RollingVO2"
+        assert replacement[0]["targetHandle"] == "in__RollingVO2"
+
+        graph = client.get("/api/pipeline").json()
+        node = next(n for n in graph["nodes"] if n["id"] == use_id)
+        assert "RollingVO2" in node["data"]["outputs"]
 
     def test_extract_rejects_node_outside_scope(self, client):
         pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
@@ -1147,6 +1354,58 @@ class TestDeriveTargetForNode:
         assert targets[0]["output_type"] == "FilteredSignal"
         assert targets[0]["constants"] == {"low_hz": 20}
 
+    def test_reconnect_different_variable_on_graduated_node_derives_substituted_target(
+        self, client
+    ):
+        """Regression: hiding a graduated node's input edge then manually
+        reconnecting a DIFFERENT variable to the same handle must produce a
+        runnable target with the new variable substituted in, not [] — the
+        'stuck disconnected forever' bug found via a real GUI session (the
+        node kept showing 🔌 disconnected and Run kept failing with
+        "input 'signal' is disconnected" even after the reconnect)."""
+        import numpy as np
+        from scidb import BaseVariable
+
+        from scistack_gui import layout as layout_store
+        from scistack_gui import pipeline_store
+        from scistack_gui.db import get_db
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+        from scistack_gui.services.execution_service import derive_target_for_node
+
+        class OtherSignal7(BaseVariable):
+            pass
+
+        OtherSignal7.save(np.zeros(5), subject=1, session="pre")
+
+        real_wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"})
+        real_node_id = fn_node_id("bandpass_filter", real_wid)
+        db = get_db()
+
+        pipeline_store.hide_edge(
+            db,
+            f"e__RawSignal__bandpass_filter__{real_wid}",
+            "var__RawSignal",
+            real_node_id,
+            None,
+            "in__signal",
+            "main",
+        )
+        layout_store.write_manual_edge(
+            {
+                "id": "manual__reconnect7",
+                "source": "var__OtherSignal7",
+                "target": real_node_id,
+                "targetHandle": "in__signal",
+            }
+        )
+
+        targets = derive_target_for_node(db, real_node_id)
+
+        assert len(targets) == 1
+        assert targets[0]["input_types"].get("signal") == "OtherSignal7"
+        assert targets[0]["output_type"] == "FilteredSignal"
+        assert targets[0]["constants"] == {"low_hz": 20}
+
     def test_compile_root_scope(self, client):
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import (
@@ -1358,3 +1617,69 @@ class TestDeriveTargetForNode:
         assert entry["failed"] == 0
         # Seed already ran everything → memoized skip, nothing re-computed.
         assert entry["completed"] == 0
+
+    def test_compile_gives_each_sibling_wiring_its_own_step(self, client):
+        """Regression: build_backend_pipeline (Run Pipeline / Run Until
+        Here) must compile ONE step per WIRING, not per function name.
+        Found via a real GUI session: two bandpass_filter nodes wired to
+        different signals shared the compiled pipeline's single
+        'bandpass_filter' step, which derived targets by function name
+        (derive_fn_targets — every wiring sharing that name) instead of by
+        the exact node (derive_target_for_node). Running the pipeline
+        re-ran the SIBLING wiring's own real DB history under the hood and
+        resurrected a stale node for it on the next graph build — the same
+        no-blur bug TestDeriveTargetForNode fixed for single-node Run,
+        just unfixed one layer up in the pipeline compiler."""
+        import numpy as np
+        from scidb import BaseVariable
+
+        class OtherSignal5(BaseVariable):
+            pass
+
+        class OtherFiltered5(BaseVariable):
+            pass
+
+        OtherSignal5.save(np.zeros(5), subject=1, session="pre")
+
+        client.put("/api/layout/mv_o5_in", json={
+            "x": 0, "y": 0, "node_type": "variableNode", "label": "OtherSignal5",
+        })
+        client.put("/api/layout/mf_bp_other5", json={
+            "x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter",
+        })
+        client.put("/api/layout/mv_o5_out", json={
+            "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered5",
+        })
+        client.put(
+            "/api/edges/e_o5_in", json={"source": "mv_o5_in", "target": "mf_bp_other5"}
+        )
+        client.put(
+            "/api/edges/e_o5_out", json={"source": "mf_bp_other5", "target": "mv_o5_out"}
+        )
+        client.put("/api/edges/e_o5_const", json={
+            "source": "const__low_hz",
+            "target": "mf_bp_other5",
+            "target_handle": "in__low_hz",
+        })
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            _discard_compiled,
+            build_backend_pipeline,
+        )
+
+        built: dict = {}
+        pipe = build_backend_pipeline(get_db(), "main", built)
+        try:
+            bp_steps = [s for s in pipe.steps if s.name == "bandpass_filter"]
+            assert len(bp_steps) == 2, (
+                "expected one compiled step per wiring (RawSignal and "
+                f"OtherSignal5), got {len(bp_steps)}"
+            )
+            signals = {s.inputs["signal"].__name__ for s in bp_steps}
+            assert signals == {"RawSignal", "OtherSignal5"}, (
+                "each step must carry its OWN wiring's input — one must "
+                f"never borrow the other's, got {signals}"
+            )
+        finally:
+            _discard_compiled(built)

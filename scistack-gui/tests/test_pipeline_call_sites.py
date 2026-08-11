@@ -371,3 +371,64 @@ def test_manual_node_graduates_after_running_despite_shared_label_ambiguity(clie
         n for n in bp_nodes if n["data"].get("input_params", {}).get("signal") == "OtherSignal4"
     )
     assert graduated["data"]["run_state"] == "green"
+
+
+def test_disconnected_duplicate_survives_wired_siblings_graduation(client):
+    """Regression test: a manual functionNode left with NO wiring at all
+    must not be silently deleted just because a SIBLING manual node with
+    the same label graduates into the one real call site that both happen
+    to (individually) match.
+
+    merge_manual_nodes and the Pass 1 "absence of wiring is not a
+    conflict" rule (see test_unwired_manual_node_still_graduates_immediately)
+    each decide, per manual node, "does THIS ONE graduate" — neither knows
+    about siblings. Two manual nodes sharing a label can therefore both
+    resolve to the SAME target: the wired one legitimately matches it, and
+    the unwired one also "graduates" since it has no wiring to contradict
+    anything. graduate_manual_node only deletes the manual row (the target
+    already exists from real data), so the second graduation silently
+    deleted the unwired node with nothing left to show for it. Found via a
+    real GUI session: two compute_rolling_vo2 placeholders, one wired to
+    RawVO2 and run, one left completely disconnected — running the wired
+    one made the disconnected one vanish from the canvas."""
+    # A wired manual node matching the real call site `populated_db` already
+    # seeded (bandpass_filter fed by RawSignal -> FilteredSignal).
+    client.put(
+        "/api/layout/mv_wired_in",
+        json={"x": 0, "y": 0, "node_type": "variableNode", "label": "RawSignal"},
+    )
+    client.put(
+        "/api/layout/mf_wired",
+        json={"x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter"},
+    )
+    client.put(
+        "/api/layout/mv_wired_out",
+        json={"x": 20, "y": 0, "node_type": "variableNode", "label": "FilteredSignal"},
+    )
+    client.put("/api/edges/e_wired_in", json={"source": "mv_wired_in", "target": "mf_wired"})
+    client.put("/api/edges/e_wired_out", json={"source": "mf_wired", "target": "mv_wired_out"})
+
+    # A second manual node, same label, with NO edges at all.
+    client.put(
+        "/api/layout/mf_disconnected",
+        json={"x": 100, "y": 100, "node_type": "functionNode", "label": "bandpass_filter"},
+    )
+
+    nodes = client.get("/api/pipeline").json()["nodes"]
+    bp_nodes = [
+        n
+        for n in nodes
+        if n["type"] == "functionNode" and n["data"]["label"] == "bandpass_filter"
+    ]
+    assert len(bp_nodes) == 2, (
+        "the disconnected duplicate must survive as its own manual node "
+        f"when its wired sibling graduates, got {[n['id'] for n in bp_nodes]}"
+    )
+    assert "mf_disconnected" in {n["id"] for n in bp_nodes}, (
+        "the disconnected node's manual id must remain (demoted back to a "
+        "separate manual node, not graduated and deleted)"
+    )
+    disconnected_node = next(n for n in bp_nodes if n["id"] == "mf_disconnected")
+    assert disconnected_node["data"]["run_state"] == "red", (
+        "must not inherit its wired sibling's green state"
+    )

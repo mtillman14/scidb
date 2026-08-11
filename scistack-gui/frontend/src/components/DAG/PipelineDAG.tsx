@@ -78,6 +78,11 @@ export default function PipelineDAG() {
   // The scope the on-screen nodes belong to — on a scope switch, on-screen
   // positions must NOT carry over to the new canvas.
   const loadedScope = useRef<string | null>(null)
+  // Nodes dropped onto the canvas, keyed by id, waiting for React Flow to
+  // measure their rendered size so the DROP POINT can be re-centered under
+  // the node (dropped nodes start pinned by their top-left corner, since
+  // their eventual width/height isn't known until they've rendered once).
+  const pendingCenterRef = useRef<Map<string, { x: number; y: number }>>(new Map())
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [runFinalized, setRunFinalized] = useState(false)
@@ -137,9 +142,11 @@ export default function PipelineDAG() {
       setTimeout(() => fitView({ padding: 0.2 }), 50)
     }
 
-    // Hidden edges are global (not per-scope, same as hidden nodes) —
-    // refreshed alongside the graph so the restore-panel count stays live.
-    callBackend('get_hidden_edges', {}).then(res => {
+    // Hidden edges are scoped per pipeline (a delete in one hypothesis
+    // never hides another hypothesis's independent placement of the same
+    // shared wiring) — refreshed alongside the graph so the restore-panel
+    // count stays live for the currently open scope.
+    callBackend('get_hidden_edges', { pipeline_id: currentScope }).then(res => {
       setHiddenEdges((res as { edges: HiddenEdge[] }).edges)
     })
   }, [setNodes, setEdges, fitView, currentScope])
@@ -152,6 +159,22 @@ export default function PipelineDAG() {
   useBackendMessage(useCallback((msg) => {
     if (msg.type === 'dag_updated' || msg.method === 'dag_updated') fetchPipeline()
   }, [fetchPipeline]))
+
+  // Re-center nodes queued by onDrop once React Flow has measured their
+  // rendered size (fit-content width/height isn't known until then).
+  useEffect(() => {
+    if (pendingCenterRef.current.size === 0) return
+    for (const [id, center] of pendingCenterRef.current) {
+      const node = nodes.find(n => n.id === id)
+      const { width, height } = node?.measured ?? {}
+      if (!width || !height) continue
+      pendingCenterRef.current.delete(id)
+      const newX = center.x - width / 2
+      const newY = center.y - height / 2
+      setNodes(prev => prev.map(n => n.id === id ? { ...n, position: { x: newX, y: newY } } : n))
+      callBackend('put_layout', { node_id: id, x: newX, y: newY, pipeline_id: currentScope })
+    }
+  }, [nodes, setNodes, currentScope])
 
   // Keep selectedNode data fresh after DAG refreshes.
   useEffect(() => {
@@ -199,10 +222,10 @@ export default function PipelineDAG() {
   }, [extractDraft.name, selectedIds, currentScope, bumpGraph])
 
   const handleRestoreEdge = useCallback((edgeId: string) => {
-    callBackend('unhide_edge', { edge_id: edgeId })
+    callBackend('unhide_edge', { edge_id: edgeId, pipeline_id: currentScope })
       .then(() => bumpGraph())
       .catch(err => window.alert(`Could not restore edge: ${(err as Error).message}`))
-  }, [bumpGraph])
+  }, [bumpGraph, currentScope])
 
   // Short label for a node id in the restore list — strip prefixes/hashes
   // rather than showing the raw fn__{fn}__{wiring_id} form.
@@ -282,7 +305,11 @@ export default function PipelineDAG() {
         x: position.x,
         y: position.y,
       })
-        .then(() => bumpGraph())
+        .then(res => {
+          const { use_id } = res as { use_id: string }
+          pendingCenterRef.current.set(use_id, position)
+          bumpGraph()
+        })
         .catch(err => window.alert(`Could not place pipeline '${name}': ${(err as Error).message}`))
       return
     }
@@ -294,6 +321,7 @@ export default function PipelineDAG() {
     const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
     const prefix = nodeType === 'functionNode' ? 'fn' : nodeType === 'constantNode' ? 'const' : nodeType === 'pathInputNode' ? 'pathInput' : 'var'
     const nodeId = `${prefix}__${label}__${Math.random().toString(36).slice(2, 8)}`
+    pendingCenterRef.current.set(nodeId, position)
 
     const buildFnData = async () => {
       if (nodeType !== 'functionNode') return { run_state: 'red' as const }

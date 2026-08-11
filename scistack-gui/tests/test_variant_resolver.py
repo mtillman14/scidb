@@ -481,6 +481,77 @@ class TestFilterDisconnectedTargets:
     def test_empty_targets_returns_empty(self):
         assert filter_disconnected_targets([], "fn", {"anything"}) == []
 
+    def test_manual_reconnect_substitutes_new_input_type(self):
+        # A manual edge onto the SAME handle a hidden inbound edge fed,
+        # with a DIFFERENT source variable, must keep the target but with
+        # its input_types substituted — and drop any stale call_id.
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+
+        target = self._target({"signal": "RawEMG"})
+        target["call_id"] = "stale0000000000"
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        hidden = {f"e__RawEMG__fn__{wid}"}
+        manual_edges = [
+            {
+                "target": fn_node_id("fn", wid),
+                "targetHandle": "in__signal",
+                "source": "var__OtherEMG",
+            }
+        ]
+        result = filter_disconnected_targets([target], "fn", hidden, manual_edges)
+        assert result == [
+            {"input_types": {"signal": "OtherEMG"}, "output_type": "Out", "constants": {}}
+        ]
+        assert "call_id" not in result[0]
+
+    def test_manual_reconnect_to_different_handle_still_drops(self):
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+
+        target = self._target({"signal": "RawEMG"})
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        hidden = {f"e__RawEMG__fn__{wid}"}
+        manual_edges = [
+            {
+                "target": fn_node_id("fn", wid),
+                "targetHandle": "in__other_param",
+                "source": "var__OtherEMG",
+            }
+        ]
+        assert filter_disconnected_targets([target], "fn", hidden, manual_edges) == []
+
+    def test_partial_reconnection_multi_handle_still_drops(self):
+        # Hidden var input AND hidden constant; manual edge covers only the
+        # var handle — the target must still be dropped entirely.
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+
+        target = self._target({"signal": "RawEMG"}, constants={"low_hz": 20})
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        hidden = {f"e__RawEMG__fn__{wid}", f"e__low_hz__fn__{wid}"}
+        manual_edges = [
+            {
+                "target": fn_node_id("fn", wid),
+                "targetHandle": "in__signal",
+                "source": "var__OtherEMG",
+            }
+        ]
+        assert filter_disconnected_targets([target], "fn", hidden, manual_edges) == []
+
+    def test_manual_reconnect_covers_one_of_multitype_list_elements(self):
+        # Reconnecting the in__signal handle collapses a multitype
+        # ["A", "B"] input down to the single manually-wired type.
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+
+        target = self._target({"signal": ["A", "B"]})
+        wid = wiring_id("fn", {"signal": ["A", "B"]}, {"Out"})
+        hidden = {f"e__B__fn__{wid}"}
+        manual_edges = [
+            {"target": fn_node_id("fn", wid), "targetHandle": "in__signal", "source": "var__C"}
+        ]
+        result = filter_disconnected_targets([target], "fn", hidden, manual_edges)
+        assert result == [
+            {"input_types": {"signal": "C"}, "output_type": "Out", "constants": {}}
+        ]
+
 
 # ---------------------------------------------------------------------------
 # build_schema_kwargs

@@ -234,8 +234,6 @@ def _compute_run_states(
     db: DatabaseManager,
     fn_input_params: dict[tuple, dict],
     fn_outputs: dict[tuple, set],
-    fn_constants: dict[tuple, set] | None = None,
-    pending_constants: dict[str, set] | None = None,
     disconnected_fkeys: set[tuple] | None = None,
 ) -> dict[str, str]:
     """
@@ -254,9 +252,12 @@ def _compute_run_states(
       forces those call sites red regardless of DB freshness, cascading
       downstream through the same propagation.
 
-    Returns {node_id: "green"|"pending"|"red"} for fn__ and var__ nodes
-    ("pending" is GUI-only: an unrun pending constant value staged in the
-    GUI — scidb's own node state is binary green/red).
+    Returns {node_id: "green"|"red"} for fn__ and var__ nodes — real,
+    recorded call sites only. "pending" (an unrun staged constant value)
+    is a display-only concept layered on top by
+    domain.graph_builder.group_call_sites_by_wiring, which synthesizes a
+    separate row for the not-yet-existing combo rather than downgrading
+    any real call site's own state (see pending_value_group_coverage).
     """
     from scidb import BaseVariable
     from scihist import check_multiple_nodes_state
@@ -328,8 +329,6 @@ def _compute_run_states(
         fn_own_state,
         fn_input_params,
         fn_outputs,
-        fn_constants,
-        pending_constants,
         disconnected_fkeys,
     )
 
@@ -368,10 +367,16 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     from scistack_gui.domain import graph_builder as gb
     from scistack_gui.domain.edge_resolver import resolve_function_edges
 
-    hidden_ids = _ps.get_hidden_node_ids(db)
-    logger.debug("[pipeline] loaded %d hidden node IDs", len(hidden_ids))
-    hidden_edge_ids = _ps.get_hidden_edge_ids(db)
-    logger.debug("[pipeline] loaded %d hidden edge IDs", len(hidden_edge_ids))
+    hidden_ids = _ps.get_hidden_node_ids(db, pipeline_id)
+    logger.debug(
+        "[pipeline] loaded %d hidden node ID(s) for scope=%s", len(hidden_ids), pipeline_id
+    )
+    hidden_edge_ids = _ps.get_hidden_edge_ids(db, pipeline_id)
+    logger.debug(
+        "[pipeline] loaded %d hidden edge ID(s) for scope=%s",
+        len(hidden_edge_ids),
+        pipeline_id,
+    )
 
     # --- Fetch aggregated data from scidb (replaces steps 2-5) ---
     logger.info("[pipeline] Fetching aggregated variants from scidb")
@@ -421,7 +426,16 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         }
 
     logger.info("[pipeline] Filtering hidden nodes")
-    gb.filter_hidden(agg, hidden_ids)
+    # strip_var_type_values=False: this pre-grouping pass must NOT scrub
+    # hidden variable types out of fn_outputs/fn_input_params VALUES — those
+    # feed wiring_id (fn name + input/output var types) below, and a
+    # function's wiring identity (hence its canvas node id and saved scope
+    # placement) must stay stable regardless of which of its own outputs the
+    # user has hidden, or the node loses its placement and vanishes from
+    # non-root scopes (see graph_builder.filter_hidden docstring). The
+    # post-grouping filter_hidden call further down still strips those
+    # values (default True) for display, once identity is already fixed.
+    gb.filter_hidden(agg, hidden_ids, strip_var_type_values=False)
 
     logger.info("[pipeline] Using record counts from scidb")
     record_counts = {
@@ -446,8 +460,18 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     # recomputes the same wiring_id regardless of grouping (see
     # graph_builder.hidden_wirings). Drives both run-state forcing below
     # and the per-node "disconnected" flag attached to function nodes.
+    # manual_edges is fetched here (rather than further down, where it used
+    # to be the first read) so a manual reconnect onto a previously-hidden
+    # handle can clear the disconnected state in the same pass — see
+    # graph_builder.hidden_wirings' manual_edges param.
+    manual_edges_for_fn_lookup = layout_store.read_manual_edges()
     disconnected_wirings = gb.hidden_wirings(
-        agg.fn_input_params, agg.fn_outputs, agg.fn_constants, agg.path_inputs, hidden_edge_ids
+        agg.fn_input_params,
+        agg.fn_outputs,
+        agg.fn_constants,
+        agg.path_inputs,
+        hidden_edge_ids,
+        manual_edges=manual_edges_for_fn_lookup,
     )
     disconnected_fkeys = gb.wiring_disconnected_fkeys(
         agg.fn_input_params, agg.fn_outputs, disconnected_wirings
@@ -465,8 +489,6 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         db,
         agg.fn_input_params,
         agg.fn_outputs,
-        agg.fn_constants,
-        pending_constants,
         disconnected_fkeys,
     )
     logger.info("[pipeline] computed run states for %d nodes", len(run_states))
@@ -549,7 +571,6 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     from scistack_gui.domain.edge_resolver import infer_manual_fn_param_to_class
     from scistack_gui.domain.graph_builder import fn_node_id
 
-    manual_edges_for_fn_lookup = layout_store.read_manual_edges()
     existing_node_labels_pre = {f"var__{t}": t for t in agg.all_var_types}
     for fn in matlab_functions:
         # Collect all DB-derived node IDs for this fn (one per call site)
@@ -776,6 +797,59 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         )
         graduations.append(gb.GraduationAction(old_id=node_id, new_id=target_id))
     to_add = still_to_add
+
+    # Collision guard — the passes above each decide, per manual node,
+    # "does THIS ONE graduate" without knowing about siblings. Two manual
+    # nodes sharing a label can independently resolve to the SAME target
+    # (e.g. one wired-and-run, one left completely unwired: Pass 1's
+    # "absence of wiring is not a conflict" rule lets the unwired one
+    # graduate too, since from its own perspective there's no evidence it's
+    # different). graduate_manual_node only deletes the manual row and
+    # never creates the target (it already exists from real DB data), so a
+    # second graduation to the same target silently deletes that manual
+    # node with nothing left to show for it — found via a real GUI session
+    # (two compute_rolling_vo2 placeholders, one wired to RawVO2 and run,
+    # one left completely disconnected; running the first made the second
+    # vanish, see plan-duplicate-manual-node-graduation-collision.md).
+    #
+    # Resolve by preferring the graduation with actual wiring evidence (a
+    # non-empty inferred input/output type — i.e. it matched its candidate
+    # on more than "you were the only option") over one that only passed
+    # because it had no wiring to contradict anything. Ties (or all-unwired
+    # collisions) keep one deterministically; the rest are demoted back to
+    # a normal (red, unrun) manual node instead of being deleted.
+    def _has_wiring_evidence(action: gb.GraduationAction) -> bool:
+        meta = manual_nodes[action.old_id]
+        if meta["type"] != "functionNode":
+            return True
+        resolved, inferred_inputs = _resolve_manual_fn_wiring(action.old_id, meta["label"])
+        return bool(inferred_inputs) or bool(resolved.output_types)
+
+    by_target: dict[str, list[gb.GraduationAction]] = {}
+    for action in graduations:
+        by_target.setdefault(action.new_id, []).append(action)
+
+    deduped_graduations = []
+    for target_id, actions in by_target.items():
+        if len(actions) == 1:
+            deduped_graduations.append(actions[0])
+            continue
+        ranked = sorted(actions, key=lambda a: not _has_wiring_evidence(a))
+        winner, losers = ranked[0], ranked[1:]
+        deduped_graduations.append(winner)
+        for loser in losers:
+            logger.warning(
+                "[pipeline] graduation collision on target %s: %s and %s "
+                "both resolved to the same target — keeping %s, demoting "
+                "%s back to a separate manual node",
+                target_id,
+                winner.old_id,
+                loser.old_id,
+                winner.old_id,
+                loser.old_id,
+            )
+            to_add.append(loser.old_id)
+    graduations = deduped_graduations
 
     # Execute graduation side effects.
     logger.info("[pipeline] Executing %d graduation action(s)", len(graduations))
