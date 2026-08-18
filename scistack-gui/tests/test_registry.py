@@ -242,6 +242,74 @@ class TestGetVariableClass:
         with pytest.raises(KeyError, match="not found"):
             registry.get_variable_class("NonExistentVarClass")
 
+
+# ---------------------------------------------------------------------------
+# Discovery output suppression — a discovered file is actually *imported*
+# (Python has no side-effect-free way to inspect a module), so a stray
+# script with real top-level code would otherwise leak its print()s and
+# tracebacks into the GUI's own console/log, reading as a GUI failure.
+# See registry._suppress_user_code_output and _load_file_modules.
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoveryOutputSuppression:
+    def test_print_in_discovered_file_does_not_reach_console(
+        self, tmp_path, capsys, caplog
+    ):
+        import logging
+
+        f = tmp_path / "noisy.py"
+        f.write_text(
+            "print('hello from noisy module')\n\n"
+            "def noisy_fn(x):\n"
+            "    return x\n"
+        )
+
+        registry._functions.clear()
+        registry._function_sources.clear()
+        registry._load_errors.clear()
+        with caplog.at_level(logging.DEBUG):
+            registry._load_file_modules([f])
+
+        captured = capsys.readouterr()
+        assert "hello from noisy module" not in captured.out
+        # Not discarded — recoverable via scidb.log at DEBUG if needed.
+        assert "hello from noisy module" in caplog.text
+        # The module still gets scanned normally despite the redirect.
+        assert "noisy_fn" in registry._functions
+
+    def test_failed_import_does_not_log_at_error_level(self, tmp_path, caplog):
+        """A file that raises on import (e.g. an unguarded debug script with
+        real top-level code) is routine during folder-scan discovery, not a
+        GUI failure -- must not surface as an ERROR-level console line."""
+        import logging
+
+        f = tmp_path / "broken.py"
+        f.write_text("raise RuntimeError('boom')\n")
+
+        registry._load_errors.clear()
+        with caplog.at_level(logging.DEBUG):
+            registry._load_file_modules([f])
+
+        assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+        # Still fully recorded for the 📁 Paths -> Discovered Code panel.
+        errors = registry.get_load_errors()
+        assert len(errors) == 1
+        assert "boom" in errors[0]["error"]
+
+    def test_failed_import_traceback_recoverable_at_debug(self, tmp_path, caplog):
+        import logging
+
+        f = tmp_path / "broken.py"
+        f.write_text("raise RuntimeError('boom')\n")
+
+        registry._load_errors.clear()
+        with caplog.at_level(logging.DEBUG):
+            registry._load_file_modules([f])
+
+        assert "Failed to load module file" in caplog.text
+        assert "RuntimeError: boom" in caplog.text
+
     def test_error_message_includes_class_name(self):
         with pytest.raises(KeyError) as exc_info:
             registry.get_variable_class("GhostClass")

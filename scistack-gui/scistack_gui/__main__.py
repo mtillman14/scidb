@@ -1,12 +1,15 @@
 """
-CLI entry point: scistack-gui <path/to/experiment.duckdb>
+CLI entry point: scistack-gui [path/to/experiment.duckdb]
 
 What happens:
-  1. Validate the .duckdb path
-  2. Read schema keys from the existing DB
-  3. Initialise the shared DatabaseManager (scistack_gui.db)
-  4. Start uvicorn on localhost:8765
-  5. Open the browser
+  1. If a db_path is given: import pipeline code, open (or create, with
+     --schema-keys) the database via scistack_gui.bootstrap.
+  2. If no db_path is given: skip straight to step 3 with no project loaded
+     — the browser opens onto the project-creation wizard
+     (POST /api/bootstrap/create, /api/bootstrap/open), which runs the same
+     bootstrap sequence from a running server.
+  3. Start uvicorn on localhost:8765
+  4. Open the browser
 """
 
 import argparse
@@ -25,7 +28,10 @@ def main():
     parser.add_argument(
         "db_path",
         type=Path,
-        help="Path to the SciStack .duckdb file (e.g. experiment.duckdb)",
+        nargs="?",
+        default=None,
+        help="Path to the SciStack .duckdb file (e.g. experiment.duckdb). "
+        "If omitted, the GUI opens onto a wizard to create or open one.",
     )
     parser.add_argument(
         "--port",
@@ -49,6 +55,13 @@ def main():
         "(project mode — reads [tool.scistack] config).",
     )
     parser.add_argument(
+        "--schema-keys",
+        type=str,
+        default=None,
+        help="Comma-separated schema keys; if provided and db_path "
+        "does not exist, a new database is created.",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Don't open the browser automatically",
@@ -59,126 +72,47 @@ def main():
         print("Error: --module and --project are mutually exclusive.", file=sys.stderr)
         sys.exit(1)
 
-    db_path = args.db_path.resolve()
-    if not db_path.exists():
-        print(f"Error: database file not found: {db_path}", file=sys.stderr)
-        sys.exit(1)
+    if args.db_path is not None:
+        db_path = args.db_path.resolve()
+        schema_keys = None
+        if args.schema_keys:
+            schema_keys = [k.strip() for k in args.schema_keys.split(",") if k.strip()]
 
-    # Import user code first (populates BaseVariable._all_subclasses and
-    # gives us function objects) — must happen before init_db so that
-    # configure_database() can auto-register the user's variable classes.
-    from scistack_gui import registry
+        if not db_path.exists() and not schema_keys:
+            print(f"Error: database file not found: {db_path}", file=sys.stderr)
+            sys.exit(1)
 
-    if args.project:
-        from scistack_gui.config import load_config
+        from scistack_gui.bootstrap import open_or_create_project
 
         try:
-            config = load_config(args.project, db_path)
-            result = registry.load_from_config(config)
-            print(
-                f"Project mode: {len(result['functions'])} functions, "
-                f"{len(result['variables'])} variables"
+            result = open_or_create_project(
+                db_path,
+                schema_keys=schema_keys,
+                module=args.module,
+                project=args.project,
             )
-            # Load MATLAB registry if MATLAB config is present.
-            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
-                from scistack_gui import matlab_registry
-
-                matlab_result = matlab_registry.load_from_config(config)
-                print(
-                    f"MATLAB: {len(matlab_result['matlab_functions'])} functions, "
-                    f"{len(matlab_result['matlab_variables'])} variables"
-                )
-        except (FileNotFoundError, ValueError) as e:
+        except (FileNotFoundError, ValueError, FileExistsError) as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
-            print(f"Error loading project: {e}", file=sys.stderr)
+            print(f"Error opening database: {e}", file=sys.stderr)
             sys.exit(1)
-    elif args.module:
-        module_path = args.module.resolve()
-        if not module_path.exists():
-            print(f"Error: module not found: {module_path}", file=sys.stderr)
-            sys.exit(1)
-        import importlib.util
 
-        spec = importlib.util.spec_from_file_location("user_pipeline", module_path)
-        user_mod = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(user_mod)
-        except Exception as e:
-            print(f"Error importing module {module_path}: {e}", file=sys.stderr)
-            sys.exit(1)
-        registry.register_module(user_mod, module_path=module_path)
-        print(f"Loaded module: {module_path}")
-    else:
-        # No --module/--project given: best-effort auto-discovery, either
-        # from a pyproject.toml/scistack.toml found near the database, or
-        # (more commonly, for a loose-scripts project) a folder scan of the
-        # database's directory. Never fatal — an empty registry here is no
-        # worse than today's default of not discovering anything at all.
-        from scistack_gui.config import load_config
-
-        try:
-            config = load_config(None, db_path)
-            result = registry.load_from_config(config)
-            print(
-                f"Auto-discovered: {len(result['functions'])} functions, "
-                f"{len(result['variables'])} variables"
-            )
-            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
-                from scistack_gui import matlab_registry
-
-                matlab_result = matlab_registry.load_from_config(config)
-                print(
-                    f"MATLAB: {len(matlab_result['matlab_functions'])} functions, "
-                    f"{len(matlab_result['matlab_variables'])} variables"
-                )
-        except Exception as e:
-            print(f"Warning: auto-discovery failed ({e}); starting with an empty registry.", file=sys.stderr)
-
-    # Initialise the shared DB connection before uvicorn starts.
-    # Import here so that the module-level singleton is set before the app
-    # imports its routers.
-    from scistack_gui.db import init_db
-
-    try:
-        db = init_db(db_path)
         print(f"Opened database: {db_path}")
-        print(f"Schema keys: {db.dataset_schema_keys}")
-    except Exception as e:
-        print(f"Error opening database: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Restore any manually-declared builtin function references (e.g.
-    # numpy.mean, a MATLAB builtin) from a previous session — they have no
-    # file on disk to be rediscovered from otherwise.
-    try:
-        from scistack_gui.services.builtin_function_service import (
-            replay_persisted_builtins,
+        print(f"Schema keys: {result.schema_keys}")
+        print(
+            f"Loaded: {result.functions_loaded} functions, "
+            f"{result.variables_loaded} variables"
         )
-
-        replay_persisted_builtins(db)
-    except Exception as e:
-        print(f"Warning: failed to restore builtin function references: {e}", file=sys.stderr)
-
-    # Bridge Python logging → scidb.log so that scihist/scistack_gui logger
-    # calls appear in the unified log file.
-    from scidb.log import Log
-
-    Log.bridge_python_logging()
-
-    # Phase 8: Stale lockfile detection on project open.
-    # If pyproject.toml exists next to the db, check whether uv.lock is
-    # out of date and silently sync if so. On failure, the error is
-    # stored in scistack_gui.startup and surfaced to the browser via the
-    # /api/info endpoint that the React app polls on mount.
-    from scistack_gui import startup as _startup
-
-    _startup.check_lockfile_staleness(db_path.parent)
-    for err in _startup.get_startup_errors():
-        print(f"Startup warning [{err.kind}]: {err.message}", file=sys.stderr)
-        if err.details:
-            print(err.details, file=sys.stderr)
+        if result.matlab_functions_loaded or result.matlab_variables_loaded:
+            print(
+                f"MATLAB: {result.matlab_functions_loaded} functions, "
+                f"{result.matlab_variables_loaded} variables"
+            )
+        for w in result.warnings:
+            print(f"Warning: {w}", file=sys.stderr)
+    else:
+        print("No database given — open the browser to create or open one.")
 
     url = f"http://localhost:{args.port}"
     print(f"SciStack GUI running at {url}")

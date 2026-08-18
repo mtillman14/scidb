@@ -102,11 +102,22 @@ def get_schema(db) -> dict:
 
 
 def get_info() -> dict:
-    """Return metadata about the open database."""
+    """Return metadata about the open database.
+
+    Returns ``{"db_loaded": False}`` if no database has been opened or
+    created yet — the browser frontend falls back to the project-creation
+    wizard in that case instead of the normal DAG shell (VS Code always
+    opens/creates a database before its webview mounts, so this branch is
+    standalone-frontend-only).
+    """
     from scistack_gui import startup as _startup
-    from scistack_gui.db import get_db_path
+    from scistack_gui.db import get_db_path, is_loaded
+
+    if not is_loaded():
+        return {"db_loaded": False}
 
     return {
+        "db_loaded": True,
         "db_name": get_db_path().name,
         "startup_errors": [e.to_dict() for e in _startup.get_startup_errors()],
     }

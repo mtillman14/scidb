@@ -192,6 +192,11 @@ def create_db(db_path: Path, schema_keys: list[str]) -> DatabaseManager:
     return _db
 
 
+def is_loaded() -> bool:
+    """Whether a database has been opened or created yet (via init_db/create_db)."""
+    return _db is not None
+
+
 def get_db_path() -> Path:
     """Returns the path to the open database file."""
     if _db_path is None:

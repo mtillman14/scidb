@@ -9,15 +9,17 @@ A step-by-step guide for structuring your files and directories to work with the
 1. [Choose Your Mode](#1-choose-your-mode)
 2. [Quick Start: Scaffolded Project (Recommended)](#2-quick-start-scaffolded-project-recommended)
 3. [Quick Start: Single-File Mode](#3-quick-start-single-file-mode)
-4. [Full Project Directory Layout](#4-full-project-directory-layout)
-5. [Configuration Files Reference](#5-configuration-files-reference)
-6. [Defining Variables](#6-defining-variables)
-7. [Defining Functions](#7-defining-functions)
-8. [Defining Constants](#8-defining-constants)
-9. [Using Libraries (Shared Packages)](#9-using-libraries-shared-packages)
-10. [How the GUI Discovers Your Code](#10-how-the-gui-discovers-your-code)
-11. [Launching the GUI](#11-launching-the-gui)
-12. [Troubleshooting](#12-troubleshooting)
+4. [Quick Start: VS Code Extension Wizard (No Terminal Required)](#4-quick-start-vs-code-extension-wizard-no-terminal-required)
+5. [Quick Start: Browser Wizard (No VS Code Required)](#5-quick-start-browser-wizard-no-vs-code-required)
+6. [Full Project Directory Layout](#6-full-project-directory-layout)
+7. [Configuration Files Reference](#7-configuration-files-reference)
+8. [Defining Variables](#8-defining-variables)
+9. [Defining Functions](#9-defining-functions)
+10. [Defining Constants](#10-defining-constants)
+11. [Using Libraries (Shared Packages)](#11-using-libraries-shared-packages)
+12. [How the GUI Discovers Your Code](#12-how-the-gui-discovers-your-code)
+13. [Launching the GUI](#13-launching-the-gui)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -113,7 +115,151 @@ Everything you want the GUI to see must be defined in (or imported by) that one 
 
 ---
 
-## 4. Full Project Directory Layout
+## 4. Quick Start: VS Code Extension Wizard (No Terminal Required)
+
+If you're using the SciStack VS Code extension, you don't need a terminal or
+any pre-existing files at all -- there's an in-editor wizard that creates the
+`.duckdb` file and defines its schema for you.
+
+**This wizard is extension-only.** The browser-only frontend (`scistack-gui`
+launched from the CLI) has no equivalent screen -- see the note at the end of
+this section.
+
+### Steps
+
+1. Run the command **`SciStack: Open Pipeline`** (`scistack.openPipeline`)
+   from the Command Palette.
+2. Choose **"Create new database"** (vs. "Open existing database").
+3. Pick a **folder**, then type a **filename** (`.duckdb` is appended
+   automatically if you leave it off).
+4. Type **schema keys**, comma-separated, ordered top-down (e.g.
+   `subject, session, trial`). This is the schema definition step -- it's
+   validated to require at least one key before you can continue.
+5. Choose how the GUI should discover your pipeline code:
+   - **"Select a project (pyproject.toml)"** -- if the folder has no
+     `pyproject.toml`/`scistack.toml`, you're offered to auto-generate a
+     minimal `scistack.toml` (commented-out `modules`/`packages`/
+     `variable_file`/MATLAB options) which opens in the editor for you to
+     fill in.
+   - **"Select a single pipeline module (.py)"** -- single-file mode.
+   - **"No module"** -- create the database and schema now, wire up code
+     later. The server starts with an empty registry; you can still browse
+     the (empty) DAG and, in project mode with `variable_file` configured,
+     create Variables from the GUI itself.
+
+### What happens under the hood
+
+The extension spawns the same JSON-RPC backend the rest of the GUI talks to,
+passing the schema keys on the command line:
+
+```
+python -m scistack_gui.server --db <path> --schema-keys "subject,session,trial" [--project <path> | --module <path>]
+```
+
+(`extension/src/pythonProcess.ts`, `PythonProcess` constructor.) Because the
+`.duckdb` file doesn't exist yet, `scistack_gui/server.py`'s `main()` treats
+this as a creation request: it calls `create_db(db_path, schema_keys)`
+(`scistack_gui/db.py`), which calls `scidb.configure_database(db_path,
+schema_keys)` to create the DuckDB file and its `_schema` table. On an
+ordinary "open existing database" run, no `--schema-keys` is passed and the
+server calls `init_db()` instead, reading the schema keys back out of the
+existing `_schema` table.
+
+Restarting the server later (e.g. `SciStack: Restart Python Process`) reuses
+the remembered `dbPath`/`schemaKeys`/`modulePath`/`projectPath` from the first
+run (`extension/src/extension.ts`, `lastStartArgs`) and does **not** re-pass
+`schemaKeys`, since the database already exists by then.
+
+### What this wizard does *not* do
+
+- It does not scaffold a full project layout (`pyproject.toml` + `uv.lock` +
+  `src/{name}/` + `data/`/`plots/` -- see
+  [Quick Start: Scaffolded Project](#2-quick-start-scaffolded-project-recommended)).
+  It only writes a bare `scistack.toml` if you point it at a project folder
+  with no config file at all. For the full scaffolded layout, run
+  `scistack project new` from a terminal first, then open the resulting
+  folder with the wizard's "Open existing database" path.
+- It does not let you define Variable *classes* (i.e. table schemas beyond
+  the top-level `subject`/`session`/`trial` schema keys) -- that still
+  requires either writing Python or using the GUI's "Create Variable" action
+  once a project with `variable_file` is loaded (see
+  [Defining Variables](#8-defining-variables)).
+
+---
+
+## 5. Quick Start: Browser Wizard (No VS Code Required)
+
+If you're launching `scistack-gui` from a terminal rather than through VS
+Code, the same open-or-create flow is available as an in-browser wizard --
+you don't need to already have a `.duckdb` file.
+
+**This wizard is browser-only.** It never appears inside the VS Code
+webview, since the extension always opens or creates a database itself
+(§4) before the webview ever mounts.
+
+### Steps
+
+1. Launch with no path: `scistack-gui` (no arguments). The browser opens
+   directly onto the wizard instead of the usual DAG canvas.
+2. Choose **"Open existing database"** or **"Create new database"**.
+   - **Open**: type the full path to an existing `.duckdb` file.
+   - **Create**: type a destination **folder** (must already exist),
+     a **filename** (`.duckdb` appended automatically), and **schema keys**
+     (comma-separated, top-down -- e.g. `subject, session, trial`).
+3. Submit. The database is created/opened and the browser transitions
+   straight into the normal DAG view -- no page reload.
+
+Unlike the VS Code wizard, there's no third step asking how to discover
+pipeline code (project / module / none). Both `POST /api/bootstrap/create`
+and `/open` always call `open_or_create_project()` with no `module`/
+`project` argument, which puts it on the same auto-discovery path
+`config.load_config(None, db_path)` already uses elsewhere in this
+codebase -- the loose-script/folder-scan mode: search upward for a
+`pyproject.toml`, and if none is found, scan the database's own directory
+for `.py`/`.m` files directly. Nothing needs to be typed in up front, and
+the header's "Refresh Code" button re-scans once files exist.
+
+### Why plain text paths instead of a file browser
+
+VS Code's wizard gets a native folder/file picker for free
+(`vscode.window.showOpenDialog`). A browser has no equivalent that returns
+a real filesystem path -- `<input type="file">` sandboxes the selection and
+never exposes a usable server-side path, even though the FastAPI server and
+the browser are running on the same machine. Building an in-browser
+directory navigator (a `GET` endpoint that lists server-side directories,
+plus a breadcrumb UI) was considered and deliberately deferred as
+unnecessary scope for the first version -- see
+`.claude/plan-browser-db-creation-wizard.md`. Every path in this wizard is
+typed in directly.
+
+### What happens under the hood
+
+Unlike the VS Code wizard (which passes `--schema-keys` on the command line
+before the server process starts -- §4), the browser wizard's two calls
+happen **after** `scistack-gui` is already running, from inside a request
+handler:
+
+- `POST /api/bootstrap/create` -- `scistack_gui/api/bootstrap.py`
+- `POST /api/bootstrap/open` -- `scistack_gui/api/bootstrap.py`
+
+Both wrap `scistack_gui.bootstrap.open_or_create_project()`, the exact same
+sequence `__main__.py` runs at CLI startup when you do pass a `db_path`
+(import pipeline code, then `create_db()`/`init_db()`,
+`replay_persisted_builtins()`, `Log.bridge_python_logging()`,
+`check_lockfile_staleness()`). No process restart is needed to pick up the
+newly opened database -- `scistack_gui.db._db` is a plain swappable module
+global, so setting it from a request handler works identically to setting
+it before `uvicorn.run()` starts.
+
+The frontend knows whether to show the wizard at all via `GET /api/info`,
+which now returns `{"db_loaded": false}` instead of erroring when nothing
+is open yet (`scistack_gui/services/pipeline_service.py`). `App.tsx`
+renders `ProjectBootstrapWizard` in that case and re-fetches `/api/info`
+once the wizard's POST succeeds.
+
+---
+
+## 6. Full Project Directory Layout
 
 Here is the canonical structure with annotations:
 
@@ -156,7 +302,7 @@ my_study/
 
 ---
 
-## 5. Configuration Files Reference
+## 7. Configuration Files Reference
 
 ### A. `pyproject.toml` -- Main Configuration
 
@@ -241,7 +387,7 @@ Auto-created by the GUI beside the `.duckdb` file. Stores cosmetic node position
 
 ---
 
-## 6. Defining Variables
+## 8. Defining Variables
 
 Variables are Python classes that subclass `BaseVariable`. Each variable type maps to a table in the DuckDB database.
 
@@ -270,7 +416,7 @@ class TrialOnsets(BaseVariable):
 
 ---
 
-## 7. Defining Functions
+## 9. Defining Functions
 
 Functions appear in the pipeline DAG when they process variables via `for_each()`.
 
@@ -307,7 +453,7 @@ The `@lineage_fcn` decorator wraps the function so the discovery scanner can ide
 
 ---
 
-## 8. Defining Constants
+## 10. Defining Constants
 
 Constants are named scalar values that appear in the pipeline DAG.
 
@@ -328,7 +474,7 @@ WINDOW_SIZE_MS = constant(250, description="Analysis window size in milliseconds
 
 ---
 
-## 9. Using Libraries (Shared Packages)
+## 11. Using Libraries (Shared Packages)
 
 A library is a plain Python package that happens to contain scistack exports (Variables, Functions, or Constants).
 
@@ -491,7 +637,7 @@ This removes the entry from `~/.scistack/config.toml` and deletes the local clon
 
 ---
 
-## 10. How the GUI Discovers Your Code
+## 12. How the GUI Discovers Your Code
 
 Understanding the discovery pipeline helps you debug "why doesn't my variable/function show up?"
 
@@ -628,7 +774,7 @@ The DAG you see in the GUI is built from:
 
 ---
 
-## 11. Launching the GUI
+## 13. Launching the GUI
 
 ### From the Command Line
 
@@ -654,7 +800,7 @@ scistack-gui my_study.duckdb
 
 ---
 
-## 12. Troubleshooting
+## 14. Troubleshooting
 
 ### "My variable/function doesn't appear in the GUI"
 

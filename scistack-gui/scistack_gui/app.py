@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from scistack_gui.api.artifacts import router as artifacts_router
+from scistack_gui.api.bootstrap import router as bootstrap_router
 from scistack_gui.api.builtin_functions import router as builtin_functions_router
 from scistack_gui.api.indexes import router as indexes_router
 from scistack_gui.api.layout import router as layout_router
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(bootstrap_router, prefix="/api")
     app.include_router(pipeline_router, prefix="/api")
     app.include_router(registry_router, prefix="/api")
     app.include_router(schema_router, prefix="/api")

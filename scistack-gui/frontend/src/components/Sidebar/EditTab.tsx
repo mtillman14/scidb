@@ -38,10 +38,14 @@ interface HiddenPipelineInfo {
 
 export default function EditTab() {
   const [registry, setRegistry] = useState<Registry>({ functions: [], variables: [] })
-  // Two distinct failure modes worth telling the user about: the request
-  // itself failing (network/RPC error — discoveryError), vs. a successful
-  // response reporting that some module/file failed to import server-side
-  // (registry.load_errors — "why doesn't my function show up").
+  // discoveryError is the request itself failing (network/RPC error) — a
+  // real problem, shown here as a banner. registry.load_errors (some
+  // module/file failing to import server-side) is NOT shown here: in
+  // loose-script/folder-scan mode it's routinely full of framework/example
+  // files that were never meant to be pipeline code, so surfacing it as an
+  // always-on red banner reads as a process failure when it usually isn't.
+  // It's still fully visible, per-module, in 📁 Paths → Discovered Code
+  // (components/Sidebar/ProjectConfigPanel.tsx) for when it's worth digging into.
   const [discoveryError, setDiscoveryError] = useState('')
   const [constants, setConstants] = useState<string[]>([])
   const [addingConst, setAddingConst] = useState(false)
@@ -365,25 +369,6 @@ export default function EditTab() {
   return (
     <div style={styles.root}>
       {discoveryError && <div style={styles.errorBanner}>{discoveryError}</div>}
-      {!discoveryError && registry.load_errors && registry.load_errors.length > 0 && (
-        <div style={styles.errorBanner}>
-          <div>
-            {registry.load_errors.length === 1
-              ? '1 file failed to load:'
-              : `${registry.load_errors.length} files failed to load:`}
-          </div>
-          {registry.load_errors.slice(0, 3).map((e, i) => (
-            <div key={i} title={e.error} style={styles.errorBannerLine}>
-              {e.source}: {e.error.length > 140 ? `${e.error.slice(0, 140)}…` : e.error}
-            </div>
-          ))}
-          {registry.load_errors.length > 3 && (
-            <div style={styles.errorBannerLine}>
-              +{registry.load_errors.length - 3} more — see 📁 Paths for details
-            </div>
-          )}
-        </div>
-      )}
       <Section
         title="Submodules"
         action={

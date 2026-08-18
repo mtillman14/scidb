@@ -41,6 +41,8 @@ import { ScopeProvider } from "./context/ScopeContext";
 import { PlanRunProvider } from "./context/PlanRunContext";
 import { ClipboardProvider } from "./context/ClipboardContext";
 import { callBackend, isVSCodeMode } from "./api";
+import * as modalStyles from "./components/modalStyles";
+import ProjectBootstrapWizard from "./components/Bootstrap/ProjectBootstrapWizard";
 
 /**
  * Startup diagnostics reported by the backend's get_info response.
@@ -57,7 +59,8 @@ interface StartupError {
 }
 
 interface InfoResponse {
-  db_name: string;
+  db_loaded?: boolean;
+  db_name?: string;
   startup_errors?: StartupError[];
 }
 
@@ -159,32 +162,9 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#12122a",
   },
   // --- Blocking startup-error dialog (Phase 8: stale lockfile handling) ---
-  startupOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0, 0, 0, 0.75)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 10000,
-  },
-  startupDialog: {
-    background: "#1a1a2e",
-    color: "#eee",
-    border: "1px solid #ff4d4f",
-    borderRadius: 6,
-    padding: "20px 24px",
-    maxWidth: 720,
-    maxHeight: "80vh",
-    overflow: "auto",
-    boxShadow: "0 10px 40px rgba(0, 0, 0, 0.6)",
-  },
-  startupDialogTitle: {
-    fontSize: 16,
-    fontWeight: 700,
-    color: "#ff4d4f",
-    marginBottom: 12,
-  },
+  // Overlay/dialog/title chrome now lives in ./components/modalStyles —
+  // these three entries are gone; see the red-accent override in
+  // StartupErrorDialog below.
   startupDialogMessage: {
     fontSize: 13,
     lineHeight: 1.5,
@@ -213,6 +193,10 @@ const styles: Record<string, React.CSSProperties> = {
 export default function App() {
   const [schema, setSchema] = useState<{ keys: string[] }>({ keys: [] });
   const [dbName, setDbName] = useState("");
+  // null = info not fetched yet; false = no project open (browser wizard);
+  // true = normal DAG shell. VS Code always has a project open by the time
+  // its webview mounts, so it never observes `false` here.
+  const [dbLoaded, setDbLoaded] = useState<boolean | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [refreshingCode, setRefreshingCode] = useState(false);
   const [reporting, setReporting] = useState(false);
@@ -274,21 +258,50 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    callBackend("get_schema")
-      .then((d) => setSchema(d as { keys: string[] }))
-      .catch(console.error);
+  // Fetches /api/info and branches the whole app on db_loaded. Passed to
+  // ProjectBootstrapWizard as onReady so a successful create/open flips
+  // straight into the normal DAG shell without a page reload — the backend
+  // db._db singleton is just a swappable module global (scistack_gui/db.py),
+  // so re-fetching here is all that's needed once the wizard's POST lands.
+  const refreshInfo = useCallback(() => {
     callBackend("get_info")
       .then((d) => {
         const info = d as InfoResponse;
-        setDbName(info.db_name);
+        if (info.db_loaded === false) {
+          setDbLoaded(false);
+          return;
+        }
+        setDbLoaded(true);
+        setDbName(info.db_name ?? "");
         setStartupErrors(info.startup_errors ?? []);
       })
       .catch(console.error);
   }, []);
 
+  useEffect(() => {
+    refreshInfo();
+  }, [refreshInfo]);
+
+  // Only fetch schema/etc. once a project is actually open — before that,
+  // every other endpoint 500s on the missing db singleton (harmless, but
+  // noisy, and there's nothing to render yet regardless).
+  useEffect(() => {
+    if (!dbLoaded) return;
+    callBackend("get_schema")
+      .then((d) => setSchema(d as { keys: string[] }))
+      .catch(console.error);
+  }, [dbLoaded]);
+
   // Phase 8: any blocking startup error pauses the whole UI.
   const blockingErrors = startupErrors.filter((e) => e.blocking);
+
+  if (dbLoaded === false) {
+    return <ProjectBootstrapWizard onReady={refreshInfo} />;
+  }
+
+  if (dbLoaded === null) {
+    return null;
+  }
 
   return (
     <RunLogProvider>
@@ -374,9 +387,9 @@ export default function App() {
  */
 function StartupErrorDialog({ errors }: { errors: StartupError[] }) {
   return (
-    <div style={styles.startupOverlay} role="alertdialog" aria-modal="true">
-      <div style={styles.startupDialog}>
-        <div style={styles.startupDialogTitle}>
+    <div style={modalStyles.overlay} role="alertdialog" aria-modal="true">
+      <div style={{ ...modalStyles.dialog, border: "1px solid #ff4d4f" }}>
+        <div style={{ ...modalStyles.dialogTitle, color: "#ff4d4f" }}>
           Project failed to open cleanly
         </div>
         {errors.map((err, i) => (

@@ -108,6 +108,53 @@ class TestParseMatlabFunction:
 
         assert info1.source_hash != info2.source_hash
 
+    def test_method_inside_non_basevariable_classdef_not_registered(self, tmp_path):
+        """A `function` inside a methods block of a non-BaseVariable classdef
+        (e.g. a matlab.unittest.TestCase's setup helper) must not be
+        extracted as a standalone pipeline function — regression test for
+        the 'shadows previous definition' bug where every unittest test
+        class's identically-named setup method (e.g. resetSchema/addPaths)
+        overwrote the last one registered."""
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "TestSomething.m"
+        f.write_text(
+            textwrap.dedent("""\
+            classdef TestSomething < matlab.unittest.TestCase
+                methods (TestMethodSetup)
+                    function resetSchema(~)
+                        scifor.set_schema(string.empty(1, 0));
+                    end
+                end
+            end
+        """)
+        )
+
+        info = parse_matlab_function(f)
+        assert info is None
+
+    def test_method_inside_basevariable_classdef_not_registered(self, tmp_path):
+        """Same rule applies to a BaseVariable classdef's own methods (e.g.
+        a constructor) -- parse_matlab_function must defer to
+        parse_matlab_variable/classify_matlab_file for these, not extract
+        the constructor as a standalone function."""
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "RawSignal.m"
+        f.write_text(
+            textwrap.dedent("""\
+            classdef RawSignal < scidb.BaseVariable
+                methods
+                    function obj = RawSignal()
+                    end
+                end
+            end
+        """)
+        )
+
+        info = parse_matlab_function(f)
+        assert info is None
+
 
 class TestParseMatlabVariable:
     def test_basic_classdef(self, tmp_path):
@@ -370,6 +417,53 @@ class TestMatlabRegistryLoadFromSources:
         assert "Skipping non-function/non-variable" in caplog.text
         assert "Could not classify" not in caplog.text
         assert matlab_registry.get_load_errors() == []
+
+    def test_same_named_setup_methods_across_test_classes_do_not_shadow(
+        self, tmp_path, caplog
+    ):
+        """Regression test for the 'shadows previous definition' warning
+        seen scanning a real MATLAB unittest suite: many test classes each
+        define their own local setup method under the same name (e.g.
+        resetSchema/addPaths). Folder-scan discovery must not register
+        these as standalone functions at all -- so two files reusing the
+        same setup-method name must NOT collide in the registry."""
+        import logging
+
+        from scistack_gui import matlab_registry
+
+        test_a = tmp_path / "TestA.m"
+        test_a.write_text(
+            textwrap.dedent("""\
+            classdef TestA < matlab.unittest.TestCase
+                methods (TestMethodSetup)
+                    function resetSchema(~)
+                        scifor.set_schema(string.empty(1, 0));
+                    end
+                end
+            end
+        """)
+        )
+        test_b = tmp_path / "TestB.m"
+        test_b.write_text(
+            textwrap.dedent("""\
+            classdef TestB < matlab.unittest.TestCase
+                methods (TestMethodSetup)
+                    function resetSchema(~)
+                        scifor.set_schema(string.empty(1, 0));
+                    end
+                end
+            end
+        """)
+        )
+
+        matlab_registry._matlab_functions.clear()
+        matlab_registry._matlab_variables.clear()
+        matlab_registry._load_errors.clear()
+        with caplog.at_level(logging.DEBUG):
+            matlab_registry.load_from_sources([test_a, test_b])
+
+        assert "resetSchema" not in matlab_registry.get_all_function_names()
+        assert "shadows previous definition" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

@@ -92,8 +92,10 @@ class MatlabFunctionInfo:
 def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
     """Parse a MATLAB function file and extract its signature.
 
-    Returns ``None`` if the file cannot be read or does not contain a
-    valid function declaration.
+    Returns ``None`` if the file cannot be read, does not contain a valid
+    function declaration, or contains a ``classdef`` declaration (any
+    ``function`` inside such a file is a method belonging to that class,
+    never a standalone pipeline function).
     """
     logger.debug("[matlab_parser] Parsing function file: %s", path)
     try:
@@ -109,6 +111,25 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
     logger.debug("[matlab_parser] Computing source hash")
     source_hash = sha256(raw).hexdigest()
     text = _preprocess_for_parsing(raw.decode("utf-8", errors="replace"))
+
+    # A file containing ANY classdef declaration — not just a BaseVariable
+    # one — never also defines a standalone pipeline function: MATLAB's
+    # one-file-one-entity rule means a `function` match inside such a file
+    # is always a method (constructor, a TestMethodSetup/Test method, ...),
+    # not top-level callable code. Without this check, folder-scan discovery
+    # over e.g. a `matlab.unittest.TestCase` test suite mis-registers each
+    # test class's local setup helper (often named identically across many
+    # files, e.g. `resetSchema`/`addPaths`) as if it were real pipeline
+    # code, silently overwriting same-named registrations from other files
+    # (see matlab_registry._register_matlab_function's "shadows previous
+    # definition" warning — regression test in test_matlab.py).
+    if _CLASSDEF_RE.search(text):
+        logger.debug(
+            "[matlab_parser] %s contains a classdef; skipping function "
+            "extraction (any 'function' inside it belongs to that class)",
+            path,
+        )
+        return None
 
     logger.debug("[matlab_parser] Searching for function declaration")
     m = _FUNCTION_RE.search(text)

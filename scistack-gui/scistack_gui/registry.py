@@ -12,10 +12,12 @@ for_each calls.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.metadata
 import importlib.util
 import inspect
+import io
 import logging
 import pkgutil
 from pathlib import Path
@@ -47,10 +49,11 @@ attributed via ``_function_sources``.
 _load_errors: list[dict] = []
 """Discovery failures from the most recent load/refresh — [{"source", "error"}, ...].
 
-Unlike the ``logger.exception`` calls next to each of these, this list is
-queryable from the GUI (via ``get_load_errors``/``api/project.py``) so a
-failed import/module doesn't just vanish into ``scidb.log`` with the user
-none the wiser about why a function didn't show up.
+The DEBUG-level log line next to each of these only lands in scidb.log
+(Log.set_level("DEBUG", sink="file")) — this list is what actually surfaces
+a failed import to the user, queryable via ``get_load_errors``/
+``api/project.py`` (📁 Paths -> Discovered Code), so a failure doesn't just
+vanish with the user none the wiser about why a function didn't show up.
 """
 
 # Single-file mode state (legacy)
@@ -61,6 +64,45 @@ _module_name: str = "user_pipeline"
 _config: SciStackConfig | None = None
 
 ENTRY_POINT_GROUP = "scistack.plugins"
+
+
+@contextlib.contextmanager
+def _suppress_user_code_output():
+    """Redirect stdout/stderr while executing discovered/imported user code.
+
+    Discovery only wants a file's top-level definitions, but there is no
+    side-effect-free way to inspect a module in Python -- importing it also
+    *runs* it. If that file has real top-level code (a stray debug script,
+    a missing ``if __name__ == "__main__":`` guard, ...), its print()s and
+    any console-sink log lines it triggers (scidb/scifor route through
+    scistacklog's console handler, which resolves ``sys.stderr`` dynamically
+    at emit time -- see scistacklog._StderrHandler -- so they're caught by
+    this redirect too) would otherwise land in the GUI's own terminal and
+    read as if the GUI itself had broken.
+
+    Captured text is logged at DEBUG rather than discarded, so it's still
+    recoverable via ``scidb.log`` (``Log.set_level("DEBUG", sink="file")``)
+    if a user's script misbehaves and someone needs to see why.
+
+    Best-effort: redirect_stdout/stderr swap process-wide streams, so a
+    concurrent request producing console output during the same brief
+    window would have it captured too. Discovery runs are short and
+    infrequent (startup, explicit "Refresh Code"), so this is an accepted
+    tradeoff rather than a correctness concern here.
+    """
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            yield
+    finally:
+        if out.getvalue():
+            logger.debug(
+                "[registry] captured stdout during import:\n%s", out.getvalue()
+            )
+        if err.getvalue():
+            logger.debug(
+                "[registry] captured stderr during import:\n%s", err.getvalue()
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +169,8 @@ def refresh_module() -> dict:
     logger.info("[registry] Re-importing module from %s", _module_path)
     spec = importlib.util.spec_from_file_location(_module_name, _module_path)
     user_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(user_mod)
+    with _suppress_user_code_output():
+        spec.loader.exec_module(user_mod)
 
     logger.info("[registry] Scanning module for functions")
     _scan_module_functions(user_mod, source=str(_module_path))
@@ -231,7 +274,8 @@ def _load_file_modules(paths: list[Path]) -> None:
         try:
             spec = importlib.util.spec_from_file_location(mod_name, path)
             mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            with _suppress_user_code_output():
+                spec.loader.exec_module(mod)
             fn_count_before = len(_functions)
             _scan_module_functions(mod, source=str(path))
             fn_count_after = len(_functions)
@@ -242,7 +286,15 @@ def _load_file_modules(paths: list[Path]) -> None:
                 fn_count_after - fn_count_before,
             )
         except Exception as e:
-            logger.exception("[registry] Failed to load module file: %s", path)
+            # DEBUG, not ERROR: a failed import during discovery is routine
+            # (framework/example/debug files sitting in a folder-scanned
+            # tree were never meant to be pipeline code) and must not read
+            # as a GUI failure on the console. Still fully recorded via
+            # _record_load_error for the 📁 Paths -> Discovered Code panel,
+            # and the traceback is recoverable via scidb.log at DEBUG.
+            logger.debug(
+                "[registry] Failed to load module file: %s", path, exc_info=True
+            )
             _record_load_error(str(path), str(e))
 
 
@@ -254,9 +306,12 @@ def _load_packages(names: list[str]) -> None:
             "[registry] Processing package %d/%d: %s", pkg_idx + 1, len(names), pkg_name
         )
         try:
-            pkg = importlib.import_module(pkg_name)
+            with _suppress_user_code_output():
+                pkg = importlib.import_module(pkg_name)
         except ImportError as e:
-            logger.exception("[registry] Failed to import package: %s", pkg_name)
+            logger.debug(
+                "[registry] Failed to import package: %s", pkg_name, exc_info=True
+            )
             _record_load_error(f"package:{pkg_name}", str(e))
             continue
 
@@ -280,13 +335,16 @@ def _load_packages(names: list[str]) -> None:
             ):
                 try:
                     logger.debug("[registry] Importing submodule: %s", modname)
-                    submod = importlib.import_module(modname)
+                    with _suppress_user_code_output():
+                        submod = importlib.import_module(modname)
                     _scan_module_functions(submod, source=f"package:{modname}")
                     _scan_module_constants(submod, source=f"package:{modname}")
                     submodule_count += 1
                 except Exception as e:
-                    logger.exception(
-                        "[registry] Failed to import submodule: %s", modname
+                    logger.debug(
+                        "[registry] Failed to import submodule: %s",
+                        modname,
+                        exc_info=True,
                     )
                     _record_load_error(f"package:{modname}", str(e))
             logger.debug(
@@ -316,7 +374,8 @@ def _load_entry_points() -> None:
             ep.name,
         )
         try:
-            mod = ep.load()
+            with _suppress_user_code_output():
+                mod = ep.load()
             # entry point value can be a module or a callable; if it's a
             # module we scan it, otherwise we treat it as a single function.
             if inspect.ismodule(mod):
@@ -338,7 +397,9 @@ def _load_entry_points() -> None:
                     ep.value,
                 )
         except Exception as e:
-            logger.exception("[registry] Failed to load entry point: %s", ep.name)
+            logger.debug(
+                "[registry] Failed to load entry point: %s", ep.name, exc_info=True
+            )
             _record_load_error(f"entrypoint:{ep.name}", str(e))
 
 

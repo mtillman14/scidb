@@ -1104,7 +1104,8 @@ def main():
         spec = importlib.util.spec_from_file_location("user_pipeline", module_path)
         user_mod = importlib.util.module_from_spec(spec)
         try:
-            spec.loader.exec_module(user_mod)
+            with registry._suppress_user_code_output():
+                spec.loader.exec_module(user_mod)
         except Exception as e:
             print(
                 json.dumps(

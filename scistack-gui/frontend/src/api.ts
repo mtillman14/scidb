@@ -97,6 +97,8 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     get_layout:             { path: (p) => `/api/layout?pipeline_id=${encodeURIComponent((p.pipeline_id as string) ?? 'main')}` },
     get_schema:             { path: '/api/schema' },
     get_info:               { path: '/api/info' },
+    create_project:         { path: '/api/bootstrap/create', method: 'POST', body: true },
+    open_project:           { path: '/api/bootstrap/open', method: 'POST', body: true },
     get_registry:           { path: '/api/registry' },
     get_function_params:    { path: (p) => `/api/function/${encodeURIComponent(p.name as string)}/params` },
     get_function_source:    { path: (p) => `/api/function/${encodeURIComponent(p.name as string)}/source` },
