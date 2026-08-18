@@ -15,6 +15,7 @@ import datetime
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,14 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger("sciduck")
+
+
+def _truncate_sql(sql: str, limit: int = 200) -> str:
+    """Collapse whitespace and cap length for log lines."""
+    flat = " ".join(sql.split())
+    if len(flat) > limit:
+        return flat[:limit] + "...(truncated)"
+    return flat
 
 
 def _schema_str(value):
@@ -689,6 +698,14 @@ class SciDuck:
         self.dataset_schema = list(dataset_schema)
         self.read_only = bool(read_only)
         self._lock = threading.Lock()
+        # Thread id currently holding an open BEGIN...COMMIT/ROLLBACK transaction
+        # on `self.con`, or None. DuckDB connections have exactly one transaction
+        # context; `_lock` only serializes individual statements (see `_execute`
+        # docstring), so a statement from another thread can still land *inside*
+        # this transaction between `_begin()` and `_commit()`. Tracking the owner
+        # lets us log that interleaving instead of just seeing the downstream
+        # "Current transaction is aborted" failure with no context.
+        self._tx_owner: int | None = None
         logger.debug(
             "DuckDB lock ACQUIRED (read_only=%s): %s", self.read_only, self.db_path
         )
@@ -708,14 +725,46 @@ class SciDuck:
         # that fetch results must hold _lock for the entire execute+fetch sequence.
         # Use _fetchall / _fetchdf for queries that return rows; call _execute
         # directly (under _lock) only for DDL/DML that needs no fetch.
+        thread = threading.get_ident()
+        wait_start = time.monotonic()
         with self._lock:
-            if params:
-                return self.con.execute(sql, params)
-            return self.con.execute(sql)
+            waited = time.monotonic() - wait_start
+            foreign_tx = self._tx_owner is not None and self._tx_owner != thread
+            logger.debug(
+                "_execute thread=%d waited=%.4fs tx_owner=%s foreign_tx=%s sql=%s",
+                thread, waited, self._tx_owner, foreign_tx, _truncate_sql(sql),
+            )
+            try:
+                if params:
+                    return self.con.execute(sql, params)
+                return self.con.execute(sql)
+            except Exception:
+                logger.exception(
+                    "_execute FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
+                    thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
+                )
+                raise
 
     def _executemany(self, sql: str, params_list):
+        thread = threading.get_ident()
+        wait_start = time.monotonic()
         with self._lock:
-            return self.con.executemany(sql, params_list)
+            waited = time.monotonic() - wait_start
+            foreign_tx = self._tx_owner is not None and self._tx_owner != thread
+            logger.debug(
+                "_executemany thread=%d waited=%.4fs tx_owner=%s foreign_tx=%s "
+                "rows=%d sql=%s",
+                thread, waited, self._tx_owner, foreign_tx, len(params_list),
+                _truncate_sql(sql),
+            )
+            try:
+                return self.con.executemany(sql, params_list)
+            except Exception:
+                logger.exception(
+                    "_executemany FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
+                    thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
+                )
+                raise
 
     def _bulk_insert(self, table: str, columns, rows, conflict_cols=None) -> None:
         """Insert many rows with a single vectorized ``INSERT ... SELECT``.
@@ -741,40 +790,125 @@ class SciDuck:
         if conflict_cols:
             conflict_str = ", ".join(f'"{c}"' for c in conflict_cols)
             sql += f" ON CONFLICT ({conflict_str}) DO NOTHING"
+        thread = threading.get_ident()
+        wait_start = time.monotonic()
         with self._lock:
+            waited = time.monotonic() - wait_start
+            foreign_tx = self._tx_owner is not None and self._tx_owner != thread
+            logger.debug(
+                "_bulk_insert thread=%d waited=%.4fs tx_owner=%s foreign_tx=%s "
+                "table=%s rows=%d",
+                thread, waited, self._tx_owner, foreign_tx, table, len(rows),
+            )
             self.con.register("_bulk_insert_df", df)
             try:
                 self.con.execute(sql)
+            except Exception:
+                logger.exception(
+                    "_bulk_insert FAILED thread=%d tx_owner=%s foreign_tx=%s table=%s",
+                    thread, self._tx_owner, foreign_tx, table,
+                )
+                raise
             finally:
                 self.con.unregister("_bulk_insert_df")
 
     def _begin(self):
+        thread = threading.get_ident()
+        wait_start = time.monotonic()
         with self._lock:
+            waited = time.monotonic() - wait_start
+            if self._tx_owner is not None and self._tx_owner != thread:
+                logger.warning(
+                    "_begin thread=%d waited=%.4fs OVERLAPPING existing "
+                    "tx_owner=%d — this connection allows only one open "
+                    "transaction; the new BEGIN will nest into the same "
+                    "connection context",
+                    thread, waited, self._tx_owner,
+                )
+            else:
+                logger.debug("_begin thread=%d waited=%.4fs", thread, waited)
             self.con.execute("BEGIN TRANSACTION")
+            self._tx_owner = thread
 
     def _commit(self):
+        thread = threading.get_ident()
         with self._lock:
-            self.con.execute("COMMIT")
+            logger.debug(
+                "_commit thread=%d tx_owner=%s", thread, self._tx_owner,
+            )
+            if self._tx_owner is not None and self._tx_owner != thread:
+                logger.warning(
+                    "_commit thread=%d committing a transaction opened by "
+                    "thread=%d — statements from either thread may have been "
+                    "interleaved into it",
+                    thread, self._tx_owner,
+                )
+            try:
+                self.con.execute("COMMIT")
+            except Exception:
+                logger.exception(
+                    "_commit FAILED thread=%d tx_owner=%s", thread, self._tx_owner,
+                )
+                raise
+            finally:
+                self._tx_owner = None
 
     def _rollback(self):
+        thread = threading.get_ident()
         with self._lock:
-            self.con.execute("ROLLBACK")
+            logger.debug(
+                "_rollback thread=%d tx_owner=%s", thread, self._tx_owner,
+            )
+            try:
+                self.con.execute("ROLLBACK")
+            finally:
+                self._tx_owner = None
 
     def _fetchall(self, sql: str, params=None) -> list:
+        thread = threading.get_ident()
+        wait_start = time.monotonic()
         with self._lock:
-            if params:
-                return self.con.execute(sql, params).fetchall()
-            return self.con.execute(sql).fetchall()
+            waited = time.monotonic() - wait_start
+            foreign_tx = self._tx_owner is not None and self._tx_owner != thread
+            logger.debug(
+                "_fetchall thread=%d waited=%.4fs tx_owner=%s foreign_tx=%s sql=%s",
+                thread, waited, self._tx_owner, foreign_tx, _truncate_sql(sql),
+            )
+            try:
+                if params:
+                    return self.con.execute(sql, params).fetchall()
+                return self.con.execute(sql).fetchall()
+            except Exception:
+                logger.exception(
+                    "_fetchall FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
+                    thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
+                )
+                raise
 
     def fetchall(self, sql: str, params=None) -> list:
         """Public alias for _fetchall — accessible from MATLAB (underscore methods are not)."""
         return self._fetchall(sql, params)
 
     def _fetchdf(self, sql: str, params=None) -> pd.DataFrame:
+        thread = threading.get_ident()
+        wait_start = time.monotonic()
         with self._lock:
-            if params:
-                return self.con.execute(sql, params).fetchdf()
-            return self.con.execute(sql).fetchdf()
+            waited = time.monotonic() - wait_start
+            foreign_tx = self._tx_owner is not None and self._tx_owner != thread
+            logger.debug(
+                "_fetchdf thread=%d waited=%.4fs tx_owner=%s foreign_tx=%s sql=%s",
+                thread, waited, self._tx_owner, foreign_tx, _truncate_sql(sql),
+            )
+            try:
+                if params:
+                    return self.con.execute(sql, params).fetchdf()
+                return self.con.execute(sql).fetchdf()
+            except Exception:
+                logger.exception(
+                    "_fetchdf FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
+                    thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
+                )
+                raise
 
     def _table_exists(self, name: str) -> bool:
         rows = self._fetchall(
