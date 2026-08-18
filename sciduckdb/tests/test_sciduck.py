@@ -1,5 +1,7 @@
 """End-to-end integration tests for SciDuck."""
 
+import threading
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -811,6 +813,64 @@ class TestErrorHandling:
         duck.save("partial", 42, subject="S01")
         loaded = duck.load("partial", subject="S01")
         assert loaded == 42
+
+
+class TestAutocommitFailureRecovery:
+    """A failed autocommit statement (no explicit BEGIN) must not leave the
+    connection stuck aborted for later, unrelated statements.
+
+    Regression for a production bug: scistack-gui's pipeline_store issued a
+    migration ALTER TABLE that failed with CatalogException on every restart
+    (column already existed) and caught the Python exception with a bare
+    try/except. That did not clear DuckDB's connection-level aborted-
+    transaction state, so the next statement on the shared connection --
+    unrelated to the migration -- failed too with TransactionException
+    ("Current transaction is aborted"), and every statement after that did
+    as well, for the remaining life of the process. `_execute` et al. now
+    issue a best-effort ROLLBACK after any autocommit failure so a caught
+    exception can't cascade like this.
+    """
+
+    def test_execute_failure_does_not_poison_next_statement(self, duck):
+        with pytest.raises(Exception):
+            duck._execute("SELECT * FROM this_table_does_not_exist")
+        # Must succeed -- would raise TransactionException before the fix.
+        duck._execute("CREATE TABLE IF NOT EXISTS _recovery_probe (x INTEGER)")
+
+    def test_repeated_failures_do_not_poison_connection(self, duck):
+        for _ in range(5):
+            with pytest.raises(Exception):
+                duck._execute("ALTER TABLE this_table_does_not_exist ADD COLUMN y INTEGER")
+        duck._execute("CREATE TABLE IF NOT EXISTS _recovery_probe (x INTEGER)")
+        assert duck._fetchall("SELECT COUNT(*) FROM _recovery_probe") == [(0,)]
+
+    def test_fetchall_failure_does_not_poison_next_statement(self, duck):
+        with pytest.raises(Exception):
+            duck._fetchall("SELECT * FROM this_table_does_not_exist")
+        assert duck._fetchall("SELECT 1") == [(1,)]
+
+    def test_failure_inside_explicit_transaction_does_not_clear_tx_owner(self, duck):
+        """An explicit transaction's rollback is the caller's call, not ours
+        to issue out from under them -- _recover_from_autocommit_failure must
+        skip while `_tx_owner` is set.
+
+        Asserted directly on `_tx_owner` rather than on whether a later
+        statement fails: DuckDB's own transaction-poisoning behavior turns
+        out to vary by error type (a bind-time CatalogException from a
+        SELECT on a missing table does not necessarily abort an explicit
+        transaction the way a DDL catalog conflict does), and that's not
+        what this guard is responsible for -- only `_commit`/`_rollback`
+        should ever clear `_tx_owner`.
+        """
+        duck._begin()
+        thread = threading.get_ident()
+        assert duck._tx_owner == thread
+        with pytest.raises(Exception):
+            duck._execute("SELECT * FROM this_table_does_not_exist")
+        assert duck._tx_owner == thread
+        duck._rollback()
+        assert duck._tx_owner is None
+        duck._execute("SELECT 1")  # connection still usable afterward
 
 
 # ---------------------------------------------------------------------------

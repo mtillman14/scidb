@@ -50,8 +50,12 @@ Migration
 On first access (detected by the migration sentinel key in the JSON layout),
 any manual_nodes and manual_edges entries in the JSON are written to the DB
 and removed from the JSON.  This is a one-time, idempotent operation.
-Scope columns/tables migrate in-place in ``_ensure_tables`` (ALTER +
-backfill to ``main``), same pattern as the ``config`` column.
+
+``_ensure_tables`` itself creates every table with its final schema
+directly — no ALTER-TABLE migration steps. This is a beta project with no
+installed base to migrate (see ``feedback_beta_no_deprecation`` in
+project memory); once real databases exist that need a schema change,
+add a guarded ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` at that point.
 """
 
 import json
@@ -73,12 +77,24 @@ def _duck(db):
 
 
 def _ensure_tables(db) -> None:
-    """Create pipeline tables if they don't already exist."""
+    """Create pipeline tables if they don't already exist.
+
+    Beta project, no pre-existing databases to migrate: every table is
+    created with its final schema directly rather than via CREATE-then-
+    ALTER migration steps. If a schema change is ever needed against a
+    real installed base, add a guarded
+    ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` at that point —
+    sciduckdb's ``_execute`` et al. already recover the shared connection
+    from a failed autocommit statement, so a migration that fails safely
+    won't cascade into breaking unrelated queries.
+    """
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_nodes (
-            node_id   VARCHAR PRIMARY KEY,
-            node_type VARCHAR NOT NULL,
-            label     VARCHAR NOT NULL
+            node_id     VARCHAR PRIMARY KEY,
+            node_type   VARCHAR NOT NULL,
+            label       VARCHAR NOT NULL,
+            config      VARCHAR DEFAULT '{}',
+            pipeline_id VARCHAR NOT NULL DEFAULT 'main'
         )
     """)
     _duck(db)._execute("""
@@ -110,45 +126,6 @@ def _ensure_tables(db) -> None:
             PRIMARY KEY (pipeline_id, node_id)
         )
     """)
-    # Scoping migration: this table originally keyed on node_id ALONE (one
-    # hide record per canonical id, GLOBAL across every pipeline scope) —
-    # wrong once two hypothesis pipelines can independently place the SAME
-    # canonical id (graph_builder.wiring_id is scope-independent by design;
-    # see plan-scope-hidden-nodes-edges.md). A single-column PK can't hold
-    # one row per (scope, id), so recreate with the composite key,
-    # backfilling existing rows to the root scope (their only prior
-    # meaning). Self-limiting like every other ALTER migration in this
-    # file: the ADD COLUMN fails (column already exists) on every call
-    # after the first, including for a freshly-created table above.
-    try:
-        _duck(db)._execute(
-            "ALTER TABLE _pipeline_hidden_nodes ADD COLUMN pipeline_id VARCHAR DEFAULT 'main'"
-        )
-        old_rows = _duck(db)._fetchall(
-            "SELECT node_id, pipeline_id FROM _pipeline_hidden_nodes"
-        )
-        _duck(db)._execute("DROP TABLE _pipeline_hidden_nodes")
-        _duck(db)._execute("""
-            CREATE TABLE _pipeline_hidden_nodes (
-                pipeline_id VARCHAR NOT NULL DEFAULT 'main',
-                node_id     VARCHAR NOT NULL,
-                PRIMARY KEY (pipeline_id, node_id)
-            )
-        """)
-        for node_id, pid in old_rows:
-            _duck(db)._execute(
-                "INSERT INTO _pipeline_hidden_nodes (pipeline_id, node_id) "
-                "VALUES (?, ?) ON CONFLICT DO NOTHING",
-                [pid or ROOT_PIPELINE_ID, node_id],
-            )
-        logger.info(
-            "[pipeline_store] scoping migration: recreated _pipeline_hidden_nodes "
-            "with composite (pipeline_id, node_id) key (%d row(s) backfilled to '%s')",
-            len(old_rows),
-            ROOT_PIPELINE_ID,
-        )
-    except Exception:
-        pass  # Already migrated (composite key exists), or freshly created above.
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_combos (
             node_id       VARCHAR PRIMARY KEY,
@@ -167,49 +144,11 @@ def _ensure_tables(db) -> None:
             PRIMARY KEY (pipeline_id, edge_id)
         )
     """)
-    # Same scoping migration as _pipeline_hidden_nodes above, for edges.
-    try:
-        _duck(db)._execute(
-            "ALTER TABLE _pipeline_hidden_edges ADD COLUMN pipeline_id VARCHAR DEFAULT 'main'"
-        )
-        old_edge_rows = _duck(db)._fetchall(
-            "SELECT edge_id, source, target, source_handle, target_handle, "
-            "pipeline_id FROM _pipeline_hidden_edges"
-        )
-        _duck(db)._execute("DROP TABLE _pipeline_hidden_edges")
-        _duck(db)._execute("""
-            CREATE TABLE _pipeline_hidden_edges (
-                pipeline_id   VARCHAR NOT NULL DEFAULT 'main',
-                edge_id       VARCHAR NOT NULL,
-                source        VARCHAR NOT NULL,
-                target        VARCHAR NOT NULL,
-                source_handle VARCHAR,
-                target_handle VARCHAR,
-                PRIMARY KEY (pipeline_id, edge_id)
-            )
-        """)
-        for edge_id, source, target, source_handle, target_handle, pid in old_edge_rows:
-            _duck(db)._execute(
-                "INSERT INTO _pipeline_hidden_edges (pipeline_id, edge_id, "
-                "source, target, source_handle, target_handle) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                [pid or ROOT_PIPELINE_ID, edge_id, source, target, source_handle, target_handle],
-            )
-        logger.info(
-            "[pipeline_store] scoping migration: recreated _pipeline_hidden_edges "
-            "with composite (pipeline_id, edge_id) key (%d row(s) backfilled to '%s')",
-            len(old_edge_rows),
-            ROOT_PIPELINE_ID,
-        )
-    except Exception:
-        pass  # Already migrated (composite key exists), or freshly created above.
     # Hidden subpipeline ports (to-do #9) — a scope's exposed inputs/
     # outputs are computed automatically from wiring (see
     # domain.scope_filter.document_interface); this table is a per-scope
     # manual override suppressing one type's port, toggled by right-
-    # clicking a variable node inside the subpipeline's own canvas. Same
-    # composite-key/scoping shape as _pipeline_hidden_edges from the start
-    # (no migration needed — this table is new).
+    # clicking a variable node inside the subpipeline's own canvas.
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_ports (
             pipeline_id VARCHAR NOT NULL DEFAULT 'main',
@@ -218,29 +157,15 @@ def _ensure_tables(db) -> None:
             PRIMARY KEY (pipeline_id, direction, var_type)
         )
     """)
-    # Add config column if missing (migration for existing DBs).
-    try:
-        _duck(db)._execute(
-            "ALTER TABLE _pipeline_nodes ADD COLUMN config VARCHAR DEFAULT '{}'"
-        )
-    except Exception:
-        pass  # Column already exists
 
     # --- Nested-pipeline scoping (GUI stage) ---
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipelines (
             pipeline_id VARCHAR PRIMARY KEY,
-            name        VARCHAR NOT NULL
+            name        VARCHAR NOT NULL,
+            hidden      BOOLEAN DEFAULT FALSE
         )
     """)
-    # Hidden pipelines (never deleted, same ethos as hide_node/hide_edge):
-    # migration for existing DBs.
-    try:
-        _duck(db)._execute(
-            "ALTER TABLE _pipelines ADD COLUMN hidden BOOLEAN DEFAULT FALSE"
-        )
-    except Exception:
-        pass  # Column already exists
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_uses (
             use_id             VARCHAR PRIMARY KEY,
@@ -254,22 +179,6 @@ def _ensure_tables(db) -> None:
         "INSERT INTO _pipelines (pipeline_id, name) VALUES (?, ?) "
         "ON CONFLICT DO NOTHING",
         [ROOT_PIPELINE_ID, ROOT_PIPELINE_ID],
-    )
-    try:
-        _duck(db)._execute(
-            f"ALTER TABLE _pipeline_nodes ADD COLUMN pipeline_id VARCHAR "
-            f"DEFAULT '{ROOT_PIPELINE_ID}'"
-        )
-        logger.info(
-            "[pipeline_store] scoping migration: added pipeline_id "
-            "column to _pipeline_nodes (existing nodes -> '%s')",
-            ROOT_PIPELINE_ID,
-        )
-    except Exception:
-        pass  # Column already exists
-    _duck(db)._execute(
-        "UPDATE _pipeline_nodes SET pipeline_id = ? WHERE pipeline_id IS NULL",
-        [ROOT_PIPELINE_ID],
     )
 
     # --- Hypothesis tabs (a hypothesis is a tagged top-level pipeline) ---

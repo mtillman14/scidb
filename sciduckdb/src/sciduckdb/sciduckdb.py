@@ -719,6 +719,32 @@ class SciDuck:
     # Thin internal interface (future backend swap point)
     # ------------------------------------------------------------------
 
+    def _recover_from_autocommit_failure(self) -> None:
+        """Best-effort ROLLBACK after a failed autocommit statement.
+
+        DuckDB requires an explicit ROLLBACK once any statement fails —
+        even a plain autocommit call outside an explicit BEGIN/COMMIT —
+        or every later statement on this connection fails with "Current
+        transaction is aborted", regardless of what it does. Observed in
+        production: a migration's ``ALTER TABLE ... ADD COLUMN`` failed
+        with CatalogException (column already existed) on every restart;
+        the exception was caught by the caller, but the connection stayed
+        aborted, so the next *unguarded* statement — a completely
+        unrelated ``CREATE TABLE IF NOT EXISTS`` — failed too, and the
+        shared connection was stuck that way for the rest of the process.
+        Must be called only while still holding ``_lock``, and only skips
+        the rollback when an explicit transaction is open (``_tx_owner``
+        set) — that transaction's rollback is the owning caller's call,
+        not ours to issue out from under them.
+        """
+        if self._tx_owner is not None:
+            return
+        try:
+            self.con.execute("ROLLBACK")
+            logger.debug("auto-ROLLBACK issued after autocommit statement failure")
+        except Exception:
+            pass
+
     def _execute(self, sql: str, params=None):
         # NOTE: DuckDB's Python connection returns itself from execute(), so
         # execute() and fetchXxx() share the same connection state.  All callers
@@ -743,6 +769,7 @@ class SciDuck:
                     "_execute FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
                     thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
                 )
+                self._recover_from_autocommit_failure()
                 raise
 
     def _executemany(self, sql: str, params_list):
@@ -764,6 +791,7 @@ class SciDuck:
                     "_executemany FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
                     thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
                 )
+                self._recover_from_autocommit_failure()
                 raise
 
     def _bulk_insert(self, table: str, columns, rows, conflict_cols=None) -> None:
@@ -808,6 +836,7 @@ class SciDuck:
                     "_bulk_insert FAILED thread=%d tx_owner=%s foreign_tx=%s table=%s",
                     thread, self._tx_owner, foreign_tx, table,
                 )
+                self._recover_from_autocommit_failure()
                 raise
             finally:
                 self.con.unregister("_bulk_insert_df")
@@ -883,6 +912,7 @@ class SciDuck:
                     "_fetchall FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
                     thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
                 )
+                self._recover_from_autocommit_failure()
                 raise
 
     def fetchall(self, sql: str, params=None) -> list:
@@ -908,6 +938,7 @@ class SciDuck:
                     "_fetchdf FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
                     thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
                 )
+                self._recover_from_autocommit_failure()
                 raise
 
     def _table_exists(self, name: str) -> bool:

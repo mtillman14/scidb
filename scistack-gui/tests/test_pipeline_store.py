@@ -143,6 +143,47 @@ class TestHiddenEdges:
         assert pipeline_store.get_hidden_edge_ids(db) == set()
 
 
+class TestEnsureTablesIdempotent:
+    """_ensure_tables is called on every request path (get_db() dependency),
+    not just at startup, so it must stay safe to call repeatedly against an
+    already-initialized database without erroring or losing data.
+
+    This used to be a real bug: _ensure_tables ran ALTER TABLE ADD COLUMN
+    migration steps guarded only by a bare try/except, and on a DB that
+    already had those columns (i.e. every call after the first) they failed
+    with CatalogException every time. Catching the Python exception did not
+    undo DuckDB's connection-level aborted-transaction state, so the next
+    *unguarded* statement inherited that state and raised
+    TransactionException -- which then never cleared, breaking every
+    subsequent query against the shared connection for the rest of the
+    process. Since this is a beta project with no installed base to
+    migrate, the fix was to drop the ALTER-based migration steps entirely
+    and give every table its final schema at CREATE time (no more
+    already-exists case to hit). The underlying connection-recovery
+    mechanism (so a future migration's failure can't cascade the same way)
+    is regression-tested at the sciduckdb layer instead --
+    see sciduckdb/tests/test_sciduck.py::TestAutocommitFailureRecovery.
+    """
+
+    def test_ensure_tables_survives_repeated_calls(self, populated_db):
+        db = populated_db
+        # populated_db's fixture already called _ensure_tables once.
+        pipeline_store._ensure_tables(db)
+        pipeline_store._ensure_tables(db)
+
+        assert pipeline_store.get_hidden_node_ids(db) == set()
+        assert pipeline_store.list_hidden_edges(db) == []
+
+    def test_repeated_calls_preserve_existing_hidden_nodes(self, populated_db):
+        db = populated_db
+        node_id = "fn__bandpass_filter__abc123"
+        pipeline_store.hide_combo(db, node_id, "bandpass_filter", {"low_hz": "20"})
+
+        pipeline_store._ensure_tables(db)  # called again, as on every request
+
+        assert node_id in pipeline_store.get_hidden_node_ids(db)
+
+
 class TestScopedHiding:
     """hide_node/hide_edge are scoped per pipeline_id (plan-scope-hidden-
     nodes-edges.md) -- a canonical id is scope-INDEPENDENT (graph_builder.
