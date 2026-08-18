@@ -18,10 +18,20 @@
  * ethos — see pipeline_store.py's hide_pipeline); the toggle at the end of
  * the tab strip restores hidden ones, same pattern as PipelineDAG's
  * hidden-edges panel.
+ *
+ * Below the tab strip, an always-visible Research Question row shows/edits
+ * the CURRENT hypothesis's research_question — the point being you
+ * shouldn't have to hunt through a sidebar tab just to remember what
+ * question you're answering. This row was the last consumer of
+ * hypothesis_statement/evidence_for/evidence_against's UI (formerly the
+ * sidebar's Hypothesis tab, `Sidebar/HypothesisPanel.tsx` — deleted once
+ * Research Question moved here, since the panel had nothing left to show);
+ * those backend fields still exist (HypothesisInfo), just with no editing
+ * UI anywhere in the GUI today.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { callBackend } from '../api'
+import { callBackend, isVSCodeMode } from '../api'
 import { useBackendMessage } from '../hooks/useBackendMessage'
 import { useScope } from '../context/ScopeContext'
 
@@ -55,6 +65,7 @@ export default function HypothesisTabs() {
   const addInputRef = useRef<HTMLInputElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const duplicateInputRef = useRef<HTMLInputElement>(null)
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   const fetchHypotheses = useCallback(() => {
     callBackend('list_hypotheses')
@@ -153,6 +164,108 @@ export default function HypothesisTabs() {
       .catch(err => setError((err as Error).message))
   }
 
+  // Export/import between SciStack users (to-do #7) — the document only
+  // (wiring/layout/config), never data/records. Export writes into the
+  // project's exports/ dir (same "write into project dir, return the
+  // path" pattern as the existing Report button) and, in standalone mode,
+  // also triggers a browser download of the same JSON; VS Code webview
+  // mode has no filesystem download, so it just shows the written path
+  // (same limitation the Report button already has for opening tabs).
+  const handleExport = (pid: string, name: string) => {
+    callBackend('export_pipeline', { pipeline_id: pid })
+      .then(d => {
+        const r = d as { path: string; document: unknown }
+        setError('')
+        if (!isVSCodeMode) {
+          const blob = new Blob([JSON.stringify(r.document, null, 2)], { type: 'application/json' })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `${name.replace(/[^\w.-]+/g, '_')}.json`
+          a.click()
+          URL.revokeObjectURL(url)
+        }
+        window.alert(`Exported '${name}' to:\n${r.path}`)
+      })
+      .catch(err => setError((err as Error).message))
+  }
+
+  // Translate to a standalone script (to-do #6) — Python or MATLAB,
+  // detected automatically from the closure's function languages; a
+  // mixed-language closure comes back as a 400 (not supported yet).
+  const handleExportCode = (pid: string, name: string) => {
+    callBackend('export_pipeline_code', { pipeline_id: pid })
+      .then(d => {
+        const r = d as { path: string; language: 'python' | 'matlab'; script: string; warnings: string[] }
+        setError('')
+        if (!isVSCodeMode) {
+          const ext = r.language === 'matlab' ? 'm' : 'py'
+          const blob = new Blob([r.script], { type: 'text/plain' })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `${name.replace(/[^\w.-]+/g, '_')}.${ext}`
+          a.click()
+          URL.revokeObjectURL(url)
+        }
+        const warningText = r.warnings.length > 0
+          ? `\n\n${r.warnings.length} step(s) skipped (see comments in the script):\n${r.warnings.join('\n')}`
+          : ''
+        window.alert(`Exported '${name}' (${r.language}) to:\n${r.path}${warningText}`)
+      })
+      .catch(err => setError((err as Error).message))
+  }
+
+  // File API read is pure browser/JS (no filesystem-path dependency), so
+  // this works identically in standalone and VS Code webview modes.
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''  // allow re-selecting the same file again later
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(reader.result as string)
+      } catch {
+        setError('Not a valid pipeline export file (invalid JSON)')
+        return
+      }
+      callBackend('import_pipeline', { document: parsed })
+        .then(async d => {
+          const r = d as {
+            pipeline_id: string
+            reused: { pipelines: string[]; constants: string[]; path_inputs: string[]; sweeps: string[] }
+            unresolved_labels: string[]
+          }
+          setError('')
+          const listRes = await callBackend('list_hypotheses') as { hypotheses: HypothesisInfo[] }
+          setHypotheses(listRes.hypotheses)
+          fetchHidden()
+          const imported = listRes.hypotheses.find(h => h.pipeline_id === r.pipeline_id)
+          jumpToRoot(r.pipeline_id, imported?.name ?? r.pipeline_id)
+
+          const reusedTotal = r.reused.pipelines.length + r.reused.constants.length + r.reused.path_inputs.length + r.reused.sweeps.length
+          if (reusedTotal > 0 || r.unresolved_labels.length > 0) {
+            const parts: string[] = []
+            if (r.reused.pipelines.length > 0) {
+              parts.push(`Reused ${r.reused.pipelines.length} existing submodule(s) with identical content (kept the shared local copy instead of duplicating): ${r.reused.pipelines.join(', ')}`)
+            }
+            const reusedGlobals = [...r.reused.constants, ...r.reused.path_inputs, ...r.reused.sweeps]
+            if (reusedGlobals.length > 0) {
+              parts.push(`Reused ${reusedGlobals.length} existing local definition(s) by name (kept as-is): ${reusedGlobals.join(', ')}`)
+            }
+            if (r.unresolved_labels.length > 0) {
+              parts.push(`${r.unresolved_labels.length} function/variable name(s) not found locally yet: ${r.unresolved_labels.join(', ')}`)
+            }
+            window.alert(parts.join('\n\n'))
+          }
+        })
+        .catch(err => setError((err as Error).message))
+    }
+    reader.readAsText(file)
+  }
+
   const handleDelete = (pid: string) => {
     callBackend('delete_hypothesis', { pipeline_id: pid })
       .then(() => {
@@ -174,8 +287,26 @@ export default function HypothesisTabs() {
   // A tab reads as "current" whenever the breadcrumb's root is that
   // hypothesis — stays highlighted while descended into a submodule.
   const rootPipelineId = breadcrumb[0].pipeline_id
+  const currentHyp = hypotheses.find(h => h.pipeline_id === rootPipelineId) ?? null
+
+  const [rqDraft, setRqDraft] = useState('')
+  useEffect(() => {
+    setRqDraft(currentHyp?.research_question ?? '')
+    // Only re-seed when the CURRENT hypothesis changes — depending on the
+    // question text itself would clobber in-progress typing every time a
+    // dag_updated notification triggers fetchHypotheses.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentHyp?.pipeline_id])
+
+  const saveRq = () => {
+    if (!currentHyp || rqDraft === currentHyp.research_question) return
+    callBackend('update_hypothesis', { pipeline_id: currentHyp.pipeline_id, research_question: rqDraft })
+      .then(() => { setError(''); fetchHypotheses() })
+      .catch(err => setError((err as Error).message))
+  }
 
   return (
+    <div>
     <div style={styles.root}>
       {hypotheses.map(h => (
         renamingPid === h.pipeline_id ? (
@@ -224,6 +355,20 @@ export default function HypothesisTabs() {
               </button>
               <button
                 style={styles.rowBtn}
+                title="Export this hypothesis (+ everything it uses) as a portable file to share with another SciStack user"
+                onClick={() => handleExport(h.pipeline_id, h.name)}
+              >
+                ⇩
+              </button>
+              <button
+                style={styles.rowBtn}
+                title="Translate this hypothesis to a standalone Python/MATLAB script"
+                onClick={() => handleExportCode(h.pipeline_id, h.name)}
+              >
+                {'</>'}
+              </button>
+              <button
+                style={styles.rowBtn}
                 title="Rename hypothesis"
                 onClick={() => { setRenamingPid(h.pipeline_id); setRenameDraft(h.name) }}
               >
@@ -260,6 +405,20 @@ export default function HypothesisTabs() {
           + new hypothesis
         </button>
       )}
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".json"
+        style={{ display: 'none' }}
+        onChange={handleImportFile}
+      />
+      <button
+        style={styles.addTab}
+        onClick={() => importFileRef.current?.click()}
+        title="Import a pipeline exported by another SciStack user"
+      >
+        ⇧ import
+      </button>
       {(() => {
         const hiddenHypotheses = hiddenPipelines.filter(p => p.is_hypothesis)
         if (hiddenHypotheses.length === 0) return null
@@ -290,10 +449,56 @@ export default function HypothesisTabs() {
       })()}
       {error && <span style={styles.errorText}>{error}</span>}
     </div>
+    {currentHyp && (
+      <div style={styles.rqRow}>
+        <span style={styles.rqLabel}>Research Question</span>
+        <input
+          style={styles.rqInput}
+          value={rqDraft}
+          placeholder="What are we trying to find out?"
+          onChange={e => setRqDraft(e.target.value)}
+          onBlur={saveRq}
+          onKeyDown={e => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+          }}
+        />
+      </div>
+    )}
+    </div>
   )
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  rqRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '5px 12px',
+    background: '#101024',
+    borderBottom: '1px solid #2a2a4a',
+    flexShrink: 0,
+  },
+  rqLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#666',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+  },
+  rqInput: {
+    flex: 1,
+    minWidth: 0,
+    background: 'transparent',
+    border: '1px solid transparent',
+    borderRadius: 3,
+    color: '#ddd',
+    fontSize: 12,
+    fontFamily: 'inherit',
+    padding: '3px 6px',
+    outline: 'none',
+  },
   root: {
     display: 'flex',
     alignItems: 'center',

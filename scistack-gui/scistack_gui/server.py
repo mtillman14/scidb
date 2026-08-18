@@ -180,6 +180,24 @@ def _h_get_pipeline_interface(params):
     return pipeline_interface(params["pipeline_id"])
 
 
+def _h_get_hidden_ports(params):
+    from scistack_gui.services.scope_service import get_hidden_ports
+
+    return get_hidden_ports(params["pipeline_id"])
+
+
+def _h_hide_port(params):
+    from scistack_gui.services.scope_service import hide_port
+
+    return hide_port(params["pipeline_id"], params["direction"], params["var_type"])
+
+
+def _h_unhide_port(params):
+    from scistack_gui.services.scope_service import unhide_port
+
+    return unhide_port(params["pipeline_id"], params["direction"], params["var_type"])
+
+
 def _h_extract_to_submodule(params):
     from scistack_gui.services.scope_service import extract_to_submodule
 
@@ -198,6 +216,36 @@ def _h_duplicate_hypothesis(params):
     from scistack_gui.services.scope_service import duplicate_hypothesis
 
     return duplicate_hypothesis(params["pipeline_id"], params["name"])
+
+
+def _h_export_pipeline(params):
+    from scistack_gui.services.scope_service import export_pipeline
+
+    return export_pipeline(params["pipeline_id"])
+
+
+def _h_import_pipeline(params):
+    from scistack_gui.services.scope_service import import_pipeline
+
+    return import_pipeline(params["document"])
+
+
+def _h_export_pipeline_code(params):
+    from scistack_gui.services.scope_service import export_pipeline_code
+
+    return export_pipeline_code(params["pipeline_id"])
+
+
+def _h_paste_nodes(params):
+    from scistack_gui.services.scope_service import paste_nodes
+
+    return paste_nodes(
+        params["source_pipeline_id"],
+        params["node_ids"],
+        params["pipeline_id"],
+        params.get("x", 0.0),
+        params.get("y", 0.0),
+    )
 
 
 def _h_add_pipeline_use(params):
@@ -234,6 +282,11 @@ def _h_get_pipeline_plan(params):
 def _h_start_pipeline_run(params):
     from scistack_gui.api.run import start_pipeline_run
 
+    # JSON-RPC callers go through the VS Code extension's dagPanel.ts — a
+    # privileged host that can itself generate + dispatch a MATLAB script
+    # to the MathWorks terminal (Stage 2). HTTP callers (api/scopes.py, no
+    # such host) get the standalone sidecar instead (Stage 3) — see
+    # start_pipeline_run's docstring.
     return start_pipeline_run(
         params["pipeline_id"],
         params.get("mode", "all"),
@@ -241,6 +294,7 @@ def _h_start_pipeline_run(params):
         params.get("finalized"),
         params.get("skip_computed", True),
         params.get("run_id"),
+        host_can_dispatch_matlab=True,
     )
 
 
@@ -294,6 +348,13 @@ def _h_get_variable_records(params):
     from scistack_gui.services.variable_service import get_variable_records
 
     return get_variable_records(params["name"], get_db())
+
+
+def _h_get_variable_plot_data(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.variable_service import get_variable_plot_data
+
+    return get_variable_plot_data(params["name"], get_db())
 
 
 def _h_get_constants(params):
@@ -450,6 +511,44 @@ def _h_delete_path_input(params):
     return delete_path_input(params["name"])
 
 
+def _h_add_path_input_alternate(params):
+    from scistack_gui.services.layout_service import add_path_input_alternate
+
+    return add_path_input_alternate(
+        params["name"], params["template"], params.get("root_folder")
+    )
+
+
+def _h_remove_path_input_alternate(params):
+    from scistack_gui.services.layout_service import remove_path_input_alternate
+
+    return remove_path_input_alternate(params["name"], params["index"])
+
+
+def _h_get_sweeps(params):
+    from scistack_gui.services.layout_service import get_sweeps
+
+    return get_sweeps()
+
+
+def _h_create_sweep(params):
+    from scistack_gui.services.layout_service import create_sweep
+
+    return create_sweep(params["name"])
+
+
+def _h_update_sweep(params):
+    from scistack_gui.services.layout_service import update_sweep
+
+    return update_sweep(params["name"], params["values"])
+
+
+def _h_delete_sweep(params):
+    from scistack_gui.services.layout_service import delete_sweep
+
+    return delete_sweep(params["name"])
+
+
 def _h_put_node_config(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.layout_service import put_node_config
@@ -556,6 +655,12 @@ def _h_refresh_module(params):
     return result
 
 
+def _h_create_builtin_function(params):
+    from scistack_gui.services.builtin_function_service import create_builtin_function
+
+    return create_builtin_function(params["language"], params["reference"])
+
+
 def _h_create_variable(params):
     from scistack_gui.notify import notify
     from scistack_gui.services.variable_service import create_variable
@@ -599,9 +704,19 @@ def _h_get_project_libraries(params):
 
 
 def _h_refresh_project(params):
+    from scistack_gui.notify import notify
     from scistack_gui.services.project_service import refresh_project
 
-    return refresh_project()
+    result = refresh_project()
+    if result.get("ok"):
+        notify("dag_updated", {})
+    return result
+
+
+def _h_get_project_paths(params):
+    from scistack_gui.services.project_service import get_project_paths
+
+    return get_project_paths()
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +808,23 @@ def _h_generate_matlab_command(params):
     return generate_matlab_command(params["function_name"], get_db(), params)
 
 
+def _h_generate_matlab_pipeline_command(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.matlab_command_service import (
+        generate_matlab_pipeline_command,
+    )
+
+    return generate_matlab_pipeline_command(params["pipeline_id"], get_db(), params)
+
+
+def _h_start_matlab_sidecar_run(params):
+    from scistack_gui.api.run import start_matlab_sidecar_run
+
+    return start_matlab_sidecar_run(
+        params["command"], params["run_id"], params.get("warnings")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Method dispatch table
 # ---------------------------------------------------------------------------
@@ -706,6 +838,7 @@ METHODS = {
     "get_function_params": _h_get_function_params,
     "get_function_source": _h_get_function_source,
     "get_variable_records": _h_get_variable_records,
+    "get_variable_plot_data": _h_get_variable_plot_data,
     "get_constants": _h_get_constants,
     "get_variables_list": _h_get_variables_list,
     "get_path_inputs": _h_get_path_inputs,
@@ -726,15 +859,23 @@ METHODS = {
     "create_path_input": _h_create_path_input,
     "update_path_input": _h_update_path_input,
     "delete_path_input": _h_delete_path_input,
+    "add_path_input_alternate": _h_add_path_input_alternate,
+    "remove_path_input_alternate": _h_remove_path_input_alternate,
     "deep_copy_path_input": _h_deep_copy_path_input,
+    "get_sweeps": _h_get_sweeps,
+    "create_sweep": _h_create_sweep,
+    "update_sweep": _h_update_sweep,
+    "delete_sweep": _h_delete_sweep,
     "start_run": _h_start_run,
     "cancel_run": _h_cancel_run,
     "force_cancel_run": _h_force_cancel_run,
     "refresh_module": _h_refresh_module,
     "create_variable": _h_create_variable,
+    "create_builtin_function": _h_create_builtin_function,
     "get_project_code": _h_get_project_code,
     "get_project_libraries": _h_get_project_libraries,
     "refresh_project": _h_refresh_project,
+    "get_project_paths": _h_get_project_paths,
     "list_pipelines": _h_list_pipelines,
     "create_pipeline": _h_create_pipeline,
     "rename_pipeline": _h_rename_pipeline,
@@ -746,9 +887,16 @@ METHODS = {
     "update_hypothesis": _h_update_hypothesis,
     "delete_hypothesis": _h_delete_hypothesis,
     "get_pipeline_interface": _h_get_pipeline_interface,
+    "get_hidden_ports": _h_get_hidden_ports,
+    "hide_port": _h_hide_port,
+    "unhide_port": _h_unhide_port,
     "extract_to_submodule": _h_extract_to_submodule,
     "duplicate_pipeline": _h_duplicate_pipeline,
     "duplicate_hypothesis": _h_duplicate_hypothesis,
+    "export_pipeline": _h_export_pipeline,
+    "import_pipeline": _h_import_pipeline,
+    "export_pipeline_code": _h_export_pipeline_code,
+    "paste_nodes": _h_paste_nodes,
     "add_pipeline_use": _h_add_pipeline_use,
     "update_use_binding": _h_update_use_binding,
     "remove_pipeline_use": _h_remove_pipeline_use,
@@ -761,6 +909,8 @@ METHODS = {
     "add_library": _h_add_library,
     "remove_library": _h_remove_library,
     "generate_matlab_command": _h_generate_matlab_command,
+    "generate_matlab_pipeline_command": _h_generate_matlab_pipeline_command,
+    "start_matlab_sidecar_run": _h_start_matlab_sidecar_run,
 }
 
 
@@ -899,7 +1049,7 @@ def main():
                 f"{len(result['variables'])} variables"
             )
             # Load MATLAB registry if MATLAB config is present.
-            if config.matlab_functions or config.matlab_variables:
+            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
                 from scistack_gui import matlab_registry
 
                 _send_progress(
@@ -968,6 +1118,42 @@ def main():
             sys.exit(1)
         registry.register_module(user_mod, module_path=module_path)
         logger.info("Loaded module: %s", module_path)
+    else:
+        # No --module/--project given: best-effort auto-discovery, either
+        # from a pyproject.toml/scistack.toml found near the database, or
+        # (more commonly, for a loose-scripts project) a folder scan of the
+        # database's directory. Never fatal — an empty registry here is no
+        # worse than today's default of not discovering anything at all.
+        from scistack_gui.config import load_config
+
+        try:
+            _send_progress("Auto-discovering pipeline code...")
+            config = load_config(None, db_path)
+            result = registry.load_from_config(config)
+            logger.info(
+                "Auto-discovered: %d functions, %d variables",
+                len(result["functions"]),
+                len(result["variables"]),
+            )
+            _send_progress(
+                f"Auto-discovered {len(result['functions'])} Python functions, "
+                f"{len(result['variables'])} variables"
+            )
+            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
+                from scistack_gui import matlab_registry
+
+                matlab_result = matlab_registry.load_from_config(config)
+                logger.info(
+                    "MATLAB: %d functions, %d variables",
+                    len(matlab_result["matlab_functions"]),
+                    len(matlab_result["matlab_variables"]),
+                )
+                _send_progress(
+                    f"MATLAB: {len(matlab_result['matlab_functions'])} functions, "
+                    f"{len(matlab_result['matlab_variables'])} variables"
+                )
+        except Exception as e:
+            logger.warning("Auto-discovery failed (%s); starting with an empty registry.", e)
 
     # Initialise the database (create if missing and schema keys supplied)
     from scistack_gui.db import create_db, init_db
@@ -992,6 +1178,18 @@ def main():
             )
         )
         sys.exit(1)
+
+    # Restore any manually-declared builtin function references (e.g.
+    # numpy.mean, a MATLAB builtin) from a previous session — they have no
+    # file on disk to be rediscovered from otherwise.
+    try:
+        from scistack_gui.services.builtin_function_service import (
+            replay_persisted_builtins,
+        )
+
+        replay_persisted_builtins(db)
+    except Exception:
+        logger.exception("Failed to restore builtin function references")
 
     # Bridge Python logging → scidb.log so that scihist/scistack_gui logger
     # calls appear in the unified log file.

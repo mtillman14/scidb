@@ -25,6 +25,19 @@ class PathInputCreate(BaseModel):
     root_folder: str | None = None
 
 
+class PathInputAlternateCreate(BaseModel):
+    template: str
+    root_folder: str | None = None
+
+
+class SweepCreate(BaseModel):
+    name: str
+
+
+class SweepUpdate(BaseModel):
+    values: list[float]
+
+
 class EdgeCreate(BaseModel):
     source: str
     target: str
@@ -132,6 +145,27 @@ def delete_path_input(name: str):
     return _del(name)
 
 
+@router.post("/path-inputs/{name}/alternates")
+def post_path_input_alternate(name: str, body: PathInputAlternateCreate):
+    """Add an alternate template to an existing PathInput — multiple
+    templates under one name run as EachOf(PathInput(...), ...) at
+    execution time (see execution_service.build_run_inputs), the
+    PathInput analog of a Constant node's multiple staged values."""
+    from scistack_gui.services.layout_service import add_path_input_alternate
+
+    try:
+        return add_path_input_alternate(name, body.template, body.root_folder)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/path-inputs/{name}/alternates/{index}")
+def delete_path_input_alternate(name: str, index: int):
+    from scistack_gui.services.layout_service import remove_path_input_alternate
+
+    return remove_path_input_alternate(name, index)
+
+
 @router.post("/path-inputs/{node_id}/deep-copy")
 def post_deep_copy_path_input(node_id: str):
     """Opt-in fork: give this ONE PathInput node placement an independent
@@ -143,6 +177,42 @@ def post_deep_copy_path_input(node_id: str):
         return deep_copy_path_input(node_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/sweeps")
+def get_sweeps() -> list[dict]:
+    from scistack_gui.services.layout_service import get_sweeps as _get
+
+    result = _get()
+    logger.info("GET /sweeps → %s", result)
+    return result
+
+
+@router.post("/sweeps")
+def post_sweep(body: SweepCreate):
+    logger.info("POST /sweeps body=%s", body)
+    from scistack_gui.services.layout_service import create_sweep
+
+    result = create_sweep(body.name)
+    logger.info("POST /sweeps → %s", result)
+    return result
+
+
+@router.put("/sweeps/{name}")
+def put_sweep(name: str, body: SweepUpdate):
+    """Replace a Sweep's full value list — range generation (start/end/
+    step or start/end/count) is a frontend concern; this always receives
+    the final, already-computed flat list of numbers."""
+    from scistack_gui.services.layout_service import update_sweep
+
+    return update_sweep(name, body.values)
+
+
+@router.delete("/sweeps/{name}")
+def delete_sweep(name: str):
+    from scistack_gui.services.layout_service import delete_sweep as _del
+
+    return _del(name)
 
 
 @router.put("/edges/{edge_id}")

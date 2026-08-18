@@ -5,6 +5,8 @@ Tests for MATLAB support: parser, registry, and command generation.
 import textwrap
 from pathlib import Path
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # matlab_parser tests
 # ---------------------------------------------------------------------------
@@ -155,6 +157,219 @@ class TestParseMatlabVariable:
 
         name = parse_matlab_variable(f)
         assert name is None
+
+
+class TestBlockCommentStripping:
+    """A %{ %} block comment must not false-positive as a real
+    function/classdef declaration — a common way scientists leave
+    "here's how to call this" example code in their scripts."""
+
+    def test_function_example_inside_block_comment_ignored(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "real_fn.m"
+        f.write_text(
+            textwrap.dedent("""\
+            %{
+            Example usage:
+            function y = fake_example(x)
+                y = x * 2;
+            end
+            %}
+            function y = real_fn(x)
+                y = x;
+            end
+        """)
+        )
+
+        info = parse_matlab_function(f)
+        assert info is not None
+        assert info.name == "real_fn"
+
+    def test_classdef_example_inside_block_comment_ignored(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_variable
+
+        f = tmp_path / "RealVar.m"
+        f.write_text(
+            textwrap.dedent("""\
+            %{
+            classdef FakeVar < scidb.BaseVariable
+            end
+            %}
+            classdef RealVar < scidb.BaseVariable
+            end
+        """)
+        )
+
+        name = parse_matlab_variable(f)
+        assert name == "RealVar"
+
+    def test_entirely_commented_out_function_not_registered(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "commented.m"
+        f.write_text(
+            textwrap.dedent("""\
+            %{
+            function y = commented(x)
+                y = x;
+            end
+            %}
+        """)
+        )
+
+        info = parse_matlab_function(f)
+        assert info is None
+
+
+class TestLineContinuation:
+    """A `...`-continued multi-line function signature must not leak the
+    continuation marker or the next line's leading whitespace into a
+    captured parameter name."""
+
+    def test_multiline_signature_params_are_clean(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "many_args.m"
+        f.write_text(
+            "function y = many_args(alpha, beta, ...\n"
+            "    gamma, delta)\n"
+            "y = alpha;\n"
+            "end\n"
+        )
+
+        info = parse_matlab_function(f)
+        assert info is not None
+        assert info.name == "many_args"
+        assert info.params == ["alpha", "beta", "gamma", "delta"]
+        assert not any("..." in p for p in info.params)
+        assert not any("\n" in p for p in info.params)
+
+    def test_multiline_signature_with_trailing_comment(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "commented_continuation.m"
+        f.write_text(
+            "function y = commented_continuation(a, ... this is a note\n"
+            "    b)\n"
+            "y = a;\n"
+            "end\n"
+        )
+
+        info = parse_matlab_function(f)
+        assert info is not None
+        assert info.params == ["a", "b"]
+
+    def test_source_hash_unaffected_by_preprocessing(self, tmp_path):
+        """The source_hash must still be over the raw, unmodified file
+        bytes — preprocessing is only applied to the text used for
+        regex matching, never to what gets hashed."""
+        from hashlib import sha256
+
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        raw = b"function y = foo(a, ...\n    b)\ny=a;\nend\n"
+        f = tmp_path / "foo.m"
+        f.write_bytes(raw)
+
+        info = parse_matlab_function(f)
+        assert info.source_hash == sha256(raw).hexdigest()
+
+
+class TestClassifyMatlabFile:
+    def test_classifies_function(self, tmp_path):
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "foo.m"
+        f.write_text("function y = foo(x)\ny=x;\nend\n")
+
+        kind, payload = classify_matlab_file(f)
+        assert kind == "function"
+        assert payload.name == "foo"
+
+    def test_classifies_variable(self, tmp_path):
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "RawSignal.m"
+        f.write_text("classdef RawSignal < scidb.BaseVariable\nend\n")
+
+        kind, payload = classify_matlab_file(f)
+        assert kind == "variable"
+        assert payload == "RawSignal"
+
+    def test_classdef_with_method_is_variable_not_function(self, tmp_path):
+        """A BaseVariable classdef containing a method (which itself has a
+        `function` declaration) must be classified as a variable, not a
+        function — classdef parsing is tried first specifically for this
+        reason."""
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "RawSignal.m"
+        f.write_text(
+            textwrap.dedent("""\
+            classdef RawSignal < scidb.BaseVariable
+                methods
+                    function obj = RawSignal()
+                    end
+                end
+            end
+        """)
+        )
+
+        kind, payload = classify_matlab_file(f)
+        assert kind == "variable"
+        assert payload == "RawSignal"
+
+    def test_neither_returns_none(self, tmp_path):
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "script.m"
+        f.write_text("% just a script\nx = 5;\n")
+
+        assert classify_matlab_file(f) is None
+
+
+class TestMatlabRegistryLoadFromSources:
+    def test_mixed_sources_classified_and_registered(self, tmp_path):
+        from scistack_gui import matlab_registry
+
+        fn_file = tmp_path / "foo.m"
+        fn_file.write_text("function y = foo(x)\ny=x;\nend\n")
+        var_file = tmp_path / "RawSignal.m"
+        var_file.write_text("classdef RawSignal < scidb.BaseVariable\nend\n")
+
+        matlab_registry._matlab_functions.clear()
+        matlab_registry._matlab_variables.clear()
+        matlab_registry.load_from_sources([fn_file, var_file])
+
+        assert matlab_registry.is_matlab_function("foo")
+        assert "RawSignal" in matlab_registry.get_all_variable_names()
+
+    def test_unclassifiable_file_skipped_without_warning(self, tmp_path, caplog):
+        """A folder-scanned .m file that classifies as neither a function
+        nor a variable (e.g. an ordinary script) is expected, not a
+        misconfiguration — most real MATLAB projects have plenty of these.
+        load_from_sources logs it at DEBUG (not WARNING) and does NOT
+        record it as a load error; only files explicitly listed in
+        matlab.functions/matlab.variables that fail to parse are load
+        errors (see load_from_config)."""
+        import logging
+
+        from scistack_gui import matlab_registry
+
+        script_file = tmp_path / "script.m"
+        script_file.write_text("% just a script\n")
+
+        matlab_registry._matlab_functions.clear()
+        matlab_registry._matlab_variables.clear()
+        matlab_registry._load_errors.clear()
+        with caplog.at_level(logging.DEBUG):
+            matlab_registry.load_from_sources([script_file])
+
+        assert matlab_registry.get_all_function_names() == []
+        assert "Skipping non-function/non-variable" in caplog.text
+        assert "Could not classify" not in caplog.text
+        assert matlab_registry.get_load_errors() == []
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +904,58 @@ class TestSortInferredByParamsOrder:
         assert result == ["Force_Right", "Time"]
 
 
+class TestNormalizeInputTypes:
+    """derive_target_for_node's never-run fallback (resolve_function_edges)
+    returns each input param as a LIST of candidate types — even a single
+    candidate is ["RawSignal"], not "RawSignal" — unlike real DB-history
+    variants, which are already flat. generate_matlab_pipeline_command
+    must flatten this before handing targets to api.matlab_command's
+    generator, or a single-candidate list ends up nested inside a dict
+    key's tuple and raises `TypeError: unhashable type: 'list'` in
+    _group_variants (regression: found via a never-run MATLAB node in
+    test_matlab_pipeline_execution.py)."""
+
+    def test_flat_values_pass_through(self):
+        from scistack_gui.services.matlab_command_service import (
+            _normalize_input_types,
+        )
+
+        flat, unresolved = _normalize_input_types({"signal": "RawSignal"})
+        assert flat == {"signal": "RawSignal"}
+        assert unresolved == []
+
+    def test_single_item_list_collapses_to_scalar(self):
+        from scistack_gui.services.matlab_command_service import (
+            _normalize_input_types,
+        )
+
+        flat, unresolved = _normalize_input_types({"signal": ["RawSignal"]})
+        assert flat == {"signal": "RawSignal"}
+        assert unresolved == []
+
+    def test_multi_item_list_reported_unresolved(self):
+        from scistack_gui.services.matlab_command_service import (
+            _normalize_input_types,
+        )
+
+        flat, unresolved = _normalize_input_types(
+            {"signal": ["RawSignal", "OtherSignal"]}
+        )
+        assert "signal" not in flat
+        assert unresolved == ["signal"]
+
+    def test_mixed_params(self):
+        from scistack_gui.services.matlab_command_service import (
+            _normalize_input_types,
+        )
+
+        flat, unresolved = _normalize_input_types(
+            {"a": "Flat", "b": ["OneCandidate"], "c": ["X", "Y"]}
+        )
+        assert flat == {"a": "Flat", "b": "OneCandidate"}
+        assert unresolved == ["c"]
+
+
 class TestMatlabFnProxyHash:
     """Fix A — the proxy hash must match what MATLAB's scidb.LineageFcn(fn)
     (unpack_output=false default) produces, so scihist.check_node_state does
@@ -729,6 +996,233 @@ class TestMatlabFnProxyHash:
         proxy = _build_matlab_fn_proxy("fn")
         expected = sha256(f"{FakeInfo.source_hash}-False".encode()).hexdigest()
         assert proxy.hash == expected
+
+
+class TestGenerateMatlabPipelineCommand:
+    """generate_matlab_pipeline_command (whole-pipeline MATLAB execution,
+    plan-matlab-pipeline-execution.md Stage 1)."""
+
+    def _two_step_pipeline(self):
+        return [
+            {
+                "function_name": "load_csv",
+                "variants": [
+                    {
+                        "input_types": {},
+                        "output_type": "RawSignal",
+                        "constants": {},
+                    }
+                ],
+            },
+            {
+                "function_name": "bandpass_filter",
+                "variants": [
+                    {
+                        "input_types": {"signal": "RawSignal"},
+                        "output_type": "FilteredSignal",
+                        "constants": {"low_hz": 20},
+                    }
+                ],
+            },
+        ]
+
+    def test_wraps_steps_in_scidb_pipeline(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="gait_analysis",
+            steps=self._two_step_pipeline(),
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+        )
+
+        assert "pipe = scidb.Pipeline('gait_analysis');" in cmd
+        assert cmd.count("scidb.for_each") == 2
+        assert "@load_csv" in cmd
+        assert "@bandpass_filter" in cmd
+        assert "pipe.run_all(" in cmd
+
+    def test_registration_order_independent(self):
+        """Pipeline.m's execution_order() topo-sorts server-side — the
+        script may register steps in any order."""
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        steps = self._two_step_pipeline()
+        cmd_forward = generate_matlab_pipeline_command(
+            pipeline_id="p", steps=steps, db_path="/db.duckdb", schema_keys=["s"]
+        )
+        cmd_reversed = generate_matlab_pipeline_command(
+            pipeline_id="p",
+            steps=list(reversed(steps)),
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+        )
+        assert cmd_forward.count("scidb.for_each") == cmd_reversed.count(
+            "scidb.for_each"
+        )
+        assert "@load_csv" in cmd_reversed
+        assert "@bandpass_filter" in cmd_reversed
+
+    def test_mode_until_calls_run_until_with_target(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p",
+            steps=self._two_step_pipeline(),
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            mode="until",
+            target="bandpass_filter",
+        )
+        assert "pipe.run_until('bandpass_filter'" in cmd
+        assert "pipe.run_all(" not in cmd
+
+    def test_mode_until_requires_target(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        with pytest.raises(ValueError):
+            generate_matlab_pipeline_command(
+                pipeline_id="p",
+                steps=self._two_step_pipeline(),
+                db_path="/db.duckdb",
+                schema_keys=["s"],
+                mode="until",
+                target="",
+            )
+
+    def test_mode_endpoints_calls_run_endpoints(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p",
+            steps=self._two_step_pipeline(),
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            mode="endpoints",
+            finalized=True,
+        )
+        assert "pipe.run_endpoints(" in cmd
+        assert "'include_used', true" in cmd
+        assert "'finalized', true" in cmd
+
+    def test_show_mode_rejected(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        with pytest.raises(ValueError):
+            generate_matlab_pipeline_command(
+                pipeline_id="p",
+                steps=self._two_step_pipeline(),
+                db_path="/db.duckdb",
+                schema_keys=["s"],
+                mode="show",
+                target="bandpass_filter",
+            )
+
+    def test_step_with_no_variants_skipped_with_comment(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        steps = self._two_step_pipeline()
+        steps.append({"function_name": "never_run_fn", "variants": []})
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p", steps=steps, db_path="/db.duckdb", schema_keys=["s"]
+        )
+        assert "SKIPPED: 'never_run_fn'" in cmd
+        assert "@never_run_fn" not in cmd
+        # The two runnable steps still registered.
+        assert cmd.count("scidb.for_each") == 2
+
+    def test_no_runnable_steps_raises(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        with pytest.raises(ValueError):
+            generate_matlab_pipeline_command(
+                pipeline_id="p",
+                steps=[{"function_name": "never_run_fn", "variants": []}],
+                db_path="/db.duckdb",
+                schema_keys=["s"],
+            )
+
+    def test_variable_registration_union_across_steps(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p",
+            steps=self._two_step_pipeline(),
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+        )
+        assert cmd.count("scidb.register_variable(RawSignal())") == 1
+        assert cmd.count("scidb.register_variable(FilteredSignal())") == 1
+
+    def test_pyenv_preamble_present(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p",
+            steps=self._two_step_pipeline(),
+            db_path="/db.duckdb",
+            schema_keys=["s"],
+            python_executable="/usr/bin/python3",
+        )
+        assert "pyenv('Version', scistack_pyenv_target__)" in cmd
+        pyenv_idx = cmd.index("scistack_pyenv_target__")
+        pipe_idx = cmd.index("pipe = scidb.Pipeline(")
+        assert pyenv_idx < pipe_idx
+
+    def test_addpath_and_configure_database_emitted_once(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p",
+            steps=self._two_step_pipeline(),
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+            addpath_dirs=["/home/user/matlab/lib"],
+        )
+        assert cmd.count("addpath('/home/user/matlab/lib')") == 1
+        assert cmd.count("scihist.configure_database(") == 1
+        assert cmd.count("scidb.close_database(db)") == 2  # success path + catch
+
+    def test_multi_output_function_collapses_to_one_call(self):
+        """Same grouping behavior as generate_matlab_command: multiple
+        variant rows sharing (input_types, constants) but different
+        output_type collapse into one for_each with a multi-item outputs
+        cell."""
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        steps = [
+            {
+                "function_name": "load_csv",
+                "variants": [
+                    {"input_types": {}, "output_type": "Time", "constants": {}},
+                    {"input_types": {}, "output_type": "Force_Left", "constants": {}},
+                ],
+            }
+        ]
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p", steps=steps, db_path="/db.duckdb", schema_keys=["s"]
+        )
+        assert cmd.count("scidb.for_each") == 1
+        assert "{Time(), Force_Left()}" in cmd
+
+    def test_mixed_language_pipeline_only_registers_matlab_steps(self):
+        """Regression guard for the mixed-pipeline scope decision: the
+        MATLAB script generator only ever sees the steps its caller
+        (matlab_command_service.generate_matlab_pipeline_command) already
+        filtered to MATLAB functions — passing a step list that mirrors
+        'a Python node was excluded upstream' (i.e. simply absent here)
+        must still produce a clean script for the remaining MATLAB steps."""
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        # Only the MATLAB step is passed — as the service layer would do
+        # after filtering out a co-scoped Python function node.
+        steps = [self._two_step_pipeline()[1]]  # bandpass_filter only
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="p", steps=steps, db_path="/db.duckdb", schema_keys=["s"]
+        )
+        assert cmd.count("scidb.for_each") == 1
+        assert "@bandpass_filter" in cmd
+        assert "@load_csv" not in cmd
 
 
 class TestFindSciMatlabMatlabDir:

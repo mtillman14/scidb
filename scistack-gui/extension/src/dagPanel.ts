@@ -90,6 +90,36 @@ export class DagPanel {
           // Python function — auto-attach debugger so breakpoints get hit.
           await this.ensureDebugAttached();
         }
+        // Whole-pipeline runs: unlike start_run, the frontend doesn't know
+        // up front whether the pipeline scope contains MATLAB steps (it can
+        // be a mix of function nodes). Call start_pipeline_run normally and
+        // inspect the RESULT — Python's own handler
+        // (execution_service.pipeline_has_matlab_steps) already detected
+        // this and, instead of spawning its background Python-run thread,
+        // returned host_execution_required=true so the SAME run_id can be
+        // driven from here instead (mirrors handleMatlabRun's single-node
+        // terminal dispatch).
+        if (method === 'start_pipeline_run') {
+          try {
+            const result = (await this.pythonProcess.request(
+              method,
+              (msg.params ?? {}) as Record<string, unknown>,
+            )) as { run_id: string; host_execution_required?: boolean; language?: string };
+            this.panel.webview.postMessage({ id: msg.id, result });
+            if (result.host_execution_required && result.language === 'matlab') {
+              await this.handleMatlabPipelineRun(
+                result.run_id,
+                (msg.params ?? {}) as Record<string, unknown>,
+              );
+            }
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) },
+            });
+          }
+          return;
+        }
         try {
           const result = await this.pythonProcess.request(
             method,
@@ -195,14 +225,76 @@ export class DagPanel {
   }
 
   /**
-   * Handle "Run" for a MATLAB function: generate command, then either send
-   * to the MathWorks MATLAB terminal or copy to clipboard.
+   * Stage 4 fallback ladder for an already-generated MATLAB command:
+   * MathWorks terminal (Tier 2 — real breakpoint debugging) -> standalone
+   * sidecar (Tier 3 — Python-driven, real run_output/run_done via the
+   * notify channel; requires a run_id) -> clipboard (last resort).
+   *
+   * Returns which tier actually served the command. Callers need this:
+   * the terminal and clipboard tiers aren't tracked by anything else, so
+   * the caller must synthesize its own run_done; the sidecar tier is
+   * driven by Python's start_matlab_sidecar_run
+   * (_run_matlab_command_in_thread), which pushes a REAL run_done once
+   * MATLAB actually finishes — synthesizing one here would show "done"
+   * before it's actually done.
+   */
+  private async dispatchMatlabCommand(
+    command: string,
+    runId: string | undefined,
+    warnings: string[] | undefined,
+  ): Promise<'terminal' | 'sidecar' | 'clipboard'> {
+    const sent = await runInMatlabTerminal(command, this.outputChannel);
+    if (sent) {
+      this.outputChannel.appendLine('dispatchMatlabCommand: sent to MATLAB terminal');
+      vscode.window.showInformationMessage('Running in MATLAB terminal...');
+      return 'terminal';
+    }
+
+    if (runId) {
+      try {
+        const sidecarResult = await this.pythonProcess.request(
+          'start_matlab_sidecar_run',
+          { command, run_id: runId, warnings: warnings ?? [] },
+        ) as { run_id: string; sidecar_available: boolean };
+        if (sidecarResult.sidecar_available) {
+          this.outputChannel.appendLine(
+            'dispatchMatlabCommand: dispatched via standalone MATLAB sidecar',
+          );
+          vscode.window.showInformationMessage(
+            'Running via standalone MATLAB sidecar...',
+          );
+          return 'sidecar';
+        }
+        this.outputChannel.appendLine(
+          'dispatchMatlabCommand: sidecar unavailable (matlab not on PATH)',
+        );
+      } catch (err) {
+        this.outputChannel.appendLine(
+          `dispatchMatlabCommand: sidecar dispatch failed: ${err}`,
+        );
+      }
+    }
+
+    await vscode.env.clipboard.writeText(command);
+    this.outputChannel.appendLine(
+      'dispatchMatlabCommand: no MATLAB terminal or sidecar available, copied to clipboard',
+    );
+    vscode.window.showInformationMessage(
+      'MATLAB command copied to clipboard. Paste into MATLAB to run.'
+    );
+    return 'clipboard';
+  }
+
+  /**
+   * Handle "Run" for a MATLAB function: generate the command, then run it
+   * through the Stage 4 fallback ladder (terminal -> sidecar -> clipboard).
    */
   private async handleMatlabRun(
     msgId: number,
     params: Record<string, unknown>,
   ): Promise<void> {
     const functionName = params.function_name as string | undefined;
+    const runId = params.run_id as string | undefined;
     this.outputChannel.appendLine(
       `handleMatlabRun: requesting generate_matlab_command for ${functionName ?? '<?>'}`,
     );
@@ -216,31 +308,16 @@ export class DagPanel {
         `handleMatlabRun: got command (${command.length} chars)`,
       );
 
-      // Try MathWorks terminal first, fall back to clipboard.
-      const sent = await runInMatlabTerminal(command, this.outputChannel);
-      if (sent) {
-        this.outputChannel.appendLine(
-          'handleMatlabRun: sent to MATLAB terminal',
-        );
-        vscode.window.showInformationMessage('Running in MATLAB terminal...');
-      } else {
-        await vscode.env.clipboard.writeText(command);
-        this.outputChannel.appendLine(
-          'handleMatlabRun: no MATLAB terminal found, copied to clipboard',
-        );
-        vscode.window.showInformationMessage(
-          'MATLAB command copied to clipboard. Paste into MATLAB to run.'
-        );
-      }
+      const tier = await this.dispatchMatlabCommand(command, runId, undefined);
 
       this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
 
-      // Immediately notify the frontend that the MATLAB run was dispatched.
-      // We cannot track actual MATLAB execution, so treat dispatch-to-terminal
-      // as "done" from the GUI's perspective. The DB file watcher will trigger
-      // a dag_updated when MATLAB writes results to the database.
-      const runId = params.run_id as string | undefined;
-      if (runId) {
+      // Terminal/clipboard dispatch aren't tracked by anything else — treat
+      // "dispatched" as "done" from the GUI's perspective (the DB file
+      // watcher triggers a dag_updated once MATLAB actually writes
+      // results). The sidecar tier pushes its own real run_done — see
+      // dispatchMatlabCommand's docstring.
+      if (tier !== 'sidecar' && runId) {
         this.panel.webview.postMessage({
           method: 'run_done',
           params: {
@@ -259,7 +336,6 @@ export class DagPanel {
         error: { message: String(err) },
       });
       // Also reset the running state on error so the button doesn't stay stuck.
-      const runId = params.run_id as string | undefined;
       if (runId) {
         this.panel.webview.postMessage({
           method: 'run_done',
@@ -271,6 +347,75 @@ export class DagPanel {
           },
         });
       }
+    }
+  }
+
+  /**
+   * Handle host-side execution for a whole MATLAB-containing pipeline run.
+   * Python's start_pipeline_run already detected the MATLAB step(s)
+   * (execution_service.pipeline_has_matlab_steps) and, instead of spawning
+   * its own background thread, returned host_execution_required=true —
+   * this generates the whole-pipeline script and dispatches it exactly the
+   * way handleMatlabRun does for a single node, tagging run_output/run_done
+   * with the SAME run_id the frontend's PipelineRunController is already
+   * listening on (so the existing run console just works).
+   */
+  private async handleMatlabPipelineRun(
+    runId: string,
+    params: Record<string, unknown>,
+  ): Promise<void> {
+    const pipelineId = params.pipeline_id as string | undefined;
+    this.outputChannel.appendLine(
+      `handleMatlabPipelineRun: requesting generate_matlab_pipeline_command for ` +
+      `${pipelineId ?? '<?>'} (run_id=${runId})`,
+    );
+
+    const emit = (text: string) => {
+      this.panel.webview.postMessage({
+        method: 'run_output',
+        params: { run_id: runId, text },
+      });
+    };
+    const finish = (success: boolean) => {
+      this.panel.webview.postMessage({
+        method: 'run_done',
+        params: { run_id: runId, success, duration_ms: 0, cancelled: false },
+      });
+    };
+
+    try {
+      const result = await this.pythonProcess.request(
+        'generate_matlab_pipeline_command',
+        params,
+      ) as { command: string; warnings?: string[] };
+      const command = result.command;
+      this.outputChannel.appendLine(
+        `handleMatlabPipelineRun: got command (${command.length} chars)`,
+      );
+      for (const w of result.warnings ?? []) {
+        emit(`⚠ ${w}\n`);
+      }
+
+      const tier = await this.dispatchMatlabCommand(command, runId, result.warnings);
+
+      if (tier !== 'sidecar') {
+        // Terminal/clipboard dispatch aren't tracked by anything else —
+        // treat "dispatched" as "done" from the GUI's perspective; the DB
+        // file watcher triggers dag_updated once MATLAB writes results.
+        // The sidecar tier pushes its own real run_output/run_done via the
+        // notify channel — see dispatchMatlabCommand's docstring.
+        if (tier === 'terminal') {
+          emit('▶ Sent whole-pipeline script to MATLAB terminal...\n');
+        } else {
+          emit('MATLAB pipeline script copied to clipboard. Paste into MATLAB to run.\n');
+        }
+        finish(true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(`handleMatlabPipelineRun: failed: ${msg}`);
+      emit(`Error: ${msg}\n`);
+      finish(false);
     }
   }
 

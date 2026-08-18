@@ -78,10 +78,25 @@ def test_pyproject_without_scistack_section_loads_defaults(tmp_path):
     assert config.auto_discover is True
 
 
-def test_directory_without_any_toml_raises(tmp_path):
-    """A directory with no toml files should still raise FileNotFoundError."""
-    with pytest.raises(FileNotFoundError, match="No pyproject.toml or scistack.toml"):
-        load_config(tmp_path, tmp_path / "dummy.duckdb")
+def test_directory_without_any_toml_falls_back_to_folder_scan(tmp_path):
+    """A directory with no toml files no longer raises — it falls back to
+    scanning the directory directly for .py/.m files (zero-config mode for
+    loose-script projects with no pyproject.toml/scistack.toml at all)."""
+    (tmp_path / "pipeline.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    assert isinstance(config, SciStackConfig)
+    assert [p.name for p in config.modules] == ["pipeline.py"]
+
+
+def test_explicit_config_found_does_not_fall_back_to_folder_scan(tmp_path):
+    """When a scistack.toml IS found, unlisted stray .py files must not
+    leak in via folder-scan — only explicit config fields apply."""
+    (tmp_path / "scistack.toml").write_text("")  # empty = all defaults
+    (tmp_path / "stray.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    assert config.modules == []
 
 
 def test_pyproject_with_scistack_section_loads_normally(tmp_path):
@@ -407,3 +422,99 @@ def test_matlab_addpath_deduplicates(tmp_path):
     # Both files are in the same directory — should produce exactly one entry.
     assert len(config.matlab_addpath) == 1
     assert config.matlab_addpath[0] == (tmp_path / "matlab")
+
+
+# ---------------------------------------------------------------------------
+# Folder-scan fallback (no pyproject.toml/scistack.toml anywhere)
+# ---------------------------------------------------------------------------
+
+
+def test_folder_scan_discovers_py_and_m_files_mixed(tmp_path):
+    """Loose Python + MATLAB files with no config file at all: .py files
+    become modules, .m files become the unified matlab_sources list."""
+    (tmp_path / "loader.py").write_text("")
+    (tmp_path / "analysis.py").write_text("")
+    (tmp_path / "bandpass_filter.m").write_text("function y = bandpass_filter(x)\ny=x;\nend\n")
+    (tmp_path / "RawSignal.m").write_text("classdef RawSignal < scidb.BaseVariable\nend\n")
+    sub = tmp_path / "helpers"
+    sub.mkdir()
+    (sub / "util.py").write_text("")
+    (sub / "util.m").write_text("function y = util(x)\ny=x;\nend\n")
+
+    config = load_config(None, tmp_path / "dummy.duckdb")
+    assert sorted(p.name for p in config.modules) == [
+        "analysis.py",
+        "loader.py",
+        "util.py",
+    ]
+    assert sorted(p.name for p in config.matlab_sources) == [
+        "RawSignal.m",
+        "bandpass_filter.m",
+        "util.m",
+    ]
+    # matlab_functions/matlab_variables stay empty — classification happens
+    # per-file later, in matlab_registry.load_from_sources.
+    assert config.matlab_functions == []
+    assert config.matlab_variables == []
+
+
+def test_folder_scan_project_path_directory_with_no_config(tmp_path):
+    """An explicit --project pointing at a directory with no config file
+    inside it also falls back to folder-scan, rooted at that directory."""
+    (tmp_path / "pipeline.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "elsewhere" / "dummy.duckdb")
+    assert config.project_root == tmp_path
+    assert [p.name for p in config.modules] == ["pipeline.py"]
+
+
+def test_folder_scan_no_project_path_roots_at_db_directory(tmp_path):
+    """With no --project at all, folder-scan roots at the .duckdb's own
+    directory (not an ancestor search — that's only for locating a config
+    file, which doesn't exist here)."""
+    project_dir = tmp_path / "my_study"
+    project_dir.mkdir()
+    (project_dir / "pipeline.py").write_text("")
+
+    config = load_config(None, project_dir / "my_study.duckdb")
+    assert config.project_root == project_dir
+    assert [p.name for p in config.modules] == ["pipeline.py"]
+
+
+def test_folder_scan_excludes_noise_directories(tmp_path):
+    """Folder-scan must not walk into VCS/venv/build noise directories."""
+    (tmp_path / "real.py").write_text("")
+    for noise in (".git", "__pycache__", ".venv", "venv", "node_modules", "build", "dist"):
+        d = tmp_path / noise
+        d.mkdir()
+        (d / "ignored.py").write_text("")
+        (d / "ignored.m").write_text("function y = ignored(x)\ny=x;\nend\n")
+
+    config = load_config(None, tmp_path / "dummy.duckdb")
+    assert [p.name for p in config.modules] == ["real.py"]
+    assert config.matlab_sources == []
+
+
+def test_folder_scan_matlab_excludes_private_class_and_package_dirs(tmp_path):
+    """private/, @ClassName/, and +package/ folders are skipped during
+    folder-scan — sweeping them in would mis-register class methods or
+    namespaced functions as standalone top-level functions."""
+    (tmp_path / "public.m").write_text("function y = public(x)\ny=x;\nend\n")
+    for skip_dir in ("private", "@MyClass", "+mypkg"):
+        d = tmp_path / skip_dir
+        d.mkdir()
+        (d / "hidden.m").write_text("function y = hidden(x)\ny=x;\nend\n")
+
+    config = load_config(None, tmp_path / "dummy.duckdb")
+    assert [p.name for p in config.matlab_sources] == ["public.m"]
+
+
+def test_folder_scan_matlab_addpath_derived_from_sources(tmp_path):
+    """matlab_addpath should be derived from matlab_sources' parent dirs
+    too, not just the explicit matlab_functions/matlab_variables lists."""
+    sub = tmp_path / "matlab"
+    sub.mkdir()
+    (sub / "foo.m").write_text("function y = foo(x)\ny=x;\nend\n")
+
+    config = load_config(None, tmp_path / "dummy.duckdb")
+    assert config.matlab_addpath == [sub]

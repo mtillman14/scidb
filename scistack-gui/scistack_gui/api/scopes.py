@@ -164,14 +164,86 @@ def post_duplicate_pipeline(pipeline_id: str, body: DuplicatePipeline) -> dict:
     return _guard(scope_service.duplicate_pipeline, pipeline_id, body.name)
 
 
+class PasteNodes(BaseModel):
+    source_pipeline_id: str
+    node_ids: list[str]
+    x: float = 0.0
+    y: float = 0.0
+
+
+@router.post("/pipelines/{pipeline_id}/paste-nodes")
+def post_paste_nodes(pipeline_id: str, body: PasteNodes) -> dict:
+    """Copy/paste a node selection into this scope (to-do #5) — may be the
+    same scope as ``body.source_pipeline_id`` (duplicate in place) or a
+    different one (paste between hypotheses)."""
+    return _guard(
+        scope_service.paste_nodes,
+        body.source_pipeline_id,
+        body.node_ids,
+        pipeline_id,
+        body.x,
+        body.y,
+    )
+
+
 @router.post("/hypotheses/{pipeline_id}/duplicate")
 def post_duplicate_hypothesis(pipeline_id: str, body: DuplicatePipeline) -> dict:
     return _guard(scope_service.duplicate_hypothesis, pipeline_id, body.name)
 
 
+@router.get("/pipelines/{pipeline_id}/export")
+def get_export_pipeline(pipeline_id: str) -> dict:
+    """Portable document for `pipeline_id` + everything it uses (to-do #7)
+    — writes to exports/ and returns {"path", "document"}."""
+    return _guard(scope_service.export_pipeline, pipeline_id)
+
+
+@router.get("/pipelines/{pipeline_id}/export-code")
+def get_export_pipeline_code(pipeline_id: str) -> dict:
+    """Standalone Python/MATLAB script for `pipeline_id` + everything it
+    uses (to-do #6) — writes to exports/ and returns {"path", "language",
+    "script", "warnings"}. 400 for a mixed-language closure (unsupported)."""
+    return _guard(scope_service.export_pipeline_code, pipeline_id)
+
+
+class ImportPipeline(BaseModel):
+    document: dict
+
+
+@router.post("/pipelines/import")
+def post_import_pipeline(body: ImportPipeline) -> dict:
+    """Recreate an exported document with fresh ids (to-do #7)."""
+    return _guard(scope_service.import_pipeline, body.document)
+
+
 @router.get("/pipelines/{pipeline_id}/interface")
 def get_pipeline_interface(pipeline_id: str) -> dict:
     return scope_service.pipeline_interface(pipeline_id)
+
+
+class PortDirection(BaseModel):
+    direction: str  # 'input' | 'output'
+    var_type: str
+
+
+@router.get("/pipelines/{pipeline_id}/hidden-ports")
+def get_hidden_ports(pipeline_id: str) -> dict:
+    """This scope's hidden ports — the right-click context menu's Show/
+    Hide label needs current state (to-do #9)."""
+    return scope_service.get_hidden_ports(pipeline_id)
+
+
+@router.post("/pipelines/{pipeline_id}/hide-port")
+def post_hide_port(pipeline_id: str, body: PortDirection) -> dict:
+    """Suppress ``var_type``'s exposed port on this scope's interface —
+    toggled by right-clicking a variable node inside the subpipeline's
+    own canvas (see domain.scope_filter.document_interface)."""
+    return scope_service.hide_port(pipeline_id, body.direction, body.var_type)
+
+
+@router.post("/pipelines/{pipeline_id}/unhide-port")
+def post_unhide_port(pipeline_id: str, body: PortDirection) -> dict:
+    return scope_service.unhide_port(pipeline_id, body.direction, body.var_type)
 
 
 @router.get("/pipelines/{pipeline_id}/plan")

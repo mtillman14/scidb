@@ -173,6 +173,7 @@ def document_interface(
     edges: list[dict],
     uses_by_parent: dict,
     positions_by_scope: dict | None = None,
+    hidden_ports: dict | None = None,
     _visiting: frozenset = frozenset(),
 ) -> dict:
     """A scope's ports from the DOCUMENT graph: ``{"inputs": [...],
@@ -183,10 +184,21 @@ def document_interface(
     a child's inputs join consumed, its outputs join produced (matching how
     the composed backend graph would union). ``uses_by_parent`` maps
     ``parent_pipeline_id -> [{"use_id", "child_pipeline_id", ...}]``.
+
+    ``hidden_ports`` (see ``pipeline_store.get_hidden_ports_by_scope``) is
+    a manual override — ``{pipeline_id: {"input": {type, ...}, "output":
+    {type, ...}}}`` — suppressing one type's port on ONE specific scope,
+    toggled by right-clicking a variable node inside that scope's own
+    canvas (to-do #9). Applied last, after the automatic union (including
+    whatever bubbled up from nested ``uses``), and only against THIS
+    scope's own entry — a hide made two levels down doesn't silently also
+    hide the parent's re-export of that type, and a hide made here doesn't
+    retroactively change what the child scope itself reports.
     """
     if scope_id in _visiting:  # defensive; the store rejects cycles
         return {"inputs": [], "outputs": []}
     positions_by_scope = positions_by_scope or {}
+    hidden_ports = hidden_ports or {}
 
     # Scope membership judged per-edge-endpoint via the same resolution
     # resolve_scope_view uses — a bare id and a placement-qualified id for
@@ -221,12 +233,17 @@ def document_interface(
             edges,
             uses_by_parent,
             positions_by_scope,
+            hidden_ports,
             _visiting | {scope_id},
         )
         consumed.update(child_iface["inputs"])
         produced.update(child_iface["outputs"])
 
+    scope_hidden = hidden_ports.get(scope_id, {})
+    hidden_inputs = scope_hidden.get("input", set())
+    hidden_outputs = scope_hidden.get("output", set())
+
     return {
-        "inputs": sorted(consumed - produced),
-        "outputs": sorted(produced),
+        "inputs": sorted((consumed - produced) - hidden_inputs),
+        "outputs": sorted(produced - hidden_outputs),
     }

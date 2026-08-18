@@ -1,33 +1,94 @@
 {
   "positions": {
     "main": {
-      "fn__compute_rolling_vo2__e079fd03657ef922::main": {
-        "x": 450.0,
-        "y": 216.0
+      "sweep__test::main": {
+        "x": -33.43756626375402,
+        "y": 344.04523808970885
       },
-      "const__window_seconds::main": {
-        "x": 224.5808426921555,
-        "y": 240.96095853642203
+      "use_f59c504d5737": {
+        "x": 72.72763429674038,
+        "y": 223.98008917936863
+      }
+    },
+    "pipe_ca406efc9da7": {
+      "pathInput__data_dir::pipe_ca406efc9da7": {
+        "x": -56.3170971097789,
+        "y": 241.4402675381059
       },
-      "const__sample_interval::main": {
-        "x": 209.23118598520597,
-        "y": 311.6340704246446
+      "var__RawVO2::pipe_ca406efc9da7": {
+        "x": 420.25,
+        "y": 237.25
       },
-      "var__RawVO2::main": {
-        "x": 221.00567104563032,
-        "y": 121.3111368932453
+      "fn__load_vo2_from_csv__46bb2399e8aa4037::pipe_ca406efc9da7": {
+        "x": 215.75,
+        "y": 230.75
       },
-      "var__RollingVO2::main": {
-        "x": 687.8765313981309,
-        "y": 226.25000000000003
+      "var__MaxHR_50Perc__9biu3v": {
+        "x": 365.935056951023,
+        "y": 342.9741204625703
+      }
+    },
+    "pipe_7d1701700346": {
+      "use_de8a1a6caf02": {
+        "x": 253.3102345769876,
+        "y": 210.01266363453874
+      }
+    },
+    "pipe_002d53cb99a9": {
+      "use_a4bf2159d105": {
+        "x": 253.3102345769876,
+        "y": 210.01266363453874
+      },
+      "sweep__test::pipe_002d53cb99a9": {
+        "x": 147.14503401649318,
+        "y": 330.07781254487895
+      }
+    },
+    "pipe_8a1d3fd7e98e": {
+      "var__MaxHR_50Perc__357908da": {
+        "x": 365.935056951023,
+        "y": 342.9741204625703
+      },
+      "var__RawVO2::pipe_8a1d3fd7e98e": {
+        "x": 420.25,
+        "y": 237.25
+      },
+      "pathInput__data_dir::pipe_8a1d3fd7e98e": {
+        "x": -56.3170971097789,
+        "y": 241.4402675381059
+      },
+      "fn__load_vo2_from_csv__46bb2399e8aa4037::pipe_8a1d3fd7e98e": {
+        "x": 215.75,
+        "y": 230.75
       }
     }
   },
-  "constants": [
-    "sample_interval",
-    "window_seconds"
+  "constants": [],
+  "path_inputs": [
+    {
+      "name": "data_dir",
+      "template": "examples/vo2max/data/{subject}",
+      "root_folder": null
+    }
   ],
-  "path_inputs": [],
   "positions_scoped": true,
-  "placements_migrated": true
+  "placements_migrated": true,
+  "pipeline_db_migrated": true,
+  "sweeps": [
+    {
+      "name": "test",
+      "values": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0
+      ]
+    }
+  ]
 }

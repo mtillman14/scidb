@@ -73,6 +73,12 @@ def get_function_source(fn_name: str) -> dict:
 
     if matlab_registry.is_matlab_function(fn_name):
         info = matlab_registry.get_matlab_function(fn_name)
+        if info.file_path is None:
+            return {
+                "ok": False,
+                "error": f"'{fn_name}' is a manually-added built-in MATLAB reference "
+                "— there is no source file to show.",
+            }
         return {"ok": True, "file": str(info.file_path), "line": 1}
     fn = registry._functions.get(fn_name)
     if fn is None:
@@ -113,21 +119,26 @@ def get_registry() -> dict:
 
     matlab_fns = matlab_registry.get_all_function_names()
     matlab_mismatched = matlab_registry.get_mismatched_function_names()
+    load_errors = [*registry.get_load_errors(), *matlab_registry.get_load_errors()]
     logger.info(
-        "get_registry: %d python fns, %d matlab fns, %d vars",
+        "get_registry: %d python fns, %d matlab fns, %d vars, %d load errors",
         len(registry._functions),
         len(matlab_fns),
         len(BaseVariable._all_subclasses),
+        len(load_errors),
     )
     if matlab_fns:
         logger.info("matlab_functions: %s", matlab_fns)
     if matlab_mismatched:
         logger.info("matlab_functions with name/file mismatch: %s", matlab_mismatched)
+    if load_errors:
+        logger.warning("get_registry: %d discovery load error(s): %s", len(load_errors), load_errors)
     return {
         "functions": sorted(registry._functions.keys()),
         "variables": sorted(BaseVariable._all_subclasses.keys()),
         "matlab_functions": matlab_fns,
         "matlab_functions_mismatched": matlab_mismatched,
+        "load_errors": load_errors,
     }
 
 
@@ -155,4 +166,19 @@ def refresh_module() -> dict:
     except Exception as e:
         logger.exception("Failed to refresh module")
         return {"ok": False, "error": f"Import error: {e}"}
+
+    # Manually-declared builtin function references (numpy.mean, a MATLAB
+    # builtin, ...) aren't rediscovered by the refresh above — it has no
+    # file on disk to find them from — so they'd otherwise be silently
+    # dropped by the registry .clear() every refresh does internally.
+    try:
+        from scistack_gui.db import get_db
+        from scistack_gui.services.builtin_function_service import (
+            replay_persisted_builtins,
+        )
+
+        replay_persisted_builtins(get_db())
+    except Exception:
+        logger.exception("Failed to replay persisted builtin functions after refresh")
+
     return {"ok": True, **result}

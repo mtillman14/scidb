@@ -203,6 +203,82 @@ class TestDiscover:
         assert combos == [{"x": "X"}]
 
 
+class TestDiscoverFileVsDirectory:
+    """A bare LAST-segment placeholder (no literal .ext) matches directories
+    only; a literal-extension last segment matches files only — found by
+    hand: a flat CSV file sitting next to real subject folders was
+    silently discovered as a fake subject and crashed downstream the
+    first time PathInput-backed execution actually ran."""
+
+    def test_bare_placeholder_excludes_same_level_files(self, tmp_path):
+        for name in ["S01", "S02"]:
+            (tmp_path / name).mkdir()
+        # Distractor: a flat file sitting at the same level, no extension
+        # requested by the template — must NOT be discovered as a subject.
+        (tmp_path / "readme.txt").touch()
+
+        pi = PathInput("{subject}", root_folder=tmp_path)
+        combos = pi.discover()
+
+        assert sorted(c["subject"] for c in combos) == ["S01", "S02"]
+
+    def test_extension_placeholder_excludes_same_level_directories(self, tmp_path):
+        (tmp_path / "S01.csv").touch()
+        (tmp_path / "S02.csv").touch()
+        # Distractor: a DIRECTORY whose name still ends in ".csv" (so it
+        # matches the regex pattern same as the real files do) — must be
+        # excluded by kind, not just by name shape.
+        (tmp_path / "S03.csv").mkdir()
+
+        pi = PathInput("{subject}.csv", root_folder=tmp_path)
+        combos = pi.discover()
+
+        assert sorted(c["subject"] for c in combos) == ["S01", "S02"]
+
+    def test_nested_bare_placeholder_directory_only(self, tmp_path):
+        """The heuristic applies to the LAST segment specifically — a
+        multi-segment template's bare final placeholder still excludes a
+        same-level file even though earlier segments are literal."""
+        (tmp_path / "raw" / "S01").mkdir(parents=True)
+        (tmp_path / "raw" / "S02").mkdir(parents=True)
+        (tmp_path / "raw" / "manifest.json").touch()
+
+        pi = PathInput("raw/{subject}", root_folder=tmp_path)
+        combos = pi.discover()
+
+        assert sorted(c["subject"] for c in combos) == ["S01", "S02"]
+
+    def test_heuristic_miss_falls_back_to_unfiltered(self, tmp_path):
+        """An extensionless FILE is a real (if rare) case the bare-
+        placeholder heuristic guesses wrong on — it expects a directory,
+        since the template has no literal extension. If that strict pass
+        finds NOTHING, an unfiltered second pass still discovers the file
+        rather than the heuristic silently losing a legitimate match."""
+        (tmp_path / "README").touch()  # a FILE with no extension
+
+        pi = PathInput("{name}", root_folder=tmp_path)
+        combos = pi.discover()
+
+        assert combos == [{"name": "README"}]
+
+    def test_load_fallback_scan_excludes_wrong_kind_numeric_match(self, tmp_path):
+        """load()'s numeric-fallback scan (a different code path from
+        discover(), used by load()/load_with_captures() when the literal
+        path doesn't exist) gets the same file-vs-directory discipline.
+        A directory named "006.mat" and a file named "06.mat" both parse
+        to trial=6 under numeric-equivalence matching — without the kind
+        filter this used to raise RuntimeError("matched 2 files") for a
+        wrong-kind entry that was never a real candidate; the directory
+        is now excluded, leaving exactly the file."""
+        (tmp_path / "006.mat").mkdir()  # wrong kind: a directory, not a file
+        (tmp_path / "06.mat").touch()  # the real, file-like match
+
+        pi = PathInput("{trial}.mat", root_folder=tmp_path)
+        result = pi.load(trial=6)
+
+        assert result == (tmp_path / "06.mat").resolve()
+
+
 class TestApplyDiscovery:
     """The discovery-orchestration decision shared by scidb and scifor."""
 

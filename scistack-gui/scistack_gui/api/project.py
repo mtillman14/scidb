@@ -3,6 +3,7 @@ Project config panel endpoints.
 
 GET  /api/project/code       — scanned exports from src/{project}/
 GET  /api/project/libraries  — scanned exports from uv.lock packages
+GET  /api/project/paths      — resolved [tool.scistack] path config (Paths popup)
 POST /api/project/refresh    — re-run both scans
 """
 
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from scistack_gui.api import ws
 from scistack_gui.db import get_db_path
 
 logger = logging.getLogger(__name__)
@@ -120,10 +122,69 @@ def get_project_libraries() -> dict:
     }
 
 
-@router.post("/refresh")
-def refresh_project() -> dict:
-    """Re-run the discovery scan and return a summary."""
-    _run_scan()
+@router.get("/paths")
+def get_project_paths() -> dict:
+    """Return the resolved [tool.scistack] paths for the header's Paths popup.
+
+    Reads the same pyproject.toml/scistack.toml that project mode loaded at
+    startup (re-parsed here since the GUI doesn't keep the SciStackConfig
+    around after registry load). Single-file mode has no such config, so
+    that case is reported as ``configured: False`` rather than an error.
+    """
+    from scistack_gui.config import load_config
+
+    db_path = get_db_path()
+    try:
+        config = load_config(None, db_path)
+    except FileNotFoundError:
+        logger.info(
+            "[project.paths] no [tool.scistack] config found near %s "
+            "(single-file mode)",
+            db_path,
+        )
+        return {"configured": False, "project_root": str(db_path.parent)}
+
+    logger.info(
+        "[project.paths] resolved config at %s: %d modules, %d packages, "
+        "%d matlab functions, %d matlab variables",
+        config.project_root,
+        len(config.modules),
+        len(config.packages),
+        len(config.matlab_functions),
+        len(config.matlab_variables),
+    )
+    return {
+        "configured": True,
+        "project_root": str(config.project_root),
+        "modules": [str(p) for p in config.modules],
+        "variable_file": str(config.variable_file) if config.variable_file else None,
+        "packages": config.packages,
+        "auto_discover": config.auto_discover,
+        "matlab_functions": [str(p) for p in config.matlab_functions],
+        "matlab_variables": [str(p) for p in config.matlab_variables],
+        "matlab_addpath": [str(p) for p in config.matlab_addpath],
+        "matlab_variable_dir": (
+            str(config.matlab_variable_dir) if config.matlab_variable_dir else None
+        ),
+    }
+
+
+def refresh_project_sync() -> dict:
+    """Re-run the discovery scan and return a summary.
+
+    In registry-backed mode (no pyproject.toml — loose-script/folder-scan
+    projects) this also re-imports the configured files from disk first,
+    so "Refresh" here does real work instead of just re-reporting stale
+    in-memory state — see ``_run_scan(force_refresh=True)``.
+
+    Transport-agnostic core, deliberately synchronous: the FastAPI route
+    below awaits ``ws.broadcast`` afterward, while the JSON-RPC path (VS
+    Code extension, ``server.py: _h_refresh_project``) calls this same
+    function through ``services/project_service.py`` and notifies via the
+    sync ``notify()`` instead — that path runs in a plain thread with no
+    event loop, so this function itself must never be a coroutine.
+    """
+    _run_scan(force_refresh=True)
     return {
         "ok": True,
         "project_code": _serialise_package_result(_last_result.project_code),
@@ -132,31 +193,65 @@ def refresh_project() -> dict:
     }
 
 
-def _run_scan() -> None:
-    """Run the discovery scanner and cache the result."""
+@router.post("/refresh")
+async def refresh_project() -> dict:
+    result = refresh_project_sync()
+    await ws.broadcast({"type": "dag_updated"})
+    return result
+
+
+def _run_scan(*, force_refresh: bool = False) -> None:
+    """Run the discovery scanner and cache the result.
+
+    Two data sources, chosen by whether a ``pyproject.toml`` exists at the
+    detected project root:
+
+    - **Packaged projects** (``pyproject.toml`` present): the scidb-layer
+      ``scan_project`` walks ``src/{name}/`` + ``uv.lock`` libraries, same
+      as always.
+    - **Loose-script / folder-scan projects** (no ``pyproject.toml``): there
+      is no ``src/{name}/`` to walk, and ``scan_project`` would report
+      everything empty even though the registry actually has working
+      functions/variables loaded — see docs/claude/multi-source-discovery.md
+      and the "Discovered Code" panel would otherwise silently disagree
+      with what's actually runnable. Build the result from
+      ``registry``/``matlab_registry`` instead, which is the single source
+      of truth for what's actually loaded either way.
+    """
     global _last_result
-    from scidb.discover import scan_project
-
     root = _project_root()
-    logger.info("Running discovery scan on %s", root)
+    logger.info("Running discovery scan on %s (force_refresh=%s)", root, force_refresh)
 
-    # Skip scidb/scifor/etc. framework packages — they're infrastructure,
-    # not user-facing libraries.
-    _last_result = scan_project(
-        root,
-        skip_dists=[
-            "scidb",
-            "scifor",
-            "sciduckdb",
-            "scilineage",
-            "scipathgen",
-            "scicanonicalhash",
-            "scirun",
-            "scihist",
-            "scistack",
-            "scistack-gui",
-        ],
-    )
+    if (root / "pyproject.toml").exists():
+        from scidb.discover import scan_project
+
+        # Skip scidb/scifor/etc. framework packages — they're
+        # infrastructure, not user-facing libraries.
+        _last_result = scan_project(
+            root,
+            skip_dists=[
+                "scidb",
+                "scifor",
+                "sciduckdb",
+                "scilineage",
+                "scipathgen",
+                "scicanonicalhash",
+                "scirun",
+                "scihist",
+                "scistack",
+                "scistack-gui",
+            ],
+        )
+    else:
+        logger.info(
+            "No pyproject.toml at %s; using registry-backed discovery "
+            "(loose-script/folder-scan mode)",
+            root,
+        )
+        if force_refresh:
+            _refresh_registries()
+        _last_result = _build_registry_backed_result(root)
+
     logger.info(
         "Scan complete: project=%s (vars=%d, fns=%d, consts=%d), "
         "libraries=%d (shown=%d)",
@@ -167,3 +262,92 @@ def _run_scan() -> None:
         len(_last_result.libraries),
         len(_last_result.non_empty_libraries()),
     )
+
+
+def _refresh_registries() -> None:
+    """Re-import configured files from disk (registry-backed mode only)."""
+    from scistack_gui import matlab_registry, registry
+
+    try:
+        if registry._config is not None:
+            registry.refresh_all()
+        else:
+            registry.refresh_module()
+    except RuntimeError:
+        logger.debug("Nothing to refresh in registry (no config/module loaded)")
+    except Exception:
+        logger.exception("Failed to refresh Python registry before discovery scan")
+
+    try:
+        matlab_registry.refresh_all()
+    except Exception:
+        logger.exception("Failed to refresh MATLAB registry before discovery scan")
+
+
+def _build_registry_backed_result(root: Path):
+    """Build a ``scidb.discover.DiscoveryResult`` from ``registry``/
+    ``matlab_registry`` state, for projects with no ``pyproject.toml`` to
+    scan. Reuses scidb's own result dataclasses so the existing
+    ``_serialise_*`` helpers (and the frontend rendering code built for
+    ``scan_project``'s output) work completely unchanged.
+
+    Full parity with ``scan_project``: functions, ``BaseVariable``
+    subclasses, and ``scidb.constant()`` instances are all covered — the
+    last of those via ``registry.get_constants_registry()``, which
+    ``registry._scan_module_constants`` populates alongside functions at
+    every registry load. (This is separate from the GUI-native "Constant
+    node" concept — ``get_constants()``/EditTab's palette — which is about
+    user-created per-run values, not code-level named constants.)
+    """
+    from scidb import BaseVariable
+    from scidb.discover import DiscoveryResult, ModuleError, ModuleExports, PackageResult
+    from scistack_gui import matlab_registry, registry
+
+    by_source: dict[str, ModuleExports] = {}
+
+    def module_for(source: str) -> ModuleExports:
+        if source not in by_source:
+            by_source[source] = ModuleExports(module_name=source)
+        return by_source[source]
+
+    for name, fn in registry._functions.items():
+        source = registry._function_sources.get(name, "<unknown>")
+        module_for(source).functions.append(fn)
+
+    # BaseVariable._all_subclasses already contains BOTH real Python
+    # variable classes AND the Python surrogate classes matlab_registry
+    # creates for each MATLAB variable (see _register_matlab_variable) — a
+    # separate pass over matlab_registry.get_all_variable_names() would
+    # double-count them. Just re-attribute the MATLAB ones to their real
+    # .m file path instead of the surrogate's (uninformative) __module__.
+    matlab_var_paths = {
+        name: str(path) for name, path in matlab_registry._matlab_variables.items()
+    }
+    for name, cls in BaseVariable._all_subclasses.items():
+        if name in matlab_var_paths:
+            source = matlab_var_paths[name]
+        else:
+            source = registry.resolve_module_source(
+                getattr(cls, "__module__", None) or "<unknown>"
+            )
+        module_for(source).variables.append(cls)
+
+    for fn_name in matlab_registry.get_all_function_names():
+        info = matlab_registry.get_matlab_function(fn_name)
+        source = str(info.file_path) if info.file_path is not None else "<matlab builtin>"
+        # Not a real object with __name__ — _serialise_module_exports falls
+        # back to str(f) for anything without one, which is already fn_name.
+        module_for(source).functions.append(fn_name)
+
+    for name, const in registry.get_constants_registry().items():
+        source = registry._constant_sources.get(name, "<unknown>")
+        module_for(source).constants.append((name, const))
+
+    errors = [
+        ModuleError(module_name=e["source"], traceback=e["error"])
+        for e in [*registry.get_load_errors(), *matlab_registry.get_load_errors()]
+    ]
+
+    modules = sorted(by_source.values(), key=lambda m: m.module_name)
+    project_code = PackageResult(name=root.name, modules=modules, errors=errors)
+    return DiscoveryResult(project_code=project_code, libraries={})

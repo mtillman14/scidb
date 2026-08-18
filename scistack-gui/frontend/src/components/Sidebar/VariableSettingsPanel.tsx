@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react'
 import { callBackend } from '../../api'
+import VariablePlot from './VariablePlot'
 
 interface VariantSummary {
   label: string
@@ -51,6 +52,11 @@ export default function VariableSettingsPanel({ label }: Props) {
 
       {data && (
         <>
+          <section style={styles.section}>
+            <div style={styles.sectionTitle}>Plot</div>
+            <VariablePlot label={label} />
+          </section>
+
           {/* Variant summary */}
           <section style={styles.section}>
             <div style={styles.sectionTitle}>Variants</div>

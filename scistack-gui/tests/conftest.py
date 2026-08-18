@@ -70,6 +70,8 @@ def clear_db_state():
     _scifor.set_schema([])
     # Keep only the test functions registered across tests
     _registry._functions.clear()
+    _registry._constants.clear()
+    _registry._constant_sources.clear()
 
     yield
 

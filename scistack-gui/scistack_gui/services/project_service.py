@@ -18,6 +18,12 @@ def get_project_libraries() -> dict:
 
 
 def refresh_project() -> dict:
-    from scistack_gui.api.project import refresh_project
+    from scistack_gui.api.project import refresh_project_sync
 
-    return refresh_project()
+    return refresh_project_sync()
+
+
+def get_project_paths() -> dict:
+    from scistack_gui.api.project import get_project_paths
+
+    return get_project_paths()

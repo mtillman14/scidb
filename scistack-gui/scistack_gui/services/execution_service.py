@@ -34,7 +34,13 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     str, "constants": {name: typed value}}`` — DB pipeline variants when
     history exists (manual output wiring overrides stale DB outputs),
     otherwise inferred from manual edges + pending constants. Returns []
-    when nothing is derivable (no history AND no output wiring).
+    when nothing is derivable (no history AND no output wiring). PathInput-
+    backed params are NOT resolved here — they're never part of
+    ``input_types``/DB history at all (see ``build_run_inputs``), so
+    resolving them at derivation time would mean threading a new field
+    through every branch of this function AND ``derive_target_for_node``
+    for no benefit; ``build_run_inputs`` resolves them once, right before
+    execution, from the target this function already returns.
     """
     from scistack_gui import pipeline_store
     from scistack_gui.api.pipeline import _fn_params_from_registry
@@ -546,10 +552,35 @@ def apply_pending_overrides(targets: list[dict], pending_constants: dict) -> lis
     return out
 
 
-def _build_inputs(target: dict):
-    """for_each inputs dict from a derived target (types + constants)."""
-    from scidb import EachOf
+def build_run_inputs(target: dict, function_name: str) -> dict:
+    """The for_each ``inputs=`` dict for a derived target: variable-class
+    inputs, scalar constants, and any remaining signature params resolved
+    via a stored PathInput or Sweep.
+
+    Shared by the per-node Run path (``api/run.py``) and the compiled-
+    pipeline path (``build_backend_pipeline`` below) — one place instead of
+    two independently-drifting copies, which is what let PathInput
+    resolution go missing from both for a long time.
+
+    PathInput and Sweep params are resolved LAST, by elimination: neither
+    is ever a citizen of ``target["input_types"]``/``target["constants"]``
+    — a PathInput has no versioned variable class (it resolves *files*,
+    not a DB record) and a Sweep's whole point is to become
+    ``EachOf(...)`` fresh at execution time rather than a single staged
+    value — so both are absent from DB history too, regardless of
+    whether the rest of the target came from history or inference.
+    Whatever signature params variable/constant resolution left unfilled
+    are checked by name against the stored PathInput/Sweep registries
+    (``layout.read_all_path_input_names``/``read_all_sweep_names`` — the
+    same name-matching ``graph_builder`` already uses to draw the
+    display-only pathInput→fn/sweep→fn edges), so this is the single
+    place a live ``scifor.PathInput`` object or a numeric ``EachOf`` ever
+    gets constructed for execution.
+    """
+    from scidb import EachOf, PathInput
+    from scistack_gui import layout as layout_store
     from scistack_gui import registry
+    from scistack_gui.api.pipeline import _fn_params_from_registry
 
     inputs: dict = {}
     for param, type_names in target["input_types"].items():
@@ -563,6 +594,59 @@ def _build_inputs(target: dict):
         else:
             inputs[param] = registry.get_variable_class(type_names)
     inputs.update(target["constants"])
+
+    missing = [p for p in _fn_params_from_registry(function_name) if p not in inputs]
+    if missing:
+        path_inputs_by_name = {
+            pi["name"]: pi for pi in layout_store.read_all_path_input_names()
+        }
+        sweeps_by_name = {
+            sw["name"]: sw for sw in layout_store.read_all_sweep_names()
+        }
+        for param in missing:
+            pi = path_inputs_by_name.get(param)
+            if pi is not None:
+                # Alternate templates (see layout.add_path_input_alternate)
+                # are the PathInput analog of a Constant node's multiple
+                # staged values — >1 template under one name becomes
+                # EachOf(...) of PathInput objects, same convention as the
+                # multi-type variable branch above.
+                variants = [pi, *pi.get("alternate_templates", [])]
+                path_input_objs = [
+                    PathInput(v["template"], root_folder=v.get("root_folder"))
+                    for v in variants
+                ]
+                inputs[param] = (
+                    EachOf(*path_input_objs)
+                    if len(path_input_objs) > 1
+                    else path_input_objs[0]
+                )
+                logger.info(
+                    "[execution] '%s': input '%s' resolved via %s",
+                    function_name,
+                    param,
+                    inputs[param],
+                )
+                continue
+
+            sw = sweeps_by_name.get(param)
+            if sw is not None:
+                values = sw.get("values") or []
+                if not values:
+                    logger.warning(
+                        "[execution] '%s': input '%s' is a Sweep with no "
+                        "values configured — left unresolved",
+                        function_name,
+                        param,
+                    )
+                    continue
+                inputs[param] = EachOf(*values) if len(values) > 1 else values[0]
+                logger.info(
+                    "[execution] '%s': input '%s' resolved via Sweep(%d value(s))",
+                    function_name,
+                    param,
+                    len(values),
+                )
     return inputs
 
 
@@ -643,6 +727,31 @@ def _scope_function_labels(db, pipeline_id: str) -> list[str]:
         if label not in labels:
             labels.append(label)
     return labels
+
+
+def pipeline_has_matlab_steps(db, pipeline_id: str) -> bool:
+    """True if ``pipeline_id``'s scope, or any pipeline it (transitively)
+    uses, contains a MATLAB function node.
+
+    ``build_backend_pipeline``/``run_pipeline`` can only ever compile
+    Python steps: ``registry.get_function(fn_label)`` raises ``KeyError``
+    for a MATLAB-registered function name, which the per-node loop above
+    already catches and silently skips (logged as a warning) — a MATLAB-
+    containing pipeline run today just quietly omits its MATLAB steps
+    rather than erroring. ``start_pipeline_run`` (``api/run.py``) uses this
+    check to route such a pipeline to host-side MATLAB execution instead
+    (see plan-matlab-pipeline-execution.md) — the same
+    ``matlab_registry.is_matlab_function`` over ``_scope_function_node_ids``
+    test ``code_export_service`` already uses to detect a scope's language.
+    """
+    from scistack_gui import matlab_registry
+    from scistack_gui.services.portability_service import _closure_pipeline_ids
+
+    for pid in _closure_pipeline_ids(db, pipeline_id):
+        for _node_id, fn_label in _scope_function_node_ids(db, pid):
+            if matlab_registry.is_matlab_function(fn_label):
+                return True
+    return False
 
 
 def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
@@ -734,7 +843,7 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
                 continue
             seen_target_keys.add(target_key)
             try:
-                inputs = _build_inputs(target)
+                inputs = build_run_inputs(target, fn_label)
                 output_cls = registry.get_variable_class(target["output_type"])
             except KeyError as exc:
                 logger.warning(

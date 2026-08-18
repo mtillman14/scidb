@@ -35,13 +35,16 @@ import VariableNode from './VariableNode'
 import FunctionNode from './FunctionNode'
 import ConstantNode from './ConstantNode'
 import PathInputNode from './PathInputNode'
+import SweepNode from './SweepNode'
 import PipelineNode, { type PipelineNodeData } from './PipelineNode'
+import RunsDock from '../RunsDock'
 import { applyDagreLayout } from '../../layout'
 import { callBackend } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import { useScope } from '../../context/ScopeContext'
 import { usePlanRun } from '../../context/PlanRunContext'
+import { useClipboard } from '../../context/ClipboardContext'
 
 // Tell React Flow which React component to render for each node "type" string.
 // These match the "type" field we set in GET /api/pipeline.
@@ -50,13 +53,30 @@ const nodeTypes = {
   functionNode: FunctionNode,
   constantNode: ConstantNode,
   pathInputNode: PathInputNode,
+  sweepNode: SweepNode,
   pipelineNode: PipelineNode,
 }
 
 interface ContextMenuState {
   x: number
   y: number
-  fnLabel: string
+  nodeType: 'functionNode' | 'variableNode'
+  fnLabel?: string
+  varType?: string
+  // Which single direction this variable node's type plays in the
+  // current scope's interface — a type produced by a function inside the
+  // scope is ALWAYS classified as an output there (document_interface's
+  // inputs = consumed - produced), never an input, even if it's also
+  // consumed further downstream as an intermediate; a type only ever
+  // consumed (never produced) is a pure input. Only one direction is
+  // ever real for a given type in a given scope, so only one toggle is
+  // offered — never both.
+  portDirection?: 'input' | 'output'
+}
+
+interface HiddenPorts {
+  input: string[]
+  output: string[]
 }
 
 interface HiddenEdge {
@@ -74,7 +94,12 @@ export default function PipelineDAG() {
   const { selectedNode, setSelectedNode } = useSelectedNode()
   const { currentScope, breadcrumb, descend, graphVersion, bumpGraph } = useScope()
   const { requestPlan } = usePlanRun()
+  const { clipboard, setClipboard } = useClipboard()
   const isFirstLoad = useRef(true)
+  // Last mouse position over the canvas (screen coords) — Cmd/Ctrl+V has
+  // no drop point of its own, so it pastes wherever the cursor currently
+  // is, same idea as the existing drag-and-drop's screenToFlowPosition use.
+  const lastMousePosRef = useRef({ x: 0, y: 0 })
   // The scope the on-screen nodes belong to — on a scope switch, on-screen
   // positions must NOT carry over to the new canvas.
   const loadedScope = useRef<string | null>(null)
@@ -92,6 +117,7 @@ export default function PipelineDAG() {
   )
   const [hiddenEdges, setHiddenEdges] = useState<HiddenEdge[]>([])
   const [showHiddenEdges, setShowHiddenEdges] = useState(false)
+  const [hiddenPorts, setHiddenPorts] = useState<HiddenPorts>({ input: [], output: [] })
 
   const fetchPipeline = useCallback(async () => {
     // Fetch pipeline first — _build_graph has a side effect (graduate_manual_node)
@@ -149,6 +175,14 @@ export default function PipelineDAG() {
     callBackend('get_hidden_edges', { pipeline_id: currentScope }).then(res => {
       setHiddenEdges((res as { edges: HiddenEdge[] }).edges)
     })
+
+    // This scope's own hidden ports (to-do #9) — right-click a variable
+    // node's Show/Hide label needs current state. Scoped to currentScope
+    // like hidden edges: a hide made in one subpipeline never affects
+    // another's independent interface.
+    callBackend('get_hidden_ports', { pipeline_id: currentScope }).then(res => {
+      setHiddenPorts(res as HiddenPorts)
+    })
   }, [setNodes, setEdges, fitView, currentScope])
 
   useEffect(() => {
@@ -186,7 +220,7 @@ export default function PipelineDAG() {
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     setContextMenu(null)
-    if (node.type === 'functionNode' || node.type === 'constantNode' || node.type === 'variableNode' || node.type === 'pathInputNode' || node.type === 'pipelineNode') {
+    if (node.type === 'functionNode' || node.type === 'constantNode' || node.type === 'variableNode' || node.type === 'pathInputNode' || node.type === 'sweepNode' || node.type === 'pipelineNode') {
       setSelectedNode(node)
     } else {
       setSelectedNode(null)
@@ -204,6 +238,55 @@ export default function PipelineDAG() {
   const onSelectionChange = useCallback(({ nodes: selected }: OnSelectionChangeParams) => {
     setSelectedIds(selected.map(n => n.id))
   }, [])
+
+  // Copy/paste (to-do #5) — the clipboard holds a REFERENCE (source scope
+  // + node ids), not a data snapshot, so paste always resolves against
+  // live current config/wiring (see scope_service.paste_nodes). Works
+  // within one scope (paste again = a second copy) and BETWEEN scopes
+  // (copy here, switch hypothesis tabs, paste there) with no special
+  // casing — target is just whatever currentScope is at paste time.
+  const handleCopy = useCallback(() => {
+    if (selectedIds.length === 0) return
+    setClipboard({ sourcePipelineId: currentScope, nodeIds: selectedIds })
+  }, [selectedIds, currentScope, setClipboard])
+
+  const handlePaste = useCallback(() => {
+    if (!clipboard) return
+    const position = screenToFlowPosition(lastMousePosRef.current)
+    callBackend('paste_nodes', {
+      pipeline_id: currentScope,
+      source_pipeline_id: clipboard.sourcePipelineId,
+      node_ids: clipboard.nodeIds,
+      x: position.x,
+      y: position.y,
+    })
+      .then(res => {
+        const { node_id_map } = res as { node_id_map: Record<string, string> }
+        setSelectedIds(Object.values(node_id_map))
+        setClipboard(null)  // one paste consumes the clipboard — the Paste button disappears
+        bumpGraph()
+      })
+      .catch(err => window.alert(`Could not paste: ${(err as Error).message}`))
+  }, [clipboard, currentScope, screenToFlowPosition, bumpGraph, setClipboard])
+
+  // Cmd/Ctrl+C / Cmd/Ctrl+V, ignored while typing in a text field (so
+  // editing a node's name/value keeps using the browser's native copy).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      const tag = (document.activeElement as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement as HTMLElement | null)?.isContentEditable) return
+      if (e.key === 'c' && selectedIds.length > 0) {
+        e.preventDefault()
+        handleCopy()
+      } else if (e.key === 'v' && clipboard) {
+        e.preventDefault()
+        handlePaste()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedIds, clipboard, handleCopy, handlePaste])
 
   const handleExtract = useCallback(() => {
     const name = extractDraft.name.trim()
@@ -253,20 +336,39 @@ export default function PipelineDAG() {
   }, [descend])
 
   // Right-click a function node → "Run until here" (pull execution, R2).
+  // Right-click a variable node, OUTSIDE root scope → "Show/Hide outside
+  // pipeline" (to-do #9) — root is never itself a pipeline node anywhere,
+  // so hiding its ports would be a no-op.
   const onNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
-    if (node.type !== 'functionNode') return
+    if (node.type !== 'functionNode' && node.type !== 'variableNode') return
+    if (node.type === 'variableNode' && currentScope === 'main') return
     e.preventDefault()
     // Menu coordinates are relative to the canvas wrapper (position: relative).
     const bounds = wrapperRef.current?.getBoundingClientRect()
-    setContextMenu({
-      x: e.clientX - (bounds?.left ?? 0),
-      y: e.clientY - (bounds?.top ?? 0),
-      fnLabel: (node.data as { label: string }).label,
-    })
-  }, [])
+    const base = { x: e.clientX - (bounds?.left ?? 0), y: e.clientY - (bounds?.top ?? 0) }
+    if (node.type === 'functionNode') {
+      setContextMenu({ ...base, nodeType: 'functionNode', fnLabel: (node.data as { label: string }).label })
+    } else {
+      // Classify from THIS scope's own edges (already scope-filtered by
+      // the backend, so any edge touching this node id is in-scope): an
+      // edge INTO the variable node means something here produces it
+      // (output); an edge OUT means something here consumes it (input).
+      // Produced wins over consumed — see ContextMenuState.portDirection.
+      const isProduced = edges.some(ed => ed.target === node.id)
+      const isConsumed = edges.some(ed => ed.source === node.id)
+      const portDirection = isProduced ? 'output' : isConsumed ? 'input' : undefined
+      if (!portDirection) return  // isolated node — nothing to hide/show
+      setContextMenu({
+        ...base,
+        nodeType: 'variableNode',
+        varType: (node.data as { label: string }).label,
+        portDirection,
+      })
+    }
+  }, [currentScope, edges])
 
   const handleRunUntilHere = useCallback(() => {
-    if (!contextMenu) return
+    if (!contextMenu?.fnLabel) return
     requestPlan({
       pipeline_id: currentScope,
       mode: 'until',
@@ -275,6 +377,31 @@ export default function PipelineDAG() {
     })
     setContextMenu(null)
   }, [contextMenu, currentScope, breadcrumb, requestPlan])
+
+  // Toggle one direction's port for the right-clicked variable type — the
+  // internal node itself is never hidden, only its outward-facing dot on
+  // THIS scope's interface (see domain.scope_filter.document_interface).
+  const handleTogglePort = useCallback((direction: 'input' | 'output') => {
+    const varType = contextMenu?.varType
+    if (!varType) return
+    const isHidden = hiddenPorts[direction].includes(varType)
+    callBackend(isHidden ? 'unhide_port' : 'hide_port', {
+      pipeline_id: currentScope,
+      direction,
+      var_type: varType,
+    })
+      .then(() => {
+        setContextMenu(null)
+        setHiddenPorts(prev => ({
+          ...prev,
+          [direction]: isHidden
+            ? prev[direction].filter(t => t !== varType)
+            : [...prev[direction], varType],
+        }))
+        bumpGraph()
+      })
+      .catch(err => window.alert(`Could not update port visibility: ${(err as Error).message}`))
+  }, [contextMenu, hiddenPorts, currentScope, bumpGraph])
 
   const handleRunEndpoints = useCallback(() => {
     requestPlan({
@@ -319,7 +446,7 @@ export default function PipelineDAG() {
     const { nodeType, label } = JSON.parse(raw) as { nodeType: string; label: string }
 
     const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const prefix = nodeType === 'functionNode' ? 'fn' : nodeType === 'constantNode' ? 'const' : nodeType === 'pathInputNode' ? 'pathInput' : 'var'
+    const prefix = nodeType === 'functionNode' ? 'fn' : nodeType === 'constantNode' ? 'const' : nodeType === 'pathInputNode' ? 'pathInput' : nodeType === 'sweepNode' ? 'sweep' : 'var'
     const nodeId = `${prefix}__${label}__${Math.random().toString(36).slice(2, 8)}`
     pendingCenterRef.current.set(nodeId, position)
 
@@ -360,7 +487,8 @@ export default function PipelineDAG() {
             ...(nodeType === 'variableNode' ? { total_records: 0, run_state: 'red' } : {}),
             ...(nodeType === 'functionNode' ? fnExtra : {}),
             ...(nodeType === 'constantNode' ? { values: [] } : {}),
-            ...(nodeType === 'pathInputNode' ? { template: '', root_folder: null } : {}),
+            ...(nodeType === 'pathInputNode' ? { template: '', root_folder: null, alternate_templates: [] } : {}),
+            ...(nodeType === 'sweepNode' ? { values: [] } : {}),
           },
         }
         return [...prev, newNode]
@@ -479,6 +607,7 @@ export default function PipelineDAG() {
       style={{ width: '100%', height: '100%', position: 'relative' }}
       onDragOver={onDragOver}
       onDrop={onDrop}
+      onMouseMove={e => { lastMousePosRef.current = { x: e.clientX, y: e.clientY } }}
     >
       {/* React Flow's default selected-edge color (--xy-edge-stroke-selected-default:
           #555) is a dark gray meant for a light canvas — on this app's dark navy
@@ -517,6 +646,22 @@ export default function PipelineDAG() {
       >
         <Background />
         <Controls />
+        {(selectedIds.length > 0 || clipboard) && (
+          <Panel position="top-right">
+            <div style={styles.clipboardPanel}>
+              {selectedIds.length > 0 && (
+                <button style={styles.clipboardBtn} onClick={handleCopy} type="button" title="Cmd/Ctrl+C">
+                  ⧉ Copy {selectedIds.length}
+                </button>
+              )}
+              {clipboard && (
+                <button style={styles.clipboardBtn} onClick={handlePaste} type="button" title="Cmd/Ctrl+V — pastes at the cursor">
+                  📋 Paste {clipboard.nodeIds.length}
+                </button>
+              )}
+            </div>
+          </Panel>
+        )}
         {selectedIds.length > 1 && (
           <Panel position="top-left">
             <div style={styles.extractPanel}>
@@ -550,6 +695,9 @@ export default function PipelineDAG() {
             </div>
           </Panel>
         )}
+        <Panel position="bottom-left">
+          <RunsDock />
+        </Panel>
         {hiddenEdges.length > 0 && (
           <Panel position="bottom-left">
             <div style={styles.hiddenEdgesPanel}>
@@ -604,13 +752,27 @@ export default function PipelineDAG() {
           </div>
         </Panel>
       </ReactFlow>
-      {contextMenu && (
+      {contextMenu && contextMenu.nodeType === 'functionNode' && (
         <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
           <button style={styles.contextMenuItem} onClick={handleRunUntilHere} type="button">
             ▶ Run until here
           </button>
         </div>
       )}
+      {contextMenu && contextMenu.nodeType === 'variableNode' && (() => {
+        const varType = contextMenu.varType ?? ''
+        const direction = contextMenu.portDirection
+        if (!varType || !direction) return null
+        return (
+          <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
+            <button style={styles.contextMenuItem} onClick={() => handleTogglePort(direction)} type="button">
+              {hiddenPorts[direction].includes(varType)
+                ? `◎ Show as ${direction} port`
+                : `⊘ Hide as ${direction} port`}
+            </button>
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -649,6 +811,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#1a1a2e',
     border: '1px solid #a21caf',
     borderRadius: 6,
+    userSelect: 'none',
   },
   hiddenEdgesPanel: {
     padding: '4px 8px',
@@ -694,6 +857,31 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: 10,
     flexShrink: 0,
+  },
+  clipboardPanel: {
+    display: 'flex',
+    gap: 4,
+    padding: '4px 8px',
+    background: '#1a1a2e',
+    border: '1px solid #2563eb',
+    borderRadius: 6,
+    // This floating panel sits on top of the canvas, unlike React Flow's
+    // own pane (which disables text selection so shift-drag box-select
+    // works cleanly) — without this, a shift-drag gesture starting on or
+    // crossing the panel also drags out a native browser text selection
+    // alongside React Flow's own selection rectangle.
+    userSelect: 'none',
+  },
+  clipboardBtn: {
+    padding: '4px 10px',
+    background: '#2563eb',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 12,
+    whiteSpace: 'nowrap',
   },
   extractForm: {
     display: 'flex',

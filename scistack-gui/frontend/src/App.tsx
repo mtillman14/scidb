@@ -2,12 +2,29 @@
  * Root application component.
  *
  * Layout:
- *   ┌─────────────────────────────────────────────┐
- *   │  header: SciStack + db name                 │
- *   ├───────────────────────────────┬─────────────┤
- *   │  PipelineDAG (left 3/4)       │  sidebar    │
- *   │                               │  (right 1/4)│
+ *   ┌───────────────────────────────┬─────────────┐
+ *   │  header: SciStack + db name   │             │
+ *   │  + Restart/Report/📁 Paths    │             │
+ *   ├────────────────────────────────┤  sidebar    │
+ *   │  HypothesisTabs: tab strip +  │  (right 1/4,│
+ *   │  Research Question row        │  full       │
+ *   ├────────────────────────────────┤  screen    │
+ *   │  PipelineDAG (RunsDock docked │  height)    │
+ *   │  bottom-left)                 │             │
  *   └───────────────────────────────┴─────────────┘
+ *
+ * The header and HypothesisTabs live INSIDE the dagArea column (not
+ * spanning the full window width) so the sidebar can run the full height
+ * of the screen instead of starting below a full-width header row — the
+ * header's buttons end up left-aligned over the (now narrower) canvas
+ * column as a natural consequence, not via extra positioning.
+ *
+ * The 📁 Paths button opens PathsPopup (formerly the sidebar's permanent
+ * "Project" tab); RunsDock (formerly the sidebar's "Runs" tab) is now a
+ * React Flow Panel inside PipelineDAG so run status stays visible without a
+ * tab switch — see components/RunsDock.tsx and components/PathsPopup.tsx.
+ * The sidebar itself no longer has its own tab bar either — see
+ * components/Sidebar/Sidebar.tsx.
  */
 
 import { useEffect, useState, useCallback } from "react";
@@ -15,12 +32,14 @@ import { ReactFlowProvider } from "@xyflow/react";
 import PipelineDAG from "./components/DAG/PipelineDAG";
 import Breadcrumb from "./components/DAG/Breadcrumb";
 import HypothesisTabs from "./components/HypothesisTabs";
+import PathsPopup from "./components/PathsPopup";
 import Sidebar from "./components/Sidebar/Sidebar";
 import PipelineRunController from "./components/PipelineRunController";
 import { RunLogProvider } from "./context/RunLogContext";
 import { SelectedNodeProvider } from "./context/SelectedNodeContext";
 import { ScopeProvider } from "./context/ScopeContext";
 import { PlanRunProvider } from "./context/PlanRunContext";
+import { ClipboardProvider } from "./context/ClipboardContext";
 import { callBackend, isVSCodeMode } from "./api";
 
 /**
@@ -71,8 +90,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: "monospace",
     opacity: 0.8,
   },
-  refreshBtn: {
+  refreshCodeBtn: {
     marginLeft: "auto",
+    padding: "4px 12px",
+    background: "#2a2a4a",
+    color: "#ccc",
+    border: "1px solid #3a3a5a",
+    borderRadius: 4,
+    cursor: "pointer",
+    fontSize: 12,
+    fontFamily: "inherit",
+  },
+  refreshBtn: {
     padding: "4px 12px",
     background: "#2a2a4a",
     color: "#ccc",
@@ -87,6 +116,16 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#164e63",
     color: "#a5f3fc",
     border: "1px solid #0891b2",
+    borderRadius: 4,
+    cursor: "pointer",
+    fontSize: 12,
+    fontFamily: "inherit",
+  },
+  pathsBtn: {
+    padding: "4px 12px",
+    background: "#2a2a4a",
+    color: "#ccc",
+    border: "1px solid #3a3a5a",
     borderRadius: 4,
     cursor: "pointer",
     fontSize: 12,
@@ -175,8 +214,10 @@ export default function App() {
   const [schema, setSchema] = useState<{ keys: string[] }>({ keys: [] });
   const [dbName, setDbName] = useState("");
   const [restarting, setRestarting] = useState(false);
+  const [refreshingCode, setRefreshingCode] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [startupErrors, setStartupErrors] = useState<StartupError[]>([]);
+  const [pathsOpen, setPathsOpen] = useState(false);
 
   // Endpoint report: db.inspect.write_report → self-contained index.html
   // (figures embedded). Standalone opens it via the artifacts file route;
@@ -199,6 +240,23 @@ export default function App() {
       window.alert(`Report failed: ${(err as Error).message}`);
     } finally {
       setReporting(false);
+    }
+  }, []);
+
+  // Lightweight alternative to Restart: re-imports the configured Python/
+  // MATLAB files in-process (registry.refresh_all/refresh_module, already
+  // implemented server-side — this just gives it a UI trigger) instead of
+  // killing and respawning the whole Python process. Backend already
+  // broadcasts dag_updated on success, which every discovery-consuming
+  // component (EditTab, ProjectConfigPanel, etc.) listens for.
+  const handleRefreshCode = useCallback(async () => {
+    setRefreshingCode(true);
+    try {
+      await callBackend("refresh_module");
+    } catch (err) {
+      console.error("Refresh code failed:", err);
+    } finally {
+      setRefreshingCode(false);
     }
   }, []);
 
@@ -237,37 +295,53 @@ export default function App() {
       <SelectedNodeProvider>
         <ScopeProvider>
           <PlanRunProvider>
+          <ClipboardProvider>
             <div style={styles.root}>
-              <header style={styles.header}>
-                <span style={styles.title}>SciStack</span>
-                <span style={styles.separator}>|</span>
-                <span style={styles.dbName}>{dbName || "loading…"}</span>
-                <button
-                  style={styles.refreshBtn}
-                  onClick={handleRestart}
-                  disabled={restarting}
-                  title="Restart the Python process to pick up edits to server or pipeline code"
-                >
-                  {restarting ? "Restarting..." : "Restart"}
-                </button>
-                <button
-                  style={styles.reportBtn}
-                  onClick={handleReport}
-                  disabled={reporting}
-                  title="Write the endpoint report (figures + stats with provenance) and open it"
-                >
-                  {reporting ? "Writing…" : "📄 Report"}
-                </button>
-                {schema.keys.length > 0 && (
-                  <span style={styles.schemaKeys}>
-                    schema: [{schema.keys.join(", ")}]
-                  </span>
-                )}
-              </header>
-              <HypothesisTabs />
               <ReactFlowProvider>
                 <div style={styles.body}>
                   <div style={styles.dagArea}>
+                    <header style={styles.header}>
+                      <span style={styles.title}>SciStack</span>
+                      <span style={styles.separator}>|</span>
+                      <span style={styles.dbName}>{dbName || "loading…"}</span>
+                      <button
+                        style={styles.refreshCodeBtn}
+                        onClick={handleRefreshCode}
+                        disabled={refreshingCode}
+                        title="Re-import your Python/MATLAB files to pick up edits, without restarting the whole process"
+                      >
+                        {refreshingCode ? "Refreshing…" : "🔄 Refresh Code"}
+                      </button>
+                      <button
+                        style={styles.refreshBtn}
+                        onClick={handleRestart}
+                        disabled={restarting}
+                        title="Restart the Python process to pick up edits to server or pipeline code"
+                      >
+                        {restarting ? "Restarting..." : "Restart"}
+                      </button>
+                      <button
+                        style={styles.reportBtn}
+                        onClick={handleReport}
+                        disabled={reporting}
+                        title="Write the endpoint report (figures + stats with provenance) and open it"
+                      >
+                        {reporting ? "Writing…" : "📄 Report"}
+                      </button>
+                      <button
+                        style={styles.pathsBtn}
+                        onClick={() => setPathsOpen(true)}
+                        title="Configured code paths (Python + MATLAB) and discovered exports"
+                      >
+                        📁 Paths
+                      </button>
+                      {schema.keys.length > 0 && (
+                        <span style={styles.schemaKeys}>
+                          schema: [{schema.keys.join(", ")}]
+                        </span>
+                      )}
+                    </header>
+                    <HypothesisTabs />
                     <Breadcrumb />
                     <div style={styles.canvasWrap}>
                       <PipelineDAG />
@@ -279,10 +353,12 @@ export default function App() {
                 </div>
               </ReactFlowProvider>
               <PipelineRunController />
+              {pathsOpen && <PathsPopup onClose={() => setPathsOpen(false)} />}
               {blockingErrors.length > 0 && (
                 <StartupErrorDialog errors={blockingErrors} />
               )}
             </div>
+          </ClipboardProvider>
           </PlanRunProvider>
         </ScopeProvider>
       </SelectedNodeProvider>

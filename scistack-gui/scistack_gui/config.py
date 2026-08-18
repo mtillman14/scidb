@@ -79,6 +79,14 @@ class SciStackConfig:
     matlab_variable_dir: Path | None = None
     """Directory where ``create_variable`` writes new .m classdef files."""
 
+    matlab_sources: list[Path] = field(default_factory=list)
+    """Unclassified .m files (folder-scan fallback only). Each file is
+    classified per-content (variable vs. function) by
+    :func:`scistack_gui.matlab_parser.classify_matlab_file` rather than
+    being pre-sorted into ``matlab_functions``/``matlab_variables`` by an
+    explicit config. Empty whenever a ``pyproject.toml``/``scistack.toml``
+    was found and parsed normally."""
+
 
 def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     """Load a SciStackConfig from a pyproject.toml.
@@ -95,7 +103,10 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     Raises
     ------
     FileNotFoundError
-        If no pyproject.toml can be located.
+        If an explicit ``project_path`` was given and does not exist on disk.
+        (When no pyproject.toml/scistack.toml can be *located*, this function
+        no longer raises — it falls back to scanning the project root for
+        ``.py``/``.m`` files directly. See :func:`_folder_scan_config`.)
     ValueError
         If the located pyproject.toml has no ``[tool.scistack]`` section or
         the section is invalid.
@@ -106,6 +117,14 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         db_path,
     )
     toml_path = _locate_pyproject(project_path, db_path)
+    if toml_path is None:
+        root = _normalize(project_path) if project_path is not None else _normalize(db_path).parent
+        logger.info(
+            "[config] No pyproject.toml/scistack.toml found; falling back to "
+            "folder-scan discovery rooted at %s",
+            root,
+        )
+        return _folder_scan_config(root)
     project_root = toml_path.parent
     logger.info("[config] Found config at %s", toml_path)
 
@@ -344,8 +363,14 @@ def _resolve_glob_paths(
     return result
 
 
-def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
-    """Find the pyproject.toml or scistack.toml to use."""
+def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path | None:
+    """Find the pyproject.toml or scistack.toml to use.
+
+    Returns ``None`` (rather than raising) when no config file can be found —
+    callers treat that as "use folder-scan discovery instead." An explicit
+    ``project_path`` that doesn't exist on disk at all is still a hard error
+    (that's a typo, not a missing-config situation).
+    """
     if project_path is not None:
         logger.debug("[config] Explicit project_path provided: %s", project_path)
         p = _normalize(project_path)
@@ -362,9 +387,11 @@ def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
                 if candidate.exists():
                     logger.debug("[config] Found %s in directory", name)
                     return candidate
-            raise FileNotFoundError(
-                f"No pyproject.toml or scistack.toml found in directory: {p}"
+            logger.info(
+                "[config] No pyproject.toml or scistack.toml found in directory: %s",
+                p,
             )
+            return None
         raise FileNotFoundError(f"Path does not exist: {p}")
 
     # Search upward from the database file's directory.
@@ -405,10 +432,12 @@ def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path:
             break
         search_dir = parent
 
-    raise FileNotFoundError(
-        f"No pyproject.toml/scistack.toml with [tool.scistack] found "
-        f"in ancestors of {db_path}."
+    logger.info(
+        "[config] No pyproject.toml/scistack.toml with [tool.scistack] found "
+        "in ancestors of %s",
+        db_path,
     )
+    return None
 
 
 def _extract_scistack_section(data: dict, filename: str) -> dict | None:
@@ -429,3 +458,90 @@ def _extract_scistack_section(data: dict, filename: str) -> dict | None:
     else:
         logger.debug("[config] pyproject.toml: found [tool.scistack] section")
     return section
+
+
+# ---------------------------------------------------------------------------
+# Folder-scan fallback (no pyproject.toml/scistack.toml present)
+# ---------------------------------------------------------------------------
+
+# Directories never worth walking into, for either language.
+_NOISE_DIR_NAMES = {
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "node_modules",
+    "build",
+    "dist",
+}
+
+
+def _is_noise_dir(name: str) -> bool:
+    return name in _NOISE_DIR_NAMES or name.startswith(".")
+
+
+def _is_matlab_skip_dir(name: str) -> bool:
+    """MATLAB directory conventions that must never be swept in as if their
+    contents were standalone pipeline functions: ``private/`` helpers,
+    ``@ClassName/`` method files, and ``+package/`` namespace folders.
+    Proper support for the latter two is tracked as follow-on work — for
+    folder-scan discovery the safe default is to skip them entirely rather
+    than mis-register a class method or namespaced function."""
+    return name == "private" or name.startswith("@") or name.startswith("+")
+
+
+def _walk_source_files(root: Path, suffix: str, *, matlab: bool = False) -> list[Path]:
+    """Recursively find files ending in *suffix* under *root*, pruning noise
+    directories (and, for MATLAB, private/class/package folders) as we go."""
+    results: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if not _is_noise_dir(d) and not (matlab and _is_matlab_skip_dir(d))
+        ]
+        for fname in filenames:
+            if fname.endswith(suffix):
+                results.append(_normalize(Path(dirpath) / fname))
+    return sorted(results)
+
+
+def _folder_scan_config(root: Path) -> SciStackConfig:
+    """Build a :class:`SciStackConfig` by scanning *root* directly for
+    ``.py``/``.m`` files, with no config file at all.
+
+    Python files become ``modules`` — identical to how an explicit
+    ``modules = ["some_dir"]`` entry is already resolved, so
+    :func:`scistack_gui.registry._load_file_modules` needs no changes.
+
+    MATLAB files become ``matlab_sources`` — a single unified list, since a
+    folder scan has no way to know in advance which files are functions vs.
+    ``BaseVariable`` classdefs. Each file is classified individually by
+    :func:`scistack_gui.matlab_parser.classify_matlab_file` when
+    :func:`scistack_gui.matlab_registry.load_from_sources` runs.
+    """
+    logger.info("[config] Folder-scan: walking %s for .py/.m files", root)
+    py_files = _walk_source_files(root, ".py")
+    m_files = _walk_source_files(root, ".m", matlab=True)
+    logger.info(
+        "[config] Folder-scan found %d .py file(s), %d .m file(s)",
+        len(py_files),
+        len(m_files),
+    )
+
+    addpath = sorted({p.parent for p in m_files})
+
+    config = SciStackConfig(
+        project_root=root,
+        modules=py_files,
+        matlab_sources=m_files,
+        matlab_addpath=addpath,
+    )
+    logger.info(
+        "[config] Folder-scan configuration built for %s: %d modules, "
+        "%d MATLAB sources",
+        root,
+        len(py_files),
+        len(m_files),
+    )
+    return config

@@ -1,36 +1,34 @@
 /**
- * Sidebar — right-panel with tabs.
+ * Sidebar — right-panel, no tab bar. Shows the Edit palette by default;
+ * as soon as a function/constant/variable/path-input/sweep/pipeline node
+ * is selected, the palette is replaced by that node's settings panel, and
+ * reverts automatically on deselect. There's nothing left to click to
+ * switch views — Hypothesis (statement + Research Question) and the old
+ * Runs/Project tabs have all moved out (Research Question lives in
+ * HypothesisTabs above the canvas; Runs is RunsDock docked on the canvas;
+ * Project is the header's Paths popup) — so a manual tab bar had nothing
+ * left to arbitrate between.
  *
- * Tabs:
- *   - Runs: collapsible per-run log sections, most recent first.
- *   - Edit: palette of draggable function and variable nodes.
- *   - Node: settings panel for the selected function or constant node (auto-activates on selection).
- *
- * When a function node is selected, the Node tab shows a read-only list of all
- * pipeline variants — the Cartesian product of every constant node's values on the canvas.
+ * When a function node is selected, the settings panel shows a read-only
+ * list of all pipeline variants — the Cartesian product of every constant
+ * node's values on the canvas.
  */
 
-import { useState, useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useStore } from '@xyflow/react'
-import RunsTab from './RunsTab'
 import EditTab from './EditTab'
 import FunctionSettingsPanel from './FunctionSettingsPanel'
 import type { SchemaFilter, RunOptions, WhereFilter } from './FunctionSettingsPanel'
 import ConstantSettingsPanel from './ConstantSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
 import PathInputSettingsPanel from './PathInputSettingsPanel'
+import SweepSettingsPanel from './SweepSettingsPanel'
 import PipelineSettingsPanel from './PipelineSettingsPanel'
 import EndpointPanel from './EndpointPanel'
-import ProjectConfigPanel from './ProjectConfigPanel'
-import HypothesisPanel from './HypothesisPanel'
 import type { PipelineNodeData } from '../DAG/PipelineNode'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import type { Node } from '@xyflow/react'
 import type { ConstantValue } from '../DAG/ConstantNode'
-
-const BASE_TABS = ['Runs', 'Edit', 'Hypothesis', 'Project'] as const
-type BaseTab = typeof BASE_TABS[number]
-type Tab = BaseTab | 'Node'
 
 interface FnNodeData {
   label: string
@@ -58,14 +56,29 @@ function isVariableNode(node: Node | null): node is Node & { data: { label: stri
   return node?.type === 'variableNode'
 }
 
-interface PathInputNodeData {
-  label: string
+interface PathInputAlternate {
   template: string
   root_folder: string | null
 }
 
+interface PathInputNodeData {
+  label: string
+  template: string
+  root_folder: string | null
+  alternate_templates: PathInputAlternate[]
+}
+
 function isPathInputNode(node: Node | null): node is Node & { data: PathInputNodeData } {
   return node?.type === 'pathInputNode'
+}
+
+interface SweepNodeData {
+  label: string
+  values: number[]
+}
+
+function isSweepNode(node: Node | null): node is Node & { data: SweepNodeData } {
+  return node?.type === 'sweepNode'
 }
 
 function isPipelineNode(node: Node | null): node is Node & { data: PipelineNodeData } {
@@ -83,23 +96,12 @@ function cartesian(arrays: string[][]): string[][] {
 
 export default function Sidebar() {
   const { selectedNode } = useSelectedNode()
-  const [activeTab, setActiveTab] = useState<Tab>('Runs')
 
   // Subscribe directly to the React Flow store so we re-render when node/edge data changes.
   const nodes = useStore(s => s.nodes)
   const edges = useStore(s => s.edges)
 
-  // Auto-switch to Node tab when a function, constant, or variable node is selected; revert when deselected.
-  useEffect(() => {
-    if (isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)) {
-      setActiveTab('Node')
-    } else if (activeTab === 'Node') {
-      setActiveTab('Runs')
-    }
-  }, [selectedNode])  // eslint-disable-line react-hooks/exhaustive-deps
-
-  const hasNodeTab = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)
-  const tabs: Tab[] = hasNodeTab ? [...BASE_TABS, 'Node'] : [...BASE_TABS]
+  const hasNodeSelection = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isSweepNode(selectedNode) || isPipelineNode(selectedNode)
 
   // Compute variant combinations from constant nodes and multi-wired variable inputs
   // connected to the selected function node.
@@ -175,30 +177,16 @@ export default function Sidebar() {
 
   return (
     <div style={styles.root}>
-      <div style={styles.tabBar}>
-        {tabs.map(tab => (
-          <button
-            key={tab}
-            style={activeTab === tab ? styles.tabActive : styles.tab}
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
       <div style={styles.content}>
-        {activeTab === 'Runs' && <RunsTab />}
-        {activeTab === 'Edit' && <EditTab />}
-        {activeTab === 'Hypothesis' && <HypothesisPanel />}
-        {activeTab === 'Project' && <ProjectConfigPanel />}
-        {activeTab === 'Node' && isFunctionNode(selectedNode)
+        {!hasNodeSelection && <EditTab />}
+        {isFunctionNode(selectedNode)
           && (selectedNode.data as FnNodeData).endpoint_kind && (
           <EndpointPanel
             fnName={(selectedNode.data as FnNodeData).label}
             kind={(selectedNode.data as FnNodeData).endpoint_kind!}
           />
         )}
-        {activeTab === 'Node' && isFunctionNode(selectedNode) && (
+        {isFunctionNode(selectedNode) && (
           <FunctionSettingsPanel
             id={selectedNode.id}
             label={(selectedNode.data as FnNodeData).label}
@@ -211,27 +199,35 @@ export default function Sidebar() {
             runOptions={(selectedNode.data as FnNodeData).runOptions ?? { dry_run: false, save: true, distribute: false, as_table: false }}
           />
         )}
-        {activeTab === 'Node' && isConstantNode(selectedNode) && (
+        {isConstantNode(selectedNode) && (
           <ConstantSettingsPanel
             id={selectedNode.id}
             label={(selectedNode.data as ConstantNodeData).label}
             values={(selectedNode.data as ConstantNodeData).values}
           />
         )}
-        {activeTab === 'Node' && isVariableNode(selectedNode) && (
+        {isVariableNode(selectedNode) && (
           <VariableSettingsPanel
             label={(selectedNode.data as { label: string }).label}
           />
         )}
-        {activeTab === 'Node' && isPathInputNode(selectedNode) && (
+        {isPathInputNode(selectedNode) && (
           <PathInputSettingsPanel
             id={selectedNode.id}
             label={(selectedNode.data as PathInputNodeData).label}
             template={(selectedNode.data as PathInputNodeData).template}
             root_folder={(selectedNode.data as PathInputNodeData).root_folder}
+            alternate_templates={(selectedNode.data as PathInputNodeData).alternate_templates ?? []}
           />
         )}
-        {activeTab === 'Node' && isPipelineNode(selectedNode) && (
+        {isSweepNode(selectedNode) && (
+          <SweepSettingsPanel
+            id={selectedNode.id}
+            label={(selectedNode.data as SweepNodeData).label}
+            values={(selectedNode.data as SweepNodeData).values ?? []}
+          />
+        )}
+        {isPipelineNode(selectedNode) && (
           <PipelineSettingsPanel
             useId={selectedNode.id}
             data={selectedNode.data as PipelineNodeData}
@@ -248,32 +244,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     height: '100%',
     overflow: 'hidden',
-  },
-  tabBar: {
-    display: 'flex',
-    flexShrink: 0,
-    borderBottom: '1px solid #2a2a4a',
-    background: '#12122a',
-  },
-  tab: {
-    padding: '8px 16px',
-    background: 'transparent',
-    border: 'none',
-    borderBottom: '2px solid transparent',
-    color: '#888',
-    fontSize: 13,
-    cursor: 'pointer',
-    fontWeight: 500,
-  },
-  tabActive: {
-    padding: '8px 16px',
-    background: 'transparent',
-    border: 'none',
-    borderBottom: '2px solid #7b68ee',
-    color: '#fff',
-    fontSize: 13,
-    cursor: 'pointer',
-    fontWeight: 600,
   },
   content: {
     flex: 1,

@@ -98,6 +98,12 @@ def _ensure_tables(db) -> None:
         )
     """)
     _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_builtin_functions (
+            name     VARCHAR PRIMARY KEY,
+            language VARCHAR NOT NULL
+        )
+    """)
+    _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_nodes (
             pipeline_id VARCHAR NOT NULL DEFAULT 'main',
             node_id     VARCHAR NOT NULL,
@@ -197,6 +203,21 @@ def _ensure_tables(db) -> None:
         )
     except Exception:
         pass  # Already migrated (composite key exists), or freshly created above.
+    # Hidden subpipeline ports (to-do #9) — a scope's exposed inputs/
+    # outputs are computed automatically from wiring (see
+    # domain.scope_filter.document_interface); this table is a per-scope
+    # manual override suppressing one type's port, toggled by right-
+    # clicking a variable node inside the subpipeline's own canvas. Same
+    # composite-key/scoping shape as _pipeline_hidden_edges from the start
+    # (no migration needed — this table is new).
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_hidden_ports (
+            pipeline_id VARCHAR NOT NULL DEFAULT 'main',
+            direction   VARCHAR NOT NULL,
+            var_type    VARCHAR NOT NULL,
+            PRIMARY KEY (pipeline_id, direction, var_type)
+        )
+    """)
     # Add config column if missing (migration for existing DBs).
     try:
         _duck(db)._execute(
@@ -381,6 +402,32 @@ def get_manual_nodes(db, pipeline_id: "str | None" = None) -> dict[str, dict]:
                 pass
         result[row[0]] = entry
     return result
+
+
+def write_builtin_function(db, name: str, language: str) -> None:
+    """Persist a manually-declared built-in/library function reference
+    (e.g. ``numpy.mean``, MATLAB ``mean``) so it survives registry
+    refreshes and server restarts — unlike file-based functions, there's
+    no source file on disk to rediscover it from."""
+    logger.info(
+        "[pipeline_store] write_builtin_function called (name=%r, language=%r)",
+        name,
+        language,
+    )
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_builtin_functions (name, language) VALUES (?, ?) "
+        "ON CONFLICT (name) DO UPDATE SET language = excluded.language",
+        [name, language],
+    )
+
+
+def get_builtin_functions(db) -> list[dict]:
+    """Return every persisted built-in/library function reference as
+    ``[{"name": ..., "language": ...}, ...]``."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall("SELECT name, language FROM _pipeline_builtin_functions")
+    return [{"name": row[0], "language": row[1]} for row in rows]
 
 
 def write_manual_node(
@@ -590,8 +637,44 @@ def list_pipelines(db) -> list[dict]:
     return [{"pipeline_id": r[0], "name": r[1]} for r in rows]
 
 
-def create_pipeline(db, name: str) -> str:
-    """Create a new (empty) pipeline scope; returns its pipeline_id."""
+def list_all_pipelines(db) -> list[dict]:
+    """Every pipeline scope regardless of hidden state:
+    [{"pipeline_id", "name", "hidden"}], root first. Used where a name
+    collision must be avoided against hidden pipelines too (see
+    ``list_pipelines``'s docstring and ``create_pipeline``'s uniqueness
+    check, which already does this)."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT pipeline_id, name, hidden FROM _pipelines "
+        "ORDER BY (pipeline_id != ?), name",
+        [ROOT_PIPELINE_ID],
+    )
+    return [{"pipeline_id": r[0], "name": r[1], "hidden": bool(r[2])} for r in rows]
+
+
+def get_pipeline(db, pipeline_id: str) -> "dict | None":
+    """Single pipeline scope by id, regardless of hidden state —
+    {"pipeline_id", "name", "hidden"}, or None if no such pipeline
+    exists locally."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT pipeline_id, name, hidden FROM _pipelines WHERE pipeline_id = ?",
+        [pipeline_id],
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    return {"pipeline_id": r[0], "name": r[1], "hidden": bool(r[2])}
+
+
+def create_pipeline(db, name: str, pipeline_id: "str | None" = None) -> str:
+    """Create a new (empty) pipeline scope; returns its pipeline_id.
+
+    ``pipeline_id``: explicit id to use instead of minting a fresh one —
+    used by pipeline import to PRESERVE a document's portable identity
+    (see ``portability_service._resolve_pipeline``) rather than always
+    generating a new one. Defaults to minting fresh, as before.
+    """
     _ensure_tables(db)
     name = str(name).strip()
     if not name:
@@ -604,7 +687,7 @@ def create_pipeline(db, name: str) -> str:
     }
     if name in existing:
         raise ValueError(f"a pipeline named '{name}' already exists")
-    pipeline_id = f"pipe_{uuid.uuid4().hex[:12]}"
+    pipeline_id = pipeline_id or f"pipe_{uuid.uuid4().hex[:12]}"
     _duck(db)._execute(
         "INSERT INTO _pipelines (pipeline_id, name) VALUES (?, ?)",
         [pipeline_id, name],
@@ -1169,6 +1252,79 @@ def list_hidden_edges(db, pipeline_id: "str | None" = None) -> list[dict]:
         }
         for edge_id, source, target, source_handle, target_handle in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Hidden subpipeline ports (to-do #9) — a manual override on top of
+# domain.scope_filter.document_interface's automatic type-level port
+# computation. Never deletes wiring, only suppresses one type's exposed
+# dot on a scope's interface; the internal node that produces/consumes
+# that type stays fully visible on its own canvas at all times, so
+# there's no separate restore list (unlike hidden edges/nodes) — un-hiding
+# is just toggling the same right-click item again.
+# ---------------------------------------------------------------------------
+
+
+def hide_port(db, pipeline_id: str, direction: str, var_type: str) -> None:
+    """Suppress ``var_type``'s exposed ``direction`` ('input'|'output')
+    port on ``pipeline_id``'s subpipeline interface."""
+    logger.info(
+        "[pipeline_store] hide_port called (pipeline_id=%r, direction=%r, var_type=%r)",
+        pipeline_id,
+        direction,
+        var_type,
+    )
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_hidden_ports (pipeline_id, direction, var_type) "
+        "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+        [pipeline_id, direction, var_type],
+    )
+
+
+def unhide_port(db, pipeline_id: str, direction: str, var_type: str) -> None:
+    """Restore a previously hidden port."""
+    logger.info(
+        "[pipeline_store] unhide_port called (pipeline_id=%r, direction=%r, var_type=%r)",
+        pipeline_id,
+        direction,
+        var_type,
+    )
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_hidden_ports "
+        "WHERE pipeline_id = ? AND direction = ? AND var_type = ?",
+        [pipeline_id, direction, var_type],
+    )
+
+
+def get_hidden_ports(db, pipeline_id: str) -> dict:
+    """One scope's hidden ports: ``{"input": {type, ...}, "output": {type, ...}}``
+    — what the right-click context menu needs to decide Show vs Hide."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT direction, var_type FROM _pipeline_hidden_ports WHERE pipeline_id = ?",
+        [pipeline_id],
+    )
+    result: dict[str, set[str]] = {"input": set(), "output": set()}
+    for direction, var_type in rows:
+        result[direction].add(var_type)
+    return result
+
+
+def get_hidden_ports_by_scope(db) -> dict[str, dict[str, set[str]]]:
+    """Every scope's hidden ports, keyed by pipeline_id — the shape
+    domain.scope_filter.document_interface needs (it recurses across
+    scopes via nested ``uses``, so it needs every scope's own hides on
+    hand at once, not just the scope being asked about)."""
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT pipeline_id, direction, var_type FROM _pipeline_hidden_ports"
+    )
+    result: dict[str, dict[str, set[str]]] = {}
+    for pid, direction, var_type in rows:
+        scope = result.setdefault(pid, {"input": set(), "output": set()})
+        scope[direction].add(var_type)
+    return result
 
 
 # ---------------------------------------------------------------------------

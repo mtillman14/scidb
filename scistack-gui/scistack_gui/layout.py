@@ -45,6 +45,7 @@ def _load() -> dict:
             "positions": {},
             "constants": [],
             "path_inputs": [],
+            "sweeps": [],
             "positions_scoped": True,
             "placements_migrated": True,
         }
@@ -60,6 +61,7 @@ def _load() -> dict:
     raw.setdefault("positions", {})
     raw.setdefault("constants", [])
     raw.setdefault("path_inputs", [])
+    raw.setdefault("sweeps", [])
     # Migrate flat positions to per-scope: everything predating scoping
     # lived on the one canvas that is now the root pipeline.
     if not raw.get("positions_scoped"):
@@ -406,6 +408,11 @@ def read_all_path_input_names() -> list[dict]:
     - ``path_inputs[]``: palette items created via the "+" button.
     - Canonical DB-derived pathInput IDs in positions (``pathInput__name``,
       possibly placement-qualified as ``pathInput__name::{pipeline_id}``).
+
+    Every returned dict always has an ``alternate_templates`` key (``[]``
+    when none have been added via ``add_path_input_alternate``) — a
+    predictable shape so callers never need a defensive ``.get(...,
+    [])`` of their own.
     """
     from scistack_gui.domain.graph_builder import strip_placement
 
@@ -421,6 +428,8 @@ def read_all_path_input_names() -> list[dict]:
             name = parts[1] if len(parts) >= 2 else bare_id[len("pathInput__") :]
             if name not in by_name:
                 by_name[name] = {"name": name, "template": "", "root_folder": None}
+    for pi in by_name.values():
+        pi.setdefault("alternate_templates", [])
     return sorted(by_name.values(), key=lambda p: p["name"])
 
 
@@ -437,6 +446,55 @@ def write_path_input(name: str, template: str, root_folder: str | None = None) -
         {"name": name, "template": template, "root_folder": root_folder}
     )
     _save(data)
+
+
+def add_path_input_alternate(
+    name: str, template: str, root_folder: "str | None" = None
+) -> int:
+    """Append an alternate template to an existing PathInput definition.
+
+    Multiple templates under one name become ``EachOf(PathInput(...),
+    PathInput(...), ...)`` at execution time — see
+    ``execution_service.build_run_inputs`` — the PathInput analog of a
+    Constant node's multiple staged values. Mirrors ``write_path_input``'s
+    "primary" template exactly except appended to the ``alternate_templates``
+    list rather than replacing it, so the primary stays untouched. Returns
+    the new alternate's index (for the frontend's remove button).
+
+    Raises ``ValueError`` if ``name`` has no primary definition yet — an
+    alternate has nothing to be an alternative TO otherwise (mirrors
+    staging a constant value on a constant node that doesn't exist).
+    """
+    data = _load()
+    for pi in data["path_inputs"]:
+        if pi["name"] == name:
+            alts = pi.setdefault("alternate_templates", [])
+            alts.append({"template": template, "root_folder": root_folder})
+            _save(data)
+            logger.info(
+                "[layout] add_path_input_alternate: %r -> %r (index=%d)",
+                name,
+                template,
+                len(alts) - 1,
+            )
+            return len(alts) - 1
+    raise ValueError(f"no PathInput named {name!r} — create it first")
+
+
+def remove_path_input_alternate(name: str, index: int) -> None:
+    """Remove one alternate template by index (see add_path_input_alternate)."""
+    data = _load()
+    for pi in data["path_inputs"]:
+        if pi["name"] != name:
+            continue
+        alts = pi.get("alternate_templates", [])
+        if 0 <= index < len(alts):
+            alts.pop(index)
+            _save(data)
+            logger.info(
+                "[layout] remove_path_input_alternate: %r index=%d", name, index
+            )
+        return
 
 
 def deep_copy_path_input(name: str) -> str:
@@ -469,6 +527,59 @@ def deep_copy_path_input(name: str) -> str:
 def delete_path_input(name: str) -> None:
     data = _load()
     data["path_inputs"] = [p for p in data["path_inputs"] if p["name"] != name]
+    _save(data)
+
+
+def read_all_sweep_names() -> list[dict]:
+    """All Sweep definitions visible in the palette or already on the
+    canvas — same shape/sourcing as ``read_all_path_input_names`` (union
+    of ``sweeps[]`` and canonical ``sweep__name`` position ids), since a
+    Sweep has no DB-history counterpart either: its values feed
+    ``EachOf(...)`` directly at execution time (see
+    ``execution_service.build_run_inputs``), never through
+    ``_pipeline_pending_constants``.
+
+    Every returned dict always has a ``values`` key (``[]`` for a
+    freshly-created, not-yet-configured Sweep).
+    """
+    from scistack_gui.domain.graph_builder import strip_placement
+
+    data = _load()
+    by_name: dict[str, dict] = {}
+    for sw in data["sweeps"]:
+        by_name[sw["name"]] = sw
+    for node_id in _positions_all(data):
+        bare_id = strip_placement(node_id)
+        if bare_id.startswith("sweep__"):
+            parts = bare_id.split("__")
+            name = parts[1] if len(parts) >= 2 else bare_id[len("sweep__") :]
+            if name not in by_name:
+                by_name[name] = {"name": name, "values": []}
+    for sw in by_name.values():
+        sw.setdefault("values", [])
+    return sorted(by_name.values(), key=lambda s: s["name"])
+
+
+def write_sweep(name: str, values: "list[float | int]") -> None:
+    """Create or replace a Sweep's full value list (see
+    ``read_all_sweep_names``). Values are the already-computed flat
+    list — range generation (start/end/step or start/end/count) is
+    entirely a frontend concern; the backend only ever stores and
+    later ``EachOf(...)``-wraps the final numbers.
+    """
+    data = _load()
+    for sw in data["sweeps"]:
+        if sw["name"] == name:
+            sw["values"] = list(values)
+            _save(data)
+            return
+    data["sweeps"].append({"name": name, "values": list(values)})
+    _save(data)
+
+
+def delete_sweep(name: str) -> None:
+    data = _load()
+    data["sweeps"] = [s for s in data["sweeps"] if s["name"] != name]
     _save(data)
 
 

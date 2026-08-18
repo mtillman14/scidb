@@ -15,7 +15,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { Handle, Position } from '@xyflow/react'
-import { callBackend } from '../../api'
+import { callBackend, isVSCodeMode } from '../../api'
 import { usePlanRun } from '../../context/PlanRunContext'
 import { useScope, bindingSummary, type BindingSpec } from '../../context/ScopeContext'
 
@@ -76,21 +76,60 @@ export default function PipelineNode({ data }: Props) {
       .catch(err => setError((err as Error).message))
   }, [draftName, data.child_pipeline_id, bumpGraph])
 
+  const handleExport = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    callBackend('export_pipeline', { pipeline_id: data.child_pipeline_id })
+      .then(res => {
+        const r = res as { path: string; document: unknown }
+        if (!isVSCodeMode) {
+          const blob = new Blob([JSON.stringify(r.document, null, 2)], { type: 'application/json' })
+          const url = URL.createObjectURL(blob)
+          const a = window.document.createElement('a')
+          a.href = url
+          a.download = `${data.label.replace(/[^\w.-]+/g, '_')}.json`
+          a.click()
+          URL.revokeObjectURL(url)
+        }
+        window.alert(`Exported '${data.label}' to:\n${r.path}`)
+      })
+      .catch(err => window.alert(`Export failed: ${(err as Error).message}`))
+  }, [data.child_pipeline_id, data.label])
+
+  const handleExportCode = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    callBackend('export_pipeline_code', { pipeline_id: data.child_pipeline_id })
+      .then(res => {
+        const r = res as { path: string; language: 'python' | 'matlab'; script: string; warnings: string[] }
+        if (!isVSCodeMode) {
+          const ext = r.language === 'matlab' ? 'm' : 'py'
+          const blob = new Blob([r.script], { type: 'text/plain' })
+          const url = URL.createObjectURL(blob)
+          const a = window.document.createElement('a')
+          a.href = url
+          a.download = `${data.label.replace(/[^\w.-]+/g, '_')}.${ext}`
+          a.click()
+          URL.revokeObjectURL(url)
+        }
+        const warningText = r.warnings.length > 0
+          ? `\n\n${r.warnings.length} step(s) skipped (see comments in the script):\n${r.warnings.join('\n')}`
+          : ''
+        window.alert(`Exported '${data.label}' (${r.language}) to:\n${r.path}${warningText}`)
+      })
+      .catch(err => window.alert(`Export failed: ${(err as Error).message}`))
+  }, [data.child_pipeline_id, data.label])
+
   return (
     <div style={styles.container} title="Double-click to open this pipeline">
-      {data.inputs.length > 0
-        ? data.inputs.map((name, i) => (
-            <Handle
-              key={name}
-              id={`in__${name}`}
-              type="target"
-              position={Position.Left}
-              style={handleStyle(i, data.inputs.length)}
-              title={name}
-            />
-          ))
-        : <Handle type="target" position={Position.Left} />
-      }
+      {data.inputs.map((name, i) => (
+        <Handle
+          key={name}
+          id={`in__${name}`}
+          type="target"
+          position={Position.Left}
+          style={handleStyle(i, data.inputs.length)}
+          title={name}
+        />
+      ))}
 
       <div style={styles.kind}>⧉ pipeline</div>
       <div style={styles.label}>{data.label}</div>
@@ -109,6 +148,22 @@ export default function PipelineNode({ data }: Props) {
           title="Fork this submodule's own nodes into a new, independent pipeline"
         >
           ⎘ Duplicate
+        </button>
+        <button
+          style={styles.button}
+          onClick={handleExport}
+          type="button"
+          title="Export this submodule as a portable file to share with another SciStack user"
+        >
+          ⇩
+        </button>
+        <button
+          style={styles.button}
+          onClick={handleExportCode}
+          type="button"
+          title="Translate this submodule to a standalone Python/MATLAB script"
+        >
+          {'</>'}
         </button>
       </div>
       {duplicating && (
@@ -129,19 +184,16 @@ export default function PipelineNode({ data }: Props) {
         </div>
       )}
 
-      {data.outputs.length > 0
-        ? data.outputs.map((name, i) => (
-            <Handle
-              key={name}
-              id={`out__${name}`}
-              type="source"
-              position={Position.Right}
-              style={handleStyle(i, data.outputs.length)}
-              title={name}
-            />
-          ))
-        : <Handle type="source" position={Position.Right} />
-      }
+      {data.outputs.map((name, i) => (
+        <Handle
+          key={name}
+          id={`out__${name}`}
+          type="source"
+          position={Position.Right}
+          style={handleStyle(i, data.outputs.length)}
+          title={name}
+        />
+      ))}
     </div>
   )
 }

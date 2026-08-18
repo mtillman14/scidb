@@ -21,7 +21,7 @@ import pkgutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scidb import BaseVariable
+from scidb import BaseVariable, Constant
 
 if TYPE_CHECKING:
     from scistack_gui.config import SciStackConfig
@@ -34,6 +34,24 @@ logger = logging.getLogger(__name__)
 
 _functions: dict[str, callable] = {}
 _function_sources: dict[str, str] = {}  # function_name -> source description
+_constants: dict[str, Constant] = {}
+_constant_sources: dict[str, str] = {}  # constant_name -> source description
+_module_paths: dict[str, str] = {}
+"""Synthetic module name (``scistack_user_{i}_{stem}``, from
+``_load_file_modules``) -> source file path. A BaseVariable subclass's
+``__module__`` is that synthetic name, not the file path — this lets
+callers (e.g. api/project.py's registry-backed discovery panel) resolve it
+back to something human-readable, matching how functions are already
+attributed via ``_function_sources``.
+"""
+_load_errors: list[dict] = []
+"""Discovery failures from the most recent load/refresh — [{"source", "error"}, ...].
+
+Unlike the ``logger.exception`` calls next to each of these, this list is
+queryable from the GUI (via ``get_load_errors``/``api/project.py``) so a
+failed import/module doesn't just vanish into ``scidb.log`` with the user
+none the wiser about why a function didn't show up.
+"""
 
 # Single-file mode state (legacy)
 _module_path: Path | None = None
@@ -68,6 +86,7 @@ def register_module(module, *, module_path: Path | None = None) -> None:
         logger.debug("[registry] Stored module path for refresh: %s", module_path)
 
     _scan_module_functions(module, source=str(module_path or "<unknown>"))
+    _scan_module_constants(module, source=str(module_path or "<unknown>"))
     logger.info(
         "[registry] Module registration complete - %d functions registered",
         len(_functions),
@@ -99,6 +118,9 @@ def refresh_module() -> dict:
     logger.info("[registry] Clearing function registry")
     _functions.clear()
     _function_sources.clear()
+    _constants.clear()
+    _constant_sources.clear()
+    _load_errors.clear()
 
     # Re-execute the module file. This will re-define all functions and
     # BaseVariable subclasses (which auto-register via the metaclass).
@@ -109,6 +131,7 @@ def refresh_module() -> dict:
 
     logger.info("[registry] Scanning module for functions")
     _scan_module_functions(user_mod, source=str(_module_path))
+    _scan_module_constants(user_mod, source=str(_module_path))
 
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
@@ -155,6 +178,10 @@ def load_from_config(config: SciStackConfig) -> dict:
     logger.info("[registry] Clearing function registry")
     _functions.clear()
     _function_sources.clear()
+    _constants.clear()
+    _constant_sources.clear()
+    _module_paths.clear()
+    _load_errors.clear()
 
     logger.info("[registry] Loading %d file modules", len(config.modules))
     _load_file_modules(config.modules)
@@ -197,8 +224,10 @@ def _load_file_modules(paths: list[Path]) -> None:
         logger.debug("[registry] Processing module %d/%d: %s", i + 1, len(paths), path)
         if not path.exists():
             logger.warning("[registry] Skipping missing module: %s", path)
+            _record_load_error(str(path), "File does not exist")
             continue
         mod_name = f"scistack_user_{i}_{path.stem}"
+        _module_paths[mod_name] = str(path)
         try:
             spec = importlib.util.spec_from_file_location(mod_name, path)
             mod = importlib.util.module_from_spec(spec)
@@ -206,13 +235,15 @@ def _load_file_modules(paths: list[Path]) -> None:
             fn_count_before = len(_functions)
             _scan_module_functions(mod, source=str(path))
             fn_count_after = len(_functions)
+            _scan_module_constants(mod, source=str(path))
             logger.info(
                 "[registry] Loaded module file: %s (%d functions)",
                 path,
                 fn_count_after - fn_count_before,
             )
-        except Exception:
+        except Exception as e:
             logger.exception("[registry] Failed to load module file: %s", path)
+            _record_load_error(str(path), str(e))
 
 
 def _load_packages(names: list[str]) -> None:
@@ -224,14 +255,16 @@ def _load_packages(names: list[str]) -> None:
         )
         try:
             pkg = importlib.import_module(pkg_name)
-        except ImportError:
+        except ImportError as e:
             logger.exception("[registry] Failed to import package: %s", pkg_name)
+            _record_load_error(f"package:{pkg_name}", str(e))
             continue
 
         # Scan the top-level package module itself.
         fn_count_before = len(_functions)
         _scan_module_functions(pkg, source=f"package:{pkg_name}")
         fn_count_after = len(_functions)
+        _scan_module_constants(pkg, source=f"package:{pkg_name}")
         logger.info(
             "[registry] Loaded package: %s (%d functions from top level)",
             pkg_name,
@@ -249,11 +282,13 @@ def _load_packages(names: list[str]) -> None:
                     logger.debug("[registry] Importing submodule: %s", modname)
                     submod = importlib.import_module(modname)
                     _scan_module_functions(submod, source=f"package:{modname}")
+                    _scan_module_constants(submod, source=f"package:{modname}")
                     submodule_count += 1
-                except Exception:
+                except Exception as e:
                     logger.exception(
                         "[registry] Failed to import submodule: %s", modname
                     )
+                    _record_load_error(f"package:{modname}", str(e))
             logger.debug(
                 "[registry] Walked %d submodules in package %s",
                 submodule_count,
@@ -288,6 +323,7 @@ def _load_entry_points() -> None:
                 fn_count_before = len(_functions)
                 _scan_module_functions(mod, source=f"entrypoint:{ep.name}")
                 fn_count_after = len(_functions)
+                _scan_module_constants(mod, source=f"entrypoint:{ep.name}")
                 logger.info(
                     "[registry] Loaded entry point: %s = %s (%d functions)",
                     ep.name,
@@ -301,13 +337,33 @@ def _load_entry_points() -> None:
                     ep.name,
                     ep.value,
                 )
-        except Exception:
+        except Exception as e:
             logger.exception("[registry] Failed to load entry point: %s", ep.name)
+            _record_load_error(f"entrypoint:{ep.name}", str(e))
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _record_load_error(source: str, error: str) -> None:
+    entry = {"source": source, "error": error}
+    _load_errors.append(entry)
+    logger.debug("[registry] Recorded load error: %s", entry)
+
+
+def get_load_errors() -> list[dict]:
+    """Return discovery failures from the most recent load/refresh."""
+    return list(_load_errors)
+
+
+def resolve_module_source(module_name: str) -> str:
+    """Map a (possibly synthetic, file-import-only) module name back to a
+    human-readable source: the file path for file-imported modules, or the
+    module name itself for real importable modules (packages/entry
+    points already have a meaningful ``__module__``)."""
+    return _module_paths.get(module_name, module_name)
 
 
 def _scan_module_functions(module, *, source: str) -> None:
@@ -349,6 +405,77 @@ def _scan_module_functions(module, *, source: str) -> None:
             source,
             skipped_reexports,
         )
+
+
+def _scan_module_constants(module, *, source: str) -> None:
+    """Scan a module for ``scidb.Constant`` instances (``scidb.constant()``
+    values) and register them.
+
+    Unlike functions/variable classes, a ``Constant`` is attributed to
+    wherever its name is *exposed*, not filtered by ``__module__`` —
+    ``Constant`` doesn't reliably expose one (unknown attribute access
+    proxies through to the wrapped value via ``__getattr__``, so
+    ``getattr(const, "__module__", None)`` would silently return the
+    *wrapped value's* ``__module__`` if it happens to have one, which is
+    meaningless here). This mirrors the same documented tradeoff already
+    made by :func:`scidb.discover.discover_module` — a Constant imported
+    into multiple scanned modules can appear attributed to more than one
+    of them, on purpose.
+    """
+    logger.debug("[registry] Scanning module for constants: %s", source)
+    discovered = []
+    for name, obj in vars(module).items():
+        if name.startswith("_"):
+            continue
+        if isinstance(obj, Constant):
+            _register_constant(name, obj, source=source)
+            discovered.append(name)
+    if discovered:
+        logger.debug(
+            "[registry] Discovered %d constants from %s: %s",
+            len(discovered),
+            source,
+            discovered,
+        )
+
+
+def _register_constant(name: str, const: Constant, *, source: str) -> None:
+    """Register a single discovered Constant, warning on name collisions."""
+    existing_source = _constant_sources.get(name)
+    if existing_source is not None and existing_source != source:
+        logger.warning(
+            "[registry] Constant '%s' from %s shadows previous definition from %s",
+            name,
+            source,
+            existing_source,
+        )
+    _constants[name] = const
+    _constant_sources[name] = source
+    logger.debug("[registry] Registered constant: %s from %s", name, source)
+
+
+def get_constants_registry() -> dict[str, Constant]:
+    """Return all discovered ``scidb.constant()`` values, keyed by name.
+
+    Used by ``api/project.py``'s registry-backed "Discovered Code" panel
+    for loose-script/folder-scan projects — the equivalent of what
+    ``scidb.discover.scan_project`` already provides for packaged projects.
+    """
+    return dict(_constants)
+
+
+def register_builtin_function(name: str, fn) -> None:
+    """Register a manually-declared reference to a built-in/library
+    function (validated by scistack_gui.api.builtin_functions) — e.g.
+    ``numpy.mean``. Distinct from ``_scan_module_functions``' discovery
+    path: this is a deliberate, user-initiated registration for something
+    the user did NOT write themselves, not something found by scanning a
+    file. Survives registry refreshes via
+    scistack_gui.api.builtin_functions.replay_persisted_builtins, since
+    (unlike file-based functions) there's no file on disk to rediscover it
+    from.
+    """
+    _register_function(name, fn, source="builtin")
 
 
 def _register_function(name: str, fn, *, source: str) -> None:

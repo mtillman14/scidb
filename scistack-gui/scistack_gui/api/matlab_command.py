@@ -124,7 +124,53 @@ def generate_matlab_command(
         lines.append("end")
         return "\n".join(lines)
 
-    # Collect all variable types referenced across all variants.
+    # Register variable types
+    all_var_types = _collect_var_types(variants)
+    if all_var_types:
+        lines.append("% Register variable types")
+        for vtype in sorted(all_var_types):
+            lines.append(f"scidb.register_variable({vtype}());")
+        lines.append("")
+
+    # Wrap all for_each calls in a try/catch so db.close() always runs,
+    # even if the run errors out or is interrupted.
+    lines.append("try")
+
+    # Generate for_each call for each unique (inputs, constants) group.
+    lines.extend(
+        _for_each_call_lines(
+            function_name,
+            _group_variants(variants),
+            schema_keys,
+            schema_filter,
+            schema_level,
+            path_inputs,
+            project_root,
+            matlab_fn="scihist.for_each",
+        )
+    )
+
+    lines.append("    scidb.close_database(db);")
+    lines.append("catch scistack_err__")
+    lines.append(
+        "    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);"
+    )
+    lines.append("    try")
+    lines.append("        scidb.close_database(db);")
+    lines.append("    catch")
+    lines.append(
+        "        % close already logged its own error; don't mask the original"
+    )
+    lines.append("    end")
+    lines.append("    rethrow(scistack_err__);")
+    lines.append("end")
+    return "\n".join(lines)
+
+
+def _collect_var_types(variants: list[dict]) -> set[str]:
+    """All BaseVariable class names referenced (as an input or output)
+    across a function's variant rows — the set that needs a
+    ``scidb.register_variable(...)`` call."""
     all_var_types: set[str] = set()
     for v in variants:
         input_types = v.get("input_types", {})
@@ -133,19 +179,16 @@ def generate_matlab_command(
         output_type = v.get("output_type", "")
         if output_type:
             all_var_types.add(output_type)
+    return all_var_types
 
-    # Register variable types
-    if all_var_types:
-        lines.append("% Register variable types")
-        for vtype in sorted(all_var_types):
-            lines.append(f"scidb.register_variable({vtype}());")
-        lines.append("")
 
-    # Group variants by (input_types, constants). Multi-output MATLAB
-    # functions (e.g. load_csv → [Time, Force_Left, Force_Right]) surface
-    # in the DB as one variant row per output_type, all sharing the same
-    # inputs and constants. They must collapse into a single for_each
-    # call whose outputs cell lists every output_type.
+def _group_variants(variants: list[dict]) -> list[dict]:
+    """Group variant rows by (input_types, constants). Multi-output MATLAB
+    functions (e.g. load_csv -> [Time, Force_Left, Force_Right]) surface in
+    the DB as one variant row per output_type, all sharing the same inputs
+    and constants. They must collapse into a single for_each call whose
+    outputs cell lists every output_type.
+    """
     grouped: dict[tuple, dict] = {}
     for v in variants:
         input_types = v.get("input_types", {}) or {}
@@ -165,20 +208,34 @@ def generate_matlab_command(
         output_type = v.get("output_type", "")
         if output_type and output_type not in entry["output_types"]:
             entry["output_types"].append(output_type)
+    return list(grouped.values())
 
-    # Wrap all for_each calls in a try/catch so db.close() always runs,
-    # even if the run errors out or is interrupted.
-    lines.append("try")
 
-    # Generate for_each call for each unique (inputs, constants) group.
-    for entry in grouped.values():
+def _for_each_call_lines(
+    function_name: str,
+    grouped_entries: list[dict],
+    schema_keys: list[str],
+    schema_filter: dict[str, list] | None,
+    schema_level: list[str] | None,
+    path_inputs: dict[str, dict] | None,
+    project_root: str | None,
+    matlab_fn: str = "scihist.for_each",
+    indent: str = "    ",
+) -> list[str]:
+    """One (indented) ``<matlab_fn>(@function_name, ...)`` block per grouped
+    (inputs, constants) entry — the call body shared between a single
+    function's ready-to-paste command and one node's step registration
+    inside a whole-pipeline script (``generate_matlab_pipeline_command``).
+    """
+    from scistack_gui.api.pipeline import _parse_path_input
+
+    lines: list[str] = []
+    for entry in grouped_entries:
         input_types = entry["input_types"]
         output_types_list = entry["output_types"]
         constants = entry["constants"]
 
         # Build inputs struct — skip PathInput entries (handled via path_inputs).
-        from scistack_gui.api.pipeline import _parse_path_input
-
         inputs_dict = {}
         if isinstance(input_types, dict):
             for param_name, type_name in input_types.items():
@@ -205,20 +262,185 @@ def generate_matlab_command(
             iterate_keys, schema_filter, constants, function_name
         )
 
-        lines.append("    % Run")
-        lines.append(f"    scihist.for_each(@{function_name}, ...")
-        lines.append(f"        {inputs_str}, ...")
+        lines.append(f"{indent}% Run")
+        lines.append(f"{indent}{matlab_fn}(@{function_name}, ...")
+        lines.append(f"{indent}    {inputs_str}, ...")
         if schema_str:
-            lines.append(f"        {outputs_str}, ...")
-            lines.append(f"        {schema_str});")
+            lines.append(f"{indent}    {outputs_str}, ...")
+            lines.append(f"{indent}    {schema_str});")
         else:
-            lines.append(f"        {outputs_str});")
+            lines.append(f"{indent}    {outputs_str});")
         lines.append("")
+    return lines
+
+
+def generate_matlab_pipeline_command(
+    pipeline_id: str,
+    steps: list[dict],
+    db_path: str,
+    schema_keys: list[str],
+    mode: str = "all",
+    target: str = "",
+    finalized: bool | None = None,
+    skip_computed: bool = True,
+    addpath_dirs: list[str] | None = None,
+    python_executable: str | None = None,
+    project_root: str | None = None,
+) -> str:
+    """Generate a complete MATLAB script that runs a whole GUI pipeline
+    scope through ``scidb.Pipeline`` — deferred registration of every
+    MATLAB function node's step(s), then one driven run — instead of a
+    single function's ``for_each`` call.
+
+    Parameters
+    ----------
+    pipeline_id
+        The GUI pipeline's id/name; becomes the ``scidb.Pipeline(...)``
+        name.
+    steps
+        One entry per MATLAB function node already resolved by the caller
+        (``matlab_command_service.generate_matlab_pipeline_command`` — the
+        same target-derivation used for per-node runs and Python pipeline
+        compilation, see ``execution_service.derive_target_for_node`` /
+        ``build_backend_pipeline``). Each entry:
+        ``{"function_name": str, "variants": list[dict] | None,
+        "schema_filter": dict | None, "schema_level": list[str] | None,
+        "path_inputs": dict | None}``. A step with no resolvable variants
+        (nothing derivable — never run and no output wiring) is skipped
+        with a comment, mirroring the disconnected-wiring skip convention
+        in ``code_export_service`` — not an error, since the rest of the
+        pipeline can still run.
+
+        Only MATLAB-language function nodes belong in ``steps`` — Python
+        function nodes in the same GUI pipeline scope are NOT registered
+        here (a MATLAB-only script has no way to register a Python
+        ``for_each`` call into the same in-process ``scidb.Pipeline`` — the
+        Python interpreter MATLAB loads via ``pyenv``/the sidecar is a
+        fresh process with no memory of the GUI server's own compiled
+        pipeline). Callers must filter ``steps`` to MATLAB functions only
+        and separately warn about any excluded Python steps.
+    mode, target, finalized, skip_computed
+        Mirror ``execution_service.run_pipeline``'s dispatch: ``"all"`` ->
+        ``pipe.run_all()``, ``"until"`` -> ``pipe.run_until(target)``,
+        ``"endpoints"`` -> ``pipe.run_endpoints()``. ``"show"`` has no
+        MATLAB ``Pipeline.m`` equivalent (no ``show()`` method there) and
+        is rejected.
+
+    Returns
+    -------
+    str
+        A complete, self-contained MATLAB script.
+    """
+    if mode not in ("all", "until", "endpoints"):
+        raise ValueError(
+            f"generate_matlab_pipeline_command: unsupported mode {mode!r} — "
+            "MATLAB Pipeline.m only supports 'all', 'until', 'endpoints' "
+            "(mode='show' has no MATLAB Pipeline.m equivalent)"
+        )
+    if mode == "until" and not target:
+        raise ValueError("mode='until' requires a target step name")
+
+    lines: list[str] = []
+    lines.append(f"%% SciStack: Run pipeline {pipeline_id}")
+    lines.append("% Generated by SciStack GUI — paste into MATLAB Command Window")
+    lines.append("")
+
+    # pyenv preamble — must come before any py.* call.
+    if python_executable:
+        lines.extend(_format_pyenv_preamble(python_executable))
+        lines.append("")
+
+    # addpath entries
+    if addpath_dirs:
+        for d in addpath_dirs:
+            lines.append(f"addpath('{_escape_matlab_string(d)}');")
+        lines.append("")
+
+    # Configure database
+    schema_keys_str = _format_matlab_string_array(schema_keys)
+    lines.append("% Configure database (skip if already configured)")
+    lines.append(
+        f"db = scihist.configure_database('{_escape_matlab_string(db_path)}', "
+        f"{schema_keys_str});"
+    )
+    lines.append("")
+
+    all_var_types: set[str] = set()
+    resolved_steps: list[tuple[str, list[dict], dict]] = []
+    skip_comments: list[str] = []
+    for step in steps:
+        fn_name = step["function_name"]
+        variants = step.get("variants")
+        if not variants:
+            skip_comments.append(
+                f"% SKIPPED: '{fn_name}' — no runnable target derived "
+                "(never run and no output wiring)"
+            )
+            continue
+        all_var_types.update(_collect_var_types(variants))
+        resolved_steps.append((fn_name, _group_variants(variants), step))
+
+    if not resolved_steps:
+        raise ValueError(
+            f"generate_matlab_pipeline_command: no runnable MATLAB step in "
+            f"pipeline {pipeline_id!r} — nothing to register"
+        )
+
+    if all_var_types:
+        lines.append("% Register variable types")
+        for vtype in sorted(all_var_types):
+            lines.append(f"scidb.register_variable({vtype}());")
+        lines.append("")
+
+    lines.append(f"pipe = scidb.Pipeline('{_escape_matlab_string(pipeline_id)}');")
+    lines.append("")
+
+    # Wrap registration + the driven run in a try/catch so db.close() always
+    # runs, even if a step registration or the run itself errors out.
+    lines.append("try")
+    for fn_name, grouped_entries, step in resolved_steps:
+        lines.append(f"    % Register {fn_name} (deferred — runs via pipe below)")
+        lines.extend(
+            _for_each_call_lines(
+                fn_name,
+                grouped_entries,
+                schema_keys,
+                step.get("schema_filter"),
+                step.get("schema_level"),
+                step.get("path_inputs"),
+                project_root,
+                matlab_fn="scidb.for_each",
+            )
+        )
+    for comment in skip_comments:
+        lines.append(f"    {comment}")
+    if skip_comments:
+        lines.append("")
+
+    skip_str = "true" if skip_computed else "false"
+    if mode == "all":
+        lines.append(f"    pipe.run_all('skip_computed', {skip_str});")
+    elif mode == "until":
+        run_line = (
+            f"    pipe.run_until('{_escape_matlab_string(target)}', "
+            f"'skip_computed', {skip_str}"
+        )
+        if finalized is not None:
+            run_line += f", 'finalized', {'true' if finalized else 'false'}"
+        lines.append(run_line + ");")
+    else:  # "endpoints"
+        run_line = (
+            f"    pipe.run_endpoints('skip_computed', {skip_str}, "
+            "'include_used', true"
+        )
+        if finalized is not None:
+            run_line += f", 'finalized', {'true' if finalized else 'false'}"
+        lines.append(run_line + ");")
 
     lines.append("    scidb.close_database(db);")
     lines.append("catch scistack_err__")
     lines.append(
-        "    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);"
+        "    scidb.Log.error('MATLAB: pipeline run FAILED: %s', scistack_err__.message);"
     )
     lines.append("    try")
     lines.append("        scidb.close_database(db);")

@@ -80,7 +80,7 @@ def main():
                 f"{len(result['variables'])} variables"
             )
             # Load MATLAB registry if MATLAB config is present.
-            if config.matlab_functions or config.matlab_variables:
+            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
                 from scistack_gui import matlab_registry
 
                 matlab_result = matlab_registry.load_from_config(config)
@@ -110,6 +110,31 @@ def main():
             sys.exit(1)
         registry.register_module(user_mod, module_path=module_path)
         print(f"Loaded module: {module_path}")
+    else:
+        # No --module/--project given: best-effort auto-discovery, either
+        # from a pyproject.toml/scistack.toml found near the database, or
+        # (more commonly, for a loose-scripts project) a folder scan of the
+        # database's directory. Never fatal — an empty registry here is no
+        # worse than today's default of not discovering anything at all.
+        from scistack_gui.config import load_config
+
+        try:
+            config = load_config(None, db_path)
+            result = registry.load_from_config(config)
+            print(
+                f"Auto-discovered: {len(result['functions'])} functions, "
+                f"{len(result['variables'])} variables"
+            )
+            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
+                from scistack_gui import matlab_registry
+
+                matlab_result = matlab_registry.load_from_config(config)
+                print(
+                    f"MATLAB: {len(matlab_result['matlab_functions'])} functions, "
+                    f"{len(matlab_result['matlab_variables'])} variables"
+                )
+        except Exception as e:
+            print(f"Warning: auto-discovery failed ({e}); starting with an empty registry.", file=sys.stderr)
 
     # Initialise the shared DB connection before uvicorn starts.
     # Import here so that the module-level singleton is set before the app
@@ -123,6 +148,18 @@ def main():
     except Exception as e:
         print(f"Error opening database: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Restore any manually-declared builtin function references (e.g.
+    # numpy.mean, a MATLAB builtin) from a previous session — they have no
+    # file on disk to be rediscovered from otherwise.
+    try:
+        from scistack_gui.services.builtin_function_service import (
+            replay_persisted_builtins,
+        )
+
+        replay_persisted_builtins(db)
+    except Exception as e:
+        print(f"Warning: failed to restore builtin function references: {e}", file=sys.stderr)
 
     # Bridge Python logging → scidb.log so that scihist/scistack_gui logger
     # calls appear in the unified log file.

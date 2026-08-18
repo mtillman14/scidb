@@ -1,9 +1,10 @@
 /**
- * EditTab — palette of draggable function, variable, and constant nodes.
+ * EditTab — palette of draggable function, variable, constant, path-input,
+ * and sweep nodes.
  *
  * Drag an item onto the canvas to place a new node.
  * The drag payload is JSON in the 'application/scistack-node' dataTransfer key:
- *   { nodeType: 'functionNode' | 'variableNode' | 'constantNode', label: string }
+ *   { nodeType: 'functionNode' | 'variableNode' | 'constantNode' | 'pathInputNode' | 'sweepNode', label: string }
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react'
@@ -11,11 +12,17 @@ import { callBackend } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useScope } from '../../context/ScopeContext'
 
+interface LoadError {
+  source: string
+  error: string
+}
+
 interface Registry {
   functions: string[]
   variables: string[]
   matlab_functions?: string[]
   matlab_functions_mismatched?: string[]
+  load_errors?: LoadError[]
 }
 
 interface PipelineInfo {
@@ -31,6 +38,11 @@ interface HiddenPipelineInfo {
 
 export default function EditTab() {
   const [registry, setRegistry] = useState<Registry>({ functions: [], variables: [] })
+  // Two distinct failure modes worth telling the user about: the request
+  // itself failing (network/RPC error — discoveryError), vs. a successful
+  // response reporting that some module/file failed to import server-side
+  // (registry.load_errors — "why doesn't my function show up").
+  const [discoveryError, setDiscoveryError] = useState('')
   const [constants, setConstants] = useState<string[]>([])
   const [addingConst, setAddingConst] = useState(false)
   const [constDraft, setConstDraft] = useState('')
@@ -41,11 +53,25 @@ export default function EditTab() {
   const [piDraft, setPiDraft] = useState('')
   const piInputRef = useRef<HTMLInputElement>(null)
 
+  const [sweeps, setSweeps] = useState<string[]>([])
+  const [addingSweep, setAddingSweep] = useState(false)
+  const [sweepDraft, setSweepDraft] = useState('')
+  const sweepInputRef = useRef<HTMLInputElement>(null)
+
   const [addingVar, setAddingVar] = useState(false)
   const [varDraft, setVarDraft] = useState('')
   const [varError, setVarError] = useState('')
   const [varSubmitting, setVarSubmitting] = useState(false)
   const varInputRef = useRef<HTMLInputElement>(null)
+
+  // Manual built-in/library function reference (numpy.mean, a MATLAB
+  // builtin, ...) — distinct from auto-discovered functions above.
+  const [addingBuiltin, setAddingBuiltin] = useState(false)
+  const [builtinLang, setBuiltinLang] = useState<'python' | 'matlab'>('python')
+  const [builtinDraft, setBuiltinDraft] = useState('')
+  const [builtinError, setBuiltinError] = useState('')
+  const [builtinSubmitting, setBuiltinSubmitting] = useState(false)
+  const builtinInputRef = useRef<HTMLInputElement>(null)
 
   // Nested pipelines: the scopes list + navigation state. Hypothesis-tagged
   // pipelines get their own tab strip (HypothesisTabs) — this list is
@@ -66,8 +92,11 @@ export default function EditTab() {
 
   function fetchRegistry() {
     callBackend('get_registry')
-      .then(d => setRegistry(d as Registry))
-      .catch(console.error)
+      .then(d => { setRegistry(d as Registry); setDiscoveryError('') })
+      .catch(err => {
+        console.error(err)
+        setDiscoveryError(`Failed to load functions/variables: ${(err as Error).message}`)
+      })
   }
 
   function fetchPipelines() {
@@ -97,6 +126,7 @@ export default function EditTab() {
     fetchRegistry()
     fetchConstants()
     fetchPathInputs()
+    fetchSweeps()
   }, [])
 
   // Scope mutations elsewhere (e.g. a use placed on the canvas) bump
@@ -111,6 +141,7 @@ export default function EditTab() {
     if (msg.type === 'dag_updated' || msg.method === 'dag_updated') {
       fetchRegistry()
       fetchPathInputs()
+      fetchSweeps()
       fetchPipelines()
       fetchHiddenPipelines()
     }
@@ -119,7 +150,10 @@ export default function EditTab() {
   function fetchConstants() {
     callBackend('get_constants')
       .then(d => setConstants(d as string[]))
-      .catch(console.error)
+      .catch(err => {
+        console.error(err)
+        setDiscoveryError(`Failed to load constants: ${(err as Error).message}`)
+      })
   }
 
   function fetchPathInputs() {
@@ -128,7 +162,22 @@ export default function EditTab() {
         const arr = items as Array<{ name: string }>
         setPathInputs(arr.map(i => i.name))
       })
-      .catch(err => console.error('[PathInputs] fetch error:', err))
+      .catch(err => {
+        console.error('[PathInputs] fetch error:', err)
+        setDiscoveryError(`Failed to load path inputs: ${(err as Error).message}`)
+      })
+  }
+
+  function fetchSweeps() {
+    callBackend('get_sweeps')
+      .then((items) => {
+        const arr = items as Array<{ name: string }>
+        setSweeps(arr.map(i => i.name))
+      })
+      .catch(err => {
+        console.error('[Sweeps] fetch error:', err)
+        setDiscoveryError(`Failed to load sweeps: ${(err as Error).message}`)
+      })
   }
 
   useEffect(() => {
@@ -140,8 +189,16 @@ export default function EditTab() {
   }, [addingPI])
 
   useEffect(() => {
+    if (addingSweep) sweepInputRef.current?.focus()
+  }, [addingSweep])
+
+  useEffect(() => {
     if (addingVar) varInputRef.current?.focus()
   }, [addingVar])
+
+  useEffect(() => {
+    if (addingBuiltin) builtinInputRef.current?.focus()
+  }, [addingBuiltin])
 
   useEffect(() => {
     if (addingPipe) pipeInputRef.current?.focus()
@@ -189,6 +246,36 @@ export default function EditTab() {
       .finally(() => setVarSubmitting(false))
   }
 
+  const commitBuiltinDraft = () => {
+    if (builtinSubmitting) return
+    const reference = builtinDraft.trim()
+    if (!reference) {
+      setBuiltinDraft('')
+      setAddingBuiltin(false)
+      setBuiltinError('')
+      return
+    }
+    setBuiltinSubmitting(true)
+    callBackend('create_builtin_function', { language: builtinLang, reference })
+      .then(data => {
+        const d = data as { ok?: boolean; error?: string }
+        if (d.ok) {
+          setBuiltinDraft('')
+          setAddingBuiltin(false)
+          setBuiltinError('')
+          fetchRegistry()
+        } else {
+          setBuiltinError(d.error || 'Failed')
+          builtinInputRef.current?.focus()
+        }
+      })
+      .catch(() => {
+        setBuiltinError('Request failed')
+        builtinInputRef.current?.focus()
+      })
+      .finally(() => setBuiltinSubmitting(false))
+  }
+
   const commitPiDraft = () => {
     const name = piDraft.trim()
     if (name) {
@@ -198,6 +285,17 @@ export default function EditTab() {
     }
     setPiDraft('')
     setAddingPI(false)
+  }
+
+  const commitSweepDraft = () => {
+    const name = sweepDraft.trim()
+    if (name) {
+      callBackend('create_sweep', { name })
+        .then(() => fetchSweeps())
+        .catch(err => console.error('[Sweeps] create error:', err))
+    }
+    setSweepDraft('')
+    setAddingSweep(false)
   }
 
   // Backend 400s (duplicate names, still-used or last-remaining hides)
@@ -254,7 +352,7 @@ export default function EditTab() {
 
   const onDragStart = (
     e: React.DragEvent,
-    nodeType: 'functionNode' | 'variableNode' | 'constantNode' | 'pathInputNode',
+    nodeType: 'functionNode' | 'variableNode' | 'constantNode' | 'pathInputNode' | 'sweepNode',
     label: string,
   ) => {
     e.dataTransfer.setData(
@@ -266,6 +364,26 @@ export default function EditTab() {
 
   return (
     <div style={styles.root}>
+      {discoveryError && <div style={styles.errorBanner}>{discoveryError}</div>}
+      {!discoveryError && registry.load_errors && registry.load_errors.length > 0 && (
+        <div style={styles.errorBanner}>
+          <div>
+            {registry.load_errors.length === 1
+              ? '1 file failed to load:'
+              : `${registry.load_errors.length} files failed to load:`}
+          </div>
+          {registry.load_errors.slice(0, 3).map((e, i) => (
+            <div key={i} title={e.error} style={styles.errorBannerLine}>
+              {e.source}: {e.error.length > 140 ? `${e.error.slice(0, 140)}…` : e.error}
+            </div>
+          ))}
+          {registry.load_errors.length > 3 && (
+            <div style={styles.errorBannerLine}>
+              +{registry.load_errors.length - 3} more — see 📁 Paths for details
+            </div>
+          )}
+        </div>
+      )}
       <Section
         title="Submodules"
         action={
@@ -382,7 +500,18 @@ export default function EditTab() {
           )
         })()}
       </Section>
-      <Section title="Functions">
+      <Section
+        title="Functions"
+        action={
+          <button
+            style={styles.addBtn}
+            onClick={() => setAddingBuiltin(true)}
+            title="Add a built-in/library function you didn't write yourself (e.g. numpy.mean, or a MATLAB command)"
+          >
+            +
+          </button>
+        }
+      >
         {[...registry.functions, ...(registry.matlab_functions ?? [])].map(fn => {
           const mismatch = registry.matlab_functions_mismatched?.includes(fn)
           const displayLabel = mismatch ? `${fn} (function/file name mismatch)` : fn
@@ -395,6 +524,46 @@ export default function EditTab() {
             />
           )
         })}
+        {addingBuiltin && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <select
+                value={builtinLang}
+                onChange={e => {
+                  setBuiltinLang(e.target.value as 'python' | 'matlab')
+                  setBuiltinError('')
+                }}
+                style={{ fontSize: 12 }}
+              >
+                <option value="python">Python</option>
+                <option value="matlab">MATLAB</option>
+              </select>
+              <input
+                ref={builtinInputRef}
+                style={{ ...styles.draftInput, flex: 1 }}
+                value={builtinDraft}
+                placeholder={builtinLang === 'python' ? 'numpy.mean' : 'mean'}
+                onChange={e => { setBuiltinDraft(e.target.value); setBuiltinError('') }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') commitBuiltinDraft()
+                  if (e.key === 'Escape') {
+                    setBuiltinDraft('')
+                    setAddingBuiltin(false)
+                    setBuiltinError('')
+                  }
+                }}
+              />
+            </div>
+            {builtinSubmitting && (
+              <div style={{ ...styles.errorText, color: '#999' }}>
+                {builtinLang === 'matlab' ? 'Validating with MATLAB…' : 'Validating…'}
+              </div>
+            )}
+            {!builtinSubmitting && builtinError && (
+              <div style={styles.errorText}>{builtinError}</div>
+            )}
+          </div>
+        )}
       </Section>
       <Section
         title="Variables"
@@ -491,6 +660,37 @@ export default function EditTab() {
               if (e.key === 'Escape') { setPiDraft(''); setAddingPI(false) }
             }}
             onBlur={commitPiDraft}
+          />
+        )}
+      </Section>
+      <Section
+        title="Sweeps"
+        action={
+          <button style={styles.addBtn} onClick={() => setAddingSweep(true)} title="New parameter sweep">
+            +
+          </button>
+        }
+      >
+        {sweeps.map(s => (
+          <DragItem
+            key={s}
+            label={s}
+            color="#65a30d"
+            onDragStart={e => onDragStart(e, 'sweepNode', s)}
+          />
+        ))}
+        {addingSweep && (
+          <input
+            ref={sweepInputRef}
+            style={styles.draftInput}
+            value={sweepDraft}
+            placeholder="param name…"
+            onChange={e => setSweepDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitSweepDraft()
+              if (e.key === 'Escape') { setSweepDraft(''); setAddingSweep(false) }
+            }}
+            onBlur={commitSweepDraft}
           />
         )}
       </Section>
@@ -594,6 +794,20 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 12px',
     fontSize: 11,
     color: '#f87171',
+  },
+  errorBanner: {
+    background: '#442222',
+    color: '#ff8888',
+    padding: '6px 10px',
+    margin: '8px 12px 0',
+    borderRadius: 4,
+    fontSize: 11,
+  },
+  errorBannerLine: {
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    marginTop: 2,
   },
   pipelineCurrent: {
     background: '#2a2a4a',

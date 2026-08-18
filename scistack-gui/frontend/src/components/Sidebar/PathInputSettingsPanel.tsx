@@ -4,6 +4,12 @@
  * Editable fields for path template and root folder.  Changes update the
  * React Flow node data (so the canvas reflects edits live) and persist to
  * the backend on Enter or blur.  Escape reverts to the last saved value.
+ *
+ * Alternate templates (below the primary) are the PathInput analog of a
+ * Constant node's multiple staged values: >1 template under one name runs
+ * as EachOf(PathInput(...), PathInput(...), ...) at execution time (see
+ * execution_service.build_run_inputs). Same add/remove-row pattern as
+ * ConstantSettingsPanel's variant list, one row per alternate.
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react'
@@ -12,11 +18,17 @@ import { callBackend } from '../../api'
 import { useCommittedInput } from '../../hooks/useCommittedInput'
 import { useScope } from '../../context/ScopeContext'
 
+interface PathInputAlternate {
+  template: string
+  root_folder: string | null
+}
+
 interface Props {
   id: string
   label: string
   template: string
   root_folder: string | null
+  alternate_templates: PathInputAlternate[]
 }
 
 function parseTemplateKeys(template: string): string[] {
@@ -25,10 +37,13 @@ function parseTemplateKeys(template: string): string[] {
   return [...new Set(matches.map(m => m.slice(1, -1)))]
 }
 
-export default function PathInputSettingsPanel({ id, label, template, root_folder }: Props) {
+export default function PathInputSettingsPanel({ id, label, template, root_folder, alternate_templates }: Props) {
   const { setNodes } = useReactFlow()
   const { bumpGraph } = useScope()
   const [deepCopyError, setDeepCopyError] = useState('')
+  const [altTemplateDraft, setAltTemplateDraft] = useState('')
+  const [altRootDraft, setAltRootDraft] = useState('')
+  const [altError, setAltError] = useState('')
 
   // Refs so each field's callbacks can read the other field's latest draft
   // without stale-closure issues.
@@ -77,6 +92,36 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
       .catch(err => setDeepCopyError((err as Error).message))
   }, [id, bumpGraph])
 
+  const addAlternate = useCallback(() => {
+    const t = altTemplateDraft.trim()
+    if (!t) return
+    const rootVal = altRootDraft.trim() || null
+    callBackend('add_path_input_alternate', { name: label, template: t, root_folder: rootVal })
+      .then(() => {
+        setAltError('')
+        setNodes(nds => nds.map(n =>
+          n.id === id
+            ? { ...n, data: { ...n.data, alternate_templates: [...alternate_templates, { template: t, root_folder: rootVal }] } }
+            : n
+        ))
+        setAltTemplateDraft('')
+        setAltRootDraft('')
+      })
+      .catch(err => setAltError((err as Error).message))
+  }, [id, label, altTemplateDraft, altRootDraft, alternate_templates, setNodes])
+
+  const removeAlternate = useCallback((index: number) => {
+    callBackend('remove_path_input_alternate', { name: label, index })
+      .then(() => {
+        setNodes(nds => nds.map(n =>
+          n.id === id
+            ? { ...n, data: { ...n.data, alternate_templates: alternate_templates.filter((_, i) => i !== index) } }
+            : n
+        ))
+      })
+      .catch(err => setAltError((err as Error).message))
+  }, [id, label, alternate_templates, setNodes])
+
   return (
     <div style={styles.root}>
       <div style={styles.name}>{label}</div>
@@ -100,6 +145,53 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
           placeholder="/data (optional)"
           {...rootInput}
         />
+      </section>
+
+      <section style={styles.section}>
+        <div style={styles.sectionTitle}>Alternate Templates</div>
+        <div style={styles.hint}>
+          More than one template runs as EachOf(...) — one for_each call per
+          alternative, results concatenated.
+        </div>
+
+        {alternate_templates.length === 0 && (
+          <div style={styles.empty}>No alternates — single template only.</div>
+        )}
+
+        {alternate_templates.map((alt, i) => (
+          <div key={i} style={styles.altRow}>
+            <div style={styles.altRowText}>
+              <div style={styles.altTemplateText}>{alt.template}</div>
+              {alt.root_folder && (
+                <div style={styles.altRootText}>root: {alt.root_folder}</div>
+              )}
+            </div>
+            <button style={styles.removeBtn} onClick={() => removeAlternate(i)} title="Remove" type="button">
+              ×
+            </button>
+          </div>
+        ))}
+
+        <div style={styles.addAltForm}>
+          <input
+            style={styles.input}
+            placeholder="{subject}/alt_template.csv"
+            value={altTemplateDraft}
+            onChange={e => setAltTemplateDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addAlternate() }}
+          />
+          <input
+            style={styles.input}
+            placeholder="root folder (optional)"
+            value={altRootDraft}
+            onChange={e => setAltRootDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addAlternate() }}
+          />
+          <button style={styles.addAltBtn} onClick={addAlternate} type="button">
+            + Add alternate
+          </button>
+        </div>
+        {altError && <div style={styles.errorText}>{altError}</div>}
       </section>
 
       <section style={styles.section}>
@@ -197,5 +289,61 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 3,
     padding: '2px 6px',
     color: '#fbbf24',
+  },
+  empty: {
+    color: '#555',
+    fontStyle: 'italic',
+    fontSize: 11,
+    marginTop: 6,
+  },
+  altRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+    borderBottom: '1px solid #1e1e3a',
+    paddingBottom: 4,
+  },
+  altRowText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  altTemplateText: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: '#e5c8a0',
+    wordBreak: 'break-all',
+  },
+  altRootText: {
+    fontFamily: 'monospace',
+    fontSize: 10,
+    color: '#8a7a60',
+    wordBreak: 'break-all',
+  },
+  removeBtn: {
+    flexShrink: 0,
+    background: 'transparent',
+    border: 'none',
+    color: '#666',
+    cursor: 'pointer',
+    fontSize: 14,
+    padding: '0 2px',
+    lineHeight: 1,
+  },
+  addAltForm: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    marginTop: 8,
+  },
+  addAltBtn: {
+    background: '#92702a',
+    border: 'none',
+    borderRadius: 3,
+    color: '#fff',
+    fontSize: 11,
+    padding: '4px 8px',
+    cursor: 'pointer',
+    fontWeight: 600,
   },
 }

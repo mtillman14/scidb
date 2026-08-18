@@ -142,3 +142,13 @@ def get_variable_records(variable_name: str, db) -> dict:
     from scistack_gui.api.variables import get_variable_records as _get_var_records
 
     return _get_var_records(variable_name, db)
+
+
+def get_variable_plot_data(variable_name: str, db) -> dict:
+    """Raw points for the sidebar's default plot (to-do #4).
+
+    Delegates to the query logic in api/variables.py.
+    """
+    from scistack_gui.api.variables import get_variable_plot_data as _get_plot_data
+
+    return _get_plot_data(variable_name, db)

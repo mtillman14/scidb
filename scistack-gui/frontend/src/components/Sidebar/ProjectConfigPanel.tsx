@@ -1,5 +1,7 @@
 /**
- * ProjectConfigPanel — project-level panel showing discovered exports.
+ * ProjectConfigPanel — discovered-exports browser, formerly the sidebar's
+ * "Project" tab. Now rendered inside PathsPopup.tsx (a header popup rather
+ * than a permanent tab) below the raw configured-paths list.
  *
  * Two sections:
  *   - Project Code: modules under src/{project}/ with Variables/Functions/Constants
@@ -205,7 +207,7 @@ export default function ProjectConfigPanel() {
   return (
     <div style={{ padding: '0 12px' }}>
       <div style={styles.header}>
-        <span style={{ fontWeight: 700, fontSize: 14 }}>Project</span>
+        <span style={{ fontWeight: 700, fontSize: 14 }}>Discovered Code</span>
         <button
           onClick={handleRefresh}
           disabled={loading}

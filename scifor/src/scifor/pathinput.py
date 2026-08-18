@@ -10,6 +10,29 @@ from typing import Any
 from scistacklog import Log
 
 
+def _expects_file(segment: str) -> bool:
+    """Heuristic: does this LAST path segment's template text look like a
+    file (has a literal ``.ext``-style suffix) rather than a directory?
+
+    Operates on the raw segment text, placeholders and all —
+    ``Path(...).suffix`` only cares about the trailing ``.something``, so
+    a placeholder immediately before the dot doesn't matter:
+    ``{subject}.csv`` and ``report_{year}.csv`` both read as file-like via
+    their literal ``.csv``; a bare ``{subject}`` (no literal suffix at
+    all) reads as directory-like. This is what lets the LAST segment's
+    filesystem match be restricted to files-only or directories-only —
+    every other segment is already directory-only by construction (an
+    intermediate path component the walker descends into).
+    """
+    return bool(Path(segment).suffix)
+
+
+def _matches_kind(path: Path, expects_file: bool) -> bool:
+    """True if *path* is the filesystem kind (file/directory) implied by
+    ``_expects_file``."""
+    return path.is_file() if expects_file else path.is_dir()
+
+
 def _numeric_like(value: Any) -> bool:
     """True when *value* denotes an integer regardless of representation.
 
@@ -492,18 +515,25 @@ class PathInput:
         Returns complete matches as ``(path, captures)`` where *captures*
         maps each fallback key to the raw text found on disk (numeric
         captures are used to learn pad widths; alias captures are the
-        resolved on-disk spelling)."""
+        resolved on-disk spelling).
+
+        Same file-vs-directory discipline as ``discover()``'s ``_walk``
+        (see its docstring): the LAST segment is restricted to files or
+        directories per ``_expects_file``, with an unfiltered second pass
+        if that finds nothing at all.
+        """
         root, segments = self._root_and_segments()
         if not segments:
             return []
-        results: list = []
 
         def _substitute_literal(segment: str) -> str:
             for key, value in metadata.items():
                 segment = segment.replace("{" + key + "}", str(value))
             return segment
 
-        def _walk(current_dir: Path, seg_idx: int, captures: dict) -> None:
+        def _walk(
+            current_dir: Path, seg_idx: int, captures: dict, results: list, enforce_kind: bool
+        ) -> None:
             segment = segments[seg_idx]
             is_last = seg_idx == len(segments) - 1
             compiled = self._fallback_segment_regex(
@@ -514,10 +544,13 @@ class PathInput:
                 # No fallback placeholder in this segment: descend literally.
                 candidate = current_dir / _substitute_literal(segment)
                 if is_last:
-                    if candidate.exists():
+                    if candidate.exists() and (
+                        not enforce_kind
+                        or _matches_kind(candidate, _expects_file(segment))
+                    ):
                         results.append((candidate, dict(captures)))
                 elif candidate.is_dir():
-                    _walk(candidate, seg_idx + 1, captures)
+                    _walk(candidate, seg_idx + 1, captures, results, enforce_kind)
                 return
 
             regex, checks, _ = compiled
@@ -543,11 +576,17 @@ class PathInput:
                     continue
                 entry_path = current_dir / entry
                 if is_last:
-                    results.append((entry_path, new_captures))
+                    if not enforce_kind or _matches_kind(
+                        entry_path, _expects_file(segment)
+                    ):
+                        results.append((entry_path, new_captures))
                 elif entry_path.is_dir():
-                    _walk(entry_path, seg_idx + 1, new_captures)
+                    _walk(entry_path, seg_idx + 1, new_captures, results, enforce_kind)
 
-        _walk(root, 0, {})
+        results: list = []
+        _walk(root, 0, {}, results, enforce_kind=True)
+        if not results:
+            _walk(root, 0, {}, results, enforce_kind=False)
         return results
 
     def placeholder_keys(self) -> list[str]:
@@ -699,6 +738,16 @@ class PathInput:
         ``\\\\server\\share``) anchor the walk at their own root, matching
         load()'s resolution semantics; ``root_folder`` and the project root
         only apply to relative templates.
+
+        The LAST segment's matches are restricted to files or directories
+        per ``_expects_file`` (e.g. a bare ``{subject}`` only matches
+        subject DIRECTORIES, never a same-level file that happens to share
+        a name) — found by hand: a flat file sitting next to real subject
+        folders was silently discovered as a fake subject and crashed
+        downstream. If that strict pass finds nothing at all (the
+        heuristic guessed wrong — e.g. a directory genuinely named
+        ``results.final``), a second, unfiltered pass runs as a fallback
+        so a real match is never lost to the heuristic.
         """
         root, segments = self._root_and_segments()
 
@@ -706,7 +755,9 @@ class PathInput:
             return []
 
         results: list[dict[str, str]] = []
-        self._walk(root, segments, 0, {}, results)
+        self._walk(root, segments, 0, {}, results, enforce_kind=True)
+        if not results:
+            self._walk(root, segments, 0, {}, results, enforce_kind=False)
         return results
 
     # ------------------------------------------------------------------
@@ -720,6 +771,7 @@ class PathInput:
         seg_idx: int,
         bindings: dict[str, str],
         results: list[dict[str, str]],
+        enforce_kind: bool = True,
     ) -> None:
         """Recursively descend through *segments*, matching filesystem entries."""
         if seg_idx >= len(segments):
@@ -735,11 +787,15 @@ class PathInput:
             # Literal segment — must match exactly
             candidate = current_dir / segment
             if is_last:
-                if candidate.exists():
+                if candidate.exists() and (
+                    not enforce_kind or _matches_kind(candidate, _expects_file(segment))
+                ):
                     results.append(dict(bindings))
             else:
                 if candidate.is_dir():
-                    self._walk(candidate, segments, seg_idx + 1, bindings, results)
+                    self._walk(
+                        candidate, segments, seg_idx + 1, bindings, results, enforce_kind
+                    )
             return
 
         # Segment has placeholder(s) — build a regex
@@ -800,11 +856,13 @@ class PathInput:
             entry_path = current_dir / entry
 
             if is_last:
-                if entry_path.exists():
+                if not enforce_kind or _matches_kind(entry_path, _expects_file(segment)):
                     results.append(dict(new_bindings))
             else:
                 if entry_path.is_dir():
-                    self._walk(entry_path, segments, seg_idx + 1, new_bindings, results)
+                    self._walk(
+                        entry_path, segments, seg_idx + 1, new_bindings, results, enforce_kind
+                    )
 
     def _segment_to_regex(self, segment: str) -> str:
         """Convert a template segment like ``{subject}_XSENS_{session}`` to a regex.

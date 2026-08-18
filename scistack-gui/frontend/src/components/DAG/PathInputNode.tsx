@@ -9,10 +9,16 @@
 
 import { Handle, Position } from '@xyflow/react'
 
+export interface PathInputAlternate {
+  template: string
+  root_folder: string | null
+}
+
 export interface PathInputNodeData {
   label: string
   template: string
   root_folder: string | null
+  alternate_templates: PathInputAlternate[]
 }
 
 interface Props {
@@ -37,6 +43,12 @@ export default function PathInputNode({ data }: Props) {
 
       {data.root_folder && (
         <div style={styles.rootFolder}>root: {data.root_folder}</div>
+      )}
+
+      {data.alternate_templates?.length > 0 && (
+        <div style={styles.altBadge} title="Multiple templates — runs as EachOf(...)">
+          +{data.alternate_templates.length} alt{data.alternate_templates.length > 1 ? 's' : ''}
+        </div>
       )}
 
       {keys.length > 0 && (
@@ -97,5 +109,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 3,
     padding: '1px 5px',
     color: '#fbbf24',
+  },
+  altBadge: {
+    marginTop: 3,
+    fontSize: 10,
+    fontFamily: 'monospace',
+    color: '#fbbf24',
+    fontWeight: 600,
   },
 }

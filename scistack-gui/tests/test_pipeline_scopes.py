@@ -684,6 +684,215 @@ class TestPathInputDeepCopy:
         assert r.status_code == 400
 
 
+class TestPathInputAlternates:
+    """Multiple templates under one PathInput name — the PathInput analog
+    of a Constant node's multiple staged values (see
+    execution_service.build_run_inputs, which turns >1 template into
+    EachOf(PathInput(...), ...) at execution time)."""
+
+    def test_add_and_list_alternate(self, client):
+        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
+
+        r = client.post(
+            "/api/path-inputs/gait_data/alternates",
+            json={"template": "{subject}_v2.csv", "root_folder": "/v2"},
+        )
+        assert r.status_code == 200
+        assert r.json()["index"] == 0
+
+        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
+        assert by_name["gait_data"]["template"] == "{subject}.csv"  # primary untouched
+        assert by_name["gait_data"]["alternate_templates"] == [
+            {"template": "{subject}_v2.csv", "root_folder": "/v2"}
+        ]
+
+    def test_add_second_alternate_gets_next_index(self, client):
+        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
+        client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt1.csv"})
+        r = client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt2.csv"})
+        assert r.json()["index"] == 1
+
+        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
+        assert [a["template"] for a in by_name["gait_data"]["alternate_templates"]] == [
+            "alt1.csv",
+            "alt2.csv",
+        ]
+
+    def test_remove_alternate_by_index(self, client):
+        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
+        client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt1.csv"})
+        client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt2.csv"})
+
+        r = client.delete("/api/path-inputs/gait_data/alternates/0")
+        assert r.status_code == 200
+
+        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
+        assert [a["template"] for a in by_name["gait_data"]["alternate_templates"]] == [
+            "alt2.csv"
+        ]
+
+    def test_add_alternate_without_primary_is_400(self, client):
+        r = client.post(
+            "/api/path-inputs/no_such_path_input/alternates", json={"template": "x.csv"}
+        )
+        assert r.status_code == 400
+
+    def test_new_path_input_has_no_alternates(self, client):
+        client.post("/api/path-inputs", json={"name": "solo", "template": "{subject}.csv"})
+        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
+        assert by_name["solo"]["alternate_templates"] == []
+
+
+class TestSweeps:
+    """Parameter sweep nodes (#8) — builds on Constant node identity
+    (shared-by-name) but generates its value list up front rather than
+    staging values one at a time; >1 value runs as EachOf(...) at
+    execution time (see execution_service.build_run_inputs)."""
+
+    def test_create_and_list(self, client):
+        r = client.post("/api/sweeps", json={"name": "window_seconds"})
+        assert r.status_code == 200
+
+        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
+        assert by_name["window_seconds"]["values"] == []
+
+    def test_update_replaces_values(self, client):
+        client.post("/api/sweeps", json={"name": "window_seconds"})
+        r = client.put("/api/sweeps/window_seconds", json={"values": [10, 20, 30]})
+        assert r.status_code == 200
+
+        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
+        assert by_name["window_seconds"]["values"] == [10, 20, 30]
+
+        # A second update REPLACES, doesn't append.
+        client.put("/api/sweeps/window_seconds", json={"values": [5]})
+        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
+        assert by_name["window_seconds"]["values"] == [5]
+
+    def test_delete_sweep(self, client):
+        client.post("/api/sweeps", json={"name": "window_seconds"})
+        r = client.delete("/api/sweeps/window_seconds")
+        assert r.status_code == 200
+
+        names = {s["name"] for s in client.get("/api/sweeps").json()}
+        assert "window_seconds" not in names
+
+    def test_sweep_node_placement_and_edge(self, client):
+        """A Sweep node behaves like a Constant node on the canvas: place
+        it, wire it into a function's in__{param} handle. The manual
+        node_id (sweep_a) GRADUATES to the canonical placement-qualified
+        id (sweep__window_seconds::main) once the graph rebuilds — same
+        mechanism PathInput/Constant nodes already use (see
+        _DB_DERIVED_PREFIXES) — so look it up by label, not by the raw id
+        assigned at creation."""
+        client.post("/api/sweeps", json={"name": "window_seconds"})
+        client.put("/api/layout/sweep_a", json={
+            "x": 0, "y": 0, "node_type": "sweepNode", "label": "window_seconds",
+        })
+        client.put("/api/layout/fn_a", json={
+            "x": 10, "y": 0, "node_type": "functionNode", "label": "some_fn",
+        })
+        r = client.put("/api/edges/e_sweep", json={
+            "source": "sweep_a", "target": "fn_a", "target_handle": "in__window_seconds",
+        })
+        assert r.status_code == 200
+
+        graph = client.get("/api/pipeline").json()
+        node = next(
+            n for n in graph["nodes"]
+            if n["type"] == "sweepNode" and n["data"]["label"] == "window_seconds"
+        )
+        assert node["id"] == "sweep__window_seconds::main"
+
+
+class TestSweepExecutionResolution:
+    """Sweep values resolve to EachOf(...) at execution time — same
+    resolution point build_run_inputs already uses for PathInput (see
+    TestPathInputExecutionResolution), extended rather than duplicated."""
+
+    @staticmethod
+    def _register_fn(name: str):
+        from scistack_gui import registry
+
+        def _fn(window_seconds):
+            return float(window_seconds)
+
+        _fn.__name__ = name
+        registry._functions[name] = _fn
+
+    def test_multi_value_sweep_resolves_to_eachof(self, client):
+        from scidb import EachOf
+
+        self._register_fn("compute_rolling_sweep")
+        client.post("/api/sweeps", json={"name": "window_seconds"})
+        client.put("/api/sweeps/window_seconds", json={"values": [10, 20, 30]})
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        inputs = build_run_inputs(target, "compute_rolling_sweep")
+
+        assert isinstance(inputs["window_seconds"], EachOf)
+        assert inputs["window_seconds"].alternatives == [10, 20, 30]
+
+    def test_single_value_sweep_stays_scalar(self, client):
+        """One value -> plain number, not EachOf-wrapped — a sweep with
+        exactly one value behaves like a regular constant."""
+        from scidb import EachOf
+
+        self._register_fn("compute_rolling_sweep2")
+        client.post("/api/sweeps", json={"name": "window_seconds"})
+        client.put("/api/sweeps/window_seconds", json={"values": [30]})
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        inputs = build_run_inputs(target, "compute_rolling_sweep2")
+
+        assert inputs["window_seconds"] == 30
+        assert not isinstance(inputs["window_seconds"], EachOf)
+
+    def test_empty_sweep_leaves_param_unresolved(self, client):
+        """A Sweep created but never given values -> fail safe (param
+        absent from inputs), matching the same contract PathInput's
+        missing-registration case has."""
+        self._register_fn("compute_rolling_sweep3")
+        client.post("/api/sweeps", json={"name": "window_seconds"})
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        inputs = build_run_inputs(target, "compute_rolling_sweep3")
+
+        assert "window_seconds" not in inputs
+
+    def test_path_input_and_sweep_names_resolve_independently(self, client):
+        """A function with both a PathInput-backed param and a Sweep-
+        backed param gets both resolved correctly in one call — the two
+        registries (checked in sequence per missing param) don't
+        interfere with each other."""
+        from scidb import EachOf, PathInput
+        from scistack_gui import registry
+
+        def _fn(data_dir, window_seconds):
+            return None
+
+        registry._functions["mixed_fn"] = _fn
+
+        client.post("/api/path-inputs", json={"name": "data_dir", "template": "{subject}"})
+        client.post("/api/sweeps", json={"name": "window_seconds"})
+        client.put("/api/sweeps/window_seconds", json={"values": [30, 60]})
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        inputs = build_run_inputs(target, "mixed_fn")
+
+        assert isinstance(inputs["data_dir"], PathInput)
+        assert isinstance(inputs["window_seconds"], EachOf)
+        assert inputs["window_seconds"].alternatives == [30, 60]
+
+
 class TestDuplicatePipeline:
     def test_duplicate_copies_manual_nodes_config_and_edges(self, client):
         pid = client.post("/api/pipelines", json={"name": "loading"}).json()["pipeline_id"]
@@ -845,6 +1054,183 @@ class TestDuplicatePipeline:
         client.post("/api/pipelines", json={"name": "loading"})
         r = client.post("/api/pipelines/main/duplicate", json={"name": "loading"})
         assert r.status_code == 400
+
+
+class TestPasteNodes:
+    """to-do #5: copy/paste a SELECTION of nodes (not a whole scope, see
+    TestDuplicatePipeline) via scope_service.paste_nodes / _clone_nodes,
+    within one pipeline or between two different ones.
+
+    Uses PasteRawSignal/PasteFilteredSignal, NOT the fixture's RawSignal/
+    FilteredSignal — those already have real saved records from
+    populated_db's seeded bandpass_filter run, so the first graph-fetch
+    paste_nodes does internally (get_pipeline_graph, needed to enumerate
+    what to copy) GRADUATES mv_in/mv_out to their canonical DB-derived ids
+    (var__RawSignal::main, ...) as an ordinary side effect of that fetch —
+    same mechanism TestSweeps hit earlier. The literal 'mv_in'/'mv_out'
+    ids this class's assertions hardcode would silently stop matching
+    anything. Labels with no backing DB history never graduate, so the
+    bare manual ids stay stable for the whole test."""
+
+    def _wire(self, client, pid):
+        client.put("/api/layout/mv_in", json={
+            "x": 100, "y": 100, "node_type": "variableNode", "label": "PasteRawSignal", "pipeline_id": pid,
+        })
+        client.put("/api/layout/mf_proc", json={
+            "x": 200, "y": 150, "node_type": "functionNode", "label": "custom_proc", "pipeline_id": pid,
+        })
+        client.put("/api/layout/mv_out", json={
+            "x": 300, "y": 100, "node_type": "variableNode", "label": "PasteFilteredSignal", "pipeline_id": pid,
+        })
+        client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_proc"})
+        client.put("/api/edges/e_out", json={"source": "mf_proc", "target": "mv_out"})
+
+    def test_paste_within_same_scope_copies_config_and_internal_edges(self, client):
+        self._wire(client, "main")
+        client.put("/api/layout/mf_proc/config", json={"config": {"schemaFilter": {"subject": ["S01"]}}})
+
+        r = client.post(
+            "/api/pipelines/main/paste-nodes",
+            json={
+                "source_pipeline_id": "main",
+                "node_ids": ["mv_in", "mf_proc", "mv_out"],
+                "x": 500,
+                "y": 500,
+            },
+        )
+        assert r.status_code == 200
+        node_id_map = r.json()["node_id_map"]
+        assert set(node_id_map) == {"mv_in", "mf_proc", "mv_out"}
+
+        db = get_db()
+        copy_ids = set(node_id_map.values())
+        assert copy_ids.isdisjoint({"mv_in", "mf_proc", "mv_out"})  # fresh ids
+        copy_nodes = ps.get_manual_nodes(db, "main")
+        assert copy_ids <= set(copy_nodes)
+        assert {(n["type"], n["label"]) for nid, n in copy_nodes.items() if nid in copy_ids} == {
+            ("variableNode", "PasteRawSignal"),
+            ("functionNode", "custom_proc"),
+            ("variableNode", "PasteFilteredSignal"),
+        }
+        fn_copy_id = node_id_map["mf_proc"]
+        assert copy_nodes[fn_copy_id].get("config") == {"schemaFilter": {"subject": ["S01"]}}
+
+        copy_edges = [
+            e for e in ps.get_manual_edges(db)
+            if e["source"] in copy_ids or e["target"] in copy_ids
+        ]
+        assert any(
+            e["source"] == node_id_map["mv_in"] and e["target"] == node_id_map["mf_proc"]
+            for e in copy_edges
+        )
+        assert any(
+            e["source"] == node_id_map["mf_proc"] and e["target"] == node_id_map["mv_out"]
+            for e in copy_edges
+        )
+
+        # The originals are untouched.
+        original_labels = {(n["type"], n["label"]) for nid, n in ps.get_manual_nodes(db, "main").items() if nid in {"mv_in", "mf_proc", "mv_out"}}
+        assert original_labels == {
+            ("variableNode", "PasteRawSignal"),
+            ("functionNode", "custom_proc"),
+            ("variableNode", "PasteFilteredSignal"),
+        }
+
+    def test_paste_translates_selection_to_anchor_preserving_relative_layout(self, client):
+        self._wire(client, "main")
+        # mv_in at (100,100), mf_proc at (200,150) — a (100, 50) offset.
+        r = client.post(
+            "/api/pipelines/main/paste-nodes",
+            json={
+                "source_pipeline_id": "main",
+                "node_ids": ["mv_in", "mf_proc"],
+                "x": 0,
+                "y": 0,
+            },
+        )
+        node_id_map = r.json()["node_id_map"]
+
+        positions = client.get("/api/layout", params={"pipeline_id": "main"}).json()["positions"]
+        in_pos = positions[node_id_map["mv_in"]]
+        proc_pos = positions[node_id_map["mf_proc"]]
+        # Bounding-box top-left (mv_in, the min corner) lands exactly at the anchor.
+        assert in_pos == {"x": 0.0, "y": 0.0}
+        # Relative offset between the two copied nodes is preserved.
+        assert proc_pos["x"] - in_pos["x"] == 100
+        assert proc_pos["y"] - in_pos["y"] == 50
+
+    def test_paste_drops_edges_to_nodes_outside_the_selection(self, client):
+        self._wire(client, "main")
+
+        r = client.post(
+            "/api/pipelines/main/paste-nodes",
+            json={
+                "source_pipeline_id": "main",
+                "node_ids": ["mv_in", "mf_proc"],  # mv_out excluded
+                "x": 0,
+                "y": 0,
+            },
+        )
+        node_id_map = r.json()["node_id_map"]
+
+        db = get_db()
+        copy_ids = set(node_id_map.values())
+        copy_edges = [
+            e for e in ps.get_manual_edges(db)
+            if e["source"] in copy_ids or e["target"] in copy_ids
+        ]
+        # Only the mv_in -> mf_proc edge survives; nothing points at mv_out
+        # (never copied) or the original mv_out node id.
+        assert len(copy_edges) == 1
+        assert copy_edges[0]["source"] == node_id_map["mv_in"]
+        assert copy_edges[0]["target"] == node_id_map["mf_proc"]
+
+    def test_paste_between_different_scopes(self, client):
+        self._wire(client, "main")
+        target = client.post("/api/pipelines", json={"name": "other"}).json()["pipeline_id"]
+
+        r = client.post(
+            f"/api/pipelines/{target}/paste-nodes",
+            json={
+                "source_pipeline_id": "main",
+                "node_ids": ["mv_in", "mf_proc", "mv_out"],
+                "x": 0,
+                "y": 0,
+            },
+        )
+        assert r.status_code == 200
+        node_id_map = r.json()["node_id_map"]
+
+        db = get_db()
+        assert set(node_id_map.values()) <= set(ps.get_manual_nodes(db, target))
+        # main's originals are untouched, still on main.
+        assert {"mv_in", "mf_proc", "mv_out"} <= set(ps.get_manual_nodes(db, "main"))
+
+    def test_paste_keeps_submodule_use_pointing_at_same_child(self, client):
+        child = client.post("/api/pipelines", json={"name": "shared_prep"}).json()["pipeline_id"]
+        use_id = client.post(
+            "/api/pipelines/main/uses", json={"child_pipeline_id": child}
+        ).json()["use_id"]
+
+        r = client.post(
+            "/api/pipelines/main/paste-nodes",
+            json={"source_pipeline_id": "main", "node_ids": [use_id], "x": 0, "y": 0},
+        )
+        node_id_map = r.json()["node_id_map"]
+        new_use_id = node_id_map[use_id]
+        assert new_use_id != use_id
+
+        db = get_db()
+        uses_by_id = {u["use_id"]: u for u in ps.get_pipeline_uses(db, "main")}
+        assert uses_by_id[new_use_id]["child_pipeline_id"] == child  # SAME submodule
+
+    def test_paste_empty_selection_is_a_noop(self, client):
+        r = client.post(
+            "/api/pipelines/main/paste-nodes",
+            json={"source_pipeline_id": "main", "node_ids": [], "x": 0, "y": 0},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "node_id_map": {}}
 
 
 class TestScopedNodeEdgeHiding:
@@ -1199,6 +1585,214 @@ class TestDocumentInterface:
         node = next(n for n in graph["nodes"] if n["id"] == use_id)
         assert node["data"]["inputs"] == ["RawSignal"]
         assert node["data"]["outputs"] == ["FilteredSignal"]
+
+
+class TestHiddenPorts:
+    """pipeline_store-level coverage for to-do #9's manual port-hiding
+    override (see pipeline_store.hide_port's module docstring)."""
+
+    def test_hide_unhide_roundtrip(self, layout_path):
+        db = get_db()
+        assert ps.get_hidden_ports(db, "main") == {"input": set(), "output": set()}
+
+        ps.hide_port(db, "main", "input", "RawSignal")
+        assert ps.get_hidden_ports(db, "main") == {
+            "input": {"RawSignal"},
+            "output": set(),
+        }
+
+        ps.unhide_port(db, "main", "input", "RawSignal")
+        assert ps.get_hidden_ports(db, "main") == {"input": set(), "output": set()}
+
+    def test_hide_is_idempotent(self, layout_path):
+        db = get_db()
+        ps.hide_port(db, "main", "output", "FilteredSignal")
+        ps.hide_port(db, "main", "output", "FilteredSignal")  # ON CONFLICT DO NOTHING
+        assert ps.get_hidden_ports(db, "main") == {
+            "input": set(),
+            "output": {"FilteredSignal"},
+        }
+
+    def test_get_hidden_ports_by_scope_keyed_per_pipeline(self, layout_path):
+        db = get_db()
+        other = ps.create_pipeline(db, "loading")
+        ps.hide_port(db, "main", "input", "RawSignal")
+        ps.hide_port(db, other, "output", "FilteredSignal")
+
+        by_scope = ps.get_hidden_ports_by_scope(db)
+        assert by_scope["main"] == {"input": {"RawSignal"}, "output": set()}
+        assert by_scope[other] == {"input": set(), "output": {"FilteredSignal"}}
+
+
+class TestHiddenPortsFiltering:
+    """API-level coverage: hide-port/unhide-port toggling and its effect
+    on document_interface's computed ports (to-do #9)."""
+
+    def _wire_loading_scope(self, client, pid):
+        client.put(
+            "/api/layout/mv_in",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "variableNode",
+                "label": "RawSignal",
+                "pipeline_id": pid,
+            },
+        )
+        client.put(
+            "/api/layout/mf_proc",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "functionNode",
+                "label": "bandpass_filter",
+                "pipeline_id": pid,
+            },
+        )
+        client.put(
+            "/api/layout/mv_out",
+            json={
+                "x": 0,
+                "y": 0,
+                "node_type": "variableNode",
+                "label": "FilteredSignal",
+                "pipeline_id": pid,
+            },
+        )
+        client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_proc"})
+        client.put("/api/edges/e_out", json={"source": "mf_proc", "target": "mv_out"})
+
+    def test_hidden_ports_endpoint_reflects_current_state(self, client):
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        assert client.get(f"/api/pipelines/{pid}/hidden-ports").json() == {
+            "input": [],
+            "output": [],
+        }
+
+        r = client.post(
+            f"/api/pipelines/{pid}/hide-port",
+            json={"direction": "output", "var_type": "FilteredSignal"},
+        )
+        assert r.status_code == 200
+        assert client.get(f"/api/pipelines/{pid}/hidden-ports").json() == {
+            "input": [],
+            "output": ["FilteredSignal"],
+        }
+
+        r = client.post(
+            f"/api/pipelines/{pid}/unhide-port",
+            json={"direction": "output", "var_type": "FilteredSignal"},
+        )
+        assert r.status_code == 200
+        assert client.get(f"/api/pipelines/{pid}/hidden-ports").json() == {
+            "input": [],
+            "output": [],
+        }
+
+    def test_hidden_input_port_suppressed_from_interface_and_use_node(self, client):
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        self._wire_loading_scope(client, pid)
+
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+        assert iface == {"inputs": ["RawSignal"], "outputs": ["FilteredSignal"]}
+
+        client.post(
+            f"/api/pipelines/{pid}/hide-port",
+            json={"direction": "input", "var_type": "RawSignal"},
+        )
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+        assert iface == {"inputs": [], "outputs": ["FilteredSignal"]}
+
+        # The placed pipeline node's port list bubbles the filtered
+        # interface too.
+        use_id = client.post(
+            "/api/pipelines/main/uses", json={"child_pipeline_id": pid}
+        ).json()["use_id"]
+        graph = client.get("/api/pipeline").json()
+        node = next(n for n in graph["nodes"] if n["id"] == use_id)
+        assert node["data"]["inputs"] == []
+        assert node["data"]["outputs"] == ["FilteredSignal"]
+
+        # Un-hiding restores it everywhere.
+        client.post(
+            f"/api/pipelines/{pid}/unhide-port",
+            json={"direction": "input", "var_type": "RawSignal"},
+        )
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+        assert iface == {"inputs": ["RawSignal"], "outputs": ["FilteredSignal"]}
+
+    def test_hidden_output_port_suppressed_from_interface(self, client):
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        self._wire_loading_scope(client, pid)
+
+        client.post(
+            f"/api/pipelines/{pid}/hide-port",
+            json={"direction": "output", "var_type": "FilteredSignal"},
+        )
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+        assert iface == {"inputs": ["RawSignal"], "outputs": []}
+
+    def test_hidden_port_does_not_touch_the_internal_node(self, client):
+        """Hiding a port suppresses the exposed dot on the scope's
+        BOUNDARY only — the internal node that produces/consumes that
+        type must stay fully visible on its own canvas (see
+        pipeline_store.hide_port's module docstring)."""
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        self._wire_loading_scope(client, pid)
+
+        client.post(
+            f"/api/pipelines/{pid}/hide-port",
+            json={"direction": "input", "var_type": "RawSignal"},
+        )
+
+        graph = client.get(f"/api/pipeline?pipeline_id={pid}").json()
+        labels = {
+            (n["type"], n["data"]["label"])
+            for n in graph["nodes"]
+            if n["type"] in ("variableNode", "functionNode")
+        }
+        assert ("variableNode", "RawSignal") in labels
+        assert ("functionNode", "bandpass_filter") in labels
+
+    def test_hide_is_scoped_to_its_own_pipeline(self, client):
+        """A hide toggled on one scope doesn't retroactively change what
+        another scope reports for the same type — hide_port is stored
+        per (pipeline_id, direction, var_type), not globally."""
+        pid = client.post("/api/pipelines", json={"name": "loading"}).json()[
+            "pipeline_id"
+        ]
+        self._wire_loading_scope(client, pid)
+
+        # Hide RawSignal on 'main' (unrelated wiring) first — must not
+        # affect the child scope's own report.
+        client.post(
+            "/api/pipelines/main/hide-port",
+            json={"direction": "input", "var_type": "RawSignal"},
+        )
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+        assert iface == {"inputs": ["RawSignal"], "outputs": ["FilteredSignal"]}
+
+        # Hiding it on the child itself filters the child's own report,
+        # while main's earlier (independent) hide stays recorded too.
+        client.post(
+            f"/api/pipelines/{pid}/hide-port",
+            json={"direction": "input", "var_type": "RawSignal"},
+        )
+        iface = client.get(f"/api/pipelines/{pid}/interface").json()
+        assert iface == {"inputs": [], "outputs": ["FilteredSignal"]}
+
+        db = get_db()
+        by_scope = ps.get_hidden_ports_by_scope(db)
+        assert by_scope["main"] == {"input": {"RawSignal"}, "output": set()}
+        assert by_scope[pid] == {"input": {"RawSignal"}, "output": set()}
 
 
 # ---------------------------------------------------------------------------
@@ -1683,3 +2277,190 @@ class TestDeriveTargetForNode:
             )
         finally:
             _discard_compiled(built)
+
+
+class TestPathInputExecutionResolution:
+    """Regression coverage: a PathInput-backed function param is resolved
+    by NAME in build_run_inputs, not by derive_fn_targets/
+    derive_target_for_node — a PathInput is never a citizen of
+    input_types or DB variant history (it resolves files, not a versioned
+    variable), so neither branch of target derivation ever saw it. Before
+    this fix, NEITHER the never-run fallback NOR an already-run DB-history
+    target ever constructed a live scifor.PathInput anywhere in
+    scistack-gui — a PathInput-driven function couldn't be run through the
+    GUI at all, first run or re-run. api/run.py and
+    execution_service.build_backend_pipeline used to carry two
+    independently-drifting copies of the input-building logic; both now
+    call the one shared execution_service.build_run_inputs."""
+
+    @staticmethod
+    def _register_loader(name: str):
+        from scistack_gui import registry
+
+        def _fn(filepath):
+            return str(filepath)
+
+        _fn.__name__ = name
+        registry._functions[name] = _fn
+
+    def test_never_run_target_omits_pathinput_from_input_types(self, client):
+        """derive_fn_targets deliberately does NOT resolve PathInput params
+        — see its docstring — build_run_inputs is the single place that
+        does, right before execution."""
+        from scidb import BaseVariable
+
+        class LoadedThing(BaseVariable):
+            pass
+
+        self._register_loader("load_raw")
+        client.post(
+            "/api/path-inputs",
+            json={"name": "filepath", "template": "{subject}/{session}/data.csv"},
+        )
+        client.put("/api/layout/mf_load", json={
+            "x": 0, "y": 0, "node_type": "functionNode", "label": "load_raw",
+        })
+        client.put("/api/layout/mv_loaded", json={
+            "x": 10, "y": 0, "node_type": "variableNode", "label": "LoadedThing",
+        })
+        client.put(
+            "/api/edges/e_load_out", json={"source": "mf_load", "target": "mv_loaded"}
+        )
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import derive_fn_targets
+
+        targets = derive_fn_targets(get_db(), "load_raw")
+
+        assert len(targets) == 1
+        assert "filepath" not in targets[0]["input_types"]
+        assert targets[0]["output_type"] == "LoadedThing"
+
+    def test_build_run_inputs_resolves_never_run_target(self, client):
+        from scidb import BaseVariable, PathInput
+
+        class LoadedThing2(BaseVariable):
+            pass
+
+        self._register_loader("load_raw2")
+        client.post(
+            "/api/path-inputs",
+            json={"name": "filepath", "template": "{subject}/{session}/data.csv"},
+        )
+        client.put("/api/layout/mf_load2", json={
+            "x": 0, "y": 0, "node_type": "functionNode", "label": "load_raw2",
+        })
+        client.put("/api/layout/mv_loaded2", json={
+            "x": 10, "y": 0, "node_type": "variableNode", "label": "LoadedThing2",
+        })
+        client.put(
+            "/api/edges/e_load2_out", json={"source": "mf_load2", "target": "mv_loaded2"}
+        )
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            build_run_inputs,
+            derive_fn_targets,
+        )
+
+        targets = derive_fn_targets(get_db(), "load_raw2")
+        inputs = build_run_inputs(targets[0], "load_raw2")
+
+        assert isinstance(inputs["filepath"], PathInput)
+        assert inputs["filepath"].path_template == "{subject}/{session}/data.csv"
+
+    def test_compiled_pipeline_step_carries_live_pathinput(self, client):
+        """Same resolution, exercised through the real compiler path
+        (Run Pipeline / Run Until Here) rather than calling
+        build_run_inputs directly."""
+        from scidb import BaseVariable, PathInput
+
+        class LoadedThing3(BaseVariable):
+            pass
+
+        self._register_loader("load_raw3")
+        client.post("/api/path-inputs", json={"name": "filepath", "template": "{subject}.csv"})
+        client.put("/api/layout/mf_load3", json={
+            "x": 0, "y": 0, "node_type": "functionNode", "label": "load_raw3",
+        })
+        client.put("/api/layout/mv_loaded3", json={
+            "x": 10, "y": 0, "node_type": "variableNode", "label": "LoadedThing3",
+        })
+        client.put(
+            "/api/edges/e_load3_out", json={"source": "mf_load3", "target": "mv_loaded3"}
+        )
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            _discard_compiled,
+            build_backend_pipeline,
+        )
+
+        built: dict = {}
+        pipe = build_backend_pipeline(get_db(), "main", built)
+        try:
+            step = next(s for s in pipe.steps if s.name == "load_raw3")
+            assert isinstance(step.inputs["filepath"], PathInput)
+        finally:
+            _discard_compiled(built)
+
+    def test_missing_stored_pathinput_leaves_param_unresolved(self, client):
+        """No stored PathInput matches the name -> fail safe (the param is
+        simply absent from inputs), matching the KeyError-tolerant contract
+        callers already rely on for other unresolvable params — not a
+        crash inside build_run_inputs."""
+        self._register_loader("load_raw4")
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = {"input_types": {}, "output_type": "LoadedThing4", "constants": {}}
+        inputs = build_run_inputs(target, "load_raw4")
+
+        assert "filepath" not in inputs
+
+    def test_alternate_templates_resolve_to_eachof(self, client):
+        """Multiple templates under one PathInput name (see
+        TestPathInputAlternates) become EachOf(PathInput(...), ...) —
+        the PathInput analog of the multi-type variable branch's EachOf,
+        same as a Constant node's multiple staged values fanning out."""
+        from scidb import EachOf, PathInput
+
+        self._register_loader("load_raw5")
+        client.post(
+            "/api/path-inputs", json={"name": "filepath", "template": "primary.csv"}
+        )
+        client.post(
+            "/api/path-inputs/filepath/alternates",
+            json={"template": "alt.csv", "root_folder": "/alt"},
+        )
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = {"input_types": {}, "output_type": "LoadedThing5", "constants": {}}
+        inputs = build_run_inputs(target, "load_raw5")
+
+        assert isinstance(inputs["filepath"], EachOf)
+        alts = inputs["filepath"].alternatives
+        assert len(alts) == 2
+        assert all(isinstance(a, PathInput) for a in alts)
+        assert alts[0].path_template == "primary.csv"
+        assert alts[1].path_template == "alt.csv"
+        assert alts[1].root_folder is not None and str(alts[1].root_folder) == "/alt"
+
+    def test_single_template_stays_plain_pathinput(self, client):
+        """No alternates -> still a bare PathInput, not EachOf-wrapped —
+        confirms the single-template case is unaffected by this feature."""
+        from scidb import EachOf, PathInput
+
+        self._register_loader("load_raw6")
+        client.post(
+            "/api/path-inputs", json={"name": "filepath", "template": "solo.csv"}
+        )
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = {"input_types": {}, "output_type": "LoadedThing6", "constants": {}}
+        inputs = build_run_inputs(target, "load_raw6")
+
+        assert isinstance(inputs["filepath"], PathInput)
+        assert not isinstance(inputs["filepath"], EachOf)

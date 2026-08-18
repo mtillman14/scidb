@@ -309,6 +309,57 @@ def delete_path_input(name: str) -> dict:
     return {"ok": True}
 
 
+def add_path_input_alternate(
+    name: str, template: str, root_folder: str | None = None
+) -> dict:
+    from scistack_gui import layout as layout_store
+
+    logger.debug(
+        "PathInput alternate added: name=%r, template=%r, root_folder=%r",
+        name,
+        template,
+        root_folder,
+    )
+    index = layout_store.add_path_input_alternate(name, template, root_folder)
+    return {"ok": True, "index": index}
+
+
+def remove_path_input_alternate(name: str, index: int) -> dict:
+    from scistack_gui import layout as layout_store
+
+    layout_store.remove_path_input_alternate(name, index)
+    return {"ok": True}
+
+
+def get_sweeps() -> list[dict]:
+    from scistack_gui import layout as layout_store
+
+    return layout_store.read_all_sweep_names()
+
+
+def create_sweep(name: str) -> dict:
+    from scistack_gui import layout as layout_store
+
+    logger.debug("Node created (added to palette): type=sweep, name=%r", name)
+    layout_store.write_sweep(name, [])
+    return {"ok": True}
+
+
+def update_sweep(name: str, values: "list[float | int]") -> dict:
+    from scistack_gui import layout as layout_store
+
+    logger.debug("Sweep updated: name=%r, %d value(s)", name, len(values))
+    layout_store.write_sweep(name, values)
+    return {"ok": True}
+
+
+def delete_sweep(name: str) -> dict:
+    from scistack_gui import layout as layout_store
+
+    layout_store.delete_sweep(name)
+    return {"ok": True}
+
+
 def deep_copy_path_input(node_id: str) -> dict:
     """Give one PathInput node its own independent named definition —
     opt-in fork; every other placement of the original name is untouched.

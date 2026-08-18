@@ -606,6 +606,11 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     logger.debug("[pipeline] loaded %d saved path input(s)", len(saved_path_inputs))
     gb.overlay_saved_path_inputs(agg.path_inputs, saved_path_inputs)
 
+    # --- Load sweeps (GUI-only, no DB-derived counterpart — see
+    # graph_builder.build_sweep_nodes) ---
+    saved_sweeps = layout_store.read_all_sweep_names()
+    logger.debug("[pipeline] loaded %d saved sweep(s)", len(saved_sweeps))
+
     # --- Build nodes (pure) ---
     logger.info("[pipeline] Building nodes (delegating to graph_builder)")
     nodes = gb.build_variable_nodes(agg.all_var_types, record_counts, run_states)
@@ -614,6 +619,10 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     const_node_count = len(nodes) - var_node_count
     nodes += gb.build_path_input_nodes(agg.path_inputs)
     path_input_node_count = len(nodes) - var_node_count - const_node_count
+    nodes += gb.build_sweep_nodes(saved_sweeps)
+    sweep_node_count = (
+        len(nodes) - var_node_count - const_node_count - path_input_node_count
+    )
     nodes += gb.build_function_nodes(
         agg.fn_input_params,
         agg.fn_outputs,
@@ -627,14 +636,20 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         matlab_param_to_class=matlab_param_to_class,
     )
     fn_node_count = (
-        len(nodes) - var_node_count - const_node_count - path_input_node_count
+        len(nodes)
+        - var_node_count
+        - const_node_count
+        - path_input_node_count
+        - sweep_node_count
     )
     logger.info(
-        "[pipeline] built %d nodes: %d variable, %d constant, %d path input, %d function",
+        "[pipeline] built %d nodes: %d variable, %d constant, %d path input, "
+        "%d sweep, %d function",
         len(nodes),
         var_node_count,
         const_node_count,
         path_input_node_count,
+        sweep_node_count,
         fn_node_count,
     )
 

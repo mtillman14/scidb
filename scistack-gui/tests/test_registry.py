@@ -142,6 +142,69 @@ class TestRegisterModule:
 
 
 # ---------------------------------------------------------------------------
+# _scan_module_constants (via register_module)
+# ---------------------------------------------------------------------------
+
+
+class TestScanModuleConstants:
+    def test_registers_constant(self):
+        from scidb import constant
+
+        rate = constant(1000, description="Sample rate")
+        mod = _make_module(RATE=rate)
+        registry.register_module(mod)
+        assert "RATE" in registry._constants
+        assert registry._constants["RATE"] is rate
+
+    def test_get_constants_registry_returns_copy(self):
+        from scidb import constant
+
+        rate = constant(42)
+        mod = _make_module(MY_CONST=rate)
+        registry.register_module(mod)
+        result = registry.get_constants_registry()
+        assert result["MY_CONST"] is rate
+        result["MY_CONST"] = "mutated"
+        assert registry._constants["MY_CONST"] is rate
+
+    def test_skips_private_constants(self):
+        from scidb import constant
+
+        mod = _make_module(_HIDDEN=constant(1))
+        registry.register_module(mod)
+        assert "_HIDDEN" not in registry._constants
+
+    def test_skips_non_constant_values(self):
+        mod = _make_module(PLAIN_NUMBER=42, PLAIN_STRING="hello")
+        registry.register_module(mod)
+        assert "PLAIN_NUMBER" not in registry._constants
+        assert "PLAIN_STRING" not in registry._constants
+
+    def test_constant_attributed_even_when_reexported(self):
+        # Deliberately different from functions: a Constant doesn't
+        # reliably expose __module__ (unknown attribute access proxies to
+        # the wrapped value via __getattr__), so it's attributed wherever
+        # its name is exposed — mirrors scidb.discover.discover_module's
+        # same documented choice, not the functions' stricter filter.
+        from scidb import constant
+
+        rate = constant(7, description="shared")
+        mod = _make_module_with_reexport(SHARED_RATE=rate)
+        registry.register_module(mod)
+        assert "SHARED_RATE" in registry._constants
+        assert registry._constants["SHARED_RATE"] is rate
+
+    def test_source_tracked(self):
+        from pathlib import Path
+
+        from scidb import constant
+
+        mod = _make_module(RATE=constant(5))
+        registry.register_module(mod, module_path=Path("/fake/pipeline.py"))
+        assert registry._constant_sources["RATE"] == "/fake/pipeline.py"
+
+
+# ---------------------------------------------------------------------------
 # get_function
 # ---------------------------------------------------------------------------
 

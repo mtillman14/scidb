@@ -308,108 +308,142 @@ def extract_to_submodule(pipeline_id: str, node_ids: list[str], name: str) -> di
     return {"ok": True, "pipeline_id": new_pid, "use_id": use_id}
 
 
-def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
-    """Fork ``pipeline_id``'s own nodes into a brand-new, independent
-    pipeline the user can freely edit (e.g. "gait symmetry" -> "gait
-    speed"), while keeping any placed submodule pointing at the SAME
-    child pipeline — the shared submodule itself is never duplicated,
-    since factoring something out as a submodule is precisely what makes
-    it reusable across hypotheses.
+def _clone_nodes(
+    db,
+    source_pid: str,
+    node_ids: "list[str] | None",
+    target_pid: str,
+    anchor: "tuple[float, float] | None" = None,
+) -> "tuple[dict[str, str], int, int]":
+    """Copy a set of ``source_pid``'s nodes (``node_ids=None`` means every
+    node in the scope) into ``target_pid`` with fresh ids. Shared by
+    ``duplicate_pipeline`` (whole scope, fixed +40/+40 offset from each
+    node's own original position) and ``paste_nodes`` (an explicit
+    selection, translated so its bounding box's top-left lands at
+    ``anchor`` instead).
 
     Includes already-executed ("graduated") DB-derived nodes too, now that
     graduation is scope-aware (placement-qualified ids — see
     domain.graph_builder.placement_id and plan-placement-qualified-node-
     ids.md): a fresh manual copy of a graduated node safely graduates to
     its OWN independent placement in the new scope, rather than colliding
-    with and stealing the original's (the bug an earlier version of this
-    function hit and worked around by skipping graduated nodes entirely —
-    no longer necessary).
+    with and stealing the original's.
 
-    What forks is the per-node GUI config (schemaFilter/schemaLevel/
+    What's copied is the per-node GUI config (schemaFilter/schemaLevel/
     runOptions, and eventually whereFilters) and the wiring, since each
     copy gets its own node_id — copying those verbatim is what makes the
-    duplicate compute IDENTICALLY to the original until the user changes
+    copy compute IDENTICALLY to the original until the user changes
     something (at which point scidb naturally creates an independent
     variant, no special handling needed). Function/variable-type identity
     stays shared for free (a fresh node with the same label just resolves
-    against the same real function/DB table); PathInput nodes are shared
-    by name by default too (Stage 2) — copying the node (same name
+    against the same real function/DB table); PathInput/Sweep nodes are
+    shared by name by default too — copying the node (same name
     reference) is exactly the desired "shared ground truth" behavior.
+
+    Submodule placements (pipelineNode) get a fresh use_id pointing at the
+    SAME child_pipeline_id — the shared submodule itself is never
+    duplicated, since factoring something out as a submodule is precisely
+    what makes it reusable across hypotheses.
+
+    An edge with either endpoint OUTSIDE the copied set is dropped (only
+    possible for an explicit partial selection — a whole-scope copy has no
+    such edges by construction, since every node is included).
+
+    Returns ``(old_id -> new_id map, nodes copied, edges copied)``.
     """
     import uuid
 
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store as ps
-    from scistack_gui.db import get_db
     from scistack_gui.domain import graph_builder
     from scistack_gui.services.pipeline_service import get_pipeline_graph
 
-    db = get_db()
-    graph = get_pipeline_graph(db, pipeline_id)
-    manual_nodes = ps.get_manual_nodes(db, pipeline_id)  # config source
-    old_positions = layout_store.read_positions_by_scope().get(pipeline_id, {})
-    offset = 40.0
+    graph = get_pipeline_graph(db, source_pid)
+    manual_nodes = ps.get_manual_nodes(db, source_pid)  # config source
+    old_positions = layout_store.read_positions_by_scope().get(source_pid, {})
+    uses_by_id = {u["use_id"]: u for u in ps.get_pipeline_uses(db, source_pid)}
     prefix_by_type = {
         "functionNode": "fn",
         "variableNode": "var",
         "constantNode": "const",
         "pathInputNode": "pathInput",
+        "sweepNode": "sweep",
     }
 
-    new_pid = ps.create_pipeline(db, new_name)
+    node_id_set = None if node_ids is None else set(node_ids)
+    selected = [n for n in graph["nodes"] if node_id_set is None or n["id"] in node_id_set]
+
+    # anchor=None (duplicate_pipeline): keep each node's own position,
+    # offset by a fixed amount. anchor=(x, y) (paste_nodes): translate the
+    # WHOLE selection so its bounding-box top-left lands there, preserving
+    # the copied nodes' relative layout to one another.
+    if anchor is None:
+        translation = {"x": 40.0, "y": 40.0}
+    else:
+        real_positions = [old_positions[n["id"]] for n in selected if n["id"] in old_positions]
+        min_x = min((p["x"] for p in real_positions), default=0.0)
+        min_y = min((p["y"] for p in real_positions), default=0.0)
+        translation = {"x": anchor[0] - min_x, "y": anchor[1] - min_y}
+
     old_to_new: dict[str, str] = {}
     # Counts nodes solidified below with no prior real position, so each
     # gets a distinct fallback instead of all landing on the same point.
     unpositioned_solidified = 0
 
-    # Submodule placements: fresh use_id, same child_pipeline_id, binding
-    # copied (the duplicate's binding becomes independently editable from
-    # here on — nothing special needed, it's just a normal column value).
-    for use in ps.get_pipeline_uses(db, pipeline_id):
-        pos = old_positions.get(use["use_id"], {"x": 0.0, "y": 0.0})
-        result = add_pipeline_use(
-            new_pid, use["child_pipeline_id"], dict(use["binding"]),
-            pos["x"] + offset, pos["y"] + offset,
-        )
-        old_to_new[use["use_id"]] = result["use_id"]
-
-    # Everything else: fresh node_id + config copied verbatim. Uses the
-    # FULL resolved graph (not just get_manual_nodes) so already-executed
-    # nodes are duplicated too — each gets its own node_id and, if its
-    # label matches real DB history, independently graduates to its own
-    # placement in new_pid on the next graph build.
-    for node in graph["nodes"]:
+    for node in selected:
         old_id = node["id"]
         node_type = node["type"]
+
         if node_type == "pipelineNode":
+            # Submodule placement: fresh use_id, same child_pipeline_id,
+            # binding copied (the copy's binding becomes independently
+            # editable from here on — nothing special needed, it's just a
+            # normal column value).
+            use = uses_by_id.get(old_id)
+            if use is None:
+                continue  # defensive; shouldn't happen
+            pos = old_positions.get(old_id, {"x": 0.0, "y": 0.0})
+            result = add_pipeline_use(
+                target_pid, use["child_pipeline_id"], dict(use["binding"]),
+                pos["x"] + translation["x"], pos["y"] + translation["y"],
+            )
+            old_to_new[old_id] = result["use_id"]
             continue
+
+        # Fresh node_id + config copied verbatim. Uses the FULL resolved
+        # graph (not just get_manual_nodes) so already-executed nodes are
+        # copied too — each gets its own node_id and, if its label matches
+        # real DB history, independently graduates to its own placement in
+        # target_pid on the next graph build.
         label = manual_nodes.get(old_id, {}).get("label") or node.get("data", {}).get("label", "")
         prefix = prefix_by_type.get(node_type, node_type)
         new_id = f"{prefix}__{label}__{uuid.uuid4().hex[:8]}"
         old_to_new[old_id] = new_id
 
-        ps.write_manual_node(db, new_id, node_type, label, new_pid)
+        ps.write_manual_node(db, new_id, node_type, label, target_pid)
         config = manual_nodes.get(old_id, {}).get("config")
         if config:
             ps.update_node_config(db, new_id, config)
 
         real_pos = old_positions.get(old_id)
         pos = real_pos or {"x": 0.0, "y": 0.0}
-        layout_store.write_node_position(new_id, pos["x"] + offset, pos["y"] + offset, pipeline_id=new_pid)
+        layout_store.write_node_position(
+            new_id, pos["x"] + translation["x"], pos["y"] + translation["y"], pipeline_id=target_pid
+        )
 
         # old_id may be a BARE canonical id relying on the implicit root
         # default (never explicitly placed anywhere) rather than an
         # explicit placement. Once the fresh copy above independently
-        # graduates to its OWN placement in new_pid on the next graph
+        # graduates to its OWN placement in target_pid on the next graph
         # build, a bare id's "no placement anywhere" fallback and a
         # "moved away to another scope" state become indistinguishable
         # from position data alone (domain.scope_filter._resolve_in_scope
-        # can't tell "duplicated" from "relocated") — the source's
-        # implicit default would silently disappear from its own canvas.
-        # Affirm the source's own explicit placement now, before that
-        # ambiguity can arise.
+        # can't tell "copied" from "relocated") — the source's implicit
+        # default would silently disappear from its own canvas. Affirm the
+        # source's own explicit placement now, before that ambiguity can
+        # arise.
         if old_id not in manual_nodes and graph_builder.parse_placement_id(old_id) is None:
-            solidified_id = graph_builder.placement_id(old_id, pipeline_id)
+            solidified_id = graph_builder.placement_id(old_id, source_pid)
             if real_pos is not None:
                 solidify_pos = real_pos
             else:
@@ -417,7 +451,7 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
                 # (frontend/src/layout.ts) auto-arranges such nodes via
                 # dagre on every load. Writing a REAL saved position is
                 # still required (it's the only way to record "this
-                # canonical node is explicitly claimed by `pipeline_id`",
+                # canonical node is explicitly claimed by `source_pid`",
                 # avoiding the ambiguity above) but it must not be the
                 # same shared fallback for every node solidified here —
                 # the frontend treats any saved position as authoritative
@@ -431,18 +465,19 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
                 }
                 unpositioned_solidified += 1
             logger.info(
-                "[duplicate_pipeline] solidifying %s -> %s at %r (had_real_pos=%s)",
+                "[_clone_nodes] solidifying %s -> %s at %r (had_real_pos=%s)",
                 old_id, solidified_id, solidify_pos, real_pos is not None,
             )
-            layout_store.write_node_position(solidified_id, solidify_pos["x"], solidify_pos["y"], pipeline_id=pipeline_id)
+            layout_store.write_node_position(solidified_id, solidify_pos["x"], solidify_pos["y"], pipeline_id=source_pid)
 
-    # Internal edges: get_pipeline_graph is already scope-resolved (both
-    # endpoints belong to pipeline_id), so both sides are always mapped.
+    # get_pipeline_graph is already scope-resolved (both endpoints belong
+    # to source_pid), so an edge is dropped here only when at least one
+    # endpoint wasn't part of the copied selection.
     n_edges = 0
     for e in graph["edges"]:
         src, tgt = old_to_new.get(e["source"]), old_to_new.get(e["target"])
         if src is None or tgt is None:
-            continue  # defensive; shouldn't happen given the scope resolution
+            continue
         ps.write_manual_edge(db, {
             "id": f"edge_{uuid.uuid4().hex[:12]}",
             "source": src,
@@ -451,6 +486,25 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
             "targetHandle": e.get("targetHandle"),
         })
         n_edges += 1
+
+    return old_to_new, len(old_to_new), n_edges
+
+
+def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
+    """Fork ``pipeline_id``'s own nodes into a brand-new, independent
+    pipeline the user can freely edit (e.g. "gait symmetry" -> "gait
+    speed") — see ``_clone_nodes`` for what "fork" means at the node
+    level. Unlike a partial paste (``paste_nodes``), a whole-scope copy is
+    expected to be immediately self-consistent, so this validates the
+    result compiles and rolls back if not.
+    """
+    from scistack_gui import layout as layout_store
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
+
+    db = get_db()
+    new_pid = ps.create_pipeline(db, new_name)
+    _old_to_new, n_nodes, n_edges = _clone_nodes(db, pipeline_id, None, new_pid)
 
     # Sanity-check: the copy must compile like any other pipeline. A
     # failure here means something in the copy was inconsistent — clean up
@@ -475,9 +529,49 @@ def duplicate_pipeline(pipeline_id: str, new_name: str) -> dict:
     logger.info(
         "[scope_service] duplicate_pipeline: '%s' -> '%s' (%s): %d node(s), "
         "%d edge(s)",
-        pipeline_id, new_name, new_pid, len(old_to_new), n_edges,
+        pipeline_id, new_name, new_pid, n_nodes, n_edges,
     )
     return {"ok": True, "pipeline_id": new_pid}
+
+
+def paste_nodes(
+    source_pipeline_id: str,
+    node_ids: list,
+    target_pipeline_id: str,
+    x: float,
+    y: float,
+) -> dict:
+    """Copy a selection (Cmd/Ctrl+C -> Cmd/Ctrl+V, or the canvas toolbar's
+    Copy/Paste buttons) from one scope into another — or the same scope
+    twice — via ``_clone_nodes`` at selection granularity (to-do #5).
+
+    Unlike ``duplicate_pipeline``, this does NOT validate that the result
+    compiles: a pasted subgraph is expected to often be a dangling
+    fragment right after paste (edges to nodes outside the selection are
+    dropped — meaningless once the target scope may not even contain
+    them), exactly like manually dragging in a few nodes one at a time.
+    The user re-wires boundaries same as any other partially-wired state
+    the GUI already tolerates (matches the project's "reversible, not
+    restrictive" stance used for hidden edges/ports).
+
+    Returns the old->new id map so the caller can select the freshly
+    pasted nodes.
+    """
+    from scistack_gui.db import get_db
+
+    if not node_ids:
+        return {"ok": True, "node_id_map": {}}
+
+    db = get_db()
+    old_to_new, n_nodes, n_edges = _clone_nodes(
+        db, source_pipeline_id, node_ids, target_pipeline_id, anchor=(x, y)
+    )
+    logger.info(
+        "[scope_service] paste_nodes: %d node(s) from '%s' -> '%s' (%d "
+        "internal edge(s) kept; boundary edges to non-copied nodes dropped)",
+        n_nodes, source_pipeline_id, target_pipeline_id, n_edges,
+    )
+    return {"ok": True, "node_id_map": old_to_new}
 
 
 def duplicate_hypothesis(pipeline_id: str, new_name: str) -> dict:
@@ -507,8 +601,9 @@ def pipeline_interface(pipeline_id: str) -> dict:
     for use in ps.get_pipeline_uses(db):
         uses_by_parent.setdefault(use["parent_pipeline_id"], []).append(use)
     positions_by_scope = layout_store.read_positions_by_scope()
+    hidden_ports = ps.get_hidden_ports_by_scope(db)
     return document_interface(
-        pipeline_id, manual_nodes, edges, uses_by_parent, positions_by_scope
+        pipeline_id, manual_nodes, edges, uses_by_parent, positions_by_scope, hidden_ports
     )
 
 
@@ -529,13 +624,14 @@ def build_pipeline_nodes(db, scope_id: str) -> list[dict]:
     manual_nodes = ps.get_manual_nodes(db)
     edges = ps.get_manual_edges(db)
     positions_by_scope = layout_store.read_positions_by_scope()
+    hidden_ports = ps.get_hidden_ports_by_scope(db)
     names = {p["pipeline_id"]: p["name"] for p in ps.list_pipelines(db)}
 
     nodes = []
     for use in uses_by_parent[scope_id]:
         child_id = use["child_pipeline_id"]
         iface = document_interface(
-            child_id, manual_nodes, edges, uses_by_parent, positions_by_scope
+            child_id, manual_nodes, edges, uses_by_parent, positions_by_scope, hidden_ports
         )
         nodes.append(
             {
@@ -555,3 +651,61 @@ def build_pipeline_nodes(db, scope_id: str) -> list[dict]:
         "[scope_service] built %d pipelineNode(s) for scope %s", len(nodes), scope_id
     )
     return nodes
+
+
+def hide_port(pipeline_id: str, direction: str, var_type: str) -> dict:
+    """Suppress a variable type's exposed port on ``pipeline_id``'s
+    interface (to-do #9) — see pipeline_store.hide_port /
+    domain.scope_filter.document_interface."""
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
+
+    ps.hide_port(get_db(), pipeline_id, direction, var_type)
+    return {"ok": True}
+
+
+def unhide_port(pipeline_id: str, direction: str, var_type: str) -> dict:
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
+
+    ps.unhide_port(get_db(), pipeline_id, direction, var_type)
+    return {"ok": True}
+
+
+def get_hidden_ports(pipeline_id: str) -> dict:
+    """One scope's hidden ports as JSON-friendly lists (the frontend
+    context menu's Show/Hide label needs to know current state)."""
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
+
+    hidden = ps.get_hidden_ports(get_db(), pipeline_id)
+    return {"input": sorted(hidden["input"]), "output": sorted(hidden["output"])}
+
+
+def export_pipeline(pipeline_id: str) -> dict:
+    """Write a portable document for ``pipeline_id`` (+ everything it
+    uses) to ``exports/`` and return its path + the document itself
+    (to-do #7) — see services.portability_service."""
+    from scistack_gui.db import get_db
+    from scistack_gui.services.portability_service import export_pipeline_to_file
+
+    return export_pipeline_to_file(get_db(), pipeline_id)
+
+
+def import_pipeline(document: dict) -> dict:
+    """Recreate an exported document with fresh ids (to-do #7) — see
+    services.portability_service."""
+    from scistack_gui.db import get_db
+    from scistack_gui.services.portability_service import import_pipeline_document
+
+    return import_pipeline_document(get_db(), document)
+
+
+def export_pipeline_code(pipeline_id: str) -> dict:
+    """Translate ``pipeline_id`` (+ everything it uses) into a standalone
+    Python or MATLAB script, written to ``exports/`` (to-do #6) — see
+    services.code_export_service."""
+    from scistack_gui.db import get_db
+    from scistack_gui.services.code_export_service import export_pipeline_to_code
+
+    return export_pipeline_to_code(get_db(), pipeline_id)

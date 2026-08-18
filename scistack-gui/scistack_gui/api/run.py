@@ -423,44 +423,18 @@ def _run_in_thread(
                     idx,
                     run_id,
                 )
-                inputs = {}
-                for param, type_names in v["input_types"].items():
-                    # type_names may be a list (new) or a string (from DB history).
-                    if isinstance(type_names, list):
-                        if len(type_names) > 1:
-                            from scidb import EachOf
+                # Variable-class inputs + scalar constants (pending overrides
+                # already applied above the loop) + any PathInput-backed
+                # params — shared with the pipeline-compiler path so this
+                # logic (including PathInput construction) lives in one
+                # place. See execution_service.build_run_inputs.
+                from scistack_gui.services.execution_service import build_run_inputs
 
-                            inputs[param] = EachOf(
-                                *(registry.get_variable_class(t) for t in type_names)
-                            )
-                            logger.debug(
-                                "[run_thread] Input '%s' is EachOf with %d types (run_id=%s)",
-                                param,
-                                len(type_names),
-                                run_id,
-                            )
-                        else:
-                            inputs[param] = registry.get_variable_class(type_names[0])
-                            logger.debug(
-                                "[run_thread] Input '%s' is single type: %s (run_id=%s)",
-                                param,
-                                type_names[0],
-                                run_id,
-                            )
-                    else:
-                        inputs[param] = registry.get_variable_class(type_names)
-                        logger.debug(
-                            "[run_thread] Input '%s' is type: %s (run_id=%s)",
-                            param,
-                            type_names,
-                            run_id,
-                        )
-                # Constants arrive already pending-overridden (see
-                # apply_pending_overrides above the loop).
-                inputs.update(v["constants"])
+                inputs = build_run_inputs(v, function_name)
                 logger.debug(
-                    "[run_thread] Added constants to inputs: %s (run_id=%s)",
-                    v["constants"],
+                    "[run_thread] Built inputs for %d param(s): %s (run_id=%s)",
+                    len(inputs),
+                    list(inputs),
                     run_id,
                 )
 
@@ -963,6 +937,237 @@ def _run_pipeline_in_thread(
         push_message({"type": "dag_updated"})
 
 
+def _run_matlab_pipeline_in_thread(
+    run_id: str,
+    pipeline_id: str,
+    mode: str,
+    target: str,
+    finalized,
+    skip_computed: bool,
+    db: DatabaseManager,
+) -> None:
+    """Background execution of a MATLAB-containing GUI pipeline scope
+    through the standalone sidecar (Stage 3) — the browser/standalone
+    counterpart to ``_run_pipeline_in_thread``, for callers with no
+    host-side terminal integration (no VS Code + MathWorks extension).
+    Generates the whole-pipeline script (Stage 1's
+    ``generate_matlab_pipeline_command``) and drives it through
+    ``MatlabSidecar``, relaying real stdout lines as ``run_output`` and a
+    real ``run_done`` once the sentinel is seen — unlike the VS Code
+    terminal path (Stage 2), this path KNOWS exactly when the run
+    finished, no DB file-watcher guessing needed.
+    """
+    from scistack_gui import matlab_sidecar
+    from scistack_gui.services.matlab_command_service import (
+        generate_matlab_pipeline_command,
+    )
+
+    def emit(text: str):
+        push_message({"type": "run_output", "run_id": run_id, "text": text})
+
+    cancel_event = threading.Event()
+    with _active_runs_lock:
+        _active_runs[run_id] = {
+            "event": cancel_event,
+            "thread": threading.current_thread(),
+            "cancelled": False,
+            "force_cancelled": False,
+            # force_cancel_run checks this to kill the MATLAB process
+            # itself instead of (uselessly) ctypes-injecting into a thread
+            # that's just waiting on a queue — see force_cancel_run.
+            "matlab_sidecar": True,
+        }
+    db.set_current_db()
+    run_started_at = time.time()
+    logger.info(
+        "[pipeline_run][matlab] run_id=%s scope=%s mode=%s target=%r",
+        run_id,
+        pipeline_id,
+        mode,
+        target,
+    )
+    emit(
+        f"▶ Running pipeline scope {pipeline_id} via MATLAB sidecar (mode={mode}"
+        + (f", target={target}" if target else "")
+        + ")\n"
+    )
+
+    success = False
+    cancelled = False
+    try:
+        result = generate_matlab_pipeline_command(
+            pipeline_id,
+            db,
+            {
+                "mode": mode,
+                "target": target,
+                "finalized": finalized,
+                "skip_computed": skip_computed,
+            },
+        )
+        for w in result.get("warnings") or []:
+            emit(f"⚠ {w}\n")
+        command = result["command"]
+
+        sidecar = matlab_sidecar.get_sidecar()
+        if not sidecar.start():
+            emit(
+                "Error: 'matlab' not found on PATH — cannot run this "
+                "pipeline without VS Code + the MathWorks extension "
+                "installed.\n"
+            )
+        else:
+            success = sidecar.run_command(command, emit)
+            if not success:
+                emit("✗ MATLAB reported an error — see log above\n")
+    except KeyboardInterrupt:
+        # force_cancel_run killed the sidecar process, which unblocks
+        # run_command's queue wait with a RuntimeError (not
+        # KeyboardInterrupt) — this branch exists defensively in case a
+        # future caller injects one directly, matching the Python-thread
+        # run path's shape.
+        cancelled = True
+        emit("⛔ Force-cancelled\n")
+    except Exception as exc:
+        logger.exception("[pipeline_run][matlab] failed (run_id=%s)", run_id)
+        emit(f"Error: {exc}\n")
+    finally:
+        duration_ms = int((time.time() - run_started_at) * 1000)
+        with _active_runs_lock:
+            entry = _active_runs.pop(run_id, None)
+        was_force = bool(entry and entry.get("force_cancelled"))
+        if cancel_event.is_set():
+            cancelled = True
+        if was_force:
+            # A force-cancel that killed the sidecar surfaces here as a
+            # plain RuntimeError from run_command (process exited before
+            # completion) — reclassify it as a cancellation, not a failure.
+            cancelled = True
+        logger.info(
+            "[pipeline_run][matlab] finished (run_id=%s success=%s cancelled=%s) "
+            "in %d ms",
+            run_id,
+            success,
+            cancelled,
+            duration_ms,
+        )
+        push_message(
+            {
+                "type": "run_done",
+                "run_id": run_id,
+                "success": success and not cancelled,
+                "duration_ms": duration_ms,
+                "cancelled": cancelled,
+                "force_cancelled": was_force,
+            }
+        )
+        push_message({"type": "dag_updated"})
+
+
+def _run_matlab_command_in_thread(
+    run_id: str,
+    command: str,
+    warnings: list[str],
+) -> None:
+    """Background execution of an ALREADY-GENERATED MATLAB command (single
+    function or whole pipeline — this is transport-agnostic, just text)
+    through the standalone sidecar. The Stage 4 fallback-ladder tier: used
+    when a caller has some OTHER host-side dispatch option too (VS Code's
+    dagPanel.ts trying the MathWorks terminal first) but that option isn't
+    available right now, before finally falling back to clipboard-copy.
+    Pushes real run_output/run_done — the caller doesn't synthesize
+    anything for this tier (unlike the terminal-dispatch tier, which must,
+    since nothing else drives that path)."""
+    from scistack_gui import matlab_sidecar
+
+    def emit(text: str):
+        push_message({"type": "run_output", "run_id": run_id, "text": text})
+
+    cancel_event = threading.Event()
+    with _active_runs_lock:
+        _active_runs[run_id] = {
+            "event": cancel_event,
+            "thread": threading.current_thread(),
+            "cancelled": False,
+            "force_cancelled": False,
+            "matlab_sidecar": True,
+        }
+    run_started_at = time.time()
+    for w in warnings:
+        emit(f"⚠ {w}\n")
+
+    success = False
+    try:
+        sidecar = matlab_sidecar.get_sidecar()
+        if not sidecar.start():
+            emit("Error: 'matlab' not found on PATH.\n")
+        else:
+            success = sidecar.run_command(command, emit)
+            if not success:
+                emit("✗ MATLAB reported an error — see log above\n")
+    except Exception as exc:
+        logger.exception("[run_thread][matlab] failed (run_id=%s)", run_id)
+        emit(f"Error: {exc}\n")
+    finally:
+        duration_ms = int((time.time() - run_started_at) * 1000)
+        with _active_runs_lock:
+            entry = _active_runs.pop(run_id, None)
+        was_force = bool(entry and entry.get("force_cancelled"))
+        cancelled = was_force or cancel_event.is_set()
+        logger.info(
+            "[run_thread][matlab] finished (run_id=%s success=%s cancelled=%s) "
+            "in %d ms",
+            run_id,
+            success,
+            cancelled,
+            duration_ms,
+        )
+        push_message(
+            {
+                "type": "run_done",
+                "run_id": run_id,
+                "success": success and not cancelled,
+                "duration_ms": duration_ms,
+                "cancelled": cancelled,
+                "force_cancelled": was_force,
+            }
+        )
+        push_message({"type": "dag_updated"})
+
+
+def start_matlab_sidecar_run(
+    command: str, run_id: str, warnings: "list[str] | None" = None
+) -> dict:
+    """Drive an already-generated MATLAB command (single function or
+    whole pipeline) through the standalone sidecar. Called from the VS
+    Code extension's dagPanel.ts as the fallback-ladder's Tier 3, when
+    Tier 2 (the MathWorks terminal) isn't available — see
+    plan-matlab-pipeline-execution.md Stage 4.
+
+    Cheaply reports unavailability up front (``sidecar_available=False``,
+    no thread spawned) when ``matlab`` isn't on PATH, so the caller can
+    fall through to its clipboard-copy fallback instead of waiting.
+    """
+    from scistack_gui import matlab_sidecar
+
+    if not matlab_sidecar.sidecar_capable():
+        logger.info(
+            "[api/run] MATLAB sidecar unavailable ('matlab' not on PATH) "
+            "for run_id=%s",
+            run_id,
+        )
+        return {"run_id": run_id, "sidecar_available": False}
+
+    thread = threading.Thread(
+        target=_run_matlab_command_in_thread,
+        args=(run_id, command, warnings or []),
+        daemon=True,
+    )
+    thread.start()
+    logger.info("[api/run] MATLAB sidecar run thread started (run_id=%s)", run_id)
+    return {"run_id": run_id, "sidecar_available": True}
+
+
 def start_pipeline_run(
     pipeline_id: str,
     mode: str = "all",
@@ -970,20 +1175,78 @@ def start_pipeline_run(
     finalized=None,
     skip_computed: bool = True,
     run_id: "str | None" = None,
+    host_can_dispatch_matlab: bool = False,
 ) -> dict:
     """Spawn a background pipeline run (called from api/scopes and the
     JSON-RPC handler). Validates the mode/target shape up front so bad
-    requests fail synchronously."""
+    requests fail synchronously.
+
+    MATLAB routing: if ``pipeline_id``'s scope (or any pipeline it uses)
+    contains a MATLAB function node, Python's own ``Pipeline._run`` can't
+    execute it (see ``execution_service.pipeline_has_matlab_steps`` — it
+    can only silently skip such steps, not run them).
+
+    ``host_can_dispatch_matlab=True`` (set only by ``server.py``'s
+    JSON-RPC handler — the VS Code extension has a privileged host,
+    ``dagPanel.ts``, sitting between the webview and this process) skips
+    spawning any thread here and instead returns
+    ``host_execution_required=True`` (with the SAME ``run_id`` the caller
+    already has), so ``dagPanel.ts`` generates the script itself and
+    dispatches it to the MathWorks terminal (Stage 2) or clipboard.
+
+    Plain HTTP callers (``api/scopes.py`` — browser/standalone mode, no
+    such privileged host exists) get ``host_can_dispatch_matlab=False``
+    (the default): MATLAB steps are driven directly here through the
+    standalone sidecar (Stage 3, ``_run_matlab_pipeline_in_thread``). Both
+    paths emit ``run_output``/``run_done`` tagged with the same
+    ``run_id``, so the frontend's run console doesn't need to know which
+    path served it.
+    """
     from scistack_gui.db import get_db
+    from scistack_gui.services.execution_service import pipeline_has_matlab_steps
 
     if mode not in ("all", "until", "endpoints", "show"):
         raise ValueError(f"unknown run mode {mode!r}")
     if mode in ("until", "show") and not target:
         raise ValueError(f"mode={mode!r} requires a target step name")
+
     rid = run_id or str(uuid.uuid4())[:8]
+    db = get_db()
+    if pipeline_has_matlab_steps(db, pipeline_id):
+        if mode == "show":
+            raise ValueError(
+                "mode='show' is not supported for a MATLAB-containing "
+                "pipeline (MATLAB Pipeline.m has no show() equivalent)"
+            )
+        if host_can_dispatch_matlab:
+            logger.info(
+                "[api/run] pipeline %s contains MATLAB step(s) — routing to "
+                "host-side execution (run_id=%s)",
+                pipeline_id,
+                rid,
+            )
+            return {
+                "run_id": rid,
+                "host_execution_required": True,
+                "language": "matlab",
+            }
+        logger.info(
+            "[api/run] pipeline %s contains MATLAB step(s) — routing to "
+            "standalone MATLAB sidecar (run_id=%s)",
+            pipeline_id,
+            rid,
+        )
+        thread = threading.Thread(
+            target=_run_matlab_pipeline_in_thread,
+            args=(rid, pipeline_id, mode, target, finalized, skip_computed, db),
+            daemon=True,
+        )
+        thread.start()
+        return {"run_id": rid}
+
     thread = threading.Thread(
         target=_run_pipeline_in_thread,
-        args=(rid, pipeline_id, mode, target, finalized, skip_computed, get_db()),
+        args=(rid, pipeline_id, mode, target, finalized, skip_computed, db),
         daemon=True,
     )
     thread.start()
@@ -1024,7 +1287,8 @@ def cancel_run(run_id: str) -> dict:
 
 
 def force_cancel_run(run_id: str) -> dict:
-    """Force-cancel a running for_each by injecting KeyboardInterrupt.
+    """Force-cancel a running for_each by injecting KeyboardInterrupt (or,
+    for a MATLAB-sidecar pipeline run, killing the MATLAB process itself).
 
     Sets the cooperative cancel event AND calls
     ``ctypes.pythonapi.PyThreadState_SetAsyncExc`` to raise
@@ -1034,6 +1298,16 @@ def force_cancel_run(run_id: str) -> dict:
       or threading primitives that don't poll for interrupts.
     - When that fails, the user must restart the Python subprocess via
       the existing ``scistack.restartPython`` command.
+
+    A MATLAB-sidecar run (``_run_matlab_pipeline_in_thread``, tagged
+    ``matlab_sidecar: True`` in the registry) is a different shape: the
+    worker thread is just blocked waiting on a queue for output from a
+    SEPARATE MATLAB process — injecting an exception into that thread would
+    only stop Python from waiting, not stop MATLAB from computing. Real
+    cancellation there means killing the MATLAB process directly
+    (``matlab_sidecar.MatlabSidecar.stop()``), which closes its stdout and
+    unblocks the worker thread's queue wait with a clean "process exited"
+    error — no ctypes injection needed or attempted.
 
     Returns:
         ``{"ok": True, "cancelled": True, "force": True, "best_effort": True}``
@@ -1057,6 +1331,24 @@ def force_cancel_run(run_id: str) -> dict:
         entry["force_cancelled"] = True
         entry["event"].set()
         thread = entry["thread"]
+        is_matlab_sidecar = bool(entry.get("matlab_sidecar"))
+
+    if is_matlab_sidecar:
+        from scistack_gui import matlab_sidecar
+
+        logger.info(
+            "[force_cancel_run] MATLAB sidecar run — killing the MATLAB "
+            "process directly (run_id=%s)",
+            run_id,
+        )
+        matlab_sidecar.get_sidecar().stop()
+        return {
+            "ok": True,
+            "cancelled": True,
+            "force": True,
+            "best_effort": True,
+            "injected": False,
+        }
 
     tid = thread.ident
     if tid is None:

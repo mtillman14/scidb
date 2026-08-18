@@ -97,7 +97,7 @@ PLACEMENT_SEP = "::"
 # Every prefix a DB-derived (non-manual) canonical id can start with —
 # shared by the layout.json migration and anything else that needs to
 # distinguish "this id names real DB data" from a manual/opaque id.
-_DB_DERIVED_PREFIXES = ("var__", "fn__", "const__", "pathInput__")
+_DB_DERIVED_PREFIXES = ("var__", "fn__", "const__", "pathInput__", "sweep__")
 
 # Matches domain.scope_filter.ROOT / pipeline_store.ROOT_PIPELINE_ID — kept
 # as a local literal since this module is pure (no DB/store imports).
@@ -765,7 +765,10 @@ def overlay_saved_path_inputs(
 ) -> dict[str, dict]:
     """Overlay saved template/root_folder from layout.json onto path_inputs.
 
-    Mutates path_inputs in place and returns it.
+    Mutates path_inputs in place and returns it. ``alternate_templates``
+    (see layout.add_path_input_alternate) rides through verbatim — it's
+    layout.json-only metadata, never DB-derived, so there's nothing to
+    merge, only to carry over.
     """
     for saved_pi in saved_path_inputs:
         pname = saved_pi["name"]
@@ -774,10 +777,14 @@ def overlay_saved_path_inputs(
                 path_inputs[pname]["template"] = saved_pi["template"]
             if saved_pi.get("root_folder") is not None:
                 path_inputs[pname]["root_folder"] = saved_pi["root_folder"]
+            path_inputs[pname]["alternate_templates"] = saved_pi.get(
+                "alternate_templates", []
+            )
         else:
             path_inputs[pname] = {
                 "template": saved_pi.get("template", ""),
                 "root_folder": saved_pi.get("root_folder"),
+                "alternate_templates": saved_pi.get("alternate_templates", []),
                 "functions": set(),
             }
     return path_inputs
@@ -801,10 +808,37 @@ def build_path_input_nodes(path_inputs: dict[str, dict]) -> list[dict]:
                     "label": param_name,
                     "template": pi["template"],
                     "root_folder": pi.get("root_folder"),
+                    "alternate_templates": pi.get("alternate_templates", []),
                 },
             }
         )
     logger.debug("[graph_builder] built %d path input node(s)", len(nodes))
+    return nodes
+
+
+def build_sweep_nodes(sweeps: list[dict]) -> list[dict]:
+    """Build React Flow sweep nodes.
+
+    Unlike variables/constants/path-inputs, a Sweep has no DB-history
+    counterpart to overlay onto — it's purely a layout.json-authored
+    definition (see layout.read_all_sweep_names), so this reads the
+    saved list directly rather than merging into an aggregated dict.
+    """
+    logger.info(
+        "[graph_builder] build_sweep_nodes: building %d sweep node(s)",
+        len(sweeps),
+    )
+    nodes = []
+    for sw in sorted(sweeps, key=lambda s: s["name"]):
+        nodes.append(
+            {
+                "id": f"sweep__{sw['name']}",
+                "type": "sweepNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": sw["name"], "values": sw.get("values", [])},
+            }
+        )
+    logger.debug("[graph_builder] built %d sweep node(s)", len(nodes))
     return nodes
 
 
@@ -1490,7 +1524,9 @@ def build_manual_node(
         ]
         extra = {"values": pending_vals}
     elif meta["type"] == "pathInputNode":
-        extra = {"template": "", "root_folder": None}
+        extra = {"template": "", "root_folder": None, "alternate_templates": []}
+    elif meta["type"] == "sweepNode":
+        extra = {"values": []}
     elif meta["type"] == "functionNode":
         extra = {
             "input_params": resolved_input_params or {},

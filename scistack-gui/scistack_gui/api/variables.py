@@ -137,6 +137,125 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
     }
 
 
+# ---- Default plotting by schema level (to-do #4) ------------------------------
+
+
+def _numeric_plot_kind(sample: object) -> "str | None":
+    """Classify a variable's data column for the default-plot mechanism
+    from one SAMPLE VALUE already fetched via the duckdb Python client
+    (not by parsing a SQL type-name string) — see
+    plan-default-plotting-by-schema-level.md for why: the duckdb client's
+    own Python type for a row value (float/int for a scalar column, list
+    for a LIST column) is the ground truth actually observed, with no
+    dependency on knowing DuckDB's information_schema type-string spelling
+    for list/array columns across versions.
+
+    Returns "scalar", "1d", or None (not eligible). A column is uniformly
+    typed by DuckDB, so sampling any one row's value classifies the whole
+    column.
+    """
+    if isinstance(sample, bool):  # bool is an int subclass — exclude explicitly
+        return None
+    if isinstance(sample, (int, float)):
+        return "scalar"
+    if isinstance(sample, list) and sample and all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) for v in sample
+    ):
+        return "1d"
+    return None
+
+
+@router.get("/variables/{variable_name}/plot-data")
+def get_variable_plot_data(variable_name: str, db: DatabaseManager = Depends(get_db)):
+    """
+    Raw points for the sidebar's default plot (to-do #4) — every record's
+    schema key values + its scalar/1D-numeric value, unaggregated. The
+    frontend groups/averages by whichever schema keys the user leaves
+    checked; shipping raw points keeps that instant (no round trip per
+    schema-level toggle).
+
+    Response shape:
+      {
+        "eligible": bool,
+        "reason": str | None,             # why not, when eligible=False
+        "kind": "scalar" | "1d" | None,
+        "schema_keys": ["subject", "session"],
+        "points": [
+          {"subject": "1", "session": "pre", "value": 0.42},
+          ...
+        ]
+      }
+    """
+    schema_keys: list[str] = db._duck.dataset_schema
+    empty = {"eligible": False, "reason": None, "kind": None,
+             "schema_keys": schema_keys, "points": []}
+
+    known = {
+        row[0] for row in db._duck._fetchall("SELECT variable_name FROM _variables")
+    }
+    if variable_name not in known:
+        logger.info("get_variable_plot_data: unknown variable %r", variable_name)
+        return {**empty, "reason": "unknown variable"}
+
+    data_table = f"{variable_name}_data"
+    cols = db._duck._fetchall(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name != 'record_id' "
+        "ORDER BY ordinal_position",
+        [data_table],
+    )
+    if len(cols) != 1:
+        return {**empty, "reason": "not a scalar/1D variable (multi-column data)"}
+    value_col = cols[0][0]
+
+    schema_select = ", ".join(f's."{k}"' for k in schema_keys)
+    if schema_select:
+        schema_select = ", " + schema_select
+    query = f"""
+        SELECT t.record_id, t."{value_col}"{schema_select}
+        FROM "{data_table}" t
+        JOIN _record r ON t.record_id = r.record_id
+        LEFT JOIN _schema s ON r.schema_id = s.schema_id
+        WHERE r.excluded IS DISTINCT FROM TRUE
+    """
+    try:
+        rows = db._duck._fetchall(query)
+    except Exception as exc:
+        logger.warning("get_variable_plot_data(%s) query failed: %s", variable_name, exc)
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    if not rows:
+        return {**empty, "reason": "no records yet"}
+
+    kind = _numeric_plot_kind(rows[0][1])
+    if kind is None:
+        return {**empty, "reason": f"not scalar/1D numeric (got {type(rows[0][1]).__name__})"}
+
+    points = []
+    for row in rows:
+        value = row[1]
+        schema_vals = dict(zip(schema_keys, row[2:], strict=False))
+        points.append({
+            **{
+                k: (str(v) if v is not None else None)
+                for k, v in schema_vals.items()
+            },
+            "value": value,
+        })
+
+    logger.info(
+        "get_variable_plot_data(%s): kind=%s, %d point(s)",
+        variable_name, kind, len(points),
+    )
+    return {
+        "eligible": True,
+        "reason": None,
+        "kind": kind,
+        "schema_keys": schema_keys,
+        "points": points,
+    }
+
+
 # ---- Create new variable type -------------------------------------------------
 
 

@@ -36,6 +36,31 @@ _CLASSDEF_RE = re.compile(
     re.MULTILINE,
 )
 
+# MATLAB block comments: a line containing only `%{`, everything up to a
+# line containing only `%}`. Stripped before either regex above runs, so
+# example code inside a block comment (a common way scientists leave
+# "here's how to call this" notes) never false-positives as a real
+# function/classdef declaration.
+_BLOCK_COMMENT_RE = re.compile(
+    r"^[ \t]*%\{[ \t]*$.*?^[ \t]*%\}[ \t]*$\n?",
+    re.DOTALL | re.MULTILINE,
+)
+
+# MATLAB line continuation (`...` through end of line, including any
+# trailing comment) followed by the leading whitespace of the next line.
+# Collapsed to a single space before matching so a signature split across
+# multiple lines doesn't leak "...\n    " into a captured parameter name.
+_LINE_CONTINUATION_RE = re.compile(r"\.\.\.[^\n]*\n[ \t]*")
+
+
+def _preprocess_for_parsing(text: str) -> str:
+    """Strip block comments and collapse line continuations before either
+    parser regex runs. Never applied to the bytes used for ``source_hash`` —
+    only to the text used to locate function/classdef declarations."""
+    text = _BLOCK_COMMENT_RE.sub("", text)
+    text = _LINE_CONTINUATION_RE.sub(" ", text)
+    return text
+
 
 @dataclass
 class MatlabFunctionInfo:
@@ -44,8 +69,10 @@ class MatlabFunctionInfo:
     name: str
     """Function name (from the function declaration)."""
 
-    file_path: Path
-    """Absolute path to the .m file."""
+    file_path: Path | None
+    """Absolute path to the .m file. ``None`` for a manually-declared
+    reference to a MATLAB built-in/toolbox function — there is no backing
+    .m file to point at (see scistack_gui.api.builtin_functions)."""
 
     params: list[str]
     """Parameter names (input arguments)."""
@@ -81,7 +108,7 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
     # preserves \r\n line endings (read_text would normalise them away).
     logger.debug("[matlab_parser] Computing source hash")
     source_hash = sha256(raw).hexdigest()
-    text = raw.decode("utf-8", errors="replace")
+    text = _preprocess_for_parsing(raw.decode("utf-8", errors="replace"))
 
     logger.debug("[matlab_parser] Searching for function declaration")
     m = _FUNCTION_RE.search(text)
@@ -145,6 +172,7 @@ def parse_matlab_variable(path: Path) -> str | None:
             "[matlab_parser] Cannot read MATLAB variable file %s: %s", path, e
         )
         return None
+    text = _preprocess_for_parsing(text)
 
     logger.debug("[matlab_parser] Searching for classdef declaration")
     m = _CLASSDEF_RE.search(text)
@@ -164,4 +192,32 @@ def parse_matlab_variable(path: Path) -> str | None:
     logger.debug(
         "[matlab_parser] Class %s does not inherit from BaseVariable", class_name
     )
+    return None
+
+
+def classify_matlab_file(
+    path: Path,
+) -> tuple[str, str] | tuple[str, MatlabFunctionInfo] | None:
+    """Classify a single .m file as a variable or a function by content,
+    for folder-scan discovery (no explicit ``matlab.functions``/
+    ``matlab.variables`` split available).
+
+    Mirrors how Python's ``_scan_module_functions`` classifies each
+    imported object dynamically rather than requiring the config to
+    pre-sort files. Tries the classdef parse first (cheaper, and a
+    ``BaseVariable`` classdef with methods would otherwise also match the
+    function regex).
+
+    Returns ``("variable", class_name)``, ``("function", MatlabFunctionInfo)``,
+    or ``None`` if the file is neither (e.g. a script with no function
+    declaration, or unreadable).
+    """
+    var_name = parse_matlab_variable(path)
+    if var_name is not None:
+        return ("variable", var_name)
+
+    fn_info = parse_matlab_function(path)
+    if fn_info is not None:
+        return ("function", fn_info)
+
     return None

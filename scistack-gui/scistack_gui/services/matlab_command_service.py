@@ -12,6 +12,33 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def _normalize_input_types(input_types: dict) -> "tuple[dict, list[str]]":
+    """Collapse a target's ``input_types`` to the flat ``{param: type_name}``
+    shape ``api.matlab_command``'s generator expects.
+
+    ``derive_target_for_node``'s never-run fallback (``resolve_function_
+    edges``) returns each param as a LIST of candidate producer types —
+    even a single candidate is ``["RawSignal"]``, not ``"RawSignal"`` —
+    unlike real DB-history variants, which are already flat. A one-item
+    list collapses to its item; a param with 0 or >1 candidates has no
+    single MATLAB-safe value (the generator has no ``EachOf(...)``
+    support), so it's reported back as unresolved instead of guessing.
+
+    Returns ``(flat_input_types, unresolved_param_names)``.
+    """
+    flat: dict = {}
+    unresolved: list[str] = []
+    for param, type_val in input_types.items():
+        if isinstance(type_val, list):
+            if len(type_val) == 1:
+                flat[param] = type_val[0]
+            else:
+                unresolved.append(param)
+        else:
+            flat[param] = type_val
+    return flat, unresolved
+
+
 def _sort_inferred_by_params_order(
     inferred: list[str], params_types: list[str]
 ) -> list[str]:
@@ -218,3 +245,202 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         "generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd)
     )
     return {"command": cmd}
+
+
+def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict:
+    """Generate a ready-to-paste whole-pipeline MATLAB script.
+
+    Scopes to every MATLAB function node in ``pipeline_id`` (via
+    ``execution_service._scope_function_node_ids`` +
+    ``matlab_registry.is_matlab_function``), resolving each node's
+    target(s) with ``execution_service.derive_target_for_node`` — the same
+    per-node target derivation ``build_backend_pipeline`` uses for Python
+    pipeline runs, so a MATLAB pipeline run sees identical targets to a
+    Python pipeline run or a ``code_export_service`` export of the same
+    scope. Python function nodes sharing the scope are excluded (a
+    MATLAB-only script cannot register a Python step into the same
+    in-process ``scidb.Pipeline`` the MATLAB session builds — see
+    ``api.matlab_command.generate_matlab_pipeline_command``'s docstring)
+    and reported back via ``warnings`` instead of silently vanishing.
+
+    Args:
+        pipeline_id: The GUI pipeline scope id.
+        db: DatabaseManager instance.
+        params: Full RPC params dict (``mode``, ``target``, ``finalized``,
+            ``skip_computed``, ``schema_filter``, ``schema_level``).
+
+    Returns:
+        {"command": str, "warnings": list[str]}
+    """
+    from scistack_gui import layout as layout_store
+    from scistack_gui import matlab_registry
+    from scistack_gui import pipeline_store
+    from scistack_gui import registry as _reg
+    from scistack_gui.api.matlab_command import (
+        generate_matlab_pipeline_command as _fmt,
+    )
+    from scistack_gui.db import get_db_path
+    from scistack_gui.domain.graph_builder import parse_path_input, strip_placement
+    from scistack_gui.domain.variant_resolver import (
+        filter_hidden_targets,
+        hidden_call_ids_for_fn,
+    )
+    from scistack_gui.services.execution_service import (
+        _scope_function_node_ids,
+        apply_pending_overrides,
+        derive_target_for_node,
+    )
+
+    db_path = str(get_db_path())
+
+    addpath_dirs: list[str] = []
+    if matlab_registry._config is not None:
+        addpath_dirs = [str(p) for p in matlab_registry._config.matlab_addpath]
+
+    from scistack_gui.server import _find_scimatlab_matlab_dir
+
+    scimatlab_dir = _find_scimatlab_matlab_dir()
+    if scimatlab_dir:
+        addpath_dirs = [scimatlab_dir] + addpath_dirs
+        logger.info(
+            "generate_matlab_pipeline_command: prepended scimatlab dir: %s",
+            scimatlab_dir,
+        )
+    else:
+        logger.warning(
+            "generate_matlab_pipeline_command: scimatlab MATLAB directory not "
+            "found; scihist.* / scidb.* may be unavailable in MATLAB"
+        )
+
+    project_root: str | None = None
+    if _reg._config is not None:
+        project_root = str(_reg._config.project_root)
+
+    pending_consts = pipeline_store.get_pending_constants(db)
+    hidden_ids = pipeline_store.get_hidden_node_ids(db)
+    saved_pis = {pi["name"]: pi for pi in layout_store.read_all_path_input_names()}
+    manual_edges = layout_store.read_manual_edges()
+
+    steps: list[dict] = []
+    warnings: list[str] = []
+    excluded_python: set[str] = set()
+    for node_id, fn_label in _scope_function_node_ids(db, pipeline_id):
+        if not matlab_registry.is_matlab_function(fn_label):
+            excluded_python.add(fn_label)
+            continue
+
+        targets = apply_pending_overrides(
+            derive_target_for_node(db, node_id), pending_consts
+        )
+        targets = filter_hidden_targets(
+            targets,
+            fn_label,
+            hidden_call_ids_for_fn(hidden_ids, fn_label),
+            pending_consts,
+            distribute=False,
+            as_table=None,
+        )
+        seen_target_keys: set = set()
+        unique_targets: list[dict] = []
+        for target in targets:
+            key = (tuple(sorted(target["constants"].items())), target["output_type"])
+            if key in seen_target_keys:
+                continue
+            seen_target_keys.add(key)
+            flat_input_types, unresolved = _normalize_input_types(
+                target.get("input_types") or {}
+            )
+            if unresolved:
+                warnings.append(
+                    f"'{fn_label}': param(s) {sorted(unresolved)} have more "
+                    "than one candidate producer type — target skipped "
+                    "(MATLAB generation doesn't support EachOf-style "
+                    "multi-type inputs)"
+                )
+                continue
+            unique_targets.append({**target, "input_types": flat_input_types})
+
+        # Path inputs for this function — same two-source resolution
+        # (DB-variant input_types + manual edges + saved templates) as
+        # generate_matlab_command, applied per-node here.
+        path_input_params: dict[str, dict] = {}
+        for t in unique_targets:
+            for param_name, type_val in (t.get("input_types") or {}).items():
+                pi = parse_path_input(str(type_val))
+                if pi is not None:
+                    path_input_params[param_name] = pi
+        for edge in manual_edges:
+            src = edge.get("source", "")
+            tgt = edge.get("target", "")
+            th = edge.get("targetHandle", "")
+            if not (src.startswith("pathInput__") and th.startswith("in__")):
+                continue
+            tgt_parts = tgt.split("__")
+            if len(tgt_parts) < 2 or tgt_parts[0] != "fn" or tgt_parts[1] != fn_label:
+                continue
+            bare_src = strip_placement(src)
+            pi_name = (
+                bare_src.split("__")[1]
+                if len(bare_src.split("__")) >= 2
+                else bare_src[len("pathInput__") :]
+            )
+            param_name = th[len("in__") :]
+            if pi_name in saved_pis:
+                path_input_params[param_name] = {
+                    "template": saved_pis[pi_name].get("template", ""),
+                    "root_folder": saved_pis[pi_name].get("root_folder"),
+                }
+        for param_name, pi in path_input_params.items():
+            for edge in manual_edges:
+                th = edge.get("targetHandle", "")
+                if th == f"in__{param_name}":
+                    src = strip_placement(edge.get("source", ""))
+                    pi_name = src.split("__")[1] if len(src.split("__")) >= 2 else ""
+                    if pi_name in saved_pis and saved_pis[pi_name].get("template"):
+                        pi["template"] = saved_pis[pi_name]["template"]
+                        pi["root_folder"] = saved_pis[pi_name].get("root_folder")
+
+        steps.append(
+            {
+                "function_name": fn_label,
+                "variants": unique_targets,
+                "schema_filter": params.get("schema_filter"),
+                "schema_level": params.get("schema_level"),
+                "path_inputs": path_input_params if path_input_params else None,
+            }
+        )
+
+    for fn_label in sorted(excluded_python):
+        warnings.append(
+            f"'{fn_label}' is a Python function — excluded from the MATLAB "
+            "pipeline script; run it separately"
+        )
+
+    logger.info(
+        "generate_matlab_pipeline_command: pipeline=%s, matlab_steps=%d, "
+        "excluded_python=%d, project_root=%s",
+        pipeline_id,
+        len(steps),
+        len(excluded_python),
+        project_root,
+    )
+
+    cmd = _fmt(
+        pipeline_id=pipeline_id,
+        steps=steps,
+        db_path=db_path,
+        schema_keys=list(db.dataset_schema_keys),
+        mode=params.get("mode", "all"),
+        target=params.get("target", ""),
+        finalized=params.get("finalized"),
+        skip_computed=params.get("skip_computed", True),
+        addpath_dirs=addpath_dirs if addpath_dirs else None,
+        python_executable=sys.executable,
+        project_root=project_root,
+    )
+    logger.info(
+        "generate_matlab_pipeline_command: pipeline=%s, command_length=%d",
+        pipeline_id,
+        len(cmd),
+    )
+    return {"command": cmd, "warnings": warnings}
