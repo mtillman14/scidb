@@ -51,9 +51,25 @@ interface PackageResult {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+/**
+ * module_name is a dotted Python import path in packaged mode (e.g.
+ * "my_study.preprocessing") but a raw absolute filesystem path in
+ * loose-script/registry-backed mode (e.g. ".../python/vif.py") -- see
+ * registry.py's _scan_module_functions(mod, source=str(path)). Splitting
+ * a path on "." grabs the extension ("py"/"m"), not the filename, so
+ * detect which shape we have before picking a split character.
+ */
+function shortModuleName(moduleName: string): string {
+  if (moduleName.includes('/') || moduleName.includes('\\')) {
+    return moduleName.split(/[\\/]/).pop() || moduleName
+  }
+  return moduleName.split('.').pop() || moduleName
+}
+
 function ModuleRow({ mod }: { mod: ModuleExports }) {
   const [open, setOpen] = useState(false)
-  const shortName = mod.module_name.split('.').pop() || mod.module_name
+  const shortName = shortModuleName(mod.module_name)
   const total = mod.variable_count + mod.function_count + mod.constant_count
 
   if (total === 0) return null
@@ -65,6 +81,7 @@ function ModuleRow({ mod }: { mod: ModuleExports }) {
         onClick={() => setOpen(!open)}
         role="button"
         tabIndex={0}
+        title={mod.module_name}
       >
         <span style={{ marginRight: 6, fontSize: 10 }}>{open ? '▼' : '▶'}</span>
         <span style={{ flex: 1 }}>{shortName}</span>
@@ -102,7 +119,7 @@ function ModuleRow({ mod }: { mod: ModuleExports }) {
 
 function ErrorRow({ err }: { err: ModuleError }) {
   const [open, setOpen] = useState(false)
-  const shortName = err.module_name.split('.').pop() || err.module_name
+  const shortName = shortModuleName(err.module_name)
 
   return (
     <div style={{ marginBottom: 2 }}>
@@ -111,6 +128,7 @@ function ErrorRow({ err }: { err: ModuleError }) {
         onClick={() => setOpen(!open)}
         role="button"
         tabIndex={0}
+        title={err.module_name}
       >
         <span style={{ marginRight: 6, fontSize: 10 }}>{open ? '▼' : '▶'}</span>
         <span style={{ flex: 1 }}>{shortName}</span>
