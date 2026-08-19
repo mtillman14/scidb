@@ -15,7 +15,6 @@ from fastapi.staticfiles import StaticFiles
 from scistack_gui.api.artifacts import router as artifacts_router
 from scistack_gui.api.bootstrap import router as bootstrap_router
 from scistack_gui.api.builtin_functions import router as builtin_functions_router
-from scistack_gui.api.indexes import router as indexes_router
 from scistack_gui.api.layout import router as layout_router
 from scistack_gui.api.pipeline import router as pipeline_router
 from scistack_gui.api.project import router as project_router
@@ -48,7 +47,6 @@ def create_app() -> FastAPI:
     app.include_router(layout_router, prefix="/api")
     app.include_router(variables_router, prefix="/api")
     app.include_router(project_router, prefix="/api")
-    app.include_router(indexes_router, prefix="/api")
     app.include_router(scopes_router, prefix="/api")
     app.include_router(artifacts_router, prefix="/api")
     app.include_router(builtin_functions_router, prefix="/api")

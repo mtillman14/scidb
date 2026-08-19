@@ -101,17 +101,6 @@ class TestGetProjectCode:
         assert "PROJECT_RATE" in all_consts
 
 
-class TestGetProjectLibraries:
-    def test_returns_libraries_structure(self, project_client):
-        resp = project_client.get("/api/project/libraries")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "libraries" in data
-        assert "total_libraries" in data
-        assert "shown_libraries" in data
-        assert isinstance(data["libraries"], dict)
-
-
 class TestRefreshProject:
     def test_refresh_returns_ok(self, project_client):
         resp = project_client.post("/api/project/refresh")
@@ -258,3 +247,90 @@ class TestLooseProjectCode:
         registry_resp = loose_project_client.get("/api/registry").json()
         assert "now_fixed" in registry_resp["functions"]
         assert registry_resp["load_errors"] == []
+
+
+# ---------------------------------------------------------------------------
+# add_project_path / remove_project_path — Paths popup's editable list
+# (loose-script projects only). Uses external, non-nested directories to
+# mirror the real use case: pointing at a shared, reusable code repository
+# elsewhere on disk, not something inside the project's own folder.
+# ---------------------------------------------------------------------------
+
+
+class TestAddProjectPath:
+    def test_add_discovers_new_code_without_restart(
+        self, loose_project_client, tmp_path_factory
+    ):
+        """The critical regression case: registry.refresh_all()/
+        matlab_registry.refresh_all() replay against a *stale* in-memory
+        config and would NOT pick up a newly added path. The handler must
+        re-read scistack.toml from disk (see api/project.py's
+        _reload_config_and_rescan) so this works without a server restart.
+        """
+        external = tmp_path_factory.mktemp("external_repo")
+        (external / "shared_fn.py").write_text("def shared_fn(x):\n    return x * 2\n")
+
+        resp = loose_project_client.post(
+            "/api/project/paths", json={"path": str(external)}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert str(external) in data["managed_paths"]
+
+        code_resp = loose_project_client.get("/api/project/code").json()
+        all_fns = {f for mod in code_resp["modules"] for f in mod["functions"]}
+        assert "shared_fn" in all_fns
+
+    def test_add_rejects_nonexistent_path(self, loose_project_client, tmp_path):
+        resp = loose_project_client.post(
+            "/api/project/paths", json={"path": str(tmp_path / "does_not_exist")}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    def test_add_rejects_file_not_directory(self, loose_project_client, tmp_path):
+        a_file = tmp_path / "just_a_file.py"
+        a_file.write_text("")
+        resp = loose_project_client.post(
+            "/api/project/paths", json={"path": str(a_file)}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+
+class TestRemoveProjectPath:
+    def test_remove_stops_discovery_of_that_path(
+        self, loose_project_client, tmp_path_factory
+    ):
+        from urllib.parse import quote
+
+        external = tmp_path_factory.mktemp("external_repo")
+        (external / "temp_fn.py").write_text("def temp_fn(x):\n    return x\n")
+
+        add_resp = loose_project_client.post(
+            "/api/project/paths", json={"path": str(external)}
+        )
+        assert add_resp.json()["ok"] is True
+        code_resp = loose_project_client.get("/api/project/code").json()
+        all_fns = {f for mod in code_resp["modules"] for f in mod["functions"]}
+        assert "temp_fn" in all_fns
+
+        remove_resp = loose_project_client.delete(
+            f"/api/project/paths?path={quote(str(external))}"
+        )
+        assert remove_resp.status_code == 200
+        assert remove_resp.json()["ok"] is True
+
+        code_resp2 = loose_project_client.get("/api/project/code").json()
+        all_fns2 = {f for mod in code_resp2["modules"] for f in mod["functions"]}
+        assert "temp_fn" not in all_fns2
+
+    def test_remove_fails_when_no_scistack_toml_yet(self, loose_project_client, tmp_path):
+        from urllib.parse import quote
+
+        resp = loose_project_client.delete(
+            f"/api/project/paths?path={quote(str(tmp_path))}"
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False

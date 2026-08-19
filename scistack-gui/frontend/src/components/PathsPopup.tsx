@@ -16,9 +16,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { callBackend } from '../api'
 import ProjectConfigPanel from './Sidebar/ProjectConfigPanel'
+import ManagedPathsList from './ManagedPathsList'
 
 interface PathsInfo {
   configured: boolean
+  packaged: boolean
+  managed_paths: string[]
   project_root: string
   modules?: string[]
   variable_file?: string | null
@@ -51,30 +54,34 @@ export default function PathsPopup({ onClose }: { onClose: () => void }) {
         </div>
         <div style={styles.body}>
           <section style={{ marginBottom: 20 }}>
-            <div style={styles.sectionTitle}>Configured Paths</div>
+            <div style={styles.sectionTitle}>Paths</div>
             {error && <div style={styles.errorBanner}>{error}</div>}
             {!paths ? (
               <div style={styles.emptyText}>Loading…</div>
-            ) : !paths.configured ? (
-              <div style={styles.emptyText}>
-                Single-file mode — no [tool.scistack] paths configured.
-                Project root: <span style={styles.mono}>{paths.project_root}</span>
-              </div>
+            ) : paths.packaged ? (
+              <>
+                <div style={styles.pathsGrid}>
+                  <PathRow label="Project root" values={[paths.project_root]} />
+                  <PathRow label="Python modules" values={paths.modules ?? []} />
+                  <PathRow label="Python packages" values={paths.packages ?? []} />
+                  <PathRow label="Variable file" values={paths.variable_file ? [paths.variable_file] : []} />
+                  <PathRow label="MATLAB functions" values={paths.matlab_functions ?? []} />
+                  <PathRow label="MATLAB variables" values={paths.matlab_variables ?? []} />
+                  <PathRow label="MATLAB addpath" values={paths.matlab_addpath ?? []} />
+                  <PathRow label="MATLAB variable dir" values={paths.matlab_variable_dir ? [paths.matlab_variable_dir] : []} />
+                </div>
+                <div style={styles.hint}>
+                  Packaged project (pyproject.toml found) — edit these under <span style={styles.mono}>[tool.scistack]</span> / <span style={styles.mono}>[tool.scistack.matlab]</span> by hand, then hit Refresh below.
+                </div>
+              </>
             ) : (
-              <div style={styles.pathsGrid}>
-                <PathRow label="Project root" values={[paths.project_root]} />
-                <PathRow label="Python modules" values={paths.modules ?? []} />
-                <PathRow label="Python packages" values={paths.packages ?? []} />
-                <PathRow label="Variable file" values={paths.variable_file ? [paths.variable_file] : []} />
-                <PathRow label="MATLAB functions" values={paths.matlab_functions ?? []} />
-                <PathRow label="MATLAB variables" values={paths.matlab_variables ?? []} />
-                <PathRow label="MATLAB addpath" values={paths.matlab_addpath ?? []} />
-                <PathRow label="MATLAB variable dir" values={paths.matlab_variable_dir ? [paths.matlab_variable_dir] : []} />
-              </div>
+              <>
+                <ManagedPathsList paths={paths.managed_paths ?? []} onChange={fetchPaths} />
+                <div style={styles.hint}>
+                  Each path is recursively scanned for Python (.py) and MATLAB (.m) code — typically a shared, reusable code repository, not necessarily anything inside this project's own folder.
+                </div>
+              </>
             )}
-            <div style={styles.hint}>
-              Edit these under <span style={styles.mono}>[tool.scistack]</span> / <span style={styles.mono}>[tool.scistack.matlab]</span> in pyproject.toml (or scistack.toml), then hit Refresh below.
-            </div>
           </section>
           <ProjectConfigPanel />
         </div>

@@ -697,12 +697,6 @@ def _h_get_project_code(params):
     return get_project_code()
 
 
-def _h_get_project_libraries(params):
-    from scistack_gui.services.project_service import get_project_libraries
-
-    return get_project_libraries()
-
-
 def _h_refresh_project(params):
     from scistack_gui.notify import notify
     from scistack_gui.services.project_service import refresh_project
@@ -719,33 +713,24 @@ def _h_get_project_paths(params):
     return get_project_paths()
 
 
-# ---------------------------------------------------------------------------
-# Index & library management (Phase 7)
-# ---------------------------------------------------------------------------
+def _h_add_project_path(params):
+    from scistack_gui.notify import notify
+    from scistack_gui.services.project_service import add_project_path
+
+    result = add_project_path(params.get("path", ""))
+    if result.get("ok"):
+        notify("dag_updated", {})
+    return result
 
 
-def _h_get_indexes(params):
-    from scistack_gui.services.indexes_service import list_indexes
+def _h_remove_project_path(params):
+    from scistack_gui.notify import notify
+    from scistack_gui.services.project_service import remove_project_path
 
-    return list_indexes()
-
-
-def _h_search_index_packages(params):
-    from scistack_gui.services.indexes_service import search_index_packages
-
-    return search_index_packages(params.get("name", ""), q=params.get("q", ""))
-
-
-def _h_add_library(params):
-    from scistack_gui.services.indexes_service import add_library
-
-    return add_library(params)
-
-
-def _h_remove_library(params):
-    from scistack_gui.services.indexes_service import remove_library
-
-    return remove_library(params.get("name", ""))
+    result = remove_project_path(params.get("path", ""))
+    if result.get("ok"):
+        notify("dag_updated", {})
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -873,9 +858,10 @@ METHODS = {
     "create_variable": _h_create_variable,
     "create_builtin_function": _h_create_builtin_function,
     "get_project_code": _h_get_project_code,
-    "get_project_libraries": _h_get_project_libraries,
     "refresh_project": _h_refresh_project,
     "get_project_paths": _h_get_project_paths,
+    "add_project_path": _h_add_project_path,
+    "remove_project_path": _h_remove_project_path,
     "list_pipelines": _h_list_pipelines,
     "create_pipeline": _h_create_pipeline,
     "rename_pipeline": _h_rename_pipeline,
@@ -904,10 +890,6 @@ METHODS = {
     "start_pipeline_run": _h_start_pipeline_run,
     "get_endpoint_artifacts": _h_get_endpoint_artifacts,
     "write_report": _h_write_report,
-    "get_indexes": _h_get_indexes,
-    "search_index_packages": _h_search_index_packages,
-    "add_library": _h_add_library,
-    "remove_library": _h_remove_library,
     "generate_matlab_command": _h_generate_matlab_command,
     "generate_matlab_pipeline_command": _h_generate_matlab_pipeline_command,
     "start_matlab_sidecar_run": _h_start_matlab_sidecar_run,

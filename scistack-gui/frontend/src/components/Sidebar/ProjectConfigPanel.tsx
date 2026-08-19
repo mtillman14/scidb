@@ -3,16 +3,14 @@
  * "Project" tab. Now rendered inside PathsPopup.tsx (a header popup rather
  * than a permanent tab) below the raw configured-paths list.
  *
- * Two sections:
- *   - Project Code: modules under src/{project}/ with Variables/Functions/Constants
- *   - Libraries: installed packages from uv.lock that expose scistack exports
+ * Project Code: modules under src/{project}/ (or, in loose-script mode,
+ * whatever's configured/discovered) with Variables/Functions/Constants.
  *
  * Triggered by the Refresh button or initially on first render.
  */
 
 import { useState, useEffect, useCallback } from 'react'
 import { callBackend } from '../../api'
-import AddLibraryDialog from './AddLibraryDialog'
 
 // ---------------------------------------------------------------------------
 // Types matching the backend JSON shape
@@ -50,12 +48,6 @@ interface PackageResult {
   is_empty: boolean
 }
 
-interface LibrariesResponse {
-  libraries: Record<string, PackageResult>
-  total_libraries: number
-  shown_libraries: number
-}
-
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -74,7 +66,7 @@ function ModuleRow({ mod }: { mod: ModuleExports }) {
         role="button"
         tabIndex={0}
       >
-        <span style={{ marginRight: 6, fontSize: 10 }}>{open ? '\u25BC' : '\u25B6'}</span>
+        <span style={{ marginRight: 6, fontSize: 10 }}>{open ? '▼' : '▶'}</span>
         <span style={{ flex: 1 }}>{shortName}</span>
         <span style={styles.badge}>{total}</span>
       </div>
@@ -120,7 +112,7 @@ function ErrorRow({ err }: { err: ModuleError }) {
         role="button"
         tabIndex={0}
       >
-        <span style={{ marginRight: 6, fontSize: 10 }}>{open ? '\u25BC' : '\u25B6'}</span>
+        <span style={{ marginRight: 6, fontSize: 10 }}>{open ? '▼' : '▶'}</span>
         <span style={{ flex: 1 }}>{shortName}</span>
         <span style={{ ...styles.badge, background: '#552222' }}>error</span>
       </div>
@@ -131,56 +123,20 @@ function ErrorRow({ err }: { err: ModuleError }) {
   )
 }
 
-function PackageSection({ pkg, defaultOpen }: { pkg: PackageResult; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen ?? false)
-  const total = pkg.variable_count + pkg.function_count + pkg.constant_count
-
-  return (
-    <div style={{ marginBottom: 4 }}>
-      <div
-        style={styles.packageHeader}
-        onClick={() => setOpen(!open)}
-        role="button"
-        tabIndex={0}
-      >
-        <span style={{ marginRight: 6, fontSize: 10 }}>{open ? '\u25BC' : '\u25B6'}</span>
-        <span style={{ flex: 1, fontWeight: 600 }}>{pkg.name}</span>
-        <span style={styles.badge}>{total}</span>
-      </div>
-      {open && (
-        <div style={{ paddingLeft: 12 }}>
-          {pkg.modules.map(m => <ModuleRow key={m.module_name} mod={m} />)}
-          {pkg.errors.map(e => <ErrorRow key={e.module_name} err={e} />)}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 export default function ProjectConfigPanel() {
   const [projectCode, setProjectCode] = useState<PackageResult | null>(null)
-  const [libraries, setLibraries] = useState<Record<string, PackageResult>>({})
-  const [totalLibs, setTotalLibs] = useState(0)
-  const [shownLibs, setShownLibs] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [addLibOpen, setAddLibOpen] = useState(false)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [code, libs] = await Promise.all([
-        callBackend('get_project_code') as Promise<PackageResult>,
-        callBackend('get_project_libraries') as Promise<LibrariesResponse>,
-      ])
+      const code = await callBackend('get_project_code') as PackageResult
       setProjectCode(code)
-      setLibraries(libs.libraries)
-      setTotalLibs(libs.total_libraries)
-      setShownLibs(libs.shown_libraries)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -212,7 +168,7 @@ export default function ProjectConfigPanel() {
           onClick={handleRefresh}
           disabled={loading}
           style={styles.refreshBtn}
-          title="Re-scan project code and libraries"
+          title="Re-scan project code"
         >
           {loading ? 'Scanning...' : 'Refresh'}
         </button>
@@ -236,36 +192,6 @@ export default function ProjectConfigPanel() {
       ) : !loading ? (
         <div style={styles.emptyText}>Not scanned yet.</div>
       ) : null}
-
-      {/* Libraries */}
-      <div style={{ ...styles.sectionTitle, marginTop: 16 }}>
-        Libraries
-        {totalLibs > 0 && (
-          <span style={styles.libCount}>
-            {shownLibs} of {totalLibs} have exports
-          </span>
-        )}
-        <button
-          onClick={() => setAddLibOpen(true)}
-          style={{ ...styles.refreshBtn, marginLeft: 'auto' }}
-        >
-          Add Library
-        </button>
-      </div>
-      <AddLibraryDialog
-        open={addLibOpen}
-        onClose={() => setAddLibOpen(false)}
-        onInstalled={fetchData}
-      />
-      {Object.keys(libraries).length === 0 && !loading ? (
-        <div style={styles.emptyText}>
-          No libraries with scistack exports found.
-        </div>
-      ) : (
-        Object.entries(libraries).map(([name, pkg]) => (
-          <PackageSection key={name} pkg={pkg} />
-        ))
-      )}
     </div>
   )
 }
@@ -308,22 +234,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-  },
-  libCount: {
-    fontWeight: 400,
-    fontSize: 11,
-    color: '#666',
-    textTransform: 'none' as const,
-    letterSpacing: 0,
-  },
-  packageHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    padding: '4px 6px',
-    cursor: 'pointer',
-    borderRadius: 4,
-    fontSize: 13,
-    color: '#ddd',
   },
   moduleHeader: {
     display: 'flex',

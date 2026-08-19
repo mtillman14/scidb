@@ -12,7 +12,10 @@ from scistack_gui.config import (
     SciStackConfig,
     _extract_scistack_section,
     _normalize,
+    add_path,
     load_config,
+    remove_path,
+    tomllib,
 )
 
 # ---------------------------------------------------------------------------
@@ -195,6 +198,29 @@ def test_modules_empty_directory_warns(tmp_path, caplog):
     assert "no .py files" in caplog.text
 
 
+def test_modules_directory_excludes_noise_directories(tmp_path):
+    """A directory entry in modules should prune .venv/node_modules/etc.,
+    the same way folder-scan mode already does -- otherwise transitioning
+    a loose project from folder-scan to an explicit scistack.toml with
+    modules = ["."] would newly sweep in noise dirs it never used to."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('modules = ["lib"]')
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "real.py").write_text("")
+    venv = lib / ".venv" / "site-packages"
+    venv.mkdir(parents=True)
+    (venv / "noise.py").write_text("")
+    node_modules = lib / "node_modules" / "pkg"
+    node_modules.mkdir(parents=True)
+    (node_modules / "noise2.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.modules)
+    assert stems == ["real"]
+
+
 # ---------------------------------------------------------------------------
 # matlab.functions / matlab.variables — directory and glob support
 # ---------------------------------------------------------------------------
@@ -265,6 +291,46 @@ def test_matlab_empty_directory_warns(tmp_path, caplog):
 
     assert config.matlab_functions == []
     assert "no .m files" in caplog.text
+
+
+def test_matlab_sources_key_populates_matlab_sources_unified(tmp_path):
+    """[matlab] sources = [...] should populate matlab_sources unsplit --
+    NOT matlab_functions/matlab_variables -- since each file is classified
+    per-content at registry-load time (see matlab_registry.load_from_config),
+    not pre-sorted by the config author. This is the key that lets a single
+    GUI-added path (Paths popup) work for MATLAB without declaring
+    function-vs-variable up front."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('[matlab]\nsources = ["mixed"]')
+
+    mixed = tmp_path / "mixed"
+    mixed.mkdir()
+    (mixed / "some_function.m").write_text("")
+    (mixed / "SomeClass.m").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.matlab_sources)
+    assert stems == ["SomeClass", "some_function"]
+    assert config.matlab_functions == []
+    assert config.matlab_variables == []
+
+
+def test_matlab_sources_directory_excludes_noise_and_skip_dirs(tmp_path):
+    """[matlab] sources directory entries should prune noise dirs and
+    MATLAB private/@class/+package dirs, same as folder-scan mode."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('[matlab]\nsources = ["mixed"]')
+
+    mixed = tmp_path / "mixed"
+    mixed.mkdir()
+    (mixed / "keep.m").write_text("")
+    private_dir = mixed / "private"
+    private_dir.mkdir()
+    (private_dir / "helper.m").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.matlab_sources)
+    assert stems == ["keep"]
 
 
 # ---------------------------------------------------------------------------
@@ -518,3 +584,147 @@ def test_folder_scan_matlab_addpath_derived_from_sources(tmp_path):
 
     config = load_config(None, tmp_path / "dummy.duckdb")
     assert config.matlab_addpath == [sub]
+
+
+# ---------------------------------------------------------------------------
+# add_path / remove_path — GUI Paths popup write-back (loose-script only)
+# ---------------------------------------------------------------------------
+
+
+def _read_raw_section(toml_path: Path) -> dict:
+    with open(toml_path, "rb") as f:
+        return tomllib.load(f)
+
+
+def test_add_path_creates_scistack_toml_when_none_exists(tmp_path):
+    """First-ever '+' click on a pure folder-scan project: creates
+    scistack.toml, seeding it with the project root (so code implicitly
+    discovered under folder-scan mode isn't silently dropped) plus the
+    newly added path -- in both modules and [matlab] sources."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    shared_repo = tmp_path / "shared_repo"
+    shared_repo.mkdir()
+
+    written = add_path(db_path, shared_repo)
+
+    assert written == tmp_path / "scistack.toml"
+    data = _read_raw_section(written)
+    root_str = str(_normalize(tmp_path))
+    repo_str = str(_normalize(shared_repo))
+    assert set(data["modules"]) == {root_str, repo_str}
+    assert set(data["matlab"]["sources"]) == {root_str, repo_str}
+
+
+def test_add_path_appends_to_existing_scistack_toml_preserving_other_keys(tmp_path):
+    """Adding a path to an already-configured project must not disturb
+    unrelated hand-authored keys (packages, auto_discover, existing
+    modules entries)."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "existing").mkdir()
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text(
+        'modules = ["existing"]\n'
+        'packages = ["foo"]\n'
+        "auto_discover = false\n"
+    )
+
+    shared_repo = tmp_path / "shared_repo"
+    shared_repo.mkdir()
+    add_path(db_path, shared_repo)
+
+    data = _read_raw_section(toml_file)
+    assert "existing" in data["modules"]
+    assert str(_normalize(shared_repo)) in data["modules"]
+    assert data["packages"] == ["foo"]
+    assert data["auto_discover"] is False
+
+
+def test_add_path_is_idempotent_on_duplicate(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    shared_repo = tmp_path / "shared_repo"
+    shared_repo.mkdir()
+
+    add_path(db_path, shared_repo)
+    written = add_path(db_path, shared_repo)
+
+    data = _read_raw_section(written)
+    repo_str = str(_normalize(shared_repo))
+    assert data["modules"].count(repo_str) == 1
+    assert data["matlab"]["sources"].count(repo_str) == 1
+
+
+def test_add_path_rejects_relative_path(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    with pytest.raises(ValueError):
+        add_path(db_path, Path("relative/dir"))
+
+
+def test_add_path_rejects_nonexistent_path(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    with pytest.raises(FileNotFoundError):
+        add_path(db_path, tmp_path / "does_not_exist")
+
+
+def test_add_path_rejects_file_not_directory(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    a_file = tmp_path / "not_a_dir.py"
+    a_file.write_text("")
+    with pytest.raises(NotADirectoryError):
+        add_path(db_path, a_file)
+
+
+def test_add_path_rejects_packaged_project(tmp_path):
+    """pyproject.toml projects are out of scope for this write path --
+    the Paths popup keeps its old read-only view for those."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "pyproject.toml").write_text("[tool.scistack]\n")
+    shared_repo = tmp_path / "shared_repo"
+    shared_repo.mkdir()
+
+    with pytest.raises(ValueError):
+        add_path(db_path, shared_repo)
+
+
+def test_remove_path_deletes_entry_from_both_lists(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    keep_dir = tmp_path / "keep"
+    keep_dir.mkdir()
+    drop_dir = tmp_path / "drop"
+    drop_dir.mkdir()
+
+    add_path(db_path, keep_dir)
+    add_path(db_path, drop_dir)
+    written = remove_path(db_path, drop_dir)
+
+    data = _read_raw_section(written)
+    keep_str = str(_normalize(keep_dir))
+    drop_str = str(_normalize(drop_dir))
+    assert keep_str in data["modules"]
+    assert drop_str not in data["modules"]
+    assert keep_str in data["matlab"]["sources"]
+    assert drop_str not in data["matlab"]["sources"]
+
+
+def test_remove_path_noop_when_no_config_file(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    with pytest.raises(FileNotFoundError):
+        remove_path(db_path, tmp_path / "whatever")
+    assert not (tmp_path / "scistack.toml").exists()
+
+
+def test_remove_path_rejects_packaged_project(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "pyproject.toml").write_text("[tool.scistack]\nmodules = [\"x\"]\n")
+
+    with pytest.raises(ValueError):
+        remove_path(db_path, tmp_path / "x")

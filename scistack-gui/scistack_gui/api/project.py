@@ -1,10 +1,11 @@
 """
 Project config panel endpoints.
 
-GET  /api/project/code       — scanned exports from src/{project}/
-GET  /api/project/libraries  — scanned exports from uv.lock packages
-GET  /api/project/paths      — resolved [tool.scistack] path config (Paths popup)
-POST /api/project/refresh    — re-run both scans
+GET    /api/project/code    — scanned exports from src/{project}/
+GET    /api/project/paths   — resolved [tool.scistack] path config (Paths popup)
+POST   /api/project/paths   — add a discovery path (loose-script projects only)
+DELETE /api/project/paths   — remove a discovery path (loose-script projects only)
+POST   /api/project/refresh — re-run both scans
 """
 
 from __future__ import annotations
@@ -106,22 +107,6 @@ def get_project_code() -> dict:
     return _serialise_package_result(_last_result.project_code)
 
 
-@router.get("/libraries")
-def get_project_libraries() -> dict:
-    """Return scanned exports from uv.lock packages (non-empty only)."""
-    global _last_result
-    if _last_result is None:
-        _run_scan()
-    non_empty = _last_result.non_empty_libraries()
-    return {
-        "libraries": {
-            name: _serialise_package_result(pkg) for name, pkg in non_empty.items()
-        },
-        "total_libraries": len(_last_result.libraries),
-        "shown_libraries": len(non_empty),
-    }
-
-
 @router.get("/paths")
 def get_project_paths() -> dict:
     """Return the resolved [tool.scistack] paths for the header's Paths popup.
@@ -130,10 +115,18 @@ def get_project_paths() -> dict:
     startup (re-parsed here since the GUI doesn't keep the SciStackConfig
     around after registry load). Single-file mode has no such config, so
     that case is reported as ``configured: False`` rather than an error.
+
+    Also reports ``packaged`` (pyproject.toml present -- read-only in the
+    Paths popup) and ``managed_paths`` (the raw, pre-discovery ``modules``
+    entries as written to scistack.toml -- what the popup's editable add/
+    remove list actually displays; empty until the first path is added via
+    :func:`add_project_path`, even in folder-scan mode).
     """
-    from scistack_gui.config import load_config
+    from scistack_gui.config import describe_managed_paths, load_config
 
     db_path = get_db_path()
+    managed_info = describe_managed_paths(db_path)
+
     try:
         config = load_config(None, db_path)
     except FileNotFoundError:
@@ -142,16 +135,21 @@ def get_project_paths() -> dict:
             "(single-file mode)",
             db_path,
         )
-        return {"configured": False, "project_root": str(db_path.parent)}
+        return {
+            "configured": False,
+            "project_root": str(db_path.parent),
+            **managed_info,
+        }
 
     logger.info(
         "[project.paths] resolved config at %s: %d modules, %d packages, "
-        "%d matlab functions, %d matlab variables",
+        "%d matlab functions, %d matlab variables, %d matlab sources",
         config.project_root,
         len(config.modules),
         len(config.packages),
         len(config.matlab_functions),
         len(config.matlab_variables),
+        len(config.matlab_sources),
     )
     return {
         "configured": True,
@@ -166,7 +164,78 @@ def get_project_paths() -> dict:
         "matlab_variable_dir": (
             str(config.matlab_variable_dir) if config.matlab_variable_dir else None
         ),
+        **managed_info,
     }
+
+
+def _reload_config_and_rescan() -> None:
+    """Re-read scistack.toml from disk and reload both registries against
+    the fresh config, then rebuild the cached scan result.
+
+    Deliberately NOT the same as ``_run_scan(force_refresh=True)`` /
+    ``_refresh_registries()`` -- those replay ``registry.refresh_all()`` /
+    ``matlab_registry.refresh_all()`` against the *stale* in-memory
+    ``_config`` object captured at the last load (see registry.py:
+    ``refresh_all`` calls ``load_from_config(_config)``, it never re-parses
+    the TOML file). That's fine for the existing "Refresh" button, which
+    only needs to pick up *content* changes in already-configured files.
+    But after :func:`~scistack_gui.config.add_path`/``remove_path`` change
+    *which paths are configured*, reusing the stale config would silently
+    fail to discover the new path until the server restarts. So this
+    re-runs ``load_config`` fresh first.
+    """
+    from scistack_gui import matlab_registry, registry
+    from scistack_gui.config import load_config
+
+    db_path = get_db_path()
+    new_config = load_config(None, db_path)
+    try:
+        registry.load_from_config(new_config)
+    except Exception:
+        logger.exception("Failed to reload Python registry after path change")
+    try:
+        matlab_registry.load_from_config(new_config)
+    except Exception:
+        logger.exception("Failed to reload MATLAB registry after path change")
+    _run_scan(force_refresh=False)
+
+
+@router.post("/paths")
+def add_project_path(body: dict) -> dict:
+    """Add a directory to scistack.toml and re-scan (loose-script projects
+    only). Body: ``{"path": "/absolute/path/to/folder"}``.
+    """
+    from scistack_gui.config import add_path
+
+    path_str = body.get("path", "")
+    try:
+        add_path(get_db_path(), Path(path_str))
+    except (ValueError, FileNotFoundError, NotADirectoryError) as e:
+        logger.warning("[project.paths] add_project_path failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+    _reload_config_and_rescan()
+    result = get_project_paths()
+    result["ok"] = True
+    return result
+
+
+@router.delete("/paths")
+def remove_project_path(path: str) -> dict:
+    """Remove a directory from scistack.toml and re-scan (loose-script
+    projects only). ``path`` is a query parameter."""
+    from scistack_gui.config import remove_path
+
+    try:
+        remove_path(get_db_path(), Path(path))
+    except (ValueError, FileNotFoundError) as e:
+        logger.warning("[project.paths] remove_project_path failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+    _reload_config_and_rescan()
+    result = get_project_paths()
+    result["ok"] = True
+    return result
 
 
 def refresh_project_sync() -> dict:
