@@ -245,6 +245,19 @@ def get_hidden_edges(db, pipeline_id: "str | None" = None) -> dict:
     return {"edges": pipeline_store.list_hidden_edges(db, pipeline_id)}
 
 
+def get_notes() -> dict[str, str]:
+    from scistack_gui import layout as layout_store
+
+    return layout_store.read_notes()
+
+
+def set_note(key: str, text: str) -> dict:
+    from scistack_gui import layout as layout_store
+
+    layout_store.write_note(key, text)
+    return {"ok": True}
+
+
 def get_constants() -> list[str]:
     from scistack_gui import layout as layout_store
 

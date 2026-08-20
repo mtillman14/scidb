@@ -7,14 +7,27 @@ get_schema, get_variables_list, and get_registry.
 
 from __future__ import annotations
 
+import pytest
+
 import scistack_gui.registry as _registry
 from scistack_gui.services.pipeline_service import (
+    get_function_doc,
     get_function_params,
     get_function_source,
     get_registry,
     get_schema,
     get_variables_list,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_matlab_registry():
+    from scistack_gui import matlab_registry
+
+    matlab_registry._matlab_functions.clear()
+    yield
+    matlab_registry._matlab_functions.clear()
+
 
 # ---------------------------------------------------------------------------
 # get_function_source
@@ -51,6 +64,92 @@ class TestGetFunctionSource:
         _registry._functions.clear()
         result = get_function_source("anything")
         assert result["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# get_function_doc
+# ---------------------------------------------------------------------------
+
+
+class TestGetFunctionDoc:
+    def test_registered_python_function_returns_signature_and_docstring(self, populated_db):
+        def my_fn(x, y=1):
+            """Do the thing."""
+
+        _registry._functions["my_fn"] = my_fn
+        result = get_function_doc("my_fn")
+        assert result["ok"] is True
+        assert result["language"] == "python"
+        assert result["signature"] == "my_fn(x, y=1)"
+        assert result["docstring"] == "Do the thing."
+
+    def test_python_function_without_docstring_returns_none(self, populated_db):
+        def my_fn(x):
+            pass
+
+        _registry._functions["my_fn"] = my_fn
+        result = get_function_doc("my_fn")
+        assert result["ok"] is True
+        assert result["docstring"] is None
+
+    def test_unregistered_function_returns_error(self, populated_db):
+        result = get_function_doc("no_such_function")
+        assert result["ok"] is False
+        assert "not registered" in result["error"]
+
+    def test_matlab_function_returns_signature_and_docstring(self, populated_db):
+        from scistack_gui import matlab_registry
+        from scistack_gui.matlab_parser import MatlabFunctionInfo
+
+        info = MatlabFunctionInfo(
+            name="bandpass_filter",
+            file_path=None,
+            params=["signal", "low_hz"],
+            source_hash="deadbeef",
+            n_outputs=1,
+            output_names=["filtered"],
+            docstring="BANDPASS_FILTER  Apply a bandpass filter.",
+        )
+        matlab_registry.register_builtin_function(info)
+
+        result = get_function_doc("bandpass_filter")
+        assert result["ok"] is True
+        assert result["language"] == "matlab"
+        assert result["signature"] == "filtered = bandpass_filter(signal, low_hz)"
+        assert result["docstring"] == "BANDPASS_FILTER  Apply a bandpass filter."
+
+    def test_matlab_function_multiple_outputs_signature(self, populated_db):
+        from scistack_gui import matlab_registry
+        from scistack_gui.matlab_parser import MatlabFunctionInfo
+
+        info = MatlabFunctionInfo(
+            name="decompose",
+            file_path=None,
+            params=["signal"],
+            source_hash="deadbeef",
+            n_outputs=2,
+            output_names=["amp", "phase"],
+        )
+        matlab_registry.register_builtin_function(info)
+
+        result = get_function_doc("decompose")
+        assert result["signature"] == "[amp, phase] = decompose(signal)"
+        assert result["docstring"] is None
+
+    def test_matlab_function_no_outputs_signature(self, populated_db):
+        from scistack_gui import matlab_registry
+        from scistack_gui.matlab_parser import MatlabFunctionInfo
+
+        info = MatlabFunctionInfo(
+            name="plot_results",
+            file_path=None,
+            params=["data"],
+            source_hash="deadbeef",
+        )
+        matlab_registry.register_builtin_function(info)
+
+        result = get_function_doc("plot_results")
+        assert result["signature"] == "plot_results(data)"
 
 
 # ---------------------------------------------------------------------------

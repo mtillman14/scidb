@@ -94,6 +94,49 @@ def get_function_source(fn_name: str) -> dict:
     return {"ok": True, "file": file, "line": line}
 
 
+def get_function_doc(fn_name: str) -> dict:
+    """Return a display-ready signature string and docstring for a
+    registered function (Python or MATLAB) — used by the sidebar palette's
+    item-info panel. Mirrors ``get_function_source``'s not-registered error
+    shape.
+    """
+    from scistack_gui import matlab_registry, registry
+
+    if matlab_registry.is_matlab_function(fn_name):
+        info = matlab_registry.get_matlab_function(fn_name)
+        outputs = ", ".join(info.output_names) if info.output_names else None
+        params = ", ".join(info.params)
+        signature = (
+            f"[{outputs}] = {fn_name}({params})"
+            if outputs and len(info.output_names) > 1
+            else f"{outputs} = {fn_name}({params})"
+            if outputs
+            else f"{fn_name}({params})"
+        )
+        return {
+            "ok": True,
+            "language": "matlab",
+            "signature": signature,
+            "docstring": info.docstring,
+        }
+    fn = registry._functions.get(fn_name)
+    if fn is None:
+        return {
+            "ok": False,
+            "error": f"Function '{fn_name}' is not registered (pass --module at startup).",
+        }
+    try:
+        signature = f"{fn_name}{inspect.signature(fn)}"
+    except (TypeError, ValueError) as e:
+        return {"ok": False, "error": f"Could not read signature for '{fn_name}': {e}"}
+    return {
+        "ok": True,
+        "language": "python",
+        "signature": signature,
+        "docstring": inspect.getdoc(fn),
+    }
+
+
 def get_schema(db) -> dict:
     """Return schema keys and distinct values."""
     keys = db.dataset_schema_keys

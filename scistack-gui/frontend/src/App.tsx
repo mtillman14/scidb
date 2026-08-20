@@ -37,6 +37,7 @@ import Sidebar from "./components/Sidebar/Sidebar";
 import PipelineRunController from "./components/PipelineRunController";
 import { RunLogProvider } from "./context/RunLogContext";
 import { SelectedNodeProvider } from "./context/SelectedNodeContext";
+import { SidebarSelectionProvider } from "./context/SidebarSelectionContext";
 import { ScopeProvider } from "./context/ScopeContext";
 import { PlanRunProvider } from "./context/PlanRunContext";
 import { ClipboardProvider } from "./context/ClipboardContext";
@@ -306,6 +307,7 @@ export default function App() {
   return (
     <RunLogProvider>
       <SelectedNodeProvider>
+        <SidebarSelectionProvider>
         <ScopeProvider>
           <PlanRunProvider>
           <ClipboardProvider>
@@ -374,6 +376,7 @@ export default function App() {
           </ClipboardProvider>
           </PlanRunProvider>
         </ScopeProvider>
+        </SidebarSelectionProvider>
       </SelectedNodeProvider>
     </RunLogProvider>
   );

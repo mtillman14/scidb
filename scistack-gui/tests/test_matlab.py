@@ -156,6 +156,88 @@ class TestParseMatlabFunction:
         assert info is None
 
 
+class TestExtractDocstring:
+    """Docstring extraction: the contiguous %-comment block immediately
+    following the function declaration (MATLAB's own help/H1 convention).
+    """
+
+    def test_single_line(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "bandpass_filter.m"
+        f.write_text(
+            textwrap.dedent("""\
+            function [filtered] = bandpass_filter(signal, low_hz, high_hz)
+            % BANDPASS_FILTER  Apply a bandpass filter.
+                filtered = signal * low_hz;
+            end
+        """)
+        )
+
+        info = parse_matlab_function(f)
+        assert info.docstring == "BANDPASS_FILTER  Apply a bandpass filter."
+
+    def test_multi_line(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "compute_vo2.m"
+        f.write_text(
+            textwrap.dedent("""\
+            function result = compute_vo2(breath_data)
+            %COMPUTE_VO2 Estimate VO2 from breath-by-breath data.
+            %   result = COMPUTE_VO2(breath_data) returns the estimated VO2.
+            %
+            %   See also COMPUTE_VCO2.
+              result = 0;
+            end
+        """)
+        )
+
+        info = parse_matlab_function(f)
+        assert info.docstring == (
+            "COMPUTE_VO2 Estimate VO2 from breath-by-breath data.\n"
+            "  result = COMPUTE_VO2(breath_data) returns the estimated VO2.\n"
+            "\n"
+            "  See also COMPUTE_VCO2."
+        )
+
+    def test_none_when_blank_line_follows(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "setup.m"
+        f.write_text("function setup()\n\n  disp('hi');\nend\n")
+
+        info = parse_matlab_function(f)
+        assert info.docstring is None
+
+    def test_none_when_code_follows_immediately(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "plot_results.m"
+        f.write_text("function plot_results(data)\n  plot(data);\nend\n")
+
+        info = parse_matlab_function(f)
+        assert info.docstring is None
+
+    def test_stops_at_first_non_comment_line(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_function
+
+        f = tmp_path / "decompose.m"
+        f.write_text(
+            textwrap.dedent("""\
+            function [amp, phase] = decompose(signal)
+            % DECOMPOSE  Split a signal into amplitude and phase.
+            amp = abs(signal);
+            % this trailing comment is not part of the docstring
+            phase = angle(signal);
+            end
+        """)
+        )
+
+        info = parse_matlab_function(f)
+        assert info.docstring == "DECOMPOSE  Split a signal into amplitude and phase."
+
+
 class TestParseMatlabVariable:
     def test_basic_classdef(self, tmp_path):
         from scistack_gui.matlab_parser import parse_matlab_variable

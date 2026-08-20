@@ -343,6 +343,24 @@ def _h_get_function_source(params):
     return get_function_source(params["name"])
 
 
+def _h_get_function_doc(params):
+    from scistack_gui.services.pipeline_service import get_function_doc
+
+    return get_function_doc(params["name"])
+
+
+def _h_get_notes(params):
+    from scistack_gui.services.layout_service import get_notes
+
+    return get_notes()
+
+
+def _h_set_note(params):
+    from scistack_gui.services.layout_service import set_note
+
+    return set_note(params["key"], params["text"])
+
+
 def _h_get_variable_records(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.variable_service import get_variable_records
@@ -822,6 +840,9 @@ METHODS = {
     "get_registry": _h_get_registry,
     "get_function_params": _h_get_function_params,
     "get_function_source": _h_get_function_source,
+    "get_function_doc": _h_get_function_doc,
+    "get_notes": _h_get_notes,
+    "set_note": _h_set_note,
     "get_variable_records": _h_get_variable_records,
     "get_variable_plot_data": _h_get_variable_plot_data,
     "get_constants": _h_get_constants,

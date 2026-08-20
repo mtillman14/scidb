@@ -1103,6 +1103,13 @@ def get_function_source(fn_name: str):
     return _get_source(fn_name)
 
 
+@router.get("/function/{fn_name}/doc")
+def get_function_doc(fn_name: str):
+    from scistack_gui.services.pipeline_service import get_function_doc as _get_doc
+
+    return _get_doc(fn_name)
+
+
 @router.put("/constants/{name}/pending/{value}")
 async def add_pending_constant_value(name: str, value: str):
     from scistack_gui.services.layout_service import put_pending_constant

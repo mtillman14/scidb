@@ -62,6 +62,7 @@ def _load() -> dict:
     raw.setdefault("constants", [])
     raw.setdefault("path_inputs", [])
     raw.setdefault("sweeps", [])
+    raw.setdefault("notes", {})
     # Migrate flat positions to per-scope: everything predating scoping
     # lived on the one canvas that is now the root pipeline.
     if not raw.get("positions_scoped"):
@@ -581,6 +582,30 @@ def delete_sweep(name: str) -> None:
     data = _load()
     data["sweeps"] = [s for s in data["sweeps"] if s["name"] != name]
     _save(data)
+
+
+def read_notes() -> dict[str, str]:
+    return dict(_load()["notes"])
+
+
+def write_note(key: str, text: str) -> None:
+    """Persist (or clear) one item's free-text note.
+
+    ``key`` is ``"{kind}:{name}"`` (see api/layout.py's ``PUT /notes/{key}``)
+    — e.g. ``"variable:Position"`` or ``"submodule:pipe_abc123"`` (submodules
+    key by pipeline_id, which survives renames; every other kind keys by its
+    registered name). An empty/whitespace-only ``text`` removes the entry
+    entirely, so the file doesn't accumulate empty-string notes.
+    """
+    logger.info("[layout] write_note called (key=%r, len(text)=%d)", key, len(text))
+    data = _load()
+    stripped = text.strip()
+    if stripped:
+        data["notes"][key] = text
+    else:
+        data["notes"].pop(key, None)
+    _save(data)
+    logger.debug("[layout] Note written successfully (key=%r)", key)
 
 
 def read_manual_edges() -> list[dict]:

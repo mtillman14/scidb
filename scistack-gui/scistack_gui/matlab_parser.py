@@ -62,6 +62,30 @@ def _preprocess_for_parsing(text: str) -> str:
     return text
 
 
+def _extract_docstring(text: str, after_pos: int) -> str | None:
+    """Collect MATLAB help text: the run of ``%``-prefixed comment lines
+    starting immediately after ``after_pos`` (the end of the function
+    declaration), stopping at the first line that isn't a comment —
+    including a blank line, matching how MATLAB's own ``help`` command
+    finds the H1/help block. Returns ``None`` if there is no such block.
+    """
+    line_end = text.find("\n", after_pos)
+    remainder = text[line_end + 1 :] if line_end != -1 else ""
+    doc_lines: list[str] = []
+    for line in remainder.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("%"):
+            break
+        # Drop the leading '%' and at most one following space.
+        content = stripped[1:]
+        if content.startswith(" "):
+            content = content[1:]
+        doc_lines.append(content)
+    if not doc_lines:
+        return None
+    return "\n".join(doc_lines)
+
+
 @dataclass
 class MatlabFunctionInfo:
     """Parsed metadata for a MATLAB function file."""
@@ -85,6 +109,11 @@ class MatlabFunctionInfo:
 
     output_names: list[str] = field(default_factory=list)
     """Names of declared output arguments, in order."""
+
+    docstring: str | None = None
+    """Help text: the contiguous ``%``-comment lines immediately following
+    the function declaration (MATLAB's own ``help``/H1-line convention).
+    ``None`` if the function has no such comment block."""
 
     language: str = "matlab"
 
@@ -162,6 +191,13 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
         n_outputs = 0
     logger.debug("[matlab_parser] Function has %d outputs", n_outputs)
 
+    docstring = _extract_docstring(text, m.end())
+    logger.debug(
+        "[matlab_parser] Function %s has docstring: %s",
+        fn_name,
+        docstring is not None,
+    )
+
     logger.debug("[matlab_parser] Successfully parsed function: %s", fn_name)
     return MatlabFunctionInfo(
         name=fn_name,
@@ -176,6 +212,7 @@ def parse_matlab_function(path: Path) -> MatlabFunctionInfo | None:
         source_hash=source_hash,
         n_outputs=n_outputs,
         output_names=output_names,
+        docstring=docstring,
     )
 
 

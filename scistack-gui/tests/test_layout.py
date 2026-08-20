@@ -178,6 +178,45 @@ class TestConstants:
 
 
 # ---------------------------------------------------------------------------
+# notes (sidebar palette item-info panel)
+# ---------------------------------------------------------------------------
+
+
+class TestNotes:
+    def test_read_empty(self, layout_path):
+        assert layout_store.read_notes() == {}
+
+    def test_write_and_read(self, layout_path):
+        layout_store.write_note("variable:Position", "meters, post-filter")
+        assert layout_store.read_notes() == {"variable:Position": "meters, post-filter"}
+
+    def test_overwrite(self, layout_path):
+        layout_store.write_note("constant:low_hz", "first draft")
+        layout_store.write_note("constant:low_hz", "revised")
+        assert layout_store.read_notes() == {"constant:low_hz": "revised"}
+
+    def test_multiple_keys_independent(self, layout_path):
+        layout_store.write_note("constant:low_hz", "note A")
+        layout_store.write_note("sweep:gain", "note B")
+        notes = layout_store.read_notes()
+        assert notes == {"constant:low_hz": "note A", "sweep:gain": "note B"}
+
+    def test_empty_text_deletes_the_note(self, layout_path):
+        layout_store.write_note("pathInput:raw_dir", "some note")
+        layout_store.write_note("pathInput:raw_dir", "")
+        assert layout_store.read_notes() == {}
+
+    def test_whitespace_only_text_deletes_the_note(self, layout_path):
+        layout_store.write_note("pathInput:raw_dir", "some note")
+        layout_store.write_note("pathInput:raw_dir", "   ")
+        assert layout_store.read_notes() == {}
+
+    def test_delete_nonexistent_note_is_a_noop(self, layout_path):
+        layout_store.write_note("submodule:pipe_abc", "")  # must not raise
+        assert layout_store.read_notes() == {}
+
+
+# ---------------------------------------------------------------------------
 # manual edges
 # ---------------------------------------------------------------------------
 

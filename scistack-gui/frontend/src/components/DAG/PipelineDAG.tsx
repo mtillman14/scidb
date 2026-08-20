@@ -42,6 +42,7 @@ import { applyDagreLayout } from '../../layout'
 import { callBackend } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
+import { useSidebarSelection } from '../../context/SidebarSelectionContext'
 import { useScope } from '../../context/ScopeContext'
 import { usePlanRun } from '../../context/PlanRunContext'
 import { useClipboard } from '../../context/ClipboardContext'
@@ -92,6 +93,7 @@ export default function PipelineDAG() {
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<Edge>([])
   const { screenToFlowPosition, fitView } = useReactFlow()
   const { selectedNode, setSelectedNode } = useSelectedNode()
+  const { setSelectedItem: setSidebarSelectedItem } = useSidebarSelection()
   const { currentScope, breadcrumb, descend, graphVersion, bumpGraph } = useScope()
   const { requestPlan } = usePlanRun()
   const { clipboard, setClipboard } = useClipboard()
@@ -222,15 +224,17 @@ export default function PipelineDAG() {
     setContextMenu(null)
     if (node.type === 'functionNode' || node.type === 'constantNode' || node.type === 'variableNode' || node.type === 'pathInputNode' || node.type === 'sweepNode' || node.type === 'pipelineNode') {
       setSelectedNode(node)
+      setSidebarSelectedItem(null)
     } else {
       setSelectedNode(null)
     }
-  }, [setSelectedNode])
+  }, [setSelectedNode, setSidebarSelectedItem])
 
   const onPaneClick = useCallback(() => {
     setSelectedNode(null)
+    setSidebarSelectedItem(null)
     setContextMenu(null)
-  }, [setSelectedNode])
+  }, [setSelectedNode, setSidebarSelectedItem])
 
   // Box-select (shift+drag, react-flow's default) tracked here so a
   // multi-node selection can offer "extract to submodule" — the app never

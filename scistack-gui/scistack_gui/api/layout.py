@@ -73,6 +73,10 @@ class NodeConfigUpdate(BaseModel):
     config: dict
 
 
+class NoteUpdate(BaseModel):
+    text: str
+
+
 @router.get("/layout")
 def get_layout(pipeline_id: str = "main") -> dict:
     from scistack_gui.services.layout_service import get_layout as _get
@@ -92,6 +96,20 @@ def delete_layout(node_id: str):
     from scistack_gui.services.layout_service import delete_layout as _del
 
     return _del(node_id)
+
+
+@router.get("/notes")
+def get_notes() -> dict[str, str]:
+    from scistack_gui.services.layout_service import get_notes as _get
+
+    return _get()
+
+
+@router.put("/notes/{key:path}")
+def put_note(key: str, body: NoteUpdate):
+    from scistack_gui.services.layout_service import set_note as _set
+
+    return _set(key, body.text)
 
 
 @router.get("/constants")
