@@ -150,6 +150,89 @@ class TestDiscoverModule:
         assert by_name["SAMPLING_RATE_HZ"] == 1000
         assert by_name["DEFAULT_BANDPASS"].description == "LFP band"
 
+    def test_finds_path_inputs(self, project_factory):
+        root = project_factory(
+            package_name="fix_path_inputs",
+            files={
+                "paths.py": """
+                    from scidb import PathInput
+
+                    RAW_EMG = PathInput("{subject}/{trial}.mat")
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_path_inputs = [
+            pi for m in result.project_code.modules for pi in m.path_inputs
+        ]
+        assert len(all_path_inputs) == 1
+        name, obj = all_path_inputs[0]
+        assert name == "RAW_EMG"
+        assert obj.path_template == "{subject}/{trial}.mat"
+
+    def test_finds_each_of_path_inputs_as_alternate_templates(self, project_factory):
+        root = project_factory(
+            package_name="fix_path_input_alts",
+            files={
+                "paths.py": """
+                    from scidb import EachOf, PathInput
+
+                    GAIT_DATA = EachOf(
+                        PathInput("assessment/{subject}.mat"),
+                        PathInput("training/{subject}.mat"),
+                    )
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_path_inputs = [
+            pi for m in result.project_code.modules for pi in m.path_inputs
+        ]
+        assert len(all_path_inputs) == 1
+        name, obj = all_path_inputs[0]
+        assert name == "GAIT_DATA"
+        assert len(obj.alternatives) == 2
+
+    def test_finds_sweeps(self, project_factory):
+        root = project_factory(
+            package_name="fix_sweeps",
+            files={
+                "sweeps.py": """
+                    from scidb import Sweep
+
+                    WINDOW_SECONDS = Sweep(10, 20, 30)
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_sweeps = [sw for m in result.project_code.modules for sw in m.sweeps]
+        assert len(all_sweeps) == 1
+        name, obj = all_sweeps[0]
+        assert name == "WINDOW_SECONDS"
+        assert obj.alternatives == [10, 20, 30]
+
+    def test_bare_each_of_not_counted_as_sweep_or_path_input(self, project_factory):
+        """A bare EachOf of plain numbers is neither a Sweep (wrong type)
+        nor a PathInput bundle (alternatives aren't PathInputs) -- it's
+        simply not discoverable, same as an unwrapped literal constant."""
+        root = project_factory(
+            package_name="fix_bare_each_of",
+            files={
+                "vals.py": """
+                    from scidb import EachOf
+
+                    NOT_DISCOVERABLE = EachOf(1, 2, 3)
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_path_inputs = [
+            pi for m in result.project_code.modules for pi in m.path_inputs
+        ]
+        all_sweeps = [sw for m in result.project_code.modules for sw in m.sweeps]
+        assert all_path_inputs == []
+        assert all_sweeps == []
+
     def test_ignores_reexports_of_variables(self, project_factory):
         """A BaseVariable re-imported into another module must not be double-counted."""
         root = project_factory(
@@ -521,10 +604,28 @@ class TestModuleExportsProperties:
         assert not exports.is_empty
         assert exports.total_count == 1
 
+    def test_is_empty_false_with_path_input(self):
+        from scidb import PathInput
+        from scidb.discover import ModuleExports
+
+        pi = PathInput("{subject}.mat")
+        exports = ModuleExports(module_name="test", path_inputs=[("X", pi)])
+        assert not exports.is_empty
+        assert exports.total_count == 1
+
+    def test_is_empty_false_with_sweep(self):
+        from scidb import Sweep
+        from scidb.discover import ModuleExports
+
+        sw = Sweep(1, 2)
+        exports = ModuleExports(module_name="test", sweeps=[("X", sw)])
+        assert not exports.is_empty
+        assert exports.total_count == 1
+
     def test_total_count_mixed(self):
         from scidb.discover import ModuleExports
 
-        from scidb import constant
+        from scidb import PathInput, Sweep, constant
 
         c = constant(42)
         exports = ModuleExports(
@@ -532,8 +633,10 @@ class TestModuleExportsProperties:
             variables=[object, object],
             functions=[object],
             constants=[("X", c), ("Y", c)],
+            path_inputs=[("P", PathInput("{s}.mat"))],
+            sweeps=[("S", Sweep(1, 2))],
         )
-        assert exports.total_count == 5
+        assert exports.total_count == 7
 
 
 # ---------------------------------------------------------------------------
@@ -543,15 +646,23 @@ class TestPackageResultProperties:
     def test_counts_across_modules(self):
         from scidb.discover import ModuleExports, PackageResult
 
-        from scidb import constant
+        from scidb import PathInput, Sweep, constant
 
         c = constant(1)
         m1 = ModuleExports(module_name="a", variables=[object, object])
-        m2 = ModuleExports(module_name="b", functions=[object], constants=[("X", c)])
+        m2 = ModuleExports(
+            module_name="b",
+            functions=[object],
+            constants=[("X", c)],
+            path_inputs=[("P", PathInput("{s}.mat"))],
+            sweeps=[("S", Sweep(1, 2))],
+        )
         result = PackageResult(name="test", modules=[m1, m2])
         assert result.variable_count == 2
         assert result.function_count == 1
         assert result.constant_count == 1
+        assert result.path_input_count == 1
+        assert result.sweep_count == 1
 
     def test_is_empty_all_empty_modules(self):
         from scidb.discover import ModuleExports, PackageResult

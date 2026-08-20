@@ -515,32 +515,10 @@ def _h_create_path_input(params):
     )
 
 
-def _h_update_path_input(params):
-    from scistack_gui.services.layout_service import update_path_input
-
-    return update_path_input(
-        params["name"], params.get("template", ""), params.get("root_folder")
-    )
-
-
 def _h_delete_path_input(params):
     from scistack_gui.services.layout_service import delete_path_input
 
-    return delete_path_input(params["name"])
-
-
-def _h_add_path_input_alternate(params):
-    from scistack_gui.services.layout_service import add_path_input_alternate
-
-    return add_path_input_alternate(
-        params["name"], params["template"], params.get("root_folder")
-    )
-
-
-def _h_remove_path_input_alternate(params):
-    from scistack_gui.services.layout_service import remove_path_input_alternate
-
-    return remove_path_input_alternate(params["name"], params["index"])
+    return delete_path_input(params["name"], params.get("pipeline_id", "main"))
 
 
 def _h_get_sweeps(params):
@@ -552,19 +530,13 @@ def _h_get_sweeps(params):
 def _h_create_sweep(params):
     from scistack_gui.services.layout_service import create_sweep
 
-    return create_sweep(params["name"])
-
-
-def _h_update_sweep(params):
-    from scistack_gui.services.layout_service import update_sweep
-
-    return update_sweep(params["name"], params["values"])
+    return create_sweep(params["name"], params["values"])
 
 
 def _h_delete_sweep(params):
     from scistack_gui.services.layout_service import delete_sweep
 
-    return delete_sweep(params["name"])
+    return delete_sweep(params["name"], params.get("pipeline_id", "main"))
 
 
 def _h_put_node_config(params):
@@ -863,14 +835,10 @@ METHODS = {
     "create_constant": _h_create_constant,
     "delete_constant": _h_delete_constant,
     "create_path_input": _h_create_path_input,
-    "update_path_input": _h_update_path_input,
     "delete_path_input": _h_delete_path_input,
-    "add_path_input_alternate": _h_add_path_input_alternate,
-    "remove_path_input_alternate": _h_remove_path_input_alternate,
     "deep_copy_path_input": _h_deep_copy_path_input,
     "get_sweeps": _h_get_sweeps,
     "create_sweep": _h_create_sweep,
-    "update_sweep": _h_update_sweep,
     "delete_sweep": _h_delete_sweep,
     "start_run": _h_start_run,
     "cancel_run": _h_cancel_run,

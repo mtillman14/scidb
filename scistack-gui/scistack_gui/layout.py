@@ -40,28 +40,31 @@ def _load() -> dict:
     p = _layout_path()
     logger.debug("[layout] Loading layout file from %s", p)
     if not p.exists():
-        logger.debug("[layout] Layout file does not exist, returning empty structure")
-        return {
-            "positions": {},
-            "constants": [],
-            "path_inputs": [],
-            "sweeps": [],
-            "positions_scoped": True,
-            "placements_migrated": True,
-        }
-    with p.open() as f:
-        raw = json.load(f)
+        # Deliberately NOT a hand-maintained duplicate of the defaults set
+        # below (a second "what are the defaults" list next to the
+        # setdefault calls has already drifted out of sync once — missing
+        # path_inputs/sweeps after their removal, and separately missing
+        # "notes" entirely, both silent until a fresh/never-written project
+        # hit this branch). Empty dict + fall through to the same
+        # normalization every other path goes through.
+        logger.debug("[layout] Layout file does not exist, using empty defaults")
+        raw = {}
+    else:
+        with p.open() as f:
+            raw = json.load(f)
     logger.debug("[layout] Loaded layout file with %d top-level keys", len(raw))
     # Migrate legacy flat format: { "node_id": {"x":..,"y":..}, ... }
     if raw and "positions" not in raw:
         logger.debug(
             "[layout] Migrating legacy flat format to nested positions structure"
         )
-        raw = {"positions": raw, "constants": [], "path_inputs": []}
+        raw = {"positions": raw, "constants": []}
     raw.setdefault("positions", {})
     raw.setdefault("constants", [])
-    raw.setdefault("path_inputs", [])
-    raw.setdefault("sweeps", [])
+    # "path_inputs"/"sweeps" keys are no longer read or written (both are
+    # source-scanned now — see docs/claude/code-discovery-categories.md) but
+    # are deliberately left in place if present on an old file rather than
+    # popped, so a downgrade to a pre-migration build doesn't lose data.
     raw.setdefault("notes", {})
     # Migrate flat positions to per-scope: everything predating scoping
     # lived on the one canvas that is now the root pipeline.
@@ -107,10 +110,9 @@ def _load() -> dict:
                 "position(s) with their scope", n_migrated,
             )
     logger.debug(
-        "[layout] Layout has %d scope(s), %d constants, %d path_inputs",
+        "[layout] Layout has %d scope(s), %d constants",
         len(raw["positions"]),
         len(raw["constants"]),
-        len(raw["path_inputs"]),
     )
     return raw
 
@@ -133,10 +135,9 @@ def _save(data: dict) -> None:
     p = _layout_path()
     logger.debug("[layout] Saving layout file to %s", p)
     logger.debug(
-        "[layout] Writing %d positions, %d constants, %d path_inputs",
+        "[layout] Writing %d positions, %d constants",
         len(data.get("positions", {})),
         len(data.get("constants", [])),
-        len(data.get("path_inputs", [])),
     )
     with p.open("w") as f:
         json.dump(data, f, indent=2)
@@ -399,188 +400,6 @@ def write_constant(name: str) -> None:
 def delete_constant(name: str) -> None:
     data = _load()
     data["constants"] = [c for c in data["constants"] if c != name]
-    _save(data)
-
-
-def read_all_path_input_names() -> list[dict]:
-    """All path inputs visible in the palette or already on the canvas.
-
-    Sources (unioned):
-    - ``path_inputs[]``: palette items created via the "+" button.
-    - Canonical DB-derived pathInput IDs in positions (``pathInput__name``,
-      possibly placement-qualified as ``pathInput__name::{pipeline_id}``).
-
-    Every returned dict always has an ``alternate_templates`` key (``[]``
-    when none have been added via ``add_path_input_alternate``) — a
-    predictable shape so callers never need a defensive ``.get(...,
-    [])`` of their own.
-    """
-    from scistack_gui.domain.graph_builder import strip_placement
-
-    data = _load()
-    by_name: dict[str, dict] = {}
-    for pi in data["path_inputs"]:
-        by_name[pi["name"]] = pi
-    for node_id in _positions_all(data):
-        bare_id = strip_placement(node_id)
-        if bare_id.startswith("pathInput__"):
-            # Bare IDs are "pathInput__<name>__<random>"; extract just <name>.
-            parts = bare_id.split("__")
-            name = parts[1] if len(parts) >= 2 else bare_id[len("pathInput__") :]
-            if name not in by_name:
-                by_name[name] = {"name": name, "template": "", "root_folder": None}
-    for pi in by_name.values():
-        pi.setdefault("alternate_templates", [])
-    return sorted(by_name.values(), key=lambda p: p["name"])
-
-
-def write_path_input(name: str, template: str, root_folder: str | None = None) -> None:
-    data = _load()
-    # Update existing or append new.
-    for pi in data["path_inputs"]:
-        if pi["name"] == name:
-            pi["template"] = template
-            pi["root_folder"] = root_folder
-            _save(data)
-            return
-    data["path_inputs"].append(
-        {"name": name, "template": template, "root_folder": root_folder}
-    )
-    _save(data)
-
-
-def add_path_input_alternate(
-    name: str, template: str, root_folder: "str | None" = None
-) -> int:
-    """Append an alternate template to an existing PathInput definition.
-
-    Multiple templates under one name become ``EachOf(PathInput(...),
-    PathInput(...), ...)`` at execution time — see
-    ``execution_service.build_run_inputs`` — the PathInput analog of a
-    Constant node's multiple staged values. Mirrors ``write_path_input``'s
-    "primary" template exactly except appended to the ``alternate_templates``
-    list rather than replacing it, so the primary stays untouched. Returns
-    the new alternate's index (for the frontend's remove button).
-
-    Raises ``ValueError`` if ``name`` has no primary definition yet — an
-    alternate has nothing to be an alternative TO otherwise (mirrors
-    staging a constant value on a constant node that doesn't exist).
-    """
-    data = _load()
-    for pi in data["path_inputs"]:
-        if pi["name"] == name:
-            alts = pi.setdefault("alternate_templates", [])
-            alts.append({"template": template, "root_folder": root_folder})
-            _save(data)
-            logger.info(
-                "[layout] add_path_input_alternate: %r -> %r (index=%d)",
-                name,
-                template,
-                len(alts) - 1,
-            )
-            return len(alts) - 1
-    raise ValueError(f"no PathInput named {name!r} — create it first")
-
-
-def remove_path_input_alternate(name: str, index: int) -> None:
-    """Remove one alternate template by index (see add_path_input_alternate)."""
-    data = _load()
-    for pi in data["path_inputs"]:
-        if pi["name"] != name:
-            continue
-        alts = pi.get("alternate_templates", [])
-        if 0 <= index < len(alts):
-            alts.pop(index)
-            _save(data)
-            logger.info(
-                "[layout] remove_path_input_alternate: %r index=%d", name, index
-            )
-        return
-
-
-def deep_copy_path_input(name: str) -> str:
-    """Mint a new, independently-named PathInput definition cloned from
-    ``name`` — the opt-in escape hatch from the default "shared by name"
-    behavior (placements reference a name by default; this is how one
-    placement gets its own value). Does not touch ``name`` itself or any
-    other placement still referencing it.
-    """
-    data = _load()
-    source = next((p for p in data["path_inputs"] if p["name"] == name), None)
-    template = source["template"] if source else ""
-    root_folder = source["root_folder"] if source else None
-
-    existing = {p["name"] for p in data["path_inputs"]}
-    new_name = f"{name}_copy"
-    n = 2
-    while new_name in existing:
-        new_name = f"{name}_copy{n}"
-        n += 1
-
-    data["path_inputs"].append(
-        {"name": new_name, "template": template, "root_folder": root_folder}
-    )
-    _save(data)
-    logger.info("[layout] deep_copy_path_input: %r -> %r", name, new_name)
-    return new_name
-
-
-def delete_path_input(name: str) -> None:
-    data = _load()
-    data["path_inputs"] = [p for p in data["path_inputs"] if p["name"] != name]
-    _save(data)
-
-
-def read_all_sweep_names() -> list[dict]:
-    """All Sweep definitions visible in the palette or already on the
-    canvas — same shape/sourcing as ``read_all_path_input_names`` (union
-    of ``sweeps[]`` and canonical ``sweep__name`` position ids), since a
-    Sweep has no DB-history counterpart either: its values feed
-    ``EachOf(...)`` directly at execution time (see
-    ``execution_service.build_run_inputs``), never through
-    ``_pipeline_pending_constants``.
-
-    Every returned dict always has a ``values`` key (``[]`` for a
-    freshly-created, not-yet-configured Sweep).
-    """
-    from scistack_gui.domain.graph_builder import strip_placement
-
-    data = _load()
-    by_name: dict[str, dict] = {}
-    for sw in data["sweeps"]:
-        by_name[sw["name"]] = sw
-    for node_id in _positions_all(data):
-        bare_id = strip_placement(node_id)
-        if bare_id.startswith("sweep__"):
-            parts = bare_id.split("__")
-            name = parts[1] if len(parts) >= 2 else bare_id[len("sweep__") :]
-            if name not in by_name:
-                by_name[name] = {"name": name, "values": []}
-    for sw in by_name.values():
-        sw.setdefault("values", [])
-    return sorted(by_name.values(), key=lambda s: s["name"])
-
-
-def write_sweep(name: str, values: "list[float | int]") -> None:
-    """Create or replace a Sweep's full value list (see
-    ``read_all_sweep_names``). Values are the already-computed flat
-    list — range generation (start/end/step or start/end/count) is
-    entirely a frontend concern; the backend only ever stores and
-    later ``EachOf(...)``-wraps the final numbers.
-    """
-    data = _load()
-    for sw in data["sweeps"]:
-        if sw["name"] == name:
-            sw["values"] = list(values)
-            _save(data)
-            return
-    data["sweeps"].append({"name": name, "values": list(values)})
-    _save(data)
-
-
-def delete_sweep(name: str) -> None:
-    data = _load()
-    data["sweeps"] = [s for s in data["sweeps"] if s["name"] != name]
     _save(data)
 
 

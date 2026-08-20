@@ -127,11 +127,14 @@ class TestExportImportSameDatabase:
             ("variableNode", "ExtraSignal"),
         }
 
-    def test_globals_already_present_are_reused_not_reimported(self, client):
+    def test_globals_already_present_are_reused_not_reimported(
+        self, client_with_variable_file
+    ):
         """Importing back into the SAME db means every referenced Constant/
         PathInput/Sweep name already exists there by construction — the
         confirmed 'reuse by name' decision means the import must not touch
         their existing values."""
+        client = client_with_variable_file
         pid = client.post("/api/pipelines", json={"name": "loading"}).json()["pipeline_id"]
         client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
         client.put("/api/layout/pi_a", json={
@@ -142,13 +145,20 @@ class TestExportImportSameDatabase:
         document = export_pipeline(db, pid)
         assert [p["name"] for p in document["path_inputs"]] == ["gait_data"]
 
-        # Mutate the local definition AFTER export but before import — if
-        # import were to "reimport" it, this edit would be clobbered back
-        # to the exported template; reuse-by-name means it must survive.
-        client.put(
-            "/api/path-inputs/gait_data",
-            json={"name": "gait_data", "template": "{subject}_edited.csv"},
+        # Mutate the local definition AFTER export but before import (there
+        # is no update endpoint anymore — PathInput is source-scanned and
+        # create-only from the GUI, see
+        # docs/claude/code-discovery-categories.md — so this edits the
+        # source file directly, same as the user would in their own
+        # editor, then hits Refresh Code). If import were to "reimport" it,
+        # this edit would be clobbered back to the exported template;
+        # reuse-by-name means it must survive.
+        from scistack_gui import registry
+
+        registry._module_path.write_text(
+            'from scidb import PathInput\ngait_data = PathInput("{subject}_edited.csv")\n'
         )
+        registry.refresh_module()
 
         result = import_pipeline_document(db, document)
         assert result["reused"]["path_inputs"] == ["gait_data"]
@@ -243,7 +253,9 @@ class TestExportImportCrossDatabase:
         hyp_ids = {h["pipeline_id"] for h in ps.list_hypotheses(target_db)}
         assert result["pipeline_id"] not in hyp_ids
 
-    def test_globals_created_fresh_when_absent_locally(self, client, tmp_path):
+    def test_globals_created_fresh_when_absent_locally(
+        self, client_with_variable_file, tmp_path
+    ):
         # "export_gain", NOT "low_hz" — "low_hz" is the exact constant
         # name+value (20) conftest's seeded bandpass_filter already has in
         # REAL DB history, so pending "low_hz"=20 would get silently
@@ -251,14 +263,23 @@ class TestExportImportCrossDatabase:
         # feature: pending values that duplicate real history are
         # redundant) the next time this scope's graph rebuilds — nothing
         # to do with export/import, a name collision with the fixture.
+        client = client_with_variable_file
+        from scistack_gui import registry
+
         pid = client.post("/api/pipelines", json={"name": "loading"}).json()["pipeline_id"]
         client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
-        client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt.csv"})
+        # "Alternate templates" is a source-code-only concept now (EachOf
+        # bound to one name, see docs/claude/code-discovery-categories.md)
+        # — no API endpoint authors it, so write it directly.
+        with open(registry._module_path, "a") as f:
+            f.write(
+                '\ngait_data = EachOf(gait_data, PathInput("alt.csv"))\n'
+            )
+        registry.refresh_module()
         client.put("/api/layout/pi_a", json={
             "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data", "pipeline_id": pid,
         })
-        client.post("/api/sweeps", json={"name": "window_seconds"})
-        client.put("/api/sweeps/window_seconds", json={"values": [10, 20, 30]})
+        client.post("/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]})
         client.put("/api/layout/sw_a", json={
             "x": 0, "y": 0, "node_type": "sweepNode", "label": "window_seconds", "pipeline_id": pid,
         })
@@ -275,17 +296,33 @@ class TestExportImportCrossDatabase:
         assert [s["name"] for s in document["sweeps"]] == ["window_seconds"]
 
         target_db = self._second_db(tmp_path)
+        # Simulate a genuinely separate project: the registry is a single
+        # process-wide global (not scoped per-database), so importing "into
+        # another user's project" means that user's registry doesn't
+        # already have gait_data/window_seconds — clear it and point
+        # _module_path at a fresh file before importing, exactly like a
+        # different server process with a different --module would.
+        registry._path_inputs.clear()
+        registry._path_input_sources.clear()
+        registry._sweeps.clear()
+        registry._sweep_sources.clear()
+        target_file = tmp_path / "other_user_vars.py"
+        target_file.write_text("from scidb import EachOf, PathInput, Sweep\n")
+        registry._module_path = target_file
+
         result = import_pipeline_document(target_db, document)
         assert result["reused"] == {"pipelines": [], "constants": [], "path_inputs": [], "sweeps": []}
+        assert result["materialization_errors"] == []
 
-        from scistack_gui import layout as layout_store
+        path_inputs = registry.get_path_inputs_registry()
+        sweeps = registry.get_sweeps_registry()
 
-        path_inputs = {p["name"]: p for p in layout_store.read_all_path_input_names()}
-        sweeps = {s["name"]: s for s in layout_store.read_all_sweep_names()}
+        from scistack_gui.domain.graph_builder import path_input_display
 
-        assert path_inputs["gait_data"]["template"] == "{subject}.csv"
-        assert [a["template"] for a in path_inputs["gait_data"]["alternate_templates"]] == ["alt.csv"]
-        assert sweeps["window_seconds"]["values"] == [10, 20, 30]
+        display = path_input_display(path_inputs["gait_data"])
+        assert display["template"] == "{subject}.csv"
+        assert [a["template"] for a in display["alternate_templates"]] == ["alt.csv"]
+        assert list(sweeps["window_seconds"].alternatives) == [10, 20, 30]
         assert set(ps.get_pending_constants(target_db).get("export_gain", set())) == {"20", "40"}
 
 

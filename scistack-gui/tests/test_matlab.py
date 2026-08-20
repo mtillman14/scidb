@@ -288,6 +288,148 @@ class TestParseMatlabVariable:
         assert name is None
 
 
+class TestParseMatlabPathInput:
+    """A "PathInput getter": a zero-arg function whose body constructs a
+    scifor.PathInput — MATLAB's stand-in for Python's ``NAME =
+    PathInput(...)`` binding (see
+    docs/claude/code-discovery-categories.md)."""
+
+    def test_basic_getter(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_path_input
+
+        f = tmp_path / "raw_emg_path.m"
+        f.write_text(
+            textwrap.dedent("""\
+            function p = raw_emg_path()
+                p = scifor.PathInput('{subject}/{trial}.mat');
+            end
+        """)
+        )
+        assert parse_matlab_path_input(f) == "raw_emg_path"
+
+    def test_scidb_namespaced_construction_also_matches(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_path_input
+
+        f = tmp_path / "raw_emg_path2.m"
+        f.write_text(
+            "function p = raw_emg_path2()\n"
+            "    p = scidb.PathInput('{subject}.mat');\n"
+            "end\n"
+        )
+        assert parse_matlab_path_input(f) == "raw_emg_path2"
+
+    def test_bare_construction_also_matches(self, tmp_path):
+        """Same convention as a Python file that imports PathInput
+        directly and constructs it bare (no scifor./scidb. prefix)."""
+        from scistack_gui.matlab_parser import parse_matlab_path_input
+
+        f = tmp_path / "raw_emg_path3.m"
+        f.write_text(
+            "function p = raw_emg_path3()\n"
+            "    p = PathInput('{subject}.mat');\n"
+            "end\n"
+        )
+        assert parse_matlab_path_input(f) == "raw_emg_path3"
+
+    def test_function_with_params_is_not_a_getter(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_path_input
+
+        f = tmp_path / "not_a_getter.m"
+        f.write_text(
+            "function p = not_a_getter(subject)\n"
+            "    p = scifor.PathInput([subject '.mat']);\n"
+            "end\n"
+        )
+        assert parse_matlab_path_input(f) is None
+
+    def test_plain_function_is_not_a_getter(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_path_input
+
+        f = tmp_path / "plain_fn.m"
+        f.write_text("function out = plain_fn()\n    out = 42;\nend\n")
+        assert parse_matlab_path_input(f) is None
+
+    def test_classdef_file_is_not_a_getter(self, tmp_path):
+        """Same one-file-one-entity rule as parse_matlab_function: a
+        classdef's methods are never standalone getters."""
+        from scistack_gui.matlab_parser import parse_matlab_path_input
+
+        f = tmp_path / "SomeClass.m"
+        f.write_text(
+            "classdef SomeClass < handle\n"
+            "    methods\n"
+            "        function p = getPath(obj)\n"
+            "            p = scifor.PathInput('{subject}.mat');\n"
+            "        end\n"
+            "    end\n"
+            "end\n"
+        )
+        assert parse_matlab_path_input(f) is None
+
+
+class TestParseMatlabSweep:
+    """Same "value getter" convention as PathInput, for scifor.Sweep."""
+
+    def test_basic_getter(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_sweep
+
+        f = tmp_path / "window_seconds.m"
+        f.write_text(
+            "function s = window_seconds()\n"
+            "    s = scifor.Sweep(10, 20, 30);\n"
+            "end\n"
+        )
+        assert parse_matlab_sweep(f) == "window_seconds"
+
+    def test_path_input_getter_is_not_a_sweep(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_sweep
+
+        f = tmp_path / "raw_emg_path.m"
+        f.write_text(
+            "function p = raw_emg_path()\n"
+            "    p = scifor.PathInput('{subject}.mat');\n"
+            "end\n"
+        )
+        assert parse_matlab_sweep(f) is None
+
+
+class TestClassifyMatlabFileValueGetters:
+    """classify_matlab_file must try value-getter checks BEFORE the plain
+    function check — a getter also matches the function regex (zero args,
+    one output)."""
+
+    def test_path_input_getter_classified_correctly(self, tmp_path):
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "raw_emg_path.m"
+        f.write_text(
+            "function p = raw_emg_path()\n"
+            "    p = scifor.PathInput('{subject}.mat');\n"
+            "end\n"
+        )
+        assert classify_matlab_file(f) == ("path_input", "raw_emg_path")
+
+    def test_sweep_getter_classified_correctly(self, tmp_path):
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "window_seconds.m"
+        f.write_text(
+            "function s = window_seconds()\n"
+            "    s = scifor.Sweep(10, 20, 30);\n"
+            "end\n"
+        )
+        assert classify_matlab_file(f) == ("sweep", "window_seconds")
+
+    def test_plain_function_still_classified_as_function(self, tmp_path):
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "plain_fn.m"
+        f.write_text("function out = plain_fn(x)\n    out = x * 2;\nend\n")
+        kind, payload = classify_matlab_file(f)
+        assert kind == "function"
+        assert payload.name == "plain_fn"
+
+
 class TestBlockCommentStripping:
     """A %{ %} block comment must not false-positive as a real
     function/classdef declaration — a common way scientists leave
@@ -473,6 +615,33 @@ class TestMatlabRegistryLoadFromSources:
 
         assert matlab_registry.is_matlab_function("foo")
         assert "RawSignal" in matlab_registry.get_all_variable_names()
+
+    def test_path_input_and_sweep_getters_registered(self, tmp_path):
+        from scistack_gui import matlab_registry
+
+        pi_file = tmp_path / "raw_emg_path.m"
+        pi_file.write_text(
+            "function p = raw_emg_path()\n"
+            "    p = scifor.PathInput('{subject}.mat');\n"
+            "end\n"
+        )
+        sweep_file = tmp_path / "window_seconds.m"
+        sweep_file.write_text(
+            "function s = window_seconds()\n"
+            "    s = scifor.Sweep(10, 20, 30);\n"
+            "end\n"
+        )
+
+        matlab_registry._matlab_functions.clear()
+        matlab_registry._matlab_path_inputs.clear()
+        matlab_registry._matlab_sweeps.clear()
+        matlab_registry.load_from_sources([pi_file, sweep_file])
+
+        assert "raw_emg_path" in matlab_registry.get_all_path_input_names()
+        assert "window_seconds" in matlab_registry.get_all_sweep_names()
+        # Getters are never ALSO registered as plain functions.
+        assert not matlab_registry.is_matlab_function("raw_emg_path")
+        assert not matlab_registry.is_matlab_function("window_seconds")
 
     def test_unclassifiable_file_skipped_without_warning(self, tmp_path, caplog):
         """A folder-scanned .m file that classifies as neither a function
@@ -957,8 +1126,76 @@ class TestConfigMatlabParsing:
         config = load_config(tmp_path, db_path)
         assert config.matlab_functions == []
         assert config.matlab_variables == []
+        assert config.matlab_path_inputs == []
+        assert config.matlab_sweeps == []
         assert config.matlab_addpath == []
         assert config.matlab_variable_dir is None
+
+    def test_explicit_path_inputs_and_sweeps(self, tmp_path):
+        from scistack_gui.config import load_config
+
+        (tmp_path / "pyproject.toml").write_text(
+            textwrap.dedent("""\
+            [tool.scistack]
+            modules = []
+
+            [tool.scistack.matlab]
+            functions = ["process.m"]
+            path_inputs = ["raw_emg_path.m"]
+            sweeps = ["window_seconds.m"]
+        """)
+        )
+        (tmp_path / "process.m").write_text("function y = process(x)\ny = x;\nend\n")
+        (tmp_path / "raw_emg_path.m").write_text(
+            "function p = raw_emg_path()\n"
+            "    p = scifor.PathInput('{subject}.mat');\n"
+            "end\n"
+        )
+        (tmp_path / "window_seconds.m").write_text(
+            "function s = window_seconds()\n"
+            "    s = scifor.Sweep(10, 20, 30);\n"
+            "end\n"
+        )
+
+        db_path = tmp_path / "test.duckdb"
+        db_path.touch()
+
+        config = load_config(tmp_path, db_path)
+        assert len(config.matlab_functions) == 1
+        assert config.matlab_functions[0].name == "process.m"
+        assert len(config.matlab_path_inputs) == 1
+        assert config.matlab_path_inputs[0].name == "raw_emg_path.m"
+        assert len(config.matlab_sweeps) == 1
+        assert config.matlab_sweeps[0].name == "window_seconds.m"
+
+    def test_path_inputs_deduped_from_functions(self, tmp_path):
+        """A file declared in BOTH matlab.functions (e.g. via a parent-dir
+        glob) and matlab.path_inputs must not also be parsed as a plain
+        function — same dedup already applied to matlab.variables."""
+        from scistack_gui.config import load_config
+
+        (tmp_path / "pyproject.toml").write_text(
+            textwrap.dedent("""\
+            [tool.scistack]
+            modules = []
+
+            [tool.scistack.matlab]
+            functions = ["*.m"]
+            path_inputs = ["raw_emg_path.m"]
+        """)
+        )
+        (tmp_path / "raw_emg_path.m").write_text(
+            "function p = raw_emg_path()\n"
+            "    p = scifor.PathInput('{subject}.mat');\n"
+            "end\n"
+        )
+
+        db_path = tmp_path / "test.duckdb"
+        db_path.touch()
+
+        config = load_config(tmp_path, db_path)
+        assert config.matlab_functions == []
+        assert len(config.matlab_path_inputs) == 1
 
 
 # ---------------------------------------------------------------------------

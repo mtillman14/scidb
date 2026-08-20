@@ -383,8 +383,12 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
     (this "disconnected" concept is GUI-authored state, scistack-gui's own
     layer — see plan-edge-hide-delete.md).
     """
-    from scistack_gui import pipeline_store
-    from scistack_gui.domain.graph_builder import hidden_wirings, wirings_downstream_of
+    from scistack_gui import pipeline_store, registry
+    from scistack_gui.domain.graph_builder import (
+        convert_scidb_path_inputs,
+        hidden_wirings,
+        wirings_downstream_of,
+    )
 
     hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
     if not hidden_edge_ids:
@@ -399,10 +403,12 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
         fn_input_params[fkey] = fn_data["input_params"]
         fn_outputs[fkey] = set(fn_data["outputs"])
         fn_constants[fkey] = set(fn_data["constants"].keys())
-    path_inputs: dict = {
-        param_name: {"functions": {tuple(f) for f in pi_data["functions"]}}
-        for param_name, pi_data in scidb_agg["path_inputs"].items()
-    }
+    # Resolved by registry name (not param name) — must match how
+    # build_edges actually keys its pathInput__ edges, or hidden-edge-id
+    # lookups below silently never match (see convert_scidb_path_inputs).
+    path_inputs = convert_scidb_path_inputs(
+        scidb_agg["path_inputs"], registry.get_path_inputs_registry()
+    )
 
     manual_edges = pipeline_store.get_manual_edges(db)
     seed = hidden_wirings(
@@ -570,15 +576,25 @@ def build_run_inputs(target: dict, function_name: str) -> dict:
     value — so both are absent from DB history too, regardless of
     whether the rest of the target came from history or inference.
     Whatever signature params variable/constant resolution left unfilled
-    are checked by name against the stored PathInput/Sweep registries
-    (``layout.read_all_path_input_names``/``read_all_sweep_names`` — the
-    same name-matching ``graph_builder`` already uses to draw the
-    display-only pathInput→fn/sweep→fn edges), so this is the single
-    place a live ``scifor.PathInput`` object or a numeric ``EachOf`` ever
-    gets constructed for execution.
+    are checked by name against the source-scanned PathInput/Sweep
+    registries (``registry.get_path_inputs_registry``/
+    ``get_sweeps_registry`` — see
+    docs/claude/code-discovery-categories.md), so this is the single place
+    a live ``scifor.PathInput`` object or a numeric ``EachOf`` ever gets
+    constructed for execution.
+
+    This match is by PARAMETER NAME, not by wiring edge — deliberately the
+    same wiring-agnostic "shared by name" simplification this function
+    always used (a PathInput/Sweep is resolved globally by matching the
+    unfilled signature param's name against the registry, not by tracing
+    which specific canvas edge feeds this node). A PathInput/Sweep meant to
+    fill a param here must be named the same as that parameter; if it's
+    bound to a different name (e.g. shared across two functions under two
+    different param names), only the GUI's wiring-aware node/edge display
+    (``graph_builder.resolve_path_input_name``) resolves that — this
+    execution-time fallback does not.
     """
-    from scidb import EachOf, PathInput
-    from scistack_gui import layout as layout_store
+    from scidb import EachOf
     from scistack_gui import registry
     from scistack_gui.api.pipeline import _fn_params_from_registry
 
@@ -597,55 +613,32 @@ def build_run_inputs(target: dict, function_name: str) -> dict:
 
     missing = [p for p in _fn_params_from_registry(function_name) if p not in inputs]
     if missing:
-        path_inputs_by_name = {
-            pi["name"]: pi for pi in layout_store.read_all_path_input_names()
-        }
-        sweeps_by_name = {
-            sw["name"]: sw for sw in layout_store.read_all_sweep_names()
-        }
+        # The registry already holds live PathInput/EachOf/Sweep objects —
+        # no reconstruction needed (unlike the old layout.json-backed
+        # dicts, which stored plain template/values data that had to be
+        # rebuilt into a real object here).
+        path_inputs_by_name = registry.get_path_inputs_registry()
+        sweeps_by_name = registry.get_sweeps_registry()
         for param in missing:
             pi = path_inputs_by_name.get(param)
             if pi is not None:
-                # Alternate templates (see layout.add_path_input_alternate)
-                # are the PathInput analog of a Constant node's multiple
-                # staged values — >1 template under one name becomes
-                # EachOf(...) of PathInput objects, same convention as the
-                # multi-type variable branch above.
-                variants = [pi, *pi.get("alternate_templates", [])]
-                path_input_objs = [
-                    PathInput(v["template"], root_folder=v.get("root_folder"))
-                    for v in variants
-                ]
-                inputs[param] = (
-                    EachOf(*path_input_objs)
-                    if len(path_input_objs) > 1
-                    else path_input_objs[0]
-                )
+                inputs[param] = pi
                 logger.info(
                     "[execution] '%s': input '%s' resolved via %s",
                     function_name,
                     param,
-                    inputs[param],
+                    pi,
                 )
                 continue
 
             sw = sweeps_by_name.get(param)
             if sw is not None:
-                values = sw.get("values") or []
-                if not values:
-                    logger.warning(
-                        "[execution] '%s': input '%s' is a Sweep with no "
-                        "values configured — left unresolved",
-                        function_name,
-                        param,
-                    )
-                    continue
-                inputs[param] = EachOf(*values) if len(values) > 1 else values[0]
+                inputs[param] = sw
                 logger.info(
                     "[execution] '%s': input '%s' resolved via Sweep(%d value(s))",
                     function_name,
                     param,
-                    len(values),
+                    len(sw.alternatives),
                 )
     return inputs
 

@@ -613,9 +613,10 @@ class TestScopedGraph:
 
 
 class TestPathInputDeepCopy:
-    def test_copy_shares_template_by_default(self, client):
+    def test_copy_shares_template_by_default(self, client_with_variable_file):
         """Placing the SAME named PathInput twice — via two separate manual
         nodes — is the default 'shared' behavior: no deep copy involved."""
+        client = client_with_variable_file
         client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
         client.put("/api/layout/pi_a", json={
             "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
@@ -630,7 +631,8 @@ class TestPathInputDeepCopy:
         names = {p["name"] for p in client.get("/api/path-inputs").json()}
         assert names == {"gait_data"}  # one shared definition, not two
 
-    def test_deep_copy_forks_only_the_targeted_node(self, client):
+    def test_deep_copy_forks_only_the_targeted_node(self, client_with_variable_file):
+        client = client_with_variable_file
         client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
         client.put("/api/layout/pi_a", json={
             "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
@@ -652,18 +654,17 @@ class TestPathInputDeepCopy:
         layout = client.get("/api/layout").json()
         assert layout["positions"]["pi_a"] == {"x": 0.0, "y": 0.0}
 
-        # The new definition cloned the original's template independently.
+        # The new definition cloned the original's template independently
+        # (a fresh top-level source declaration, not a layout.json row —
+        # see docs/claude/code-discovery-categories.md). There is no
+        # "editing the original afterward" to test anymore: PathInput is
+        # source-scanned and create-only from the GUI (no update endpoint).
         by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
         assert by_name[new_name]["template"] == "{subject}.csv"
         assert by_name["gait_data"]["template"] == "{subject}.csv"
 
-        # Editing the original no longer affects the deep-copied one.
-        client.put("/api/path-inputs/gait_data", json={"name": "gait_data", "template": "{subject}_v2.csv"})
-        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
-        assert by_name["gait_data"]["template"] == "{subject}_v2.csv"
-        assert by_name[new_name]["template"] == "{subject}.csv"
-
-    def test_deep_copy_disambiguates_repeated_names(self, client):
+    def test_deep_copy_disambiguates_repeated_names(self, client_with_variable_file):
+        client = client_with_variable_file
         client.post("/api/path-inputs", json={"name": "gait_data", "template": "t"})
         client.put("/api/layout/pi_a", json={
             "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data",
@@ -684,100 +685,46 @@ class TestPathInputDeepCopy:
         assert r.status_code == 400
 
 
-class TestPathInputAlternates:
-    """Multiple templates under one PathInput name — the PathInput analog
-    of a Constant node's multiple staged values (see
-    execution_service.build_run_inputs, which turns >1 template into
-    EachOf(PathInput(...), ...) at execution time)."""
-
-    def test_add_and_list_alternate(self, client):
-        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
-
-        r = client.post(
-            "/api/path-inputs/gait_data/alternates",
-            json={"template": "{subject}_v2.csv", "root_folder": "/v2"},
-        )
-        assert r.status_code == 200
-        assert r.json()["index"] == 0
-
-        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
-        assert by_name["gait_data"]["template"] == "{subject}.csv"  # primary untouched
-        assert by_name["gait_data"]["alternate_templates"] == [
-            {"template": "{subject}_v2.csv", "root_folder": "/v2"}
-        ]
-
-    def test_add_second_alternate_gets_next_index(self, client):
-        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
-        client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt1.csv"})
-        r = client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt2.csv"})
-        assert r.json()["index"] == 1
-
-        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
-        assert [a["template"] for a in by_name["gait_data"]["alternate_templates"]] == [
-            "alt1.csv",
-            "alt2.csv",
-        ]
-
-    def test_remove_alternate_by_index(self, client):
-        client.post("/api/path-inputs", json={"name": "gait_data", "template": "{subject}.csv"})
-        client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt1.csv"})
-        client.post("/api/path-inputs/gait_data/alternates", json={"template": "alt2.csv"})
-
-        r = client.delete("/api/path-inputs/gait_data/alternates/0")
-        assert r.status_code == 200
-
-        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
-        assert [a["template"] for a in by_name["gait_data"]["alternate_templates"]] == [
-            "alt2.csv"
-        ]
-
-    def test_add_alternate_without_primary_is_400(self, client):
-        r = client.post(
-            "/api/path-inputs/no_such_path_input/alternates", json={"template": "x.csv"}
-        )
-        assert r.status_code == 400
-
-    def test_new_path_input_has_no_alternates(self, client):
-        client.post("/api/path-inputs", json={"name": "solo", "template": "{subject}.csv"})
-        by_name = {p["name"]: p for p in client.get("/api/path-inputs").json()}
-        assert by_name["solo"]["alternate_templates"] == []
-
-
 class TestSweeps:
     """Parameter sweep nodes (#8) — builds on Constant node identity
-    (shared-by-name) but generates its value list up front rather than
-    staging values one at a time; >1 value runs as EachOf(...) at
-    execution time (see execution_service.build_run_inputs)."""
+    (shared-by-name) but is source-scanned: created with its full value
+    list up front (no update endpoint — see
+    docs/claude/code-discovery-categories.md), >1 value runs as
+    EachOf(...) at execution time (see execution_service.build_run_inputs)."""
 
-    def test_create_and_list(self, client):
-        r = client.post("/api/sweeps", json={"name": "window_seconds"})
-        assert r.status_code == 200
-
-        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
-        assert by_name["window_seconds"]["values"] == []
-
-    def test_update_replaces_values(self, client):
-        client.post("/api/sweeps", json={"name": "window_seconds"})
-        r = client.put("/api/sweeps/window_seconds", json={"values": [10, 20, 30]})
+    def test_create_and_list(self, client_with_variable_file):
+        client = client_with_variable_file
+        r = client.post(
+            "/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]}
+        )
         assert r.status_code == 200
 
         by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
         assert by_name["window_seconds"]["values"] == [10, 20, 30]
 
-        # A second update REPLACES, doesn't append.
-        client.put("/api/sweeps/window_seconds", json={"values": [5]})
-        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
-        assert by_name["window_seconds"]["values"] == [5]
-
-    def test_delete_sweep(self, client):
-        client.post("/api/sweeps", json={"name": "window_seconds"})
+    def test_delete_sweep_hides_node_but_keeps_source_declaration(
+        self, client_with_variable_file
+    ):
+        """"Delete" hides the sweep__ node only — the source declaration
+        (and hence the /api/sweeps listing, which reads the registry
+        directly) is untouched. Never delete, mark hidden."""
+        client = client_with_variable_file
+        client.post(
+            "/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]}
+        )
         r = client.delete("/api/sweeps/window_seconds")
         assert r.status_code == 200
 
         names = {s["name"] for s in client.get("/api/sweeps").json()}
-        assert "window_seconds" not in names
+        assert "window_seconds" in names  # still a valid source declaration
 
-    def test_sweep_node_placement_and_edge(self, client):
+        graph = client.get("/api/pipeline").json()
+        assert not any(
+            n["type"] == "sweepNode" and n["data"]["label"] == "window_seconds"
+            for n in graph["nodes"]
+        )
+
+    def test_sweep_node_placement_and_edge(self, client_with_variable_file):
         """A Sweep node behaves like a Constant node on the canvas: place
         it, wire it into a function's in__{param} handle. The manual
         node_id (sweep_a) GRADUATES to the canonical placement-qualified
@@ -785,7 +732,10 @@ class TestSweeps:
         mechanism PathInput/Constant nodes already use (see
         _DB_DERIVED_PREFIXES) — so look it up by label, not by the raw id
         assigned at creation."""
-        client.post("/api/sweeps", json={"name": "window_seconds"})
+        client = client_with_variable_file
+        client.post(
+            "/api/sweeps", json={"name": "window_seconds", "values": [10]}
+        )
         client.put("/api/layout/sweep_a", json={
             "x": 0, "y": 0, "node_type": "sweepNode", "label": "window_seconds",
         })
@@ -811,21 +761,27 @@ class TestSweepExecutionResolution:
     TestPathInputExecutionResolution), extended rather than duplicated."""
 
     @staticmethod
-    def _register_fn(name: str):
+    def _register_fn(name: str, params: str = "window_seconds"):
+        """Append a real function definition to the configured
+        variable_file, rather than injecting into registry._functions
+        directly — create_path_input/create_sweep now call
+        registry.refresh_module(), which re-scans that ONE file from
+        scratch and would otherwise wipe a dict-injected function."""
         from scistack_gui import registry
 
-        def _fn(window_seconds):
-            return float(window_seconds)
+        target = registry._module_path
+        with open(target, "a") as f:
+            f.write(f"\n\ndef {name}({params}):\n    return {params}\n")
+        registry.refresh_module()
 
-        _fn.__name__ = name
-        registry._functions[name] = _fn
-
-    def test_multi_value_sweep_resolves_to_eachof(self, client):
+    def test_multi_value_sweep_resolves_to_eachof(self, client_with_variable_file):
         from scidb import EachOf
 
+        client = client_with_variable_file
+        client.post(
+            "/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]}
+        )
         self._register_fn("compute_rolling_sweep")
-        client.post("/api/sweeps", json={"name": "window_seconds"})
-        client.put("/api/sweeps/window_seconds", json={"values": [10, 20, 30]})
 
         from scistack_gui.services.execution_service import build_run_inputs
 
@@ -835,29 +791,36 @@ class TestSweepExecutionResolution:
         assert isinstance(inputs["window_seconds"], EachOf)
         assert inputs["window_seconds"].alternatives == [10, 20, 30]
 
-    def test_single_value_sweep_stays_scalar(self, client):
-        """One value -> plain number, not EachOf-wrapped — a sweep with
-        exactly one value behaves like a regular constant."""
+    def test_single_value_sweep_stays_an_each_of(self, client_with_variable_file):
+        """A registry-backed Sweep is returned AS-IS regardless of how many
+        alternatives it has — build_run_inputs no longer reconstructs/
+        collapses it (that was an artifact of the old layout.json-values
+        rebuild; the registry now already holds the live object). A
+        single-alternative EachOf/Sweep is functionally identical to the
+        bare scalar at execution time (see EachOf's own docstring: "With a
+        single value, behaves identically to passing that value directly")
+        — the collapse happens at for_each's EachOf-expansion step, not
+        here."""
         from scidb import EachOf
 
+        client = client_with_variable_file
+        client.post("/api/sweeps", json={"name": "window_seconds", "values": [30]})
         self._register_fn("compute_rolling_sweep2")
-        client.post("/api/sweeps", json={"name": "window_seconds"})
-        client.put("/api/sweeps/window_seconds", json={"values": [30]})
 
         from scistack_gui.services.execution_service import build_run_inputs
 
         target = {"input_types": {}, "output_type": "X", "constants": {}}
         inputs = build_run_inputs(target, "compute_rolling_sweep2")
 
-        assert inputs["window_seconds"] == 30
-        assert not isinstance(inputs["window_seconds"], EachOf)
+        assert isinstance(inputs["window_seconds"], EachOf)
+        assert inputs["window_seconds"].alternatives == [30]
 
-    def test_empty_sweep_leaves_param_unresolved(self, client):
-        """A Sweep created but never given values -> fail safe (param
-        absent from inputs), matching the same contract PathInput's
-        missing-registration case has."""
+    def test_unregistered_param_leaves_param_unresolved(
+        self, client_with_variable_file
+    ):
+        """No Sweep (or PathInput) named after the param -> fail safe
+        (param absent from inputs)."""
         self._register_fn("compute_rolling_sweep3")
-        client.post("/api/sweeps", json={"name": "window_seconds"})
 
         from scistack_gui.services.execution_service import build_run_inputs
 
@@ -866,22 +829,22 @@ class TestSweepExecutionResolution:
 
         assert "window_seconds" not in inputs
 
-    def test_path_input_and_sweep_names_resolve_independently(self, client):
+    def test_path_input_and_sweep_names_resolve_independently(
+        self, client_with_variable_file
+    ):
         """A function with both a PathInput-backed param and a Sweep-
         backed param gets both resolved correctly in one call — the two
         registries (checked in sequence per missing param) don't
         interfere with each other."""
         from scidb import EachOf, PathInput
-        from scistack_gui import registry
 
-        def _fn(data_dir, window_seconds):
-            return None
-
-        registry._functions["mixed_fn"] = _fn
+        client = client_with_variable_file
+        self._register_fn("mixed_fn", params="data_dir, window_seconds")
 
         client.post("/api/path-inputs", json={"name": "data_dir", "template": "{subject}"})
-        client.post("/api/sweeps", json={"name": "window_seconds"})
-        client.put("/api/sweeps/window_seconds", json={"values": [30, 60]})
+        client.post(
+            "/api/sweeps", json={"name": "window_seconds", "values": [30, 60]}
+        )
 
         from scistack_gui.services.execution_service import build_run_inputs
 
@@ -2295,15 +2258,21 @@ class TestPathInputExecutionResolution:
 
     @staticmethod
     def _register_loader(name: str):
+        """Append a real function definition to the configured
+        variable_file, rather than injecting into registry._functions
+        directly — create_path_input/create_sweep now call
+        registry.refresh_module(), which re-scans that ONE file from
+        scratch and would otherwise wipe a dict-injected function."""
         from scistack_gui import registry
 
-        def _fn(filepath):
-            return str(filepath)
+        target = registry._module_path
+        with open(target, "a") as f:
+            f.write(f"\n\ndef {name}(filepath):\n    return str(filepath)\n")
+        registry.refresh_module()
 
-        _fn.__name__ = name
-        registry._functions[name] = _fn
-
-    def test_never_run_target_omits_pathinput_from_input_types(self, client):
+    def test_never_run_target_omits_pathinput_from_input_types(
+        self, client_with_variable_file
+    ):
         """derive_fn_targets deliberately does NOT resolve PathInput params
         — see its docstring — build_run_inputs is the single place that
         does, right before execution."""
@@ -2312,6 +2281,7 @@ class TestPathInputExecutionResolution:
         class LoadedThing(BaseVariable):
             pass
 
+        client = client_with_variable_file
         self._register_loader("load_raw")
         client.post(
             "/api/path-inputs",
@@ -2336,12 +2306,15 @@ class TestPathInputExecutionResolution:
         assert "filepath" not in targets[0]["input_types"]
         assert targets[0]["output_type"] == "LoadedThing"
 
-    def test_build_run_inputs_resolves_never_run_target(self, client):
+    def test_build_run_inputs_resolves_never_run_target(
+        self, client_with_variable_file
+    ):
         from scidb import BaseVariable, PathInput
 
         class LoadedThing2(BaseVariable):
             pass
 
+        client = client_with_variable_file
         self._register_loader("load_raw2")
         client.post(
             "/api/path-inputs",
@@ -2369,7 +2342,9 @@ class TestPathInputExecutionResolution:
         assert isinstance(inputs["filepath"], PathInput)
         assert inputs["filepath"].path_template == "{subject}/{session}/data.csv"
 
-    def test_compiled_pipeline_step_carries_live_pathinput(self, client):
+    def test_compiled_pipeline_step_carries_live_pathinput(
+        self, client_with_variable_file
+    ):
         """Same resolution, exercised through the real compiler path
         (Run Pipeline / Run Until Here) rather than calling
         build_run_inputs directly."""
@@ -2378,6 +2353,7 @@ class TestPathInputExecutionResolution:
         class LoadedThing3(BaseVariable):
             pass
 
+        client = client_with_variable_file
         self._register_loader("load_raw3")
         client.post("/api/path-inputs", json={"name": "filepath", "template": "{subject}.csv"})
         client.put("/api/layout/mf_load3", json={
@@ -2404,7 +2380,9 @@ class TestPathInputExecutionResolution:
         finally:
             _discard_compiled(built)
 
-    def test_missing_stored_pathinput_leaves_param_unresolved(self, client):
+    def test_missing_stored_pathinput_leaves_param_unresolved(
+        self, client_with_variable_file
+    ):
         """No stored PathInput matches the name -> fail safe (the param is
         simply absent from inputs), matching the KeyError-tolerant contract
         callers already rely on for other unresolvable params — not a
@@ -2418,21 +2396,26 @@ class TestPathInputExecutionResolution:
 
         assert "filepath" not in inputs
 
-    def test_alternate_templates_resolve_to_eachof(self, client):
-        """Multiple templates under one PathInput name (see
-        TestPathInputAlternates) become EachOf(PathInput(...), ...) —
-        the PathInput analog of the multi-type variable branch's EachOf,
-        same as a Constant node's multiple staged values fanning out."""
+    def test_alternate_templates_resolve_to_eachof(self, client_with_variable_file):
+        """Multiple templates under one PathInput name become
+        EachOf(PathInput(...), ...) — the PathInput analog of the
+        multi-type variable branch's EachOf, same as a Constant node's
+        multiple staged values fanning out. "Alternate templates" is now
+        purely a source-code concept (EachOf(PathInput(...), ...) bound to
+        one name) — no GUI/API endpoint authors it (see
+        docs/claude/code-discovery-categories.md), so this writes the
+        declaration directly rather than going through the API."""
         from scidb import EachOf, PathInput
+        from scistack_gui import registry
 
         self._register_loader("load_raw5")
-        client.post(
-            "/api/path-inputs", json={"name": "filepath", "template": "primary.csv"}
-        )
-        client.post(
-            "/api/path-inputs/filepath/alternates",
-            json={"template": "alt.csv", "root_folder": "/alt"},
-        )
+        target = registry._module_path
+        with open(target, "a") as f:
+            f.write(
+                '\nfilepath = EachOf(PathInput("primary.csv"), '
+                'PathInput("alt.csv", root_folder="/alt"))\n'
+            )
+        registry.refresh_module()
 
         from scistack_gui.services.execution_service import build_run_inputs
 
@@ -2447,11 +2430,12 @@ class TestPathInputExecutionResolution:
         assert alts[1].path_template == "alt.csv"
         assert alts[1].root_folder is not None and str(alts[1].root_folder) == "/alt"
 
-    def test_single_template_stays_plain_pathinput(self, client):
+    def test_single_template_stays_plain_pathinput(self, client_with_variable_file):
         """No alternates -> still a bare PathInput, not EachOf-wrapped —
         confirms the single-template case is unaffected by this feature."""
         from scidb import EachOf, PathInput
 
+        client = client_with_variable_file
         self._register_loader("load_raw6")
         client.post(
             "/api/path-inputs", json={"name": "filepath", "template": "solo.csv"}

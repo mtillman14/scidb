@@ -225,6 +225,52 @@ class TestSerializationHelpers:
         each = EachOfStub(RawSignal, 20)
         assert _matlab_literal(each) == "scifor.EachOf(RawSignal(), 20)"
 
+    def test_matlab_literal_real_sweep_duck_types_as_each_of(self):
+        """A real scidb.Sweep (not a stub) -- confirms the new Sweep class
+        needed zero changes here: it duck-types via .alternatives exactly
+        like a bare EachOf, so it renders as scifor.EachOf(...) (de-sugared
+        -- Sweep has no distinct MATLAB literal form, same as Python's own
+        repr(), see docs/claude/code-discovery-categories.md)."""
+        from scidb import Sweep
+
+        window = Sweep(10, 20, 30)
+        assert _matlab_literal(window) == "scifor.EachOf(10, 20, 30)"
+
+    def test_matlab_literal_real_path_input(self):
+        from scidb import PathInput
+
+        pi = PathInput("{subject}/{trial}.mat")
+        assert (
+            _matlab_literal(pi) == 'scifor.PathInput("{subject}/{trial}.mat")'
+        )
+
+    def test_matlab_literal_real_path_input_with_root_folder(self):
+        from scidb import PathInput
+
+        pi = PathInput("{subject}.mat", root_folder="/data")
+        assert (
+            _matlab_literal(pi)
+            == 'scifor.PathInput("{subject}.mat", \'root_folder\', "/data")'
+        )
+
+    def test_py_literal_real_sweep_reprs_as_each_of(self):
+        """Same de-sugaring on the Python side -- repr(Sweep(...)) prints
+        "EachOf(...)" (Sweep doesn't override __repr__), which is still
+        perfectly valid, runnable Python since EachOf is already imported
+        in every generated script's header."""
+        from scidb import Sweep
+
+        window = Sweep(10, 20, 30)
+        assert _py_literal(window) == "EachOf(10, 20, 30)"
+
+    def test_py_literal_real_path_input(self):
+        from scidb import PathInput
+
+        pi = PathInput("{subject}/{trial}.mat")
+        assert _py_literal(pi) == repr(pi)
+        assert "PathInput" in _py_literal(pi)
+        assert "{subject}/{trial}.mat" in _py_literal(pi)
+
     def test_matlab_struct_empty_and_nonempty(self):
         assert _matlab_struct({}) == "struct()"
         assert _matlab_struct({"low_hz": 20}) == "struct('low_hz', 20)"

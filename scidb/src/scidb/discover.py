@@ -50,6 +50,8 @@ else:  # pragma: no cover
     except ModuleNotFoundError:
         import tomli as tomllib  # type: ignore[no-redef]
 
+from scifor import EachOf, PathInput, Sweep
+
 from .constant import Constant
 from .pipeline import is_scistack_function
 from .variable import BaseVariable
@@ -68,14 +70,28 @@ class ModuleExports:
     variables: list[type] = field(default_factory=list)
     functions: list[Any] = field(default_factory=list)
     constants: list[tuple[str, Constant]] = field(default_factory=list)
+    path_inputs: list[tuple[str, Any]] = field(default_factory=list)
+    sweeps: list[tuple[str, Sweep]] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return not (self.variables or self.functions or self.constants)
+        return not (
+            self.variables
+            or self.functions
+            or self.constants
+            or self.path_inputs
+            or self.sweeps
+        )
 
     @property
     def total_count(self) -> int:
-        return len(self.variables) + len(self.functions) + len(self.constants)
+        return (
+            len(self.variables)
+            + len(self.functions)
+            + len(self.constants)
+            + len(self.path_inputs)
+            + len(self.sweeps)
+        )
 
 
 @dataclass
@@ -110,6 +126,14 @@ class PackageResult:
     @property
     def constant_count(self) -> int:
         return sum(len(m.constants) for m in self.modules)
+
+    @property
+    def path_input_count(self) -> int:
+        return sum(len(m.path_inputs) for m in self.modules)
+
+    @property
+    def sweep_count(self) -> int:
+        return sum(len(m.sweeps) for m in self.modules)
 
 
 @dataclass
@@ -167,6 +191,22 @@ def discover_module(module: ModuleType) -> ModuleExports:
         # --- Constant instances ---
         if isinstance(obj, Constant):
             exports.constants.append((name, obj))
+            continue
+
+        # --- Sweep instances (checked before PathInput: a Sweep is not
+        # itself a PathInput, but is an EachOf, so order doesn't actually
+        # matter here — kept explicit for readability) ---
+        if isinstance(obj, Sweep):
+            exports.sweeps.append((name, obj))
+            continue
+
+        # --- PathInput instances, or an EachOf of PathInputs (alternate
+        # templates) ---
+        if isinstance(obj, PathInput) or (
+            isinstance(obj, EachOf)
+            and all(isinstance(alt, PathInput) for alt in obj.alternatives)
+        ):
+            exports.path_inputs.append((name, obj))
             continue
 
     return exports

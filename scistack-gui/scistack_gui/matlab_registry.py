@@ -20,6 +20,8 @@ from scistack_gui.matlab_parser import (
     MatlabFunctionInfo,
     classify_matlab_file,
     parse_matlab_function,
+    parse_matlab_path_input,
+    parse_matlab_sweep,
     parse_matlab_variable,
 )
 
@@ -37,6 +39,26 @@ _matlab_functions: dict[str, MatlabFunctionInfo] = {}
 
 _matlab_variables: dict[str, Path] = {}
 """variable_class_name -> .m file path."""
+
+_matlab_path_inputs: dict[str, Path] = {}
+"""PathInput getter name -> .m file path (see matlab_parser.
+parse_matlab_path_input and docs/claude/code-discovery-categories.md).
+
+Unlike ``_matlab_variables``, this does NOT create a Python surrogate: a
+PathInput's actual template/root_folder VALUES live inside MATLAB source
+text (e.g. ``p = scifor.PathInput('{subject}.mat')``), and extracting them
+without running MATLAB would need a much deeper literal-expression parser
+than this file's regex-based approach supports. Currently name-only —
+known gap: MATLAB PathInputs are not yet merged into the GUI canvas's
+``pathInput__`` nodes or execution_service's content-matching resolution
+(both Python-only for now); a MATLAB pipeline's PathInput resolves through
+the MATLAB bridge calling the getter function natively at run time,
+independent of this registry.
+"""
+
+_matlab_sweeps: dict[str, Path] = {}
+"""Sweep getter name -> .m file path — same name-only scope/rationale as
+_matlab_path_inputs above."""
 
 _config: SciStackConfig | None = None
 """Stored config for refresh_all()."""
@@ -73,6 +95,8 @@ def load_from_config(config: SciStackConfig) -> dict:
     logger.info("[matlab_registry] Clearing registries")
     _matlab_functions.clear()
     _matlab_variables.clear()
+    _matlab_path_inputs.clear()
+    _matlab_sweeps.clear()
     _load_errors.clear()
 
     # --- Function files (explicit matlab.functions config) ---
@@ -118,19 +142,55 @@ def load_from_config(config: SciStackConfig) -> dict:
             )
             _record_load_error(str(path), "No BaseVariable classdef found")
 
+    # --- PathInput getter files (explicit matlab.path_inputs config) ---
+    logger.info(
+        "[matlab_registry] Parsing %d MATLAB PathInput getter files",
+        len(config.matlab_path_inputs),
+    )
+    for idx, path in enumerate(config.matlab_path_inputs):
+        pi_name = parse_matlab_path_input(path)
+        if pi_name is not None:
+            _register_matlab_path_input(pi_name, path)
+        else:
+            logger.warning(
+                "[matlab_registry] Could not parse MATLAB PathInput getter from %s",
+                path,
+            )
+            _record_load_error(str(path), "No PathInput getter found")
+
+    # --- Sweep getter files (explicit matlab.sweeps config) ---
+    logger.info(
+        "[matlab_registry] Parsing %d MATLAB Sweep getter files",
+        len(config.matlab_sweeps),
+    )
+    for idx, path in enumerate(config.matlab_sweeps):
+        sw_name = parse_matlab_sweep(path)
+        if sw_name is not None:
+            _register_matlab_sweep(sw_name, path)
+        else:
+            logger.warning(
+                "[matlab_registry] Could not parse MATLAB Sweep getter from %s", path
+            )
+            _record_load_error(str(path), "No Sweep getter found")
+
     # --- Unified sources (folder-scan fallback: no functions/variables
     # split available, each file classified individually by content) ---
     if config.matlab_sources:
         load_from_sources(config.matlab_sources)
 
     logger.info(
-        "[matlab_registry] MATLAB registry loading complete - %d functions, %d variables",
+        "[matlab_registry] MATLAB registry loading complete - %d functions, "
+        "%d variables, %d path inputs, %d sweeps",
         len(_matlab_functions),
         len(_matlab_variables),
+        len(_matlab_path_inputs),
+        len(_matlab_sweeps),
     )
     return {
         "matlab_functions": sorted(_matlab_functions.keys()),
         "matlab_variables": sorted(_matlab_variables.keys()),
+        "matlab_path_inputs": sorted(_matlab_path_inputs.keys()),
+        "matlab_sweeps": sorted(_matlab_sweeps.keys()),
     }
 
 
@@ -161,6 +221,10 @@ def load_from_sources(paths: list[Path]) -> None:
         kind, payload = result
         if kind == "variable":
             _register_matlab_variable(payload, path)
+        elif kind == "path_input":
+            _register_matlab_path_input(payload, path)
+        elif kind == "sweep":
+            _register_matlab_sweep(payload, path)
         else:
             _register_matlab_function(payload)
 
@@ -218,12 +282,31 @@ def _register_matlab_variable(var_name: str, path: Path) -> None:
         _record_load_error(str(path), str(e))
 
 
+def _register_matlab_path_input(name: str, path: Path) -> None:
+    """Register a single MATLAB PathInput getter (name-only — see
+    _matlab_path_inputs' docstring for why no Python surrogate is built)."""
+    _matlab_path_inputs[name] = path
+    logger.info("[matlab_registry] Registered MATLAB PathInput getter: %s (%s)", name, path)
+
+
+def _register_matlab_sweep(name: str, path: Path) -> None:
+    """Register a single MATLAB Sweep getter (name-only — see
+    _matlab_sweeps' docstring)."""
+    _matlab_sweeps[name] = path
+    logger.info("[matlab_registry] Registered MATLAB Sweep getter: %s (%s)", name, path)
+
+
 def refresh_all() -> dict:
     """Re-scan all configured MATLAB paths."""
     logger.info("[matlab_registry] Starting refresh_all")
     if _config is None:
         logger.warning("[matlab_registry] No MATLAB config loaded; nothing to refresh.")
-        return {"matlab_functions": [], "matlab_variables": []}
+        return {
+            "matlab_functions": [],
+            "matlab_variables": [],
+            "matlab_path_inputs": [],
+            "matlab_sweeps": [],
+        }
     return load_from_config(_config)
 
 
@@ -255,6 +338,16 @@ def get_all_variable_names() -> list[str]:
     return sorted(_matlab_variables.keys())
 
 
+def get_all_path_input_names() -> list[str]:
+    """Return sorted list of all registered MATLAB PathInput getter names."""
+    return sorted(_matlab_path_inputs.keys())
+
+
+def get_all_sweep_names() -> list[str]:
+    """Return sorted list of all registered MATLAB Sweep getter names."""
+    return sorted(_matlab_sweeps.keys())
+
+
 def get_mismatched_function_names() -> list[str]:
     """Return sorted list of MATLAB function names where the function name
     does not match the stem of its .m file (a MATLAB requirement).
@@ -284,5 +377,9 @@ def get_load_errors() -> list[dict]:
 def has_matlab_config() -> bool:
     """Return True if a MATLAB config section was loaded."""
     return _config is not None and bool(
-        _config.matlab_functions or _config.matlab_variables or _config.matlab_sources
+        _config.matlab_functions
+        or _config.matlab_variables
+        or _config.matlab_path_inputs
+        or _config.matlab_sweeps
+        or _config.matlab_sources
     )

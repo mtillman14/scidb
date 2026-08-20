@@ -190,6 +190,20 @@ def open_or_create_project(
         logger.exception("[bootstrap] failed to restore builtin function references")
         warnings.append("Failed to restore builtin function references.")
 
+    try:
+        from scistack_gui.pipeline_discovery import discover_and_seed_pipelines
+
+        pipeline_result = discover_and_seed_pipelines(db)
+        if pipeline_result["created"]:
+            logger.info(
+                "[bootstrap] seeded %d pipeline(s) from source: %s",
+                len(pipeline_result["created"]),
+                pipeline_result["created"],
+            )
+    except Exception:
+        logger.exception("[bootstrap] failed to discover/seed pipelines from source")
+        warnings.append("Failed to discover pipelines defined in source.")
+
     from scidb.log import Log
 
     Log.bridge_python_logging()

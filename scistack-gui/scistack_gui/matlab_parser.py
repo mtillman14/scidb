@@ -253,26 +253,99 @@ def parse_matlab_variable(path: Path) -> str | None:
     return None
 
 
+# MATLAB has no module-level globals, so a Python-style ``NAME =
+# PathInput(...)``/``NAME = Sweep(...)`` binding doesn't translate
+# directly. Convention: a "value getter" — a zero-argument function whose
+# body constructs and returns a scifor.PathInput/scifor.Sweep (or the
+# scidb re-export) — stands in for it, named after the object it exposes
+# (mirrors the existing one-function-per-file rule already enforced for
+# regular functions). See docs/claude/code-discovery-categories.md.
+_PATHINPUT_VALUE_RE = re.compile(r"=\s*(?:scifor\.|scidb\.)?PathInput\s*\(")
+_SWEEP_VALUE_RE = re.compile(r"=\s*(?:scifor\.|scidb\.)?Sweep\s*\(")
+
+
+def _parse_value_getter(path: Path, value_re: "re.Pattern[str]") -> str | None:
+    """Shared implementation for ``parse_matlab_path_input``/
+    ``parse_matlab_sweep``: a zero-arg function whose body contains a
+    construction matching ``value_re``. Static regex only — never runs
+    MATLAB, matching this file's "extract without running MATLAB"
+    principle. Returns the function's name (the object's exposed identity)
+    or ``None``.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        logger.warning("[matlab_parser] Cannot read MATLAB file %s: %s", path, e)
+        return None
+    text = _preprocess_for_parsing(raw.decode("utf-8", errors="replace"))
+
+    # Same one-file-one-entity rule as parse_matlab_function: a classdef
+    # file's "function" matches are always methods, never a getter.
+    if _CLASSDEF_RE.search(text):
+        return None
+
+    m = _FUNCTION_RE.search(text)
+    if m is None:
+        return None
+    fn_name = m.group(3)
+    raw_params = m.group(4).strip()
+    if raw_params:
+        return None  # a value getter takes no arguments
+
+    # Search only this function's own body — up to the next function
+    # declaration (if any) or end of file — so a getter sitting above an
+    # unrelated function in the same file doesn't false-positive on the
+    # unrelated function's own construction.
+    body = text[m.end() :]
+    next_fn = _FUNCTION_RE.search(body)
+    if next_fn is not None:
+        body = body[: next_fn.start()]
+    if value_re.search(body) is None:
+        return None
+    return fn_name
+
+
+def parse_matlab_path_input(path: Path) -> str | None:
+    """Parse a MATLAB "PathInput getter" file. See ``_parse_value_getter``."""
+    return _parse_value_getter(path, _PATHINPUT_VALUE_RE)
+
+
+def parse_matlab_sweep(path: Path) -> str | None:
+    """Parse a MATLAB "Sweep getter" file. See ``_parse_value_getter``."""
+    return _parse_value_getter(path, _SWEEP_VALUE_RE)
+
+
 def classify_matlab_file(
     path: Path,
 ) -> tuple[str, str] | tuple[str, MatlabFunctionInfo] | None:
-    """Classify a single .m file as a variable or a function by content,
-    for folder-scan discovery (no explicit ``matlab.functions``/
-    ``matlab.variables`` split available).
+    """Classify a single .m file as a variable, PathInput getter, Sweep
+    getter, or a function by content, for folder-scan discovery (no
+    explicit ``matlab.functions``/``matlab.variables`` split available).
 
-    Mirrors how Python's ``_scan_module_functions`` classifies each
-    imported object dynamically rather than requiring the config to
-    pre-sort files. Tries the classdef parse first (cheaper, and a
-    ``BaseVariable`` classdef with methods would otherwise also match the
-    function regex).
+    Mirrors how Python's ``_scan_module_functions``/``_scan_module_path_inputs``/
+    ``_scan_module_sweeps`` classify each imported object dynamically
+    rather than requiring the config to pre-sort files. Tries the classdef
+    parse first (cheaper, and a ``BaseVariable`` classdef with methods
+    would otherwise also match the function regex), then the value-getter
+    checks (a getter also matches the plain function regex — zero args,
+    one output — so it must be checked BEFORE ``parse_matlab_function``).
 
-    Returns ``("variable", class_name)``, ``("function", MatlabFunctionInfo)``,
-    or ``None`` if the file is neither (e.g. a script with no function
+    Returns ``("variable", class_name)``, ``("path_input", name)``,
+    ``("sweep", name)``, ``("function", MatlabFunctionInfo)``, or ``None``
+    if the file is none of those (e.g. a script with no function
     declaration, or unreadable).
     """
     var_name = parse_matlab_variable(path)
     if var_name is not None:
         return ("variable", var_name)
+
+    pi_name = parse_matlab_path_input(path)
+    if pi_name is not None:
+        return ("path_input", pi_name)
+
+    sweep_name = parse_matlab_sweep(path)
+    if sweep_name is not None:
+        return ("sweep", sweep_name)
 
     fn_info = parse_matlab_function(path)
     if fn_info is not None:

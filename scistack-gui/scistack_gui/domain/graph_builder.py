@@ -54,6 +54,13 @@ class AggregatedData:
     const_fns: dict[str, set] = field(default_factory=lambda: defaultdict(set))
     fn_constants: dict[FnKey, set] = field(default_factory=lambda: defaultdict(set))
     path_inputs: dict[str, dict] = field(default_factory=dict)
+    """Keyed by the PathInput's SOURCE-DECLARED name (resolved via
+    ``resolve_path_input_name``, content-matched against the registry) —
+    NOT the function parameter name, which can differ (``RAW_EMG`` bound to
+    a ``signal`` param). Each entry: ``{"template", "root_folder",
+    "alternate_templates", "functions": set[tuple[FnKey, param_name]]}`` —
+    the per-membership ``param_name`` is needed because one PathInput can
+    feed differently-named params across different functions."""
     fn_variants_map: dict[FnKey, list] = field(
         default_factory=lambda: defaultdict(list)
     )
@@ -259,10 +266,12 @@ def group_call_sites_by_wiring(
     # const/path-input edge targets follow their call sites into the groups.
     for const_name, fkeys in agg.const_fns.items():
         grouped.const_fns[const_name] = {fkey_to_gkey.get(f, f) for f in fkeys}
-    for param_name, pi in agg.path_inputs.items():
-        grouped.path_inputs[param_name] = {
+    for pi_name, pi in agg.path_inputs.items():
+        grouped.path_inputs[pi_name] = {
             **pi,
-            "functions": {fkey_to_gkey.get(f, f) for f in pi["functions"]},
+            "functions": {
+                (fkey_to_gkey.get(f, f), pname) for (f, pname) in pi["functions"]
+            },
         }
 
     # Staged pending values: a synthesized row per (constant, value) on
@@ -418,9 +427,128 @@ def parse_path_input(value: str) -> dict | None:
     return None
 
 
+def _path_input_content_variants(obj) -> list[tuple[str, str | None]]:
+    """(template, root_folder) pairs *obj* can match a historical DB value
+    against — one for a bare PathInput, one per alternative for an EachOf
+    of PathInputs (alternate templates)."""
+    from scifor import EachOf, PathInput
+
+    if isinstance(obj, PathInput):
+        candidates = [obj]
+    elif isinstance(obj, EachOf):
+        candidates = [a for a in obj.alternatives if isinstance(a, PathInput)]
+    else:
+        return []
+    return [
+        (c.path_template, str(c.root_folder) if c.root_folder is not None else None)
+        for c in candidates
+    ]
+
+
+def path_input_display(obj) -> dict:
+    """{"template", "root_folder", "alternate_templates"} for a registry
+    PathInput/EachOf-of-PathInput object — what a ``pathInput__`` node
+    shows. The first alternative is the primary template; the rest render
+    as ``alternate_templates`` (same shape the old layout.json-authored
+    version used)."""
+    from scifor import EachOf, PathInput
+
+    alts = obj.alternatives if isinstance(obj, EachOf) else [obj]
+    primary, *rest = [a for a in alts if isinstance(a, PathInput)] or [obj]
+    return {
+        "template": primary.path_template,
+        "root_folder": (
+            str(primary.root_folder) if primary.root_folder is not None else None
+        ),
+        "alternate_templates": [
+            {
+                "template": a.path_template,
+                "root_folder": str(a.root_folder) if a.root_folder is not None else None,
+            }
+            for a in rest
+        ],
+    }
+
+
+def resolve_path_input_name(
+    observed: dict, registry: "dict[str, object]"
+) -> tuple[str, dict]:
+    """Match a DB-history-observed ``{"template", "root_folder"}`` against
+    the source-scanned PathInput registry by CONTENT (there's no name in
+    DB history — ``PathInput.to_key()`` only serializes template/
+    root_folder, never the module-level name it's bound to). Returns
+    ``(registry_name, display_dict)``.
+
+    Falls back to a synthetic ``__unresolved__:{template}`` key with a WARN
+    log when nothing in the current registry matches — e.g. historical data
+    predating this migration, or the PathInput was renamed/removed from
+    source since it last ran. The node still renders (best-effort, from the
+    historical value) but won't line up with any current source object
+    until the pipeline is re-run against a matching declaration.
+    """
+    key = (observed["template"], observed.get("root_folder"))
+    for name, obj in registry.items():
+        if key in _path_input_content_variants(obj):
+            return name, path_input_display(obj)
+    logger.warning(
+        "[graph_builder] PathInput usage with no matching source "
+        "declaration: template=%r root_folder=%r — renamed or removed?",
+        observed["template"],
+        observed.get("root_folder"),
+    )
+    return f"__unresolved__:{observed['template']}", {
+        "template": observed["template"],
+        "root_folder": observed.get("root_folder"),
+        "alternate_templates": [],
+    }
+
+
+def convert_scidb_path_inputs(
+    scidb_path_inputs: dict, path_input_registry: "dict[str, object]"
+) -> dict[str, dict]:
+    """``db.get_aggregated_variants()["path_inputs"]`` (keyed by PARAM NAME
+    — raw DB-history extraction, no knowledge of source code) ->
+    ``AggregatedData.path_inputs`` shape (keyed by resolved registry name,
+    ``"functions"`` as ``set[(FnKey, param_name)]``).
+
+    Single shared conversion — do not re-inline this at a new call site;
+    ``api/pipeline.py`` and ``execution_service.disconnected_report_entries``
+    both need the exact same resolution (registry name, not param name) for
+    their hidden-edge-id lookups to line up with what ``build_edges``
+    actually produced.
+    """
+    result: dict[str, dict] = {}
+    for param_name, pi_data in scidb_path_inputs.items():
+        pi_name, display = resolve_path_input_name(
+            {"template": pi_data["template"], "root_folder": pi_data["root_folder"]},
+            path_input_registry,
+        )
+        entry_functions = {(tuple(f), param_name) for f in pi_data["functions"]}
+        existing = result.get(pi_name)
+        if existing is None:
+            result[pi_name] = {**display, "functions": entry_functions}
+        else:
+            existing["functions"] |= entry_functions
+    return result
+
+
+def seed_undiscovered_path_inputs(
+    path_inputs: dict[str, dict], registry: "dict[str, object]"
+) -> dict[str, dict]:
+    """Add every registry PathInput that has no DB run history yet (so it
+    still appears as an available, unconnected node) — the source-scanned
+    replacement for the old layout.json-authored ``overlay_saved_path_inputs``.
+    Mutates ``path_inputs`` in place and returns it."""
+    for name, obj in registry.items():
+        if name not in path_inputs:
+            path_inputs[name] = {**path_input_display(obj), "functions": set()}
+    return path_inputs
+
+
 def aggregate_variants(
     variants: list[dict],
     listed_var_names: set[str],
+    path_input_registry: "dict[str, object] | None" = None,
 ) -> AggregatedData:
     """Parse DB variants into aggregated data structures.
 
@@ -433,6 +561,10 @@ def aggregate_variants(
         variants: From db.list_pipeline_variants().
         listed_var_names: Variable names from db.list_variables() to fill in
             types that exist but haven't been run through for_each.
+        path_input_registry: ``registry.get_path_inputs_registry()`` — used
+            to resolve a historically-recorded PathInput value (template/
+            root_folder only, no name) back to its source-declared name via
+            content matching (see ``resolve_path_input_name``).
 
     Returns:
         AggregatedData with all parsed fields.
@@ -440,6 +572,7 @@ def aggregate_variants(
     logger.info(
         "[graph_builder] aggregate_variants: processing %d variant(s)", len(variants)
     )
+    path_input_registry = path_input_registry or {}
     agg = AggregatedData()
 
     for v in variants:
@@ -465,11 +598,15 @@ def aggregate_variants(
         for param_name, type_val in inputs.items():
             pi = parse_path_input(type_val)
             if pi is not None:
-                existing = agg.path_inputs.get(param_name)
+                pi_name, display = resolve_path_input_name(pi, path_input_registry)
+                existing = agg.path_inputs.get(pi_name)
                 if existing is None:
-                    agg.path_inputs[param_name] = {**pi, "functions": {fkey}}
+                    agg.path_inputs[pi_name] = {
+                        **display,
+                        "functions": {(fkey, param_name)},
+                    }
                 else:
-                    existing["functions"].add(fkey)
+                    existing["functions"].add((fkey, param_name))
             else:
                 agg.all_var_types.add(type_val)
                 agg.fn_input_params[fkey][param_name] = type_val
@@ -759,53 +896,29 @@ def build_constant_nodes(
     return nodes
 
 
-def overlay_saved_path_inputs(
-    path_inputs: dict[str, dict],
-    saved_path_inputs: list[dict],
-) -> dict[str, dict]:
-    """Overlay saved template/root_folder from layout.json onto path_inputs.
-
-    Mutates path_inputs in place and returns it. ``alternate_templates``
-    (see layout.add_path_input_alternate) rides through verbatim — it's
-    layout.json-only metadata, never DB-derived, so there's nothing to
-    merge, only to carry over.
-    """
-    for saved_pi in saved_path_inputs:
-        pname = saved_pi["name"]
-        if pname in path_inputs:
-            if saved_pi.get("template"):
-                path_inputs[pname]["template"] = saved_pi["template"]
-            if saved_pi.get("root_folder") is not None:
-                path_inputs[pname]["root_folder"] = saved_pi["root_folder"]
-            path_inputs[pname]["alternate_templates"] = saved_pi.get(
-                "alternate_templates", []
-            )
-        else:
-            path_inputs[pname] = {
-                "template": saved_pi.get("template", ""),
-                "root_folder": saved_pi.get("root_folder"),
-                "alternate_templates": saved_pi.get("alternate_templates", []),
-                "functions": set(),
-            }
-    return path_inputs
-
-
 def build_path_input_nodes(path_inputs: dict[str, dict]) -> list[dict]:
-    """Build React Flow path input nodes."""
+    """Build React Flow path input nodes.
+
+    ``path_inputs`` is keyed by the PathInput's SOURCE-DECLARED name (see
+    ``AggregatedData.path_inputs`` / ``resolve_path_input_name`` /
+    ``seed_undiscovered_path_inputs``) — no longer the function parameter
+    name, and no longer layout.json-authored (see
+    ``docs/claude/code-discovery-categories.md``).
+    """
     logger.info(
         "[graph_builder] build_path_input_nodes: building %d path input node(s)",
         len(path_inputs),
     )
     nodes = []
-    for param_name in sorted(path_inputs.keys()):
-        pi = path_inputs[param_name]
+    for pi_name in sorted(path_inputs.keys()):
+        pi = path_inputs[pi_name]
         nodes.append(
             {
-                "id": f"pathInput__{param_name}",
+                "id": f"pathInput__{pi_name}",
                 "type": "pathInputNode",
                 "position": {"x": 0, "y": 0},
                 "data": {
-                    "label": param_name,
+                    "label": pi_name,
                     "template": pi["template"],
                     "root_folder": pi.get("root_folder"),
                     "alternate_templates": pi.get("alternate_templates", []),
@@ -819,10 +932,10 @@ def build_path_input_nodes(path_inputs: dict[str, dict]) -> list[dict]:
 def build_sweep_nodes(sweeps: list[dict]) -> list[dict]:
     """Build React Flow sweep nodes.
 
-    Unlike variables/constants/path-inputs, a Sweep has no DB-history
-    counterpart to overlay onto — it's purely a layout.json-authored
-    definition (see layout.read_all_sweep_names), so this reads the
-    saved list directly rather than merging into an aggregated dict.
+    Like path inputs, a Sweep is source-scanned (``registry.
+    get_sweeps_registry()``), not layout.json-authored — see
+    ``docs/claude/code-discovery-categories.md``. Callers convert the
+    registry dict to this ``[{"name", "values"}, ...]`` shape.
     """
     logger.info(
         "[graph_builder] build_sweep_nodes: building %d sweep node(s)",
@@ -1120,24 +1233,27 @@ def build_edges(
         hidden_const_to_fn,
     )
 
-    # PathInput → function edges.
+    # PathInput → function edges. ``pi_name`` (the source-declared name) and
+    # ``param_name`` (the function's parameter it fills) can differ, so both
+    # must be part of the dedup/edge-id key — unlike var/const edges, the
+    # source id no longer encodes the parameter by itself.
     logger.debug("[graph_builder] building pathInput → function edges")
     hidden_path_to_fn = 0
-    for param_name, pi in path_inputs.items():
-        for fkey in pi["functions"]:
+    for pi_name, pi in path_inputs.items():
+        for fkey, param_name in pi["functions"]:
             fn, cid = fkey
             target_id = fn_node_id(fn, cid)
-            key = (f"pathInput__{param_name}", target_id)
+            key = (f"pathInput__{pi_name}", target_id, param_name)
             if key not in seen_edges:
                 seen_edges.add(key)
-                edge_id = f"e__{param_name}__{fn}__{cid}"
+                edge_id = f"e__{pi_name}__{param_name}__{fn}__{cid}"
                 if edge_id in hidden_edge_ids:
                     hidden_path_to_fn += 1
                     continue
                 edges.append(
                     {
                         "id": edge_id,
-                        "source": f"pathInput__{param_name}",
+                        "source": f"pathInput__{pi_name}",
                         "target": target_id,
                         "targetHandle": f"in__{param_name}",
                     }
@@ -1321,14 +1437,14 @@ def hidden_wirings(
                 wid,
                 sorted(hidden_handles),
             )
-    for param_name, pi in path_inputs.items():
-        for fkey in pi["functions"]:
+    for pi_name, pi in path_inputs.items():
+        for fkey, param_name in pi["functions"]:
             fn, _cid = fkey
             wid = wiring_id(
                 fn, fn_input_params.get(fkey, {}), fn_outputs.get(fkey, set())
             )
             handle = f"in__{param_name}"
-            if f"e__{param_name}__{fn}__{wid}" not in hidden_edge_ids:
+            if f"e__{pi_name}__{param_name}__{fn}__{wid}" not in hidden_edge_ids:
                 continue
             if (fn, wid, handle) in manual_index:
                 logger.info(
@@ -1401,7 +1517,9 @@ def wirings_downstream_of(
     return affected - seed_wirings
 
 
-def candidate_edge_id(source_id: str, target_id: str) -> str | None:
+def candidate_edge_id(
+    source_id: str, target_id: str, target_handle: "str | None" = None
+) -> str | None:
     """The deterministic DB-derived edge id a (source, target) node-id pair
     WOULD have in build_edges' output, without needing the edge to exist.
 
@@ -1411,11 +1529,26 @@ def candidate_edge_id(source_id: str, target_id: str) -> str | None:
     rather than create a redundant manual one. Returns None for pairs that
     aren't a recognized DB-derived category (a genuinely new connection).
     Both ids may be placement-qualified; only the bare ids matter here.
+
+    ``target_handle`` is required for a ``pathInput__`` source: unlike
+    var/const edges, a PathInput's declared name and the function parameter
+    it fills can differ (see docs/claude/code-discovery-categories.md), so
+    build_edges' real pathInput→fn edge id now encodes BOTH — without the
+    handle there's no way to recover the parameter name, so this returns
+    None (a safe degrade: the reconnect just creates a fresh manual edge
+    instead of auto-unhiding).
     """
     src = strip_placement(source_id)
     tgt = strip_placement(target_id)
-    src_prefixes = ("var__", "const__", "pathInput__")
-    if src.startswith(src_prefixes):
+    if src.startswith("pathInput__"):
+        parsed = parse_fn_node_id(tgt)
+        if parsed is None or not target_handle or not target_handle.startswith("in__"):
+            return None
+        fn, wid = parsed
+        pi_name = src.split("__", 1)[1]
+        param_name = target_handle[len("in__") :]
+        return f"e__{pi_name}__{param_name}__{fn}__{wid}"
+    if src.startswith(("var__", "const__")):
         parsed = parse_fn_node_id(tgt)
         if parsed is None:
             return None

@@ -87,10 +87,15 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     """
     from scistack_gui import layout as layout_store
     from scistack_gui import matlab_registry
+    from scistack_gui import registry
     from scistack_gui.api.matlab_command import generate_matlab_command as _fmt
     from scistack_gui.db import get_db_path
     from scistack_gui.domain.edge_resolver import infer_manual_fn_output_types
-    from scistack_gui.domain.graph_builder import parse_path_input, strip_placement
+    from scistack_gui.domain.graph_builder import (
+        parse_path_input,
+        path_input_display,
+        strip_placement,
+    )
 
     db_path = str(get_db_path())
 
@@ -127,7 +132,10 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
                 path_input_params[param_name] = pi
 
     # Source 2: layout manual edges — for functions not yet in the DB.
-    saved_pis = {pi["name"]: pi for pi in layout_store.read_all_path_input_names()}
+    saved_pis = {
+        name: path_input_display(obj)
+        for name, obj in registry.get_path_inputs_registry().items()
+    }
     for edge in layout_store.read_manual_edges():
         src = edge.get("source", "")
         tgt = edge.get("target", "")
@@ -280,7 +288,11 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         generate_matlab_pipeline_command as _fmt,
     )
     from scistack_gui.db import get_db_path
-    from scistack_gui.domain.graph_builder import parse_path_input, strip_placement
+    from scistack_gui.domain.graph_builder import (
+        parse_path_input,
+        path_input_display,
+        strip_placement,
+    )
     from scistack_gui.domain.variant_resolver import (
         filter_hidden_targets,
         hidden_call_ids_for_fn,
@@ -318,7 +330,10 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
 
     pending_consts = pipeline_store.get_pending_constants(db)
     hidden_ids = pipeline_store.get_hidden_node_ids(db)
-    saved_pis = {pi["name"]: pi for pi in layout_store.read_all_path_input_names()}
+    saved_pis = {
+        name: path_input_display(obj)
+        for name, obj in _reg.get_path_inputs_registry().items()
+    }
     manual_edges = layout_store.read_manual_edges()
 
     steps: list[dict] = []

@@ -123,7 +123,7 @@ def put_edge(
     # connection's own scope (derived from its endpoints, same as
     # delete_edge below) so reconnecting in one pipeline never unhides
     # another pipeline's independent placement of the same shared wiring.
-    candidate = candidate_edge_id(source, target)
+    candidate = candidate_edge_id(source, target, target_handle)
     if candidate is not None:
         manual_nodes = pipeline_store.get_manual_nodes(db)
         positions_by_scope = layout_store.read_positions_by_scope()
@@ -280,110 +280,86 @@ def delete_constant(name: str) -> dict:
 
 
 def get_path_inputs() -> list[dict]:
-    from scistack_gui import layout as layout_store
+    """Source-scanned — see docs/claude/code-discovery-categories.md."""
+    from scistack_gui import registry
+    from scistack_gui.domain.graph_builder import path_input_display
 
-    return layout_store.read_all_path_input_names()
+    return [
+        {"name": name, **path_input_display(obj)}
+        for name, obj in registry.get_path_inputs_registry().items()
+    ]
 
 
 def create_path_input(
-    name: str, template: str = "", root_folder: str | None = None
+    name: str, template: str = "", root_folder: "str | None" = None
 ) -> dict:
-    from scistack_gui import layout as layout_store
+    """Append a new ``NAME = PathInput(...)`` to source. There is no
+    ``update_path_input``/``add_path_input_alternate``/
+    ``remove_path_input_alternate`` counterpart — editing an existing
+    PathInput's value means editing the source file directly and hitting
+    Refresh Code (same as editing a function body); see
+    ``services.path_input_service``."""
+    from scistack_gui.services.path_input_service import create_path_input as _create
 
-    logger.debug(
-        "Node created (added to palette): type=pathInput, name=%r, template=%r, root_folder=%r",
-        name,
-        template,
-        root_folder,
-    )
-    layout_store.write_path_input(name, template, root_folder)
-    return {"ok": True}
-
-
-def update_path_input(
-    name: str, template: str = "", root_folder: str | None = None
-) -> dict:
-    from scistack_gui import layout as layout_store
-
-    logger.debug(
-        "PathInput updated: name=%r, template=%r, root_folder=%r",
-        name,
-        template,
-        root_folder,
-    )
-    layout_store.write_path_input(name, template, root_folder)
-    return {"ok": True}
+    return _create(name, template, root_folder)
 
 
-def delete_path_input(name: str) -> dict:
-    from scistack_gui import layout as layout_store
+def delete_path_input(name: str, pipeline_id: str = "main") -> dict:
+    """"Delete" hides the node only — the source declaration is never
+    touched (never delete, mark hidden). Reuses the same generic hide-node
+    mechanism functions/variables already use."""
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
 
-    layout_store.delete_path_input(name)
-    return {"ok": True}
-
-
-def add_path_input_alternate(
-    name: str, template: str, root_folder: str | None = None
-) -> dict:
-    from scistack_gui import layout as layout_store
-
-    logger.debug(
-        "PathInput alternate added: name=%r, template=%r, root_folder=%r",
-        name,
-        template,
-        root_folder,
-    )
-    index = layout_store.add_path_input_alternate(name, template, root_folder)
-    return {"ok": True, "index": index}
-
-
-def remove_path_input_alternate(name: str, index: int) -> dict:
-    from scistack_gui import layout as layout_store
-
-    layout_store.remove_path_input_alternate(name, index)
+    ps.hide_node(get_db(), f"pathInput__{name}", pipeline_id=pipeline_id)
     return {"ok": True}
 
 
 def get_sweeps() -> list[dict]:
-    from scistack_gui import layout as layout_store
+    """Source-scanned — see docs/claude/code-discovery-categories.md."""
+    from scistack_gui import registry
 
-    return layout_store.read_all_sweep_names()
-
-
-def create_sweep(name: str) -> dict:
-    from scistack_gui import layout as layout_store
-
-    logger.debug("Node created (added to palette): type=sweep, name=%r", name)
-    layout_store.write_sweep(name, [])
-    return {"ok": True}
+    return [
+        {"name": name, "values": list(sw.alternatives)}
+        for name, sw in registry.get_sweeps_registry().items()
+    ]
 
 
-def update_sweep(name: str, values: "list[float | int]") -> dict:
-    from scistack_gui import layout as layout_store
+def create_sweep(name: str, values: "list[float | int | str]") -> dict:
+    """Append a new ``NAME = Sweep(...)`` to source. No ``update_sweep``
+    counterpart — see ``create_path_input``'s docstring; same reasoning."""
+    from scistack_gui.services.path_input_service import create_sweep as _create
 
-    logger.debug("Sweep updated: name=%r, %d value(s)", name, len(values))
-    layout_store.write_sweep(name, values)
-    return {"ok": True}
+    return _create(name, values)
 
 
-def delete_sweep(name: str) -> dict:
-    from scistack_gui import layout as layout_store
+def delete_sweep(name: str, pipeline_id: str = "main") -> dict:
+    """"Delete" hides the node only — see ``delete_path_input``."""
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
 
-    layout_store.delete_sweep(name)
+    ps.hide_node(get_db(), f"sweep__{name}", pipeline_id=pipeline_id)
     return {"ok": True}
 
 
 def deep_copy_path_input(node_id: str) -> dict:
-    """Give one PathInput node its own independent named definition —
-    opt-in fork; every other placement of the original name is untouched.
-    See pipeline_store's module docstring for the "shared by default"
-    PathInput design this is the escape hatch for.
+    """Give one PathInput node its own independent named source
+    declaration — opt-in fork; every other placement of the original name
+    is untouched. See pipeline_store's module docstring for the "shared by
+    default" PathInput design this is the escape hatch for.
+
+    Unlike the old layout.json version, the copy is a NEW top-level source
+    declaration (``create_path_input``), not a new layout.json row — so it
+    survives with the same "must configure a variable_file" constraint as
+    any other GUI-initiated creation.
     """
     from scistack_gui import layout as layout_store
     from scistack_gui import pipeline_store as ps
+    from scistack_gui import registry
     from scistack_gui.db import get_db
-    from scistack_gui.domain.graph_builder import strip_placement
+    from scistack_gui.domain.graph_builder import path_input_display, strip_placement
     from scistack_gui.domain.scope_filter import node_scope
+    from scistack_gui.services.path_input_service import create_path_input
 
     db = get_db()
     manual_nodes = ps.get_manual_nodes(db)
@@ -401,11 +377,19 @@ def deep_copy_path_input(node_id: str) -> dict:
     if not old_name:
         raise ValueError(f"'{node_id}' is not a PathInput node")
 
+    obj = registry.get_path_input(old_name)
+    if obj is None:
+        raise ValueError(f"PathInput '{old_name}' not found in the registry")
+    display = path_input_display(obj)
+
     positions_by_scope = layout_store.read_positions_by_scope()
     pipeline_id = node_scope(node_id, manual_nodes, positions_by_scope)
     pos = positions_by_scope.get(pipeline_id, {}).get(node_id, {"x": 0.0, "y": 0.0})
 
-    new_name = layout_store.deep_copy_path_input(old_name)
+    new_name = _unique_path_input_name(old_name, registry.get_path_inputs_registry())
+    result = create_path_input(new_name, display["template"], display.get("root_folder"))
+    if not result.get("ok"):
+        raise ValueError(result.get("error", "Failed to create PathInput copy"))
 
     # Upsert guarantees a row exists whether or not this node was manual
     # before (a DB-derived PathInput node has no _pipeline_nodes row until
@@ -414,6 +398,17 @@ def deep_copy_path_input(node_id: str) -> dict:
         node_id, pos["x"], pos["y"], "pathInputNode", new_name, pipeline_id=pipeline_id
     )
     return {"ok": True, "name": new_name}
+
+
+def _unique_path_input_name(base: str, existing: dict) -> str:
+    """``base_copy``, ``base_copy2``, ... — first name not already in the
+    registry."""
+    if f"{base}_copy" not in existing:
+        return f"{base}_copy"
+    i = 2
+    while f"{base}_copy{i}" in existing:
+        i += 1
+    return f"{base}_copy{i}"
 
 
 def put_pending_constant(name: str, value: str) -> dict:

@@ -25,16 +25,8 @@ class PathInputCreate(BaseModel):
     root_folder: str | None = None
 
 
-class PathInputAlternateCreate(BaseModel):
-    template: str
-    root_folder: str | None = None
-
-
 class SweepCreate(BaseModel):
     name: str
-
-
-class SweepUpdate(BaseModel):
     values: list[float]
 
 
@@ -149,39 +141,17 @@ def post_path_input(body: PathInputCreate):
     return create_path_input(body.name, body.template, body.root_folder)
 
 
-@router.put("/path-inputs/{name}")
-def put_path_input(name: str, body: PathInputCreate):
-    from scistack_gui.services.layout_service import update_path_input
-
-    return update_path_input(name, body.template, body.root_folder)
-
-
 @router.delete("/path-inputs/{name}")
-def delete_path_input(name: str):
+def delete_path_input(name: str, pipeline_id: str = "main"):
+    """Hides the node only — the source declaration is untouched. There is
+    no update/alternates endpoint anymore: PathInput is source-scanned (see
+    docs/claude/code-discovery-categories.md); edit the source file and hit
+    Refresh Code to change a template, or add an ``EachOf(PathInput(...),
+    ...)`` alternative directly in source for multiple templates under one
+    name."""
     from scistack_gui.services.layout_service import delete_path_input as _del
 
-    return _del(name)
-
-
-@router.post("/path-inputs/{name}/alternates")
-def post_path_input_alternate(name: str, body: PathInputAlternateCreate):
-    """Add an alternate template to an existing PathInput — multiple
-    templates under one name run as EachOf(PathInput(...), ...) at
-    execution time (see execution_service.build_run_inputs), the
-    PathInput analog of a Constant node's multiple staged values."""
-    from scistack_gui.services.layout_service import add_path_input_alternate
-
-    try:
-        return add_path_input_alternate(name, body.template, body.root_folder)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@router.delete("/path-inputs/{name}/alternates/{index}")
-def delete_path_input_alternate(name: str, index: int):
-    from scistack_gui.services.layout_service import remove_path_input_alternate
-
-    return remove_path_input_alternate(name, index)
+    return _del(name, pipeline_id)
 
 
 @router.post("/path-inputs/{node_id}/deep-copy")
@@ -208,29 +178,26 @@ def get_sweeps() -> list[dict]:
 
 @router.post("/sweeps")
 def post_sweep(body: SweepCreate):
+    """Creates a new source-scanned Sweep in one call — range generation
+    (start/end/step or start/end/count) is a frontend concern; this always
+    receives the final, already-computed flat list of values. There is no
+    update endpoint: Sweep is source-scanned (see
+    docs/claude/code-discovery-categories.md); edit the source file and hit
+    Refresh Code to change its values."""
     logger.info("POST /sweeps body=%s", body)
     from scistack_gui.services.layout_service import create_sweep
 
-    result = create_sweep(body.name)
+    result = create_sweep(body.name, body.values)
     logger.info("POST /sweeps → %s", result)
     return result
 
 
-@router.put("/sweeps/{name}")
-def put_sweep(name: str, body: SweepUpdate):
-    """Replace a Sweep's full value list — range generation (start/end/
-    step or start/end/count) is a frontend concern; this always receives
-    the final, already-computed flat list of numbers."""
-    from scistack_gui.services.layout_service import update_sweep
-
-    return update_sweep(name, body.values)
-
-
 @router.delete("/sweeps/{name}")
-def delete_sweep(name: str):
+def delete_sweep(name: str, pipeline_id: str = "main"):
+    """Hides the node only — the source declaration is untouched."""
     from scistack_gui.services.layout_service import delete_sweep as _del
 
-    return _del(name)
+    return _del(name, pipeline_id)
 
 
 @router.put("/edges/{edge_id}")

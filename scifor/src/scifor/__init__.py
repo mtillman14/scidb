@@ -24,7 +24,7 @@ Example:
 
 from .colname import ColName
 from .column_selection import ColumnSelection
-from .each_of import EachOf
+from .each_of import EachOf, Sweep
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
 from .fixed import Fixed
 from .foreach import ColumnFunctionError, ForColumnsError, NoDataError, for_each
@@ -51,6 +51,7 @@ __all__ = [
     "ColumnSelection",
     "ColName",
     "EachOf",
+    "Sweep",
     "PathInput",
     "PathOutput",
     # Filters

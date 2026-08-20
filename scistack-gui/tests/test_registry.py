@@ -205,6 +205,159 @@ class TestScanModuleConstants:
 
 
 # ---------------------------------------------------------------------------
+# _scan_module_path_inputs — see docs/claude/code-discovery-categories.md
+# ---------------------------------------------------------------------------
+
+
+class TestScanModulePathInputs:
+    def test_registers_path_input(self):
+        from scidb import PathInput
+
+        raw_emg = PathInput("{subject}/{trial}.mat")
+        mod = _make_module(RAW_EMG=raw_emg)
+        registry.register_module(mod)
+        assert "RAW_EMG" in registry._path_inputs
+        assert registry._path_inputs["RAW_EMG"] is raw_emg
+
+    def test_get_path_inputs_registry_returns_copy(self):
+        from scidb import PathInput
+
+        pi = PathInput("{subject}.mat")
+        mod = _make_module(MY_PATH=pi)
+        registry.register_module(mod)
+        result = registry.get_path_inputs_registry()
+        assert result["MY_PATH"] is pi
+        result["MY_PATH"] = "mutated"
+        assert registry._path_inputs["MY_PATH"] is pi
+
+    def test_get_path_input_looks_up_by_name(self):
+        from scidb import PathInput
+
+        pi = PathInput("{subject}.mat")
+        mod = _make_module(MY_PATH=pi)
+        registry.register_module(mod)
+        assert registry.get_path_input("MY_PATH") is pi
+        assert registry.get_path_input("NO_SUCH_NAME") is None
+
+    def test_each_of_of_path_inputs_registered_as_alternate_templates(self):
+        """EachOf(PathInput(...), PathInput(...)) bound to one name is how
+        "alternate templates" express themselves now — no separate GUI
+        concept, see docs/claude/code-discovery-categories.md."""
+        from scidb import EachOf, PathInput
+
+        alts = EachOf(PathInput("primary.mat"), PathInput("alt.mat"))
+        mod = _make_module(GAIT_DATA=alts)
+        registry.register_module(mod)
+        assert registry._path_inputs["GAIT_DATA"] is alts
+
+    def test_sweep_not_double_counted_as_path_input(self):
+        """A Sweep is also an EachOf -- must not also register as a
+        PathInput (disambiguated before the isinstance(EachOf) check)."""
+        from scidb import Sweep
+
+        mod = _make_module(WINDOW=Sweep(10, 20, 30))
+        registry.register_module(mod)
+        assert "WINDOW" not in registry._path_inputs
+
+    def test_skips_private_and_non_path_input_values(self):
+        from scidb import PathInput
+
+        mod = _make_module(
+            _HIDDEN=PathInput("{subject}.mat"), PLAIN_NUMBER=42, PLAIN_STRING="hello"
+        )
+        registry.register_module(mod)
+        assert "_HIDDEN" not in registry._path_inputs
+        assert "PLAIN_NUMBER" not in registry._path_inputs
+        assert "PLAIN_STRING" not in registry._path_inputs
+
+    def test_path_input_attributed_even_when_reexported(self):
+        # Same reasoning as Constant: PathInput doesn't reliably expose a
+        # __module__ that would let us filter re-exports out.
+        from scidb import PathInput
+
+        pi = PathInput("{subject}.mat")
+        mod = _make_module_with_reexport(SHARED_PATH=pi)
+        registry.register_module(mod)
+        assert "SHARED_PATH" in registry._path_inputs
+        assert registry._path_inputs["SHARED_PATH"] is pi
+
+    def test_source_tracked(self):
+        from pathlib import Path
+
+        from scidb import PathInput
+
+        mod = _make_module(RAW_EMG=PathInput("{subject}.mat"))
+        registry.register_module(mod, module_path=Path("/fake/pipeline.py"))
+        assert registry._path_input_sources["RAW_EMG"] == "/fake/pipeline.py"
+
+
+# ---------------------------------------------------------------------------
+# _scan_module_sweeps — see docs/claude/code-discovery-categories.md
+# ---------------------------------------------------------------------------
+
+
+class TestScanModuleSweeps:
+    def test_registers_sweep(self):
+        from scidb import Sweep
+
+        window = Sweep(10, 20, 30)
+        mod = _make_module(WINDOW_SECONDS=window)
+        registry.register_module(mod)
+        assert "WINDOW_SECONDS" in registry._sweeps
+        assert registry._sweeps["WINDOW_SECONDS"] is window
+
+    def test_get_sweeps_registry_returns_copy(self):
+        from scidb import Sweep
+
+        sw = Sweep(1, 2)
+        mod = _make_module(MY_SWEEP=sw)
+        registry.register_module(mod)
+        result = registry.get_sweeps_registry()
+        assert result["MY_SWEEP"] is sw
+        result["MY_SWEEP"] = "mutated"
+        assert registry._sweeps["MY_SWEEP"] is sw
+
+    def test_get_sweep_looks_up_by_name(self):
+        from scidb import Sweep
+
+        sw = Sweep(1, 2)
+        mod = _make_module(MY_SWEEP=sw)
+        registry.register_module(mod)
+        assert registry.get_sweep("MY_SWEEP") is sw
+        assert registry.get_sweep("NO_SUCH_NAME") is None
+
+    def test_bare_eachof_is_not_discovered(self):
+        """Only a NAMED Sweep is GUI-visible -- a bare EachOf(...) used
+        inline at a call site is not discovered, same as an unwrapped
+        literal constant."""
+        from scidb import EachOf
+
+        mod = _make_module(NOT_A_SWEEP=EachOf(1, 2, 3))
+        registry.register_module(mod)
+        assert "NOT_A_SWEEP" not in registry._sweeps
+
+    def test_skips_private_and_non_sweep_values(self):
+        from scidb import Sweep
+
+        mod = _make_module(
+            _HIDDEN=Sweep(1, 2), PLAIN_NUMBER=42, PLAIN_STRING="hello"
+        )
+        registry.register_module(mod)
+        assert "_HIDDEN" not in registry._sweeps
+        assert "PLAIN_NUMBER" not in registry._sweeps
+        assert "PLAIN_STRING" not in registry._sweeps
+
+    def test_source_tracked(self):
+        from pathlib import Path
+
+        from scidb import Sweep
+
+        mod = _make_module(WINDOW=Sweep(1, 2))
+        registry.register_module(mod, module_path=Path("/fake/pipeline.py"))
+        assert registry._sweep_sources["WINDOW"] == "/fake/pipeline.py"
+
+
+# ---------------------------------------------------------------------------
 # get_function
 # ---------------------------------------------------------------------------
 

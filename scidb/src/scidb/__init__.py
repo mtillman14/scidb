@@ -38,6 +38,7 @@ from scifor import (
     Fixed,
     PathInput,
     PathOutput,
+    Sweep,
     get_schema,
     set_schema,
 )
@@ -131,6 +132,7 @@ __all__ = [
     "ColumnSelection",
     "ColName",
     "EachOf",
+    "Sweep",
     "ForEachConfig",
     "PathInput",
     "PathOutput",

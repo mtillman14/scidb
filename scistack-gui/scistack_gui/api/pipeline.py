@@ -417,13 +417,18 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     # Convert variables
     agg.all_var_types = set(scidb_agg["variables"].keys())
 
-    # Convert path_inputs
-    for param_name, pi_data in scidb_agg["path_inputs"].items():
-        agg.path_inputs[param_name] = {
-            "template": pi_data["template"],
-            "root_folder": pi_data["root_folder"],
-            "functions": {tuple(f) for f in pi_data["functions"]},
-        }
+    # Convert path_inputs — scidb_agg is keyed by PARAM NAME (it's a raw
+    # DB-history extraction with no knowledge of source code), but a
+    # PathInput's real identity is its source-declared name (see
+    # docs/claude/code-discovery-categories.md), which can differ from the
+    # parameter it happens to fill. Resolve each by content match against
+    # the registry (shared with execution_service.disconnected_report_entries
+    # — see graph_builder.convert_scidb_path_inputs).
+    path_input_registry = registry.get_path_inputs_registry()
+    agg.path_inputs = gb.convert_scidb_path_inputs(
+        scidb_agg["path_inputs"], path_input_registry
+    )
+    gb.seed_undiscovered_path_inputs(agg.path_inputs, path_input_registry)
 
     logger.info("[pipeline] Filtering hidden nodes")
     # strip_var_type_values=False: this pre-grouping pass must NOT scrub
@@ -600,16 +605,17 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         {k: dict(v) for k, v in matlab_param_to_class.items()},
     )
 
-    # --- Overlay saved path inputs ---
-    logger.info("[pipeline] Overlaying saved path inputs")
-    saved_path_inputs = layout_store.read_all_path_input_names()
-    logger.debug("[pipeline] loaded %d saved path input(s)", len(saved_path_inputs))
-    gb.overlay_saved_path_inputs(agg.path_inputs, saved_path_inputs)
-
-    # --- Load sweeps (GUI-only, no DB-derived counterpart — see
-    # graph_builder.build_sweep_nodes) ---
-    saved_sweeps = layout_store.read_all_sweep_names()
-    logger.debug("[pipeline] loaded %d saved sweep(s)", len(saved_sweeps))
+    # --- Load sweeps (source-scanned — see docs/claude/code-discovery-categories.md).
+    # "Delete" only hides the sweep__ node (layout_service.delete_sweep) —
+    # the source declaration is never touched — so this must filter by
+    # hidden_ids explicitly; unlike var__/const__/pathInput__ nodes, sweeps
+    # have no DB-derived aggregation path that filter_hidden already covers.
+    saved_sweeps = [
+        {"name": name, "values": list(sw.alternatives)}
+        for name, sw in registry.get_sweeps_registry().items()
+        if f"sweep__{name}" not in hidden_ids
+    ]
+    logger.debug("[pipeline] loaded %d sweep(s) from registry", len(saved_sweeps))
 
     # --- Build nodes (pure) ---
     logger.info("[pipeline] Building nodes (delegating to graph_builder)")

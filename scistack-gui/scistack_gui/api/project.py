@@ -294,6 +294,15 @@ def _run_scan(*, force_refresh: bool = False) -> None:
     if (root / "pyproject.toml").exists():
         from scidb.discover import scan_project
 
+        # KNOWN GAP: scan_project's own re-imports (scan_package) also
+        # register scidb.Pipeline objects into scidb.pipeline._all_pipelines
+        # as a side effect, same as _refresh_registries' path below — but
+        # this branch never calls discover_and_seed_pipelines, so a
+        # packaged-project pipeline file only gets (re-)seeded via the
+        # initial bootstrap.open_or_create_project pass, not via this
+        # scan/refresh path. Not fixed here — pre-dates this work and
+        # scan_project's relationship to the FUNCTIONAL registry (vs. just
+        # this display panel) needs its own look first.
         # Skip scidb/scifor/etc. framework packages — they're
         # infrastructure, not user-facing libraries.
         _last_result = scan_project(
@@ -351,6 +360,18 @@ def _refresh_registries() -> None:
         matlab_registry.refresh_all()
     except Exception:
         logger.exception("Failed to refresh MATLAB registry before discovery scan")
+
+    # Re-importing above may have re-registered scidb.Pipeline objects
+    # (source -> GUI pipeline import — see pipeline_discovery.py); seed any
+    # new ones now that the registry reflects the current source files.
+    try:
+        from scistack_gui.db import get_db, is_loaded
+        from scistack_gui.pipeline_discovery import discover_and_seed_pipelines
+
+        if is_loaded():
+            discover_and_seed_pipelines(get_db())
+    except Exception:
+        logger.exception("Failed to discover/seed pipelines from source")
 
 
 def _build_registry_backed_result(root: Path):

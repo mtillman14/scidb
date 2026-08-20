@@ -10,7 +10,11 @@ locally, same as any manual node already works today. Constants/
 PathInputs/Sweeps referenced by name are REUSED locally when that name
 already exists there (user-confirmed decision, 2026-08-13) — the same
 "shared by name" convention ``scope_service.duplicate_pipeline`` already
-established for PathInput.
+established for PathInput. PathInput/Sweep are source-scanned as of
+docs/claude/code-discovery-categories.md: a local miss now MATERIALIZES
+the bundled value into the importer's own source (via
+``path_input_service``) rather than just leaving a dangling reference —
+see ``import_pipeline_document``'s ``materialization_errors``.
 
 Deliberately NOT exported: hidden nodes/edges/combos
 (``_pipeline_hidden_nodes/_edges/_combos``). All three apply exclusively
@@ -186,18 +190,30 @@ def export_pipeline(db, pipeline_id: str) -> dict:
         for name in sorted(referenced_names["constantNode"])
     }
 
-    all_path_inputs = {pi["name"]: pi for pi in layout_store.read_all_path_input_names()}
+    # PathInput/Sweep are source-scanned now (see
+    # docs/claude/code-discovery-categories.md) — bundling their resolved
+    # value here is no longer "the only copy" but an IMPORT-TIME FALLBACK:
+    # if the importing user's project doesn't locally define a same-named
+    # PathInput/Sweep, import_pipeline_document materializes one from this
+    # value via path_input_service.create_path_input/create_sweep. Every
+    # referenced name is bundled even if the exporting user's own copy is
+    # also source-backed — the resolved value is always available and
+    # cheap, so there's no reason to omit it.
+    from scistack_gui import registry
+    from scistack_gui.domain.graph_builder import path_input_display
+
+    path_input_registry = registry.get_path_inputs_registry()
     path_inputs = [
-        all_path_inputs[name]
+        {"name": name, **path_input_display(path_input_registry[name])}
         for name in sorted(referenced_names["pathInputNode"])
-        if name in all_path_inputs
+        if name in path_input_registry
     ]
 
-    all_sweeps = {sw["name"]: sw for sw in layout_store.read_all_sweep_names()}
+    sweep_registry = registry.get_sweeps_registry()
     sweeps = [
-        all_sweeps[name]
+        {"name": name, "values": list(sweep_registry[name].alternatives)}
         for name in sorted(referenced_names["sweepNode"])
-        if name in all_sweeps
+        if name in sweep_registry
     ]
 
     hypothesis = None
@@ -494,17 +510,18 @@ def import_pipeline_document(db, document: dict) -> dict:
 
     root_old_id = document["root_pipeline_id"]
 
-    # Captured BEFORE any node/position writes below — read_all_constant_
-    # names/read_all_path_input_names/read_all_sweep_names ALSO scan saved
-    # positions for canonical const__/pathInput__/sweep__-prefixed ids as
-    # a fallback discovery mechanism (same prefix scheme the fresh node
-    # ids minted below use), so capturing these AFTER creating nodes would
-    # make every freshly-imported name look like it "already existed
-    # locally" — it would just be finding the node this same call just
-    # wrote a position for.
+    # Captured BEFORE any node/position writes below. read_all_constant_
+    # names still scans saved positions for canonical const__-prefixed ids
+    # as a fallback discovery mechanism, so capturing it AFTER creating
+    # nodes would make every freshly-imported constant name look like it
+    # "already existed locally" — it would just be finding the node this
+    # same call just wrote a position for. PathInput/Sweep no longer have
+    # this concern (source-scanned, not position-scanned).
+    from scistack_gui import registry
+
     local_constant_names = set(layout_store.read_all_constant_names())
-    local_path_input_names = {pi["name"] for pi in layout_store.read_all_path_input_names()}
-    local_sweep_names = {sw["name"] for sw in layout_store.read_all_sweep_names()}
+    local_path_input_names = set(registry.get_path_inputs_registry())
+    local_sweep_names = set(registry.get_sweeps_registry())
 
     # ALL pipelines, hidden included — matches create_pipeline's own
     # uniqueness check (pipeline_store.py), so a name suffix decided here
@@ -614,15 +631,35 @@ def import_pipeline_document(db, document: dict) -> dict:
         for v in values:
             ps.add_pending_constant(db, name, v)
 
+    # PathInput/Sweep are source-scanned now (see
+    # docs/claude/code-discovery-categories.md): a name already defined
+    # locally is reused UNTOUCHED (the local source declaration is never
+    # overwritten with the bundled document value — same "shared by name"
+    # precedent as constants above). Only on a local miss is the bundled
+    # value MATERIALIZED into the importer's own configured source file via
+    # path_input_service, so the imported pipeline ends up backed by real
+    # local source too, never a phantom GUI-only value. A materialization
+    # failure (e.g. no variable_file configured) is surfaced, not silently
+    # dropped — the node still imports but stays unresolved until the user
+    # configures a target and re-imports or creates it by hand.
+    from scistack_gui.services.path_input_service import create_path_input, create_sweep
+
+    materialization_errors: list[dict] = []
+
     reused_path_inputs = []
     for pi in document.get("path_inputs", []):
         if pi["name"] in local_path_input_names:
             reused_path_inputs.append(pi["name"])
             continue
-        layout_store.write_path_input(pi["name"], pi.get("template", ""), pi.get("root_folder"))
-        for alt in pi.get("alternate_templates", []):
-            layout_store.add_path_input_alternate(
-                pi["name"], alt.get("template", ""), alt.get("root_folder")
+        result = create_path_input(
+            pi["name"],
+            pi.get("template", ""),
+            pi.get("root_folder"),
+            pi.get("alternate_templates"),
+        )
+        if not result.get("ok"):
+            materialization_errors.append(
+                {"kind": "path_input", "name": pi["name"], "error": result.get("error")}
             )
 
     reused_sweeps = []
@@ -630,17 +667,21 @@ def import_pipeline_document(db, document: dict) -> dict:
         if sw["name"] in local_sweep_names:
             reused_sweeps.append(sw["name"])
             continue
-        layout_store.write_sweep(sw["name"], sw.get("values", []))
+        result = create_sweep(sw["name"], sw.get("values", []))
+        if not result.get("ok"):
+            materialization_errors.append(
+                {"kind": "sweep", "name": sw["name"], "error": result.get("error")}
+            )
 
     unresolved = _unresolved_labels(document["nodes"])
 
     logger.info(
         "[portability] import_pipeline_document: %d pipeline(s) (%d reused), %d node(s), "
         "%d edge(s) -> root=%s (reused %d constant(s), %d path_input(s), %d sweep(s); "
-        "%d unresolved label(s))",
+        "%d unresolved label(s), %d materialization error(s))",
         len(pipeline_id_map), len(reused_pipelines), len(document["nodes"]), n_edges, new_root_pid,
         len(reused_constants), len(reused_path_inputs), len(reused_sweeps),
-        len(unresolved),
+        len(unresolved), len(materialization_errors),
     )
     return {
         "ok": True,
@@ -652,4 +693,5 @@ def import_pipeline_document(db, document: dict) -> dict:
             "sweeps": reused_sweeps,
         },
         "unresolved_labels": unresolved,
+        "materialization_errors": materialization_errors,
     }

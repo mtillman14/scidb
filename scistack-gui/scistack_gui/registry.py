@@ -23,7 +23,7 @@ import pkgutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scidb import BaseVariable, Constant
+from scidb import BaseVariable, Constant, EachOf, PathInput, Sweep
 
 if TYPE_CHECKING:
     from scistack_gui.config import SciStackConfig
@@ -38,6 +38,12 @@ _functions: dict[str, callable] = {}
 _function_sources: dict[str, str] = {}  # function_name -> source description
 _constants: dict[str, Constant] = {}
 _constant_sources: dict[str, str] = {}  # constant_name -> source description
+_path_inputs: dict[str, PathInput | EachOf] = {}
+"""Top-level ``PathInput`` (or ``EachOf`` of ``PathInput``, i.e. alternate
+templates) objects, keyed by the module-level name they're bound to."""
+_path_input_sources: dict[str, str] = {}
+_sweeps: dict[str, Sweep] = {}
+_sweep_sources: dict[str, str] = {}
 _module_paths: dict[str, str] = {}
 """Synthetic module name (``scistack_user_{i}_{stem}``, from
 ``_load_file_modules``) -> source file path. A BaseVariable subclass's
@@ -129,6 +135,8 @@ def register_module(module, *, module_path: Path | None = None) -> None:
 
     _scan_module_functions(module, source=str(module_path or "<unknown>"))
     _scan_module_constants(module, source=str(module_path or "<unknown>"))
+    _scan_module_path_inputs(module, source=str(module_path or "<unknown>"))
+    _scan_module_sweeps(module, source=str(module_path or "<unknown>"))
     logger.info(
         "[registry] Module registration complete - %d functions registered",
         len(_functions),
@@ -162,6 +170,10 @@ def refresh_module() -> dict:
     _function_sources.clear()
     _constants.clear()
     _constant_sources.clear()
+    _path_inputs.clear()
+    _path_input_sources.clear()
+    _sweeps.clear()
+    _sweep_sources.clear()
     _load_errors.clear()
 
     # Re-execute the module file. This will re-define all functions and
@@ -175,6 +187,8 @@ def refresh_module() -> dict:
     logger.info("[registry] Scanning module for functions")
     _scan_module_functions(user_mod, source=str(_module_path))
     _scan_module_constants(user_mod, source=str(_module_path))
+    _scan_module_path_inputs(user_mod, source=str(_module_path))
+    _scan_module_sweeps(user_mod, source=str(_module_path))
 
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
@@ -223,6 +237,10 @@ def load_from_config(config: SciStackConfig) -> dict:
     _function_sources.clear()
     _constants.clear()
     _constant_sources.clear()
+    _path_inputs.clear()
+    _path_input_sources.clear()
+    _sweeps.clear()
+    _sweep_sources.clear()
     _module_paths.clear()
     _load_errors.clear()
 
@@ -280,6 +298,8 @@ def _load_file_modules(paths: list[Path]) -> None:
             _scan_module_functions(mod, source=str(path))
             fn_count_after = len(_functions)
             _scan_module_constants(mod, source=str(path))
+            _scan_module_path_inputs(mod, source=str(path))
+            _scan_module_sweeps(mod, source=str(path))
             logger.info(
                 "[registry] Loaded module file: %s (%d functions)",
                 path,
@@ -320,6 +340,8 @@ def _load_packages(names: list[str]) -> None:
         _scan_module_functions(pkg, source=f"package:{pkg_name}")
         fn_count_after = len(_functions)
         _scan_module_constants(pkg, source=f"package:{pkg_name}")
+        _scan_module_path_inputs(pkg, source=f"package:{pkg_name}")
+        _scan_module_sweeps(pkg, source=f"package:{pkg_name}")
         logger.info(
             "[registry] Loaded package: %s (%d functions from top level)",
             pkg_name,
@@ -339,6 +361,8 @@ def _load_packages(names: list[str]) -> None:
                         submod = importlib.import_module(modname)
                     _scan_module_functions(submod, source=f"package:{modname}")
                     _scan_module_constants(submod, source=f"package:{modname}")
+                    _scan_module_path_inputs(submod, source=f"package:{modname}")
+                    _scan_module_sweeps(submod, source=f"package:{modname}")
                     submodule_count += 1
                 except Exception as e:
                     logger.debug(
@@ -383,6 +407,8 @@ def _load_entry_points() -> None:
                 _scan_module_functions(mod, source=f"entrypoint:{ep.name}")
                 fn_count_after = len(_functions)
                 _scan_module_constants(mod, source=f"entrypoint:{ep.name}")
+                _scan_module_path_inputs(mod, source=f"entrypoint:{ep.name}")
+                _scan_module_sweeps(mod, source=f"entrypoint:{ep.name}")
                 logger.info(
                     "[registry] Loaded entry point: %s = %s (%d functions)",
                     ep.name,
@@ -523,6 +549,112 @@ def get_constants_registry() -> dict[str, Constant]:
     ``scidb.discover.scan_project`` already provides for packaged projects.
     """
     return dict(_constants)
+
+
+def _scan_module_path_inputs(module, *, source: str) -> None:
+    """Scan a module for top-level ``scifor.PathInput`` objects (or an
+    ``EachOf`` whose every alternative is a ``PathInput`` — the "alternate
+    templates" case) and register them.
+
+    Mirrors :func:`_scan_module_constants` exactly, including the
+    no-``__module__``-filtering rationale: neither ``PathInput`` nor
+    ``EachOf`` reliably expose one. See
+    ``docs/claude/code-discovery-categories.md`` — this is the *only* way a
+    ``PathInput`` becomes visible in the GUI now (no DB-history fallback).
+    """
+    logger.debug("[registry] Scanning module for path inputs: %s", source)
+    discovered = []
+    for name, obj in vars(module).items():
+        if name.startswith("_"):
+            continue
+        if isinstance(obj, Sweep):
+            continue  # a Sweep is an EachOf too; disambiguate before the PathInput check below
+        if isinstance(obj, PathInput) or (
+            isinstance(obj, EachOf)
+            and all(isinstance(alt, PathInput) for alt in obj.alternatives)
+        ):
+            _register_path_input(name, obj, source=source)
+            discovered.append(name)
+    if discovered:
+        logger.debug(
+            "[registry] Discovered %d path input(s) from %s: %s",
+            len(discovered),
+            source,
+            discovered,
+        )
+
+
+def _register_path_input(name: str, pi: "PathInput | EachOf", *, source: str) -> None:
+    """Register a single discovered PathInput, warning on name collisions."""
+    existing_source = _path_input_sources.get(name)
+    if existing_source is not None and existing_source != source:
+        logger.warning(
+            "[registry] PathInput '%s' from %s shadows previous definition from %s",
+            name,
+            source,
+            existing_source,
+        )
+    _path_inputs[name] = pi
+    _path_input_sources[name] = source
+    logger.debug("[registry] Registered path input: %s from %s", name, source)
+
+
+def get_path_inputs_registry() -> dict[str, "PathInput | EachOf"]:
+    """Return all discovered top-level PathInput objects, keyed by name."""
+    return dict(_path_inputs)
+
+
+def get_path_input(name: str) -> "PathInput | EachOf | None":
+    """Look up one discovered PathInput by name, or ``None``."""
+    return _path_inputs.get(name)
+
+
+def _scan_module_sweeps(module, *, source: str) -> None:
+    """Scan a module for top-level ``scifor.Sweep`` objects and register
+    them. Mirrors :func:`_scan_module_path_inputs`; a bare ``EachOf`` (not a
+    ``Sweep``) is intentionally NOT discovered — same as an unwrapped
+    literal constant, only a *named* top-level binding is GUI-visible.
+    """
+    logger.debug("[registry] Scanning module for sweeps: %s", source)
+    discovered = []
+    for name, obj in vars(module).items():
+        if name.startswith("_"):
+            continue
+        if isinstance(obj, Sweep):
+            _register_sweep(name, obj, source=source)
+            discovered.append(name)
+    if discovered:
+        logger.debug(
+            "[registry] Discovered %d sweep(s) from %s: %s",
+            len(discovered),
+            source,
+            discovered,
+        )
+
+
+def _register_sweep(name: str, sw: Sweep, *, source: str) -> None:
+    """Register a single discovered Sweep, warning on name collisions."""
+    existing_source = _sweep_sources.get(name)
+    if existing_source is not None and existing_source != source:
+        logger.warning(
+            "[registry] Sweep '%s' from %s shadows previous definition from %s",
+            name,
+            source,
+            existing_source,
+        )
+    _sweeps[name] = sw
+    _sweep_sources[name] = source
+    logger.debug("[registry] Registered sweep: %s from %s", name, source)
+
+
+def get_sweeps_registry() -> dict[str, Sweep]:
+    """Return all discovered top-level Sweep objects, keyed by name."""
+    return dict(_sweeps)
+
+
+def get_sweep(name: str) -> Sweep | None:
+    """Look up one discovered Sweep by name, or ``None``."""
+    return _sweeps.get(name)
 
 
 def register_builtin_function(name: str, fn) -> None:

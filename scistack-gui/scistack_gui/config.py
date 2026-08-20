@@ -73,6 +73,15 @@ class SciStackConfig:
     matlab_variables: list[Path] = field(default_factory=list)
     """Resolved absolute paths to MATLAB .m classdef files (BaseVariable subclasses)."""
 
+    matlab_path_inputs: list[Path] = field(default_factory=list)
+    """Resolved absolute paths to MATLAB PathInput getter files (see
+    matlab_parser.parse_matlab_path_input and
+    docs/claude/code-discovery-categories.md)."""
+
+    matlab_sweeps: list[Path] = field(default_factory=list)
+    """Resolved absolute paths to MATLAB Sweep getter files (see
+    matlab_parser.parse_matlab_sweep)."""
+
     matlab_addpath: list[Path] = field(default_factory=list)
     """MATLAB path entries (auto-derived from parent dirs of functions, variables, and variable_dir)."""
 
@@ -244,6 +253,12 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     matlab_variables = _resolve_glob_paths(
         project_root, matlab_section.get("variables", []), "matlab.variables"
     )
+    matlab_path_inputs = _resolve_glob_paths(
+        project_root, matlab_section.get("path_inputs", []), "matlab.path_inputs"
+    )
+    matlab_sweeps = _resolve_glob_paths(
+        project_root, matlab_section.get("sweeps", []), "matlab.sweeps"
+    )
     # Unified, unclassified .m paths -- same auto-classify-per-file behavior
     # as folder-scan mode's matlab_sources (see classify_matlab_file), just
     # reachable from an explicit config too. This is what lets a single
@@ -260,19 +275,23 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     else:
         logger.debug("[config] No matlab_variable_dir configured")
 
-    # Dedupe: any file in matlab.variables must not be parsed as a
-    # function. This handles the common case where matlab.functions points
-    # at a parent directory (e.g. "src/") that contains the variables dir
-    # (e.g. "src/vars/") as a subtree.
-    logger.info("[config] Deduplicating MATLAB functions vs variables")
-    var_path_set = {p.resolve() for p in matlab_variables}
+    # Dedupe: any file in matlab.variables/path_inputs/sweeps must not
+    # ALSO be parsed as a plain function. This handles the common case
+    # where matlab.functions points at a parent directory (e.g. "src/")
+    # that contains those files as a subtree.
+    logger.info("[config] Deduplicating MATLAB functions vs variables/path_inputs/sweeps")
+    non_function_path_set = {
+        p.resolve() for p in (*matlab_variables, *matlab_path_inputs, *matlab_sweeps)
+    }
     original_fn_count = len(matlab_functions)
-    matlab_functions = [p for p in matlab_functions if p.resolve() not in var_path_set]
+    matlab_functions = [
+        p for p in matlab_functions if p.resolve() not in non_function_path_set
+    ]
     excluded = original_fn_count - len(matlab_functions)
     if excluded:
         logger.info(
             "[config] Excluded %d file(s) from matlab.functions because they are "
-            "also declared in matlab.variables.",
+            "also declared in matlab.variables/path_inputs/sweeps.",
             excluded,
         )
 
@@ -282,6 +301,10 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     for p in matlab_functions:
         addpath_set.add(p.parent)
     for p in matlab_variables:
+        addpath_set.add(p.parent)
+    for p in matlab_path_inputs:
+        addpath_set.add(p.parent)
+    for p in matlab_sweeps:
         addpath_set.add(p.parent)
     for p in matlab_sources:
         addpath_set.add(p.parent)
@@ -299,19 +322,24 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         auto_discover=auto_discover,
         matlab_functions=matlab_functions,
         matlab_variables=matlab_variables,
+        matlab_path_inputs=matlab_path_inputs,
+        matlab_sweeps=matlab_sweeps,
         matlab_addpath=matlab_addpath,
         matlab_variable_dir=matlab_variable_dir,
         matlab_sources=matlab_sources,
     )
     logger.info(
         "[config] Configuration loaded from %s: %d modules, %d packages, auto_discover=%s, "
-        "%d MATLAB functions, %d MATLAB variables, %d MATLAB sources",
+        "%d MATLAB functions, %d MATLAB variables, %d MATLAB path inputs, "
+        "%d MATLAB sweeps, %d MATLAB sources",
         toml_path,
         len(modules),
         len(packages),
         auto_discover,
         len(matlab_functions),
         len(matlab_variables),
+        len(matlab_path_inputs),
+        len(matlab_sweeps),
         len(matlab_sources),
     )
     return config
@@ -602,6 +630,8 @@ def _render_scistack_toml(
     auto_discover: bool,
     matlab_functions: list,
     matlab_variables: list,
+    matlab_path_inputs: list,
+    matlab_sweeps: list,
     matlab_sources: list,
     matlab_variable_dir,
 ) -> str:
@@ -623,13 +653,24 @@ def _render_scistack_toml(
         lines.append(f"packages = {_toml_array(packages)}")
     if not auto_discover:
         lines.append("auto_discover = false")
-    if matlab_functions or matlab_variables or matlab_sources or matlab_variable_dir:
+    if (
+        matlab_functions
+        or matlab_variables
+        or matlab_path_inputs
+        or matlab_sweeps
+        or matlab_sources
+        or matlab_variable_dir
+    ):
         lines.append("")
         lines.append("[matlab]")
         if matlab_functions:
             lines.append(f"functions = {_toml_array(matlab_functions)}")
         if matlab_variables:
             lines.append(f"variables = {_toml_array(matlab_variables)}")
+        if matlab_path_inputs:
+            lines.append(f"path_inputs = {_toml_array(matlab_path_inputs)}")
+        if matlab_sweeps:
+            lines.append(f"sweeps = {_toml_array(matlab_sweeps)}")
         if matlab_sources:
             lines.append(f"sources = {_toml_array(matlab_sources)}")
         if matlab_variable_dir is not None:
@@ -747,6 +788,8 @@ def add_path(db_path: Path, new_path: Path) -> Path:
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
         matlab_variables=list(matlab_section.get("variables", [])),
+        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
+        matlab_sweeps=list(matlab_section.get("sweeps", [])),
         matlab_sources=raw_sources,
         matlab_variable_dir=matlab_section.get("variable_dir"),
     )
@@ -793,6 +836,8 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
         matlab_variables=list(matlab_section.get("variables", [])),
+        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
+        matlab_sweeps=list(matlab_section.get("sweeps", [])),
         matlab_sources=raw_sources,
         matlab_variable_dir=matlab_section.get("variable_dir"),
     )

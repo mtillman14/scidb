@@ -6,6 +6,8 @@ All functions are pure — no DB or fixtures required.
 
 import json
 
+from scifor import PathInput
+
 from scistack_gui.domain.graph_builder import (
     AggregatedData,
     aggregate_variants,
@@ -23,9 +25,11 @@ from scistack_gui.domain.graph_builder import (
     hidden_wirings,
     inbound_edge_candidates,
     merge_manual_nodes,
-    overlay_saved_path_inputs,
     parse_path_input,
+    path_input_display,
     pending_value_group_coverage,
+    resolve_path_input_name,
+    seed_undiscovered_path_inputs,
     wiring_disconnected_fkeys,
     wiring_id,
     wirings_downstream_of,
@@ -148,10 +152,23 @@ class TestAggregateVariants:
     def test_path_input_parsed_and_not_added_to_var_types(self):
         pi_json = json.dumps({"__type": "PathInput", "template": "{s}/f.csv"})
         variants = [_variant("f", "Out", inputs={"path": pi_json})]
-        agg = aggregate_variants(variants, listed_var_names=set())
+        registry = {"path": PathInput("{s}/f.csv")}
+        agg = aggregate_variants(
+            variants, listed_var_names=set(), path_input_registry=registry
+        )
         assert "path" in agg.path_inputs
         assert agg.path_inputs["path"]["template"] == "{s}/f.csv"
         assert "path" not in agg.all_var_types
+
+    def test_path_input_unresolved_without_registry_match(self):
+        """No registry (or no matching entry) -> falls back to a synthetic
+        __unresolved__ key rather than the param name — see
+        resolve_path_input_name."""
+        pi_json = json.dumps({"__type": "PathInput", "template": "{s}/f.csv"})
+        variants = [_variant("f", "Out", inputs={"path": pi_json})]
+        agg = aggregate_variants(variants, listed_var_names=set())
+        assert "path" not in agg.path_inputs
+        assert "__unresolved__:{s}/f.csv" in agg.path_inputs
 
     def test_path_input_function_set_accumulated(self):
         pi_json = json.dumps({"__type": "PathInput", "template": "{s}/f.csv"})
@@ -159,11 +176,17 @@ class TestAggregateVariants:
             _variant("f1", "Out1", inputs={"path": pi_json}),
             _variant("f2", "Out2", inputs={"path": pi_json}),
         ]
-        agg = aggregate_variants(variants, listed_var_names=set())
-        # path_inputs[name]["functions"] now holds FnKey tuples
+        registry = {"path": PathInput("{s}/f.csv")}
+        agg = aggregate_variants(
+            variants, listed_var_names=set(), path_input_registry=registry
+        )
+        # path_inputs[name]["functions"] now holds (FnKey, param_name) tuples
         f1_key = _fkey("f1", inputs={"path": pi_json})
         f2_key = _fkey("f2", inputs={"path": pi_json})
-        assert agg.path_inputs["path"]["functions"] == {f1_key, f2_key}
+        assert agg.path_inputs["path"]["functions"] == {
+            (f1_key, "path"),
+            (f2_key, "path"),
+        }
 
     def test_listed_var_names_added(self):
         agg = aggregate_variants([], listed_var_names={"ExtraVar"})
@@ -252,7 +275,10 @@ class TestFilterHidden:
         ]
         agg = aggregate_variants(variants, listed_var_names=set())
         bp_key = _fkey("bandpass", inputs={"signal": "Raw"}, constants={"hz": 20})
-        agg.path_inputs["mypath"] = {"template": "{s}/f.csv", "functions": {bp_key}}
+        agg.path_inputs["mypath"] = {
+            "template": "{s}/f.csv",
+            "functions": {(bp_key, "signal")},
+        }
         return agg
 
     def test_hide_var_removes_from_all_var_types(self):
@@ -575,35 +601,62 @@ class TestBuildConstantNodes:
 
 
 # ---------------------------------------------------------------------------
-# overlay_saved_path_inputs
+# resolve_path_input_name / path_input_display / seed_undiscovered_path_inputs
 # ---------------------------------------------------------------------------
 
 
-class TestOverlaySavedPathInputs:
-    def test_updates_existing_entry(self):
-        path_inputs = {
-            "mypath": {"template": "", "root_folder": None, "functions": {"f"}}
+class TestPathInputDisplay:
+    def test_bare_path_input(self):
+        display = path_input_display(PathInput("{s}/f.csv", root_folder="/data"))
+        assert display == {
+            "template": "{s}/f.csv",
+            "root_folder": "/data",
+            "alternate_templates": [],
         }
-        saved = [{"name": "mypath", "template": "{s}/file.csv", "root_folder": "/data"}]
-        result = overlay_saved_path_inputs(path_inputs, saved)
-        assert result["mypath"]["template"] == "{s}/file.csv"
-        assert result["mypath"]["root_folder"] == "/data"
 
-    def test_adds_new_entry_from_saved(self):
-        result = overlay_saved_path_inputs(
-            {}, [{"name": "newpath", "template": "{s}/x.csv"}]
+    def test_each_of_path_inputs_first_is_primary(self):
+        from scifor import EachOf
+
+        obj = EachOf(PathInput("{s}/a.csv"), PathInput("{s}/b.csv", root_folder="/x"))
+        display = path_input_display(obj)
+        assert display["template"] == "{s}/a.csv"
+        assert display["alternate_templates"] == [
+            {"template": "{s}/b.csv", "root_folder": "/x"}
+        ]
+
+
+class TestResolvePathInputName:
+    def test_matches_registry_by_content(self):
+        registry = {"RAW_EMG": PathInput("{s}/f.csv", root_folder="/data")}
+        name, display = resolve_path_input_name(
+            {"template": "{s}/f.csv", "root_folder": "/data"}, registry
+        )
+        assert name == "RAW_EMG"
+        assert display["template"] == "{s}/f.csv"
+
+    def test_falls_back_to_unresolved_key_on_no_match(self):
+        name, display = resolve_path_input_name(
+            {"template": "{s}/f.csv", "root_folder": None}, {}
+        )
+        assert name == "__unresolved__:{s}/f.csv"
+        assert display["template"] == "{s}/f.csv"
+
+
+class TestSeedUndiscoveredPathInputs:
+    def test_adds_registry_entries_with_no_history(self):
+        result = seed_undiscovered_path_inputs(
+            {}, {"newpath": PathInput("{s}/x.csv")}
         )
         assert "newpath" in result
         assert result["newpath"]["functions"] == set()
 
-    def test_does_not_overwrite_template_if_saved_empty(self):
+    def test_does_not_overwrite_existing_entry(self):
         path_inputs = {
             "p": {"template": "existing", "root_folder": None, "functions": set()}
         }
-        saved = [{"name": "p", "template": "", "root_folder": None}]
-        result = overlay_saved_path_inputs(path_inputs, saved)
-        # Empty template should not overwrite existing.
-        assert result["p"]["template"] == "existing"
+        seed_undiscovered_path_inputs(path_inputs, {"p": PathInput("{s}/new.csv")})
+        # Already has DB-history-derived data — not clobbered by the seed step.
+        assert path_inputs["p"]["template"] == "existing"
 
 
 # ---------------------------------------------------------------------------
@@ -797,14 +850,16 @@ class TestBuildEdges:
                 "mypath": {
                     "template": "",
                     "root_folder": None,
-                    "functions": {self.F_KEY},
+                    "functions": {(self.F_KEY, "filepath")},
                 }
             },
             manual_edges=[],
             hidden_ids=set(),
         )
         assert any(
-            e["source"] == "pathInput__mypath" and e["target"] == self.F_NODE
+            e["source"] == "pathInput__mypath"
+            and e["target"] == self.F_NODE
+            and e["targetHandle"] == "in__filepath"
             for e in edges
         )
 
@@ -931,12 +986,12 @@ class TestBuildEdges:
                 "mypath": {
                     "template": "",
                     "root_folder": None,
-                    "functions": {self.F_KEY},
+                    "functions": {(self.F_KEY, "filepath")},
                 }
             },
             manual_edges=[],
             hidden_ids=set(),
-            hidden_edge_ids={f"e__mypath__f__{self.F_CID}"},
+            hidden_edge_ids={f"e__mypath__filepath__f__{self.F_CID}"},
         )
         assert not any(e["source"] == "pathInput__mypath" for e in edges)
 
@@ -1016,8 +1071,8 @@ class TestHiddenWirings:
             fn_input_params={self.F_KEY: {}},
             fn_outputs={},
             fn_constants={},
-            path_inputs={"mypath": {"functions": {self.F_KEY}}},
-            hidden_edge_ids={f"e__mypath__f__{wid}"},
+            path_inputs={"mypath": {"functions": {(self.F_KEY, "filepath")}}},
+            hidden_edge_ids={f"e__mypath__filepath__f__{wid}"},
         )
         assert result == {("f", wid)}
 
@@ -1233,9 +1288,15 @@ class TestCandidateEdgeId:
 
     def test_path_input_to_fn(self):
         assert (
-            candidate_edge_id("pathInput__mypath", self.F_NODE)
-            == f"e__mypath__f__{self.F_CID}"
+            candidate_edge_id("pathInput__mypath", self.F_NODE, "in__filepath")
+            == f"e__mypath__filepath__f__{self.F_CID}"
         )
+
+    def test_path_input_to_fn_without_handle_returns_none(self):
+        # No target_handle -> can't recover the parameter name -> safe
+        # degrade (reconnect creates a fresh manual edge instead of
+        # auto-unhiding) rather than guessing.
+        assert candidate_edge_id("pathInput__mypath", self.F_NODE) is None
 
     def test_fn_to_var(self):
         assert (
@@ -1256,6 +1317,28 @@ class TestCandidateEdgeId:
         )
         real_id = next(e["id"] for e in edges if e["source"] == "var__Raw")
         assert candidate_edge_id("var__Raw", self.F_NODE) == real_id
+
+    def test_path_input_matches_build_edges_own_id_construction(self):
+        f_key = ("f", self.F_CID)
+        edges = build_edges(
+            fn_input_params={},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={
+                "mypath": {
+                    "template": "",
+                    "root_folder": None,
+                    "functions": {(f_key, "filepath")},
+                }
+            },
+            manual_edges=[],
+            hidden_ids=set(),
+        )
+        real_id = next(e["id"] for e in edges if e["source"] == "pathInput__mypath")
+        assert (
+            candidate_edge_id("pathInput__mypath", self.F_NODE, "in__filepath")
+            == real_id
+        )
 
     def test_placement_qualified_target_stripped(self):
         placed = f"{self.F_NODE}::main"
