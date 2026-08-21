@@ -6,15 +6,12 @@ POST /api/variables/create                 — define a new BaseVariable subclas
 """
 
 import json
-import keyword
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from scidb.database import DatabaseManager
 
-from scidb import BaseVariable
-from scistack_gui import registry
 from scistack_gui.api import ws
 from scistack_gui.db import get_db
 
@@ -269,82 +266,18 @@ async def create_variable(req: CreateVariableRequest) -> dict:
     """
     Define a new BaseVariable subclass by appending it to the user's module file,
     then refresh the registry so it's immediately available.
+
+    Delegates to ``services.variable_service.create_variable`` -- the single
+    source of truth also used by the JSON-RPC (VS Code extension) path in
+    server.py -- so validation/target-file/MATLAB-fallback behavior can't
+    drift between the two transports.
     """
+    from scistack_gui.services.variable_service import create_variable as _create
+
     name = req.name.strip()
     logger.info("create_variable request: name=%r docstring=%r", name, req.docstring)
 
-    # --- Validation ---
-    if not name.isidentifier() or keyword.iskeyword(name):
-        return {"ok": False, "error": f"'{name}' is not a valid Python class name."}
-
-    if name.startswith("_"):
-        return {
-            "ok": False,
-            "error": "Variable names must not start with an underscore.",
-        }
-
-    if not name[0].isupper():
-        return {
-            "ok": False,
-            "error": "Variable names should start with an uppercase letter.",
-        }
-
-    if name in BaseVariable._all_subclasses:
-        return {"ok": False, "error": f"A variable named '{name}' already exists."}
-
-    # --- Determine target file (Python or MATLAB) ---
-    target_file = None
-    if registry._config is not None and registry._config.variable_file is not None:
-        target_file = registry._config.variable_file
-    elif registry._module_path is not None:
-        target_file = registry._module_path
-
-    if target_file is None:
-        # No Python target — fall back to MATLAB if configured.
-        from scistack_gui import matlab_registry
-
-        if (
-            matlab_registry.has_matlab_config()
-            and matlab_registry._config is not None
-            and matlab_registry._config.matlab_variable_dir is not None
-        ):
-            from scistack_gui.services.variable_service import _create_matlab_variable
-
-            result = _create_matlab_variable(name, req.docstring)
-            if result.get("ok"):
-                await ws.broadcast({"type": "dag_updated"})
-            return result
-        return {
-            "ok": False,
-            "error": "No module file was loaded at startup (--module not passed). "
-            "Cannot append a new class.",
-        }
-
-    # --- Build the class definition ---
-    lines = ["\n"]
-    if req.docstring:
-        escaped = req.docstring.replace('"""', '\\"\\"\\"')
-        lines.append(f'class {name}(BaseVariable):\n    """{escaped}"""\n    pass\n')
-    else:
-        lines.append(f"class {name}(BaseVariable):\n    pass\n")
-
-    # --- Append to the module file ---
-    try:
-        with open(target_file, "a") as f:
-            f.writelines(lines)
-        logger.info("Appended class %s to %s", name, target_file)
-    except OSError as e:
-        return {"ok": False, "error": f"Failed to write to module file: {e}"}
-
-    # --- Refresh so the new class is registered ---
-    try:
-        if registry._config is not None:
-            registry.refresh_all()
-        else:
-            registry.refresh_module()
-    except Exception as e:
-        logger.exception("Refresh failed after appending class %s", name)
-        return {"ok": False, "error": f"Class was written but refresh failed: {e}"}
-
-    await ws.broadcast({"type": "dag_updated"})
-    return {"ok": True, "name": name}
+    result = _create(name, req.docstring)
+    if result.get("ok"):
+        await ws.broadcast({"type": "dag_updated"})
+    return result

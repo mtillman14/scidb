@@ -1,0 +1,198 @@
+/**
+ * VariableFileEditor — the file new PathInput/Sweep/Variable declarations
+ * created from the sidebar's "+" buttons get appended to. Rendered inside
+ * PathsPopup.tsx, loose-script projects only (packaged projects configure
+ * this by hand in pyproject.toml, same as ManagedPathsList's directories).
+ *
+ * Backed by set_variable_file/clear_variable_file, which write/rewrite
+ * scistack.toml. Leaving the field blank and hitting "Set" auto-creates a
+ * default scistack_variables.py in the project root -- this is also what
+ * happens transparently the first time a PathInput/Sweep/Variable gets
+ * created from the sidebar with nothing configured yet, so this editor is
+ * mainly for visibility/override rather than a required setup step.
+ */
+
+import { useState } from 'react'
+import { callBackend } from '../api'
+
+interface MutationResult {
+  ok: boolean
+  error?: string
+}
+
+export default function VariableFileEditor({
+  variableFile,
+  onChange,
+}: {
+  variableFile: string | null
+  onChange: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const startEdit = () => {
+    setDraft(variableFile ?? '')
+    setEditing(true)
+    setError(null)
+  }
+
+  const cancelEdit = () => {
+    setEditing(false)
+    setError(null)
+  }
+
+  const submitSet = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const path = draft.trim() || null
+      const result = await callBackend('set_variable_file', { path }) as MutationResult
+      if (!result.ok) {
+        setError(result.error || 'Failed to set variable file.')
+        return
+      }
+      setEditing(false)
+      onChange()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleClear = async () => {
+    if (!window.confirm('Stop targeting this file for new declarations?\n\nThis only edits scistack.toml — the file itself is left untouched.')) {
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await callBackend('clear_variable_file') as MutationResult
+      if (!result.ok) {
+        setError(result.error || 'Failed to clear variable file.')
+        return
+      }
+      onChange()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={styles.wrap}>
+      <div style={styles.label}>Variable file</div>
+      <div style={styles.hint}>
+        New PathInput/Sweep/Variable declarations created from the sidebar are appended here.
+        Left unset, one is auto-created the first time it's needed.
+      </div>
+      {!editing ? (
+        <div style={styles.row}>
+          <div style={styles.value}>{variableFile ?? '(not set — auto-creates on first use)'}</div>
+          <button style={styles.smallBtn} onClick={startEdit} disabled={busy} type="button">
+            {variableFile ? 'Change' : 'Set'}
+          </button>
+          {variableFile && (
+            <button style={styles.smallBtn} onClick={handleClear} disabled={busy} type="button">
+              Clear
+            </button>
+          )}
+        </div>
+      ) : (
+        <div style={styles.addRow}>
+          <input
+            style={styles.input}
+            type="text"
+            placeholder="/absolute/path/to/file.py (blank = auto default)"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') submitSet()
+              if (e.key === 'Escape') cancelEdit()
+            }}
+            disabled={busy}
+            autoFocus
+          />
+          <button style={styles.smallBtn} onClick={submitSet} disabled={busy} type="button">
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button style={styles.smallBtn} onClick={cancelEdit} disabled={busy} type="button">
+            Cancel
+          </button>
+        </div>
+      )}
+      {error && <div style={styles.errorBanner}>{error}</div>}
+    </div>
+  )
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  wrap: {
+    marginTop: 12,
+  },
+  label: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#7b68ee',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 3,
+  },
+  hint: {
+    fontSize: 11,
+    color: '#666',
+    lineHeight: 1.5,
+    marginBottom: 6,
+  },
+  row: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  value: {
+    flex: 1,
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: '#ccc',
+    wordBreak: 'break-all',
+    background: '#1a1a2e',
+    border: '1px solid #2a2a4a',
+    borderRadius: 4,
+    padding: '5px 8px',
+  },
+  addRow: {
+    display: 'flex',
+    gap: 6,
+  },
+  input: {
+    flex: 1,
+    background: '#0e0e20',
+    color: '#ccc',
+    border: '1px solid #3a3a5a',
+    borderRadius: 4,
+    padding: '4px 8px',
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  smallBtn: {
+    background: '#2a2a5a',
+    color: '#ccc',
+    border: '1px solid #3a3a6a',
+    borderRadius: 4,
+    padding: '4px 10px',
+    fontSize: 12,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  errorBanner: {
+    background: '#442222',
+    color: '#ff8888',
+    padding: '6px 10px',
+    borderRadius: 4,
+    marginTop: 6,
+    fontSize: 12,
+  },
+}

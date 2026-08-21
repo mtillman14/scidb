@@ -179,24 +179,18 @@ def _reload_config_and_rescan() -> None:
     ``refresh_all`` calls ``load_from_config(_config)``, it never re-parses
     the TOML file). That's fine for the existing "Refresh" button, which
     only needs to pick up *content* changes in already-configured files.
-    But after :func:`~scistack_gui.config.add_path`/``remove_path`` change
-    *which paths are configured*, reusing the stale config would silently
-    fail to discover the new path until the server restarts. So this
-    re-runs ``load_config`` fresh first.
+    But after :func:`~scistack_gui.config.add_path`/``remove_path``/
+    ``set_variable_file`` change *which paths are configured*, reusing the
+    stale config would silently fail to discover the new path until the
+    server restarts. So this re-runs ``load_config`` fresh first (see
+    ``services.registry_reload_service``, shared with the auto-create
+    fallback in ``services.target_file_service``).
     """
-    from scistack_gui import matlab_registry, registry
-    from scistack_gui.config import load_config
+    from scistack_gui.services.registry_reload_service import (
+        reload_registries_from_disk,
+    )
 
-    db_path = get_db_path()
-    new_config = load_config(None, db_path)
-    try:
-        registry.load_from_config(new_config)
-    except Exception:
-        logger.exception("Failed to reload Python registry after path change")
-    try:
-        matlab_registry.load_from_config(new_config)
-    except Exception:
-        logger.exception("Failed to reload MATLAB registry after path change")
+    reload_registries_from_disk(get_db_path())
     _run_scan(force_refresh=False)
 
 
@@ -230,6 +224,46 @@ def remove_project_path(path: str) -> dict:
         remove_path(get_db_path(), Path(path))
     except (ValueError, FileNotFoundError) as e:
         logger.warning("[project.paths] remove_project_path failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+    _reload_config_and_rescan()
+    result = get_project_paths()
+    result["ok"] = True
+    return result
+
+
+@router.post("/variable-file")
+def set_project_variable_file(body: dict) -> dict:
+    """Set the file new PathInput/Sweep/Variable declarations get appended
+    to (loose-script projects only). Body: ``{"path": "/absolute/path.py"}``
+    or ``{"path": null}``/omitted to auto-create the default
+    ``scistack_variables.py`` in the project root.
+    """
+    from scistack_gui.config import set_variable_file
+
+    path_str = body.get("path") or None
+    try:
+        set_variable_file(get_db_path(), Path(path_str) if path_str else None)
+    except (ValueError, OSError) as e:
+        logger.warning("[project.paths] set_project_variable_file failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+    _reload_config_and_rescan()
+    result = get_project_paths()
+    result["ok"] = True
+    return result
+
+
+@router.delete("/variable-file")
+def clear_project_variable_file() -> dict:
+    """Clear the configured variable_file (loose-script projects only).
+    Never deletes the file itself -- see ``config.clear_variable_file``."""
+    from scistack_gui.config import clear_variable_file
+
+    try:
+        clear_variable_file(get_db_path())
+    except (ValueError, FileNotFoundError) as e:
+        logger.warning("[project.paths] clear_project_variable_file failed: %s", e)
         return {"ok": False, "error": str(e)}
 
     _reload_config_and_rescan()

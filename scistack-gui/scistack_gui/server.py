@@ -723,6 +723,26 @@ def _h_remove_project_path(params):
     return result
 
 
+def _h_set_variable_file(params):
+    from scistack_gui.notify import notify
+    from scistack_gui.services.project_service import set_variable_file
+
+    result = set_variable_file(params.get("path"))
+    if result.get("ok"):
+        notify("dag_updated", {})
+    return result
+
+
+def _h_clear_variable_file(params):
+    from scistack_gui.notify import notify
+    from scistack_gui.services.project_service import clear_variable_file
+
+    result = clear_variable_file()
+    if result.get("ok"):
+        notify("dag_updated", {})
+    return result
+
+
 # ---------------------------------------------------------------------------
 # MATLAB support
 # ---------------------------------------------------------------------------
@@ -851,6 +871,8 @@ METHODS = {
     "get_project_paths": _h_get_project_paths,
     "add_project_path": _h_add_project_path,
     "remove_project_path": _h_remove_project_path,
+    "set_variable_file": _h_set_variable_file,
+    "clear_variable_file": _h_clear_variable_file,
     "list_pipelines": _h_list_pipelines,
     "create_pipeline": _h_create_pipeline,
     "rename_pipeline": _h_rename_pipeline,

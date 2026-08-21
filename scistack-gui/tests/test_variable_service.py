@@ -55,17 +55,6 @@ class TestCreateVariableValidation:
         assert result["ok"] is False
         assert "underscore" in result["error"]
 
-    def test_lowercase_start_rejected(self):
-        result = create_variable("myVar")
-        assert result["ok"] is False
-        assert "uppercase" in result["error"]
-
-    def test_leading_whitespace_stripped_then_validated(self):
-        # " myVar" strips to "myVar" → lowercase start → rejected.
-        result = create_variable(" myVar")
-        assert result["ok"] is False
-        assert "uppercase" in result["error"]
-
     def test_already_exists_rejected(self, populated_db):
         # RawSignal is defined in conftest and registered in BaseVariable.
         result = create_variable("RawSignal")
@@ -146,6 +135,21 @@ class TestCreateVariablePythonWrite:
     def test_returns_name_on_success(self, setup_module_file):
         result = create_variable("ReturnedVar")
         assert result.get("name") == "ReturnedVar"
+
+    def test_lowercase_name_accepted(self, setup_module_file):
+        # Lowercase-starting names are syntactically valid Python class
+        # names; the uppercase-only rule was a PEP8 opinion, not a
+        # technical requirement, and was removed on user request.
+        result = create_variable("myVar")
+        assert result["ok"] is True, result.get("error")
+        content = setup_module_file.read_text()
+        assert "class myVar(BaseVariable)" in content
+
+    def test_leading_whitespace_stripped(self, setup_module_file):
+        result = create_variable(" WhitespaceVar ")
+        assert result["ok"] is True, result.get("error")
+        content = setup_module_file.read_text()
+        assert "class WhitespaceVar(BaseVariable)" in content
 
     def test_unwritable_file_returns_error(self, tmp_path):
         """If the target file is unwritable, return a friendly error."""

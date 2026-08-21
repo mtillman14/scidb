@@ -90,11 +90,15 @@ export default function EditTab() {
   const [pathInputs, setPathInputs] = useState<string[]>([])
   const [addingPI, setAddingPI] = useState(false)
   const [piDraft, setPiDraft] = useState('')
+  const [piError, setPiError] = useState('')
+  const [piSubmitting, setPiSubmitting] = useState(false)
   const piInputRef = useRef<HTMLInputElement>(null)
 
   const [sweeps, setSweeps] = useState<string[]>([])
   const [addingSweep, setAddingSweep] = useState(false)
   const [sweepDraft, setSweepDraft] = useState('')
+  const [sweepError, setSweepError] = useState('')
+  const [sweepSubmitting, setSweepSubmitting] = useState(false)
   const sweepInputRef = useRef<HTMLInputElement>(null)
 
   const [addingVar, setAddingVar] = useState(false)
@@ -326,25 +330,63 @@ export default function EditTab() {
   }
 
   const commitPiDraft = () => {
+    if (piSubmitting) return
     const name = piDraft.trim()
-    if (name) {
-      callBackend('create_path_input', { name })
-        .then(() => fetchPathInputs())
-        .catch(err => console.error('[PathInputs] create error:', err))
+    if (!name) {
+      setPiDraft('')
+      setAddingPI(false)
+      setPiError('')
+      return
     }
-    setPiDraft('')
-    setAddingPI(false)
+    setPiSubmitting(true)
+    callBackend('create_path_input', { name })
+      .then(data => {
+        const d = data as { ok?: boolean; error?: string }
+        if (d.ok !== false) {
+          setPiDraft('')
+          setAddingPI(false)
+          setPiError('')
+          fetchPathInputs()
+        } else {
+          setPiError(d.error || 'Failed')
+          piInputRef.current?.focus()
+        }
+      })
+      .catch(err => {
+        setPiError((err as Error).message || 'Request failed')
+        piInputRef.current?.focus()
+      })
+      .finally(() => setPiSubmitting(false))
   }
 
   const commitSweepDraft = () => {
+    if (sweepSubmitting) return
     const name = sweepDraft.trim()
-    if (name) {
-      callBackend('create_sweep', { name })
-        .then(() => fetchSweeps())
-        .catch(err => console.error('[Sweeps] create error:', err))
+    if (!name) {
+      setSweepDraft('')
+      setAddingSweep(false)
+      setSweepError('')
+      return
     }
-    setSweepDraft('')
-    setAddingSweep(false)
+    setSweepSubmitting(true)
+    callBackend('create_sweep', { name })
+      .then(data => {
+        const d = data as { ok?: boolean; error?: string }
+        if (d.ok !== false) {
+          setSweepDraft('')
+          setAddingSweep(false)
+          setSweepError('')
+          fetchSweeps()
+        } else {
+          setSweepError(d.error || 'Failed')
+          sweepInputRef.current?.focus()
+        }
+      })
+      .catch(err => {
+        setSweepError((err as Error).message || 'Request failed')
+        sweepInputRef.current?.focus()
+      })
+      .finally(() => setSweepSubmitting(false))
   }
 
   // Backend 400s (duplicate names, still-used or last-remaining hides)
@@ -716,18 +758,23 @@ export default function EditTab() {
               />
             ))}
             {addingPI && (
-              <input
-                ref={piInputRef}
-                style={styles.draftInput}
-                value={piDraft}
-                placeholder="param name…"
-                onChange={e => setPiDraft(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') commitPiDraft()
-                  if (e.key === 'Escape') { setPiDraft(''); setAddingPI(false) }
-                }}
-                onBlur={commitPiDraft}
-              />
+              <>
+                <input
+                  ref={piInputRef}
+                  style={styles.draftInput}
+                  value={piDraft}
+                  placeholder="param name…"
+                  onChange={e => { setPiDraft(e.target.value); setPiError('') }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') commitPiDraft()
+                    if (e.key === 'Escape') { setPiDraft(''); setAddingPI(false); setPiError('') }
+                  }}
+                  onBlur={commitPiDraft}
+                />
+                {piError && (
+                  <div style={styles.errorText}>{piError}</div>
+                )}
+              </>
             )}
           </Section>
         )}
@@ -750,18 +797,23 @@ export default function EditTab() {
               />
             ))}
             {addingSweep && (
-              <input
-                ref={sweepInputRef}
-                style={styles.draftInput}
-                value={sweepDraft}
-                placeholder="param name…"
-                onChange={e => setSweepDraft(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') commitSweepDraft()
-                  if (e.key === 'Escape') { setSweepDraft(''); setAddingSweep(false) }
-                }}
-                onBlur={commitSweepDraft}
-              />
+              <>
+                <input
+                  ref={sweepInputRef}
+                  style={styles.draftInput}
+                  value={sweepDraft}
+                  placeholder="param name…"
+                  onChange={e => { setSweepDraft(e.target.value); setSweepError('') }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') commitSweepDraft()
+                    if (e.key === 'Escape') { setSweepDraft(''); setAddingSweep(false); setSweepError('') }
+                  }}
+                  onBlur={commitSweepDraft}
+                />
+                {sweepError && (
+                  <div style={styles.errorText}>{sweepError}</div>
+                )}
+              </>
             )}
           </Section>
         )}

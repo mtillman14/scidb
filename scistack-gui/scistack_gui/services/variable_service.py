@@ -1,15 +1,15 @@
 """
 Variable service — single source of truth for variable creation.
 
-Consolidates the duplicated variable creation logic from server.py and
-api/variables.py, eliminating the circular import.
+Used by both server.py's JSON-RPC handler (VS Code extension) and
+api/variables.py's FastAPI route, so validation/target-file/MATLAB-fallback
+behavior can't drift between the two transports.
 """
 
 from __future__ import annotations
 
 import keyword
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +39,6 @@ def create_variable(
             "ok": False,
             "error": "Variable names must not start with an underscore.",
         }
-    if not name[0].isupper():
-        return {
-            "ok": False,
-            "error": "Variable names should start with an uppercase letter.",
-        }
     if name in BaseVariable._all_subclasses:
         return {"ok": False, "error": f"A variable named '{name}' already exists."}
 
@@ -52,11 +47,9 @@ def create_variable(
         return _create_matlab_variable(name, docstring)
 
     # Python variable creation.
-    target_file: Path | None = None
-    if registry._config is not None and registry._config.variable_file is not None:
-        target_file = registry._config.variable_file
-    elif registry._module_path is not None:
-        target_file = registry._module_path
+    from scistack_gui.services.target_file_service import get_or_create_target_file
+
+    target_file, target_err = get_or_create_target_file()
 
     if target_file is None:
         # No Python target — fall back to MATLAB if configured.
@@ -66,7 +59,7 @@ def create_variable(
             and matlab_registry._config.matlab_variable_dir is not None
         ):
             return _create_matlab_variable(name, docstring)
-        return {"ok": False, "error": "No module file was loaded at startup."}
+        return {"ok": False, "error": target_err}
 
     lines = ["\n"]
     if docstring:

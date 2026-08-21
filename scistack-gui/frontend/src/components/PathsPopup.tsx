@@ -17,6 +17,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { callBackend } from '../api'
 import ProjectConfigPanel from './Sidebar/ProjectConfigPanel'
 import ManagedPathsList from './ManagedPathsList'
+import VariableFileEditor from './VariableFileEditor'
 
 interface PathsInfo {
   configured: boolean
@@ -80,6 +81,7 @@ export default function PathsPopup({ onClose }: { onClose: () => void }) {
                 <div style={styles.hint}>
                   Each path is recursively scanned for Python (.py) and MATLAB (.m) code — typically a shared, reusable code repository, not necessarily anything inside this project's own folder.
                 </div>
+                <VariableFileEditor variableFile={paths.variable_file ?? null} onChange={fetchPaths} />
               </>
             )}
           </section>

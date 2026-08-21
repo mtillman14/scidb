@@ -844,3 +844,142 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
     toml_path.write_text(content)
     logger.info("[config] remove_path: wrote %s (removed %s)", toml_path, target)
     return toml_path
+
+
+def _covered_by_modules(target: Path, raw_modules: list, project_root: Path) -> bool:
+    """Whether *target* would already be discovered by an existing entry in
+    *raw_modules* (an exact file match, or a directory entry it lives
+    under). Glob entries are ignored -- worst case we add a redundant
+    explicit entry alongside a glob that happens to already match."""
+    for entry in raw_modules:
+        if any(c in entry for c in ("*", "?", "[")):
+            continue
+        resolved = _resolve_raw_entry(entry, project_root)
+        if resolved == target:
+            return True
+        if resolved.is_dir() and target.is_relative_to(resolved):
+            return True
+    return False
+
+
+def set_variable_file(db_path: Path, file_path: "Path | None" = None) -> Path:
+    """Set (or auto-create) the ``variable_file`` new PathInput/Sweep/
+    Variable declarations get appended to, and write it into scistack.toml.
+
+    Only valid for loose-script projects (no pyproject.toml at the resolved
+    project root) -- see :func:`_reject_packaged_project`. Packaged
+    projects must add ``variable_file`` under ``[tool.scistack]`` in
+    pyproject.toml by hand, same as every other path in that mode.
+
+    If *file_path* is ``None``, defaults to
+    ``<project_root>/scistack_variables.py``. The file is created on disk
+    (with a short header comment) if it doesn't already exist -- an
+    existing file's contents are never touched. Mirrors :func:`add_path`'s
+    first-write seeding behavior when no scistack.toml exists yet.
+    """
+    logger.info("[config] set_variable_file: db_path=%s, file_path=%s", db_path, file_path)
+    toml_path = _locate_pyproject(None, db_path)
+    _reject_packaged_project(toml_path)
+
+    is_first_write = toml_path is None
+    if is_first_write:
+        target_path = _normalize(db_path).parent / "scistack.toml"
+        section: dict = {}
+        project_root = target_path.parent
+        logger.info(
+            "[config] set_variable_file: no config found, will create %s", target_path
+        )
+    else:
+        target_path = toml_path
+        section = _load_raw_scistack_section(toml_path)
+        project_root = toml_path.parent
+
+    raw_modules = list(section.get("modules", []))
+    matlab_section = dict(section.get("matlab", {}))
+    raw_sources = list(matlab_section.get("sources", []))
+
+    if is_first_write:
+        root_str = str(project_root)
+        raw_modules.append(root_str)
+        raw_sources.append(root_str)
+        logger.info(
+            "[config] set_variable_file: seeding new scistack.toml with project root %s",
+            root_str,
+        )
+
+    if file_path is not None:
+        raw_target = Path(file_path)
+        if not raw_target.is_absolute():
+            raise ValueError(f"Path must be absolute: {file_path}")
+        variable_file = _normalize(raw_target)
+    else:
+        variable_file = _normalize(project_root / "scistack_variables.py")
+
+    if not variable_file.exists():
+        variable_file.parent.mkdir(parents=True, exist_ok=True)
+        variable_file.write_text(
+            '"""Auto-created by the SciStack GUI -- new PathInput/Sweep/Variable\n'
+            'declarations created from the GUI are appended here."""\n'
+        )
+        logger.info("[config] set_variable_file: created new file %s", variable_file)
+
+    if not _covered_by_modules(variable_file, raw_modules, project_root):
+        raw_modules.append(str(variable_file))
+        logger.info(
+            "[config] set_variable_file: added %s to modules (not covered by an "
+            "existing entry)",
+            variable_file,
+        )
+
+    content = _render_scistack_toml(
+        modules=raw_modules,
+        variable_file=variable_file,
+        packages=list(section.get("packages", [])),
+        auto_discover=section.get("auto_discover", True),
+        matlab_functions=list(matlab_section.get("functions", [])),
+        matlab_variables=list(matlab_section.get("variables", [])),
+        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
+        matlab_sweeps=list(matlab_section.get("sweeps", [])),
+        matlab_sources=raw_sources,
+        matlab_variable_dir=matlab_section.get("variable_dir"),
+    )
+    target_path.write_text(content)
+    logger.info(
+        "[config] set_variable_file: wrote %s (variable_file=%s)",
+        target_path,
+        variable_file,
+    )
+    return variable_file
+
+
+def clear_variable_file(db_path: Path) -> Path:
+    """Remove the ``variable_file`` key from scistack.toml (loose-script
+    projects only). Never deletes the file on disk or its entry in
+    ``modules`` -- this only stops new GUI-created declarations from
+    targeting it automatically; discovery of its existing contents is
+    unaffected."""
+    logger.info("[config] clear_variable_file: db_path=%s", db_path)
+    toml_path = _locate_pyproject(None, db_path)
+    if toml_path is None:
+        raise FileNotFoundError(
+            f"No scistack.toml/pyproject.toml found near {db_path}; nothing to clear."
+        )
+    _reject_packaged_project(toml_path)
+
+    section = _load_raw_scistack_section(toml_path)
+    matlab_section = dict(section.get("matlab", {}))
+    content = _render_scistack_toml(
+        modules=list(section.get("modules", [])),
+        variable_file=None,
+        packages=list(section.get("packages", [])),
+        auto_discover=section.get("auto_discover", True),
+        matlab_functions=list(matlab_section.get("functions", [])),
+        matlab_variables=list(matlab_section.get("variables", [])),
+        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
+        matlab_sweeps=list(matlab_section.get("sweeps", [])),
+        matlab_sources=list(matlab_section.get("sources", [])),
+        matlab_variable_dir=matlab_section.get("variable_dir"),
+    )
+    toml_path.write_text(content)
+    logger.info("[config] clear_variable_file: wrote %s (cleared variable_file)", toml_path)
+    return toml_path

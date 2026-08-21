@@ -27,7 +27,7 @@ class PathInputCreate(BaseModel):
 
 class SweepCreate(BaseModel):
     name: str
-    values: list[float]
+    values: list[float] = []
 
 
 class EdgeCreate(BaseModel):

@@ -38,16 +38,6 @@ def _validate_name(name: str) -> "str | None":
     return None
 
 
-def _target_file() -> "Path | None":
-    from scistack_gui import registry
-
-    if registry._config is not None and registry._config.variable_file is not None:
-        return registry._config.variable_file
-    if registry._module_path is not None:
-        return registry._module_path
-    return None
-
-
 def _append_and_refresh(line: str, target_file: Path) -> "dict | None":
     """Write *line* to *target_file* and refresh the registry. Returns an
     error dict on failure, or ``None`` on success."""
@@ -107,9 +97,11 @@ def create_path_input(
     if name in registry.get_path_inputs_registry():
         return {"ok": False, "error": f"A PathInput named '{name}' already exists."}
 
-    target_file = _target_file()
+    from scistack_gui.services.target_file_service import get_or_create_target_file
+
+    target_file, target_err = get_or_create_target_file()
     if target_file is None:
-        return {"ok": False, "error": "No module file was loaded at startup."}
+        return {"ok": False, "error": target_err}
 
     calls = [_path_input_call(template, root_folder)]
     calls.extend(
@@ -135,7 +127,11 @@ def create_path_input(
 
 def create_sweep(name: str, values: "list[float | int | str]") -> dict:
     """Append ``NAME = Sweep(...)`` to the configured ``variable_file`` and
-    refresh the registry.
+    refresh the registry. If *values* is empty (the GUI's "New parameter
+    sweep" form only collects a name today), scaffolds a single placeholder
+    value instead of erroring -- same "create an editable stub, then
+    hand-edit source and hit Refresh" pattern ``create_path_input`` already
+    uses for an empty template.
 
     Returns ``{"ok": True, "name": name}`` on success, ``{"ok": False,
     "error": ...}`` on failure.
@@ -148,11 +144,17 @@ def create_sweep(name: str, values: "list[float | int | str]") -> dict:
     if name in registry.get_sweeps_registry():
         return {"ok": False, "error": f"A Sweep named '{name}' already exists."}
     if not values:
-        return {"ok": False, "error": "A Sweep needs at least one value."}
+        values = [0]
+        logger.info(
+            "[path_input_service] create_sweep: no values given for %r, "
+            "scaffolding a placeholder %r", name, values,
+        )
 
-    target_file = _target_file()
+    from scistack_gui.services.target_file_service import get_or_create_target_file
+
+    target_file, target_err = get_or_create_target_file()
     if target_file is None:
-        return {"ok": False, "error": "No module file was loaded at startup."}
+        return {"ok": False, "error": target_err}
 
     args = ", ".join(repr(v) for v in values)
     line = f"\n{name} = Sweep({args})\n"

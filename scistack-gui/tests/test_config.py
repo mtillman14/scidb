@@ -13,8 +13,10 @@ from scistack_gui.config import (
     _extract_scistack_section,
     _normalize,
     add_path,
+    clear_variable_file,
     load_config,
     remove_path,
+    set_variable_file,
     tomllib,
 )
 
@@ -728,3 +730,127 @@ def test_remove_path_rejects_packaged_project(tmp_path):
 
     with pytest.raises(ValueError):
         remove_path(db_path, tmp_path / "x")
+
+
+# ---------------------------------------------------------------------------
+# set_variable_file / clear_variable_file
+#
+# Regression coverage for the "creating a PathInput/Sweep/Variable from the
+# GUI silently failed with 'No module file was loaded at startup'" bug --
+# see .claude/pathinput-sweep-variable-creation-fixes.md. Before this, there
+# was no way to configure variable_file for a loose-script project at all.
+# ---------------------------------------------------------------------------
+
+
+def test_set_variable_file_auto_creates_default_when_none_exists(tmp_path):
+    """First-ever auto-create on a pure folder-scan project (no scistack.toml/
+    pyproject.toml yet): creates scistack.toml seeded with the project root
+    (same reasoning as add_path), creates scistack_variables.py, and points
+    variable_file at it."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+
+    result = set_variable_file(db_path, None)
+
+    expected = _normalize(tmp_path / "scistack_variables.py")
+    assert result == expected
+    assert expected.exists()
+    assert expected.read_text()  # non-empty scaffold, not a blank file
+
+    toml_path = tmp_path / "scistack.toml"
+    data = _read_raw_section(toml_path)
+    assert data["variable_file"] == str(expected)
+    assert str(_normalize(tmp_path)) in data["modules"]
+
+
+def test_set_variable_file_explicit_path_registers_module(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "other").mkdir()
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('modules = ["other"]\n')
+
+    explicit = tmp_path / "vars" / "custom_variables.py"
+    result = set_variable_file(db_path, explicit)
+
+    assert result == _normalize(explicit)
+    assert explicit.exists()
+    data = _read_raw_section(toml_file)
+    assert data["variable_file"] == str(_normalize(explicit))
+    assert str(_normalize(explicit)) in data["modules"]
+    assert "other" in data["modules"]  # untouched
+
+
+def test_set_variable_file_does_not_overwrite_existing_file(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    existing = tmp_path / "my_variables.py"
+    existing.write_text("from scidb import BaseVariable\n\nclass Foo(BaseVariable):\n    pass\n")
+
+    set_variable_file(db_path, existing)
+
+    assert existing.read_text() == (
+        "from scidb import BaseVariable\n\nclass Foo(BaseVariable):\n    pass\n"
+    )
+
+
+def test_set_variable_file_skips_module_entry_when_already_covered(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    covering_dir = tmp_path / "src"
+    covering_dir.mkdir()
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text(f'modules = [{str(covering_dir)!r}]\n')
+
+    target = covering_dir / "variables.py"
+    set_variable_file(db_path, target)
+
+    data = _read_raw_section(toml_file)
+    # Not appended again -- already discoverable via the directory entry.
+    assert data["modules"] == [str(covering_dir)]
+
+
+def test_set_variable_file_rejects_relative_explicit_path(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    with pytest.raises(ValueError):
+        set_variable_file(db_path, Path("relative_variables.py"))
+
+
+def test_set_variable_file_rejects_packaged_project(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "pyproject.toml").write_text("[tool.scistack]\n")
+
+    with pytest.raises(ValueError):
+        set_variable_file(db_path, None)
+
+
+def test_clear_variable_file_removes_key_but_keeps_file(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    variable_file = set_variable_file(db_path, None)
+
+    toml_path = tmp_path / "scistack.toml"
+    written = clear_variable_file(db_path)
+
+    assert written == toml_path
+    data = _read_raw_section(toml_path)
+    assert "variable_file" not in data
+    assert variable_file.exists()  # never deletes the file itself
+
+
+def test_clear_variable_file_noop_when_no_config_file(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    with pytest.raises(FileNotFoundError):
+        clear_variable_file(db_path)
+
+
+def test_clear_variable_file_rejects_packaged_project(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "pyproject.toml").write_text("[tool.scistack]\nvariable_file = \"x.py\"\n")
+
+    with pytest.raises(ValueError):
+        clear_variable_file(db_path)

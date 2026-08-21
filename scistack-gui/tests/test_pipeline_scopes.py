@@ -702,6 +702,21 @@ class TestSweeps:
         by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
         assert by_name["window_seconds"]["values"] == [10, 20, 30]
 
+    def test_create_without_values_scaffolds_placeholder(self, client_with_variable_file):
+        """The sidebar's "New parameter sweep" form only collects a name —
+        it never sends `values` (see EditTab.tsx's commitSweepDraft). This
+        used to 422/error with "A Sweep needs at least one value" and, worse,
+        the frontend swallowed that failure silently. Creating with no
+        values must succeed with a placeholder, mirroring how
+        create_path_input already scaffolds an empty template."""
+        client = client_with_variable_file
+        r = client.post("/api/sweeps", json={"name": "window_seconds"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+
+        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
+        assert by_name["window_seconds"]["values"] == [0]
+
     def test_delete_sweep_hides_node_but_keeps_source_declaration(
         self, client_with_variable_file
     ):
