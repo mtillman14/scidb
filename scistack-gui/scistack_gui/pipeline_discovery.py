@@ -148,18 +148,15 @@ def _seed_pipeline_recursive(
         len(pipe.uses),
     )
 
-    # KNOWN LIMITATION: a variable/constant manual node's _pipeline_nodes
-    # row is scoped to ONE pipeline_id (last-write-wins on the column, see
-    # _upsert_node) — if the SAME variable/constant is referenced by more
-    # than one discovered pipeline in this pass, whichever is seeded LAST
-    # "owns" that manual node's pipeline_id column. Narrow in practice
-    # (distinct steps usually reference distinct types), not resolved
-    # here — would need the placement-qualified-id cross-scope model
-    # (docs mention `{canonical_id}::{pipeline_id}`) applied to manual
-    # variable/constant nodes too, which today only DB-derived/registry-
-    # derived nodes get.
+    # Fresh per PIPELINE (not per discovery pass): a variable/constant
+    # referenced by multiple steps of THIS pipeline shares one manual node
+    # (looked up by "kind:name" key); a variable/constant referenced by a
+    # DIFFERENT discovered pipeline in the same pass gets its OWN
+    # independent node with its own arbitrary id — see _get_or_create_node's
+    # docstring for why that's what avoids the cross-pipeline collision.
+    node_cache: dict[str, str] = {}
     for spec in pipe.steps:
-        _seed_step(db, pipeline_id, spec)
+        _seed_step(db, pipeline_id, spec, node_cache)
 
     for binding in pipe.uses:
         child_id = _seed_pipeline_recursive(db, binding.pipeline, seen, created_names)
@@ -202,7 +199,47 @@ def _registered_name(value, registry_dict: dict) -> "str | None":
     return None
 
 
-def _seed_step(db, pipeline_id: str, spec) -> None:
+def _get_or_create_node(
+    db, pipeline_id: str, node_cache: dict[str, str], node_type: str, label: str
+) -> str:
+    """Look up (or create) the manual node representing *label* in this
+    pipeline's ``node_cache``, returning its id.
+
+    Deliberately an ARBITRARY id (``discovered_{kind}_{uuid}``), never the
+    bare canonical form (``var__{label}``/``const__{label}``) — matching
+    the same convention function nodes already use here, and how a human
+    manually placing a node from the GUI palette works: ``_pipeline_nodes``
+    scopes a node to exactly ONE ``pipeline_id`` (last-write-wins on that
+    column — see ``_upsert_node``), so writing the bare canonical id
+    directly would make it a single, GLOBAL row that two different
+    discovered pipelines referencing the same variable/constant would
+    fight over — whichever was seeded last silently "steals" it from the
+    other's scope. An arbitrary id sidesteps that: ``merge_manual_nodes``
+    already matches manual nodes to their real DB-derived counterpart by
+    ``(type, label)`` alone, never by id, so this behaves identically once
+    the pipeline actually runs and ``var__{label}``/``const__{label}``
+    exists for real (graduation) — see
+    ``.claude/plan-placement-qualified-node-ids.md``.
+
+    Cached per (pipeline_id-scoped) ``node_cache`` so multiple steps of the
+    SAME pipeline referencing the same variable/constant share one node
+    (matches what hand-wiring would look like) — a fresh ``node_cache`` per
+    pipeline is what keeps two DIFFERENT discovered pipelines from sharing
+    one, since each gets its own cache and therefore its own arbitrary id.
+    """
+    from scistack_gui import pipeline_store as ps
+
+    key = f"{node_type}:{label}"
+    if key in node_cache:
+        return node_cache[key]
+    kind = "var" if node_type == "variableNode" else "const"
+    node_id = f"discovered_{kind}_{uuid.uuid4().hex[:12]}"
+    ps.write_manual_node(db, node_id, node_type, label, pipeline_id)
+    node_cache[key] = node_id
+    return node_id
+
+
+def _seed_step(db, pipeline_id: str, spec, node_cache: dict[str, str]) -> None:
     """One ``StepSpec`` -> one manual functionNode, plus a manual
     variableNode/constantNode (with edge) for every referenced variable
     class and constant. Manual nodes are required here, not just edges —
@@ -226,8 +263,9 @@ def _seed_step(db, pipeline_id: str, spec) -> None:
     for param, value in spec.inputs.items():
         source_id = None
         if isinstance(value, type) and issubclass(value, BaseVariable):
-            source_id = f"var__{value.__name__}"
-            ps.write_manual_node(db, source_id, "variableNode", value.__name__, pipeline_id)
+            source_id = _get_or_create_node(
+                db, pipeline_id, node_cache, "variableNode", value.__name__
+            )
         elif isinstance(value, Sweep):
             # sweep__/pathInput__ nodes are ALWAYS registry-derived (see
             # graph_builder.seed_undiscovered_path_inputs) -- unlike
@@ -257,8 +295,9 @@ def _seed_step(db, pipeline_id: str, spec) -> None:
                 # used elsewhere for multi-type display; the other
                 # alternatives are still real, just not pre-wired.
                 first = value.alternatives[0]
-                source_id = f"var__{first.__name__}"
-                ps.write_manual_node(db, source_id, "variableNode", first.__name__, pipeline_id)
+                source_id = _get_or_create_node(
+                    db, pipeline_id, node_cache, "variableNode", first.__name__
+                )
         else:
             # A plain scalar constant. write_constant registers the name
             # in the constant palette (idempotent), add_pending_constant
@@ -271,8 +310,9 @@ def _seed_step(db, pipeline_id: str, spec) -> None:
 
             layout_store.write_constant(param)
             ps.add_pending_constant(db, param, str(value))
-            source_id = f"const__{param}"
-            ps.write_manual_node(db, source_id, "constantNode", param, pipeline_id)
+            source_id = _get_or_create_node(
+                db, pipeline_id, node_cache, "constantNode", param
+            )
 
         if source_id is None:
             logger.warning(
@@ -295,8 +335,9 @@ def _seed_step(db, pipeline_id: str, spec) -> None:
         )
 
     for out_cls in spec.output_classes():
-        target_id = f"var__{out_cls.__name__}"
-        ps.write_manual_node(db, target_id, "variableNode", out_cls.__name__, pipeline_id)
+        target_id = _get_or_create_node(
+            db, pipeline_id, node_cache, "variableNode", out_cls.__name__
+        )
         ps.write_manual_edge(
             db,
             {

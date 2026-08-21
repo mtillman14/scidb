@@ -21,6 +21,7 @@ def generate_matlab_command(
     addpath_dirs: list[str] | None = None,
     python_executable: str | None = None,
     path_inputs: dict[str, dict] | None = None,
+    sweeps: dict[str, list] | None = None,
     output_types: list[str] | None = None,
     project_root: str | None = None,
 ) -> str:
@@ -50,6 +51,12 @@ def generate_matlab_command(
         emits a guarded ``pyenv`` preamble that binds (or verifies) the
         interpreter before any ``py.*`` call is made. When ``None``/empty,
         no preamble is emitted (preserves behavior for non-GUI callers).
+    sweeps
+        Optional ``{param_name: [values]}`` — a Sweep has no DB-history
+        representation (always fans out to ``EachOf``/``Sweep`` fresh at
+        execution time), so unlike ``path_inputs`` this only ever comes
+        from the registry via manual-edge wiring, never DB variants — see
+        ``matlab_command_service``'s collection logic.
 
     Returns
     -------
@@ -83,17 +90,18 @@ def generate_matlab_command(
     lines.append("")
 
     if not variants:
-        # No variant info — generate a template, but include any known path inputs
-        # and output types inferred from manual edges.
+        # No variant info — generate a template, but include any known path
+        # inputs/sweeps and output types inferred from manual edges.
+        template_inputs: dict[str, str] = {}
         if path_inputs:
-            inputs_str = _format_matlab_struct(
-                {
-                    p: _format_path_input(pi, project_root)
-                    for p, pi in path_inputs.items()
-                }
-            )
-        else:
-            inputs_str = "struct()"
+            for p, pi in path_inputs.items():
+                template_inputs[p] = _format_path_input(pi, project_root)
+        if sweeps:
+            for p, values in sweeps.items():
+                template_inputs[p] = _format_sweep(values)
+        inputs_str = (
+            _format_matlab_struct(template_inputs) if template_inputs else "struct()"
+        )
         if output_types:
             outputs_str = _format_matlab_cell([f"{t}()" for t in output_types])
         else:
@@ -147,6 +155,7 @@ def generate_matlab_command(
             path_inputs,
             project_root,
             matlab_fn="scihist.for_each",
+            sweeps=sweeps,
         )
     )
 
@@ -221,6 +230,7 @@ def _for_each_call_lines(
     project_root: str | None,
     matlab_fn: str = "scihist.for_each",
     indent: str = "    ",
+    sweeps: dict[str, list] | None = None,
 ) -> list[str]:
     """One (indented) ``<matlab_fn>(@function_name, ...)`` block per grouped
     (inputs, constants) entry — the call body shared between a single
@@ -245,6 +255,10 @@ def _for_each_call_lines(
         if path_inputs:
             for param_name, pi in path_inputs.items():
                 inputs_dict[param_name] = _format_path_input(pi, project_root)
+        # Add sweeps as scifor.Sweep(...) expressions.
+        if sweeps:
+            for param_name, values in sweeps.items():
+                inputs_dict[param_name] = _format_sweep(values)
         # Add constants as scalar values
         for k, val in constants.items():
             inputs_dict[k] = _format_matlab_value(val)
@@ -410,6 +424,7 @@ def generate_matlab_pipeline_command(
                 step.get("path_inputs"),
                 project_root,
                 matlab_fn="scidb.for_each",
+                sweeps=step.get("sweeps"),
             )
         )
     for comment in skip_comments:
@@ -486,6 +501,15 @@ def _format_path_input(pi: dict, project_root: str | None = None) -> str:
     if root_folder:
         return f'scifor.PathInput({matlab_template}, root_folder="{root_folder}")'
     return f"scifor.PathInput({matlab_template})"
+
+
+def _format_sweep(values: list) -> str:
+    """Format a Sweep's value list as a MATLAB ``scifor.Sweep(...)``
+    expression (mirrors ``_format_path_input``'s role for PathInput —
+    ``isa(x, 'scifor.EachOf')`` covers ``Sweep`` for free, see
+    ``+scifor/Sweep.m``)."""
+    items = ", ".join(_format_matlab_value(v) for v in values)
+    return f"scifor.Sweep({items})"
 
 
 def _escape_matlab_string(s: str) -> str:

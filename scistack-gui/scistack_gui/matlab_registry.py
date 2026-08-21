@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 from scistack_gui.matlab_parser import (
     MatlabFunctionInfo,
     classify_matlab_file,
+    extract_path_input_literal,
+    extract_sweep_literal,
     parse_matlab_function,
     parse_matlab_path_input,
     parse_matlab_sweep,
@@ -44,21 +46,24 @@ _matlab_path_inputs: dict[str, Path] = {}
 """PathInput getter name -> .m file path (see matlab_parser.
 parse_matlab_path_input and docs/claude/code-discovery-categories.md).
 
-Unlike ``_matlab_variables``, this does NOT create a Python surrogate: a
-PathInput's actual template/root_folder VALUES live inside MATLAB source
-text (e.g. ``p = scifor.PathInput('{subject}.mat')``), and extracting them
-without running MATLAB would need a much deeper literal-expression parser
-than this file's regex-based approach supports. Currently name-only —
-known gap: MATLAB PathInputs are not yet merged into the GUI canvas's
-``pathInput__`` nodes or execution_service's content-matching resolution
-(both Python-only for now); a MATLAB pipeline's PathInput resolves through
-the MATLAB bridge calling the getter function natively at run time,
-independent of this registry.
+Always tracked here by name (this dict), and — when the getter's
+construction call is a simple literal (see
+matlab_parser.extract_path_input_literal) — ALSO registered as a real
+``scifor.PathInput`` object into ``scistack_gui.registry``'s shared
+``_path_inputs`` dict (:func:`_register_matlab_path_input`), which is what
+makes it show up as a ``pathInput__`` canvas node and resolve in
+execution/generated MATLAB commands — every consumer of
+``registry.get_path_inputs_registry()`` is language-agnostic once an
+object lands there. A getter whose args reference a MATLAB
+variable/expression (not a literal) can't be statically evaluated (no
+MATLAB run here) — it stays name-only in THIS dict, with a load error
+recorded so the gap is visible rather than silent.
 """
 
 _matlab_sweeps: dict[str, Path] = {}
-"""Sweep getter name -> .m file path — same name-only scope/rationale as
-_matlab_path_inputs above."""
+"""Sweep getter name -> .m file path — same name-only-vs-registered
+treatment as _matlab_path_inputs above, via
+:func:`_register_matlab_sweep`/matlab_parser.extract_sweep_literal."""
 
 _config: SciStackConfig | None = None
 """Stored config for refresh_all()."""
@@ -80,6 +85,29 @@ real MATLAB projects have plenty of non-function scripts) — see
 # ---------------------------------------------------------------------------
 
 
+def _deregister_stale_matlab_path_inputs_and_sweeps() -> None:
+    """Remove any PathInput/Sweep this module PREVIOUSLY registered into
+    the shared ``scistack_gui.registry``, before a fresh scan replaces
+    ``_matlab_path_inputs``/``_matlab_sweeps``.
+
+    Only removes an entry whose recorded SOURCE exactly matches the ``.m``
+    file this module registered it from — never a same-named entry that
+    "last write wins" collision handling has since attributed to a
+    different (e.g. Python) source; see ``registry._register_path_input``/
+    ``_register_sweep``'s shadowing warning.
+    """
+    from scistack_gui import registry
+
+    for name, path in _matlab_path_inputs.items():
+        if registry._path_input_sources.get(name) == str(path):
+            registry._path_inputs.pop(name, None)
+            registry._path_input_sources.pop(name, None)
+    for name, path in _matlab_sweeps.items():
+        if registry._sweep_sources.get(name) == str(path):
+            registry._sweeps.pop(name, None)
+            registry._sweep_sources.pop(name, None)
+
+
 def load_from_config(config: SciStackConfig) -> dict:
     """Scan configured MATLAB paths, parse .m files, populate registries.
 
@@ -95,6 +123,14 @@ def load_from_config(config: SciStackConfig) -> dict:
     logger.info("[matlab_registry] Clearing registries")
     _matlab_functions.clear()
     _matlab_variables.clear()
+    # Deregister from the SHARED scistack_gui.registry BEFORE clearing our
+    # own name-tracking dicts below — otherwise a renamed/deleted getter's
+    # old registered PathInput/Sweep object would linger there forever
+    # (matlab_registry.clear() only ever touched its own dicts, not the
+    # registry it registers INTO). Names that get re-registered further
+    # down in this same call simply overwrite these removals; this only
+    # matters for ones that DON'T come back.
+    _deregister_stale_matlab_path_inputs_and_sweeps()
     _matlab_path_inputs.clear()
     _matlab_sweeps.clear()
     _load_errors.clear()
@@ -283,17 +319,78 @@ def _register_matlab_variable(var_name: str, path: Path) -> None:
 
 
 def _register_matlab_path_input(name: str, path: Path) -> None:
-    """Register a single MATLAB PathInput getter (name-only — see
-    _matlab_path_inputs' docstring for why no Python surrogate is built)."""
+    """Register a single MATLAB PathInput getter: always name-tracked here,
+    and — when its construction call is a simple literal — ALSO registered
+    as a real ``scifor.PathInput`` into the shared Python registry (see
+    _matlab_path_inputs' docstring)."""
     _matlab_path_inputs[name] = path
-    logger.info("[matlab_registry] Registered MATLAB PathInput getter: %s (%s)", name, path)
+    literal = extract_path_input_literal(path)
+    if literal is None:
+        logger.warning(
+            "[matlab_registry] PathInput getter '%s' (%s) does not construct "
+            "a simple literal (references a MATLAB variable/expression) -- "
+            "cannot statically extract its value, so it won't appear as a "
+            "pathInput__ canvas node or resolve in execution/generated "
+            "MATLAB commands. Name-tracked only.",
+            name,
+            path,
+        )
+        _record_load_error(
+            str(path), "PathInput getter is not a simple literal construction"
+        )
+        return
+
+    template, root_folder = literal
+    from scifor import PathInput
+
+    from scistack_gui import registry
+
+    pi = PathInput(template, root_folder=root_folder)
+    registry._register_path_input(name, pi, source=str(path))
+    logger.info(
+        "[matlab_registry] Registered MATLAB PathInput getter: %s (%s) "
+        "template=%r root_folder=%r",
+        name,
+        path,
+        template,
+        root_folder,
+    )
 
 
 def _register_matlab_sweep(name: str, path: Path) -> None:
-    """Register a single MATLAB Sweep getter (name-only — see
-    _matlab_sweeps' docstring)."""
+    """Register a single MATLAB Sweep getter: always name-tracked here,
+    and — when its construction call is all simple literals — ALSO
+    registered as a real ``scifor.Sweep`` into the shared Python registry
+    (see _matlab_sweeps' docstring)."""
     _matlab_sweeps[name] = path
-    logger.info("[matlab_registry] Registered MATLAB Sweep getter: %s (%s)", name, path)
+    values = extract_sweep_literal(path)
+    if values is None:
+        logger.warning(
+            "[matlab_registry] Sweep getter '%s' (%s) does not construct "
+            "all-literal values (references a MATLAB variable/expression) "
+            "-- cannot statically extract them, so it won't appear as a "
+            "sweep__ canvas node or resolve in execution/generated MATLAB "
+            "commands. Name-tracked only.",
+            name,
+            path,
+        )
+        _record_load_error(
+            str(path), "Sweep getter is not an all-literal construction"
+        )
+        return
+
+    from scidb import Sweep
+
+    from scistack_gui import registry
+
+    sw = Sweep(*values)
+    registry._register_sweep(name, sw, source=str(path))
+    logger.info(
+        "[matlab_registry] Registered MATLAB Sweep getter: %s (%s) %d value(s)",
+        name,
+        path,
+        len(values),
+    )
 
 
 def refresh_all() -> dict:

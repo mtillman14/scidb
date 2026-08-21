@@ -74,6 +74,43 @@ def _sort_inferred_by_params_order(
     return ordered
 
 
+def _collect_sweep_params(
+    function_name: str, saved_sweeps: dict, manual_edges: list[dict], strip_placement
+) -> dict[str, list]:
+    """``{param_name: [values]}`` for every sweep__ node manually wired into
+    *function_name*'s ``in__{param}`` handle.
+
+    Unlike PathInput, a Sweep has no DB-history representation at all — it
+    always fans out to ``EachOf``/``Sweep`` fresh at execution time, never
+    staged as one recorded value (see
+    docs/claude/code-discovery-categories.md) — so this only ever has ONE
+    source (registry + manual edge), not the two-source
+    DB-variants-then-edges resolution ``path_input_params`` needs. Shared
+    between ``generate_matlab_command`` (single function) and
+    ``generate_matlab_pipeline_command`` (whole pipeline, called per node).
+    """
+    sweep_params: dict[str, list] = {}
+    for edge in manual_edges:
+        src = edge.get("source", "")
+        tgt = edge.get("target", "")
+        th = edge.get("targetHandle", "")
+        if not (src.startswith("sweep__") and th.startswith("in__")):
+            continue
+        tgt_parts = tgt.split("__")
+        if len(tgt_parts) < 2 or tgt_parts[0] != "fn" or tgt_parts[1] != function_name:
+            continue
+        bare_src = strip_placement(src)
+        sw_name = (
+            bare_src.split("__")[1]
+            if len(bare_src.split("__")) >= 2
+            else bare_src[len("sweep__") :]
+        )
+        param_name = th[len("in__") :]
+        if sw_name in saved_sweeps:
+            sweep_params[param_name] = saved_sweeps[sw_name]
+    return sweep_params
+
+
 def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     """Generate a ready-to-paste MATLAB command for a pipeline function.
 
@@ -172,6 +209,16 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
                     pi["template"] = saved_pis[pi_name]["template"]
                     pi["root_folder"] = saved_pis[pi_name].get("root_folder")
 
+    # Collect Sweep param mappings (registry + manual edges only — no
+    # DB-history source, see _collect_sweep_params).
+    saved_sweeps = {
+        name: list(sw.alternatives)
+        for name, sw in registry.get_sweeps_registry().items()
+    }
+    sweep_params = _collect_sweep_params(
+        function_name, saved_sweeps, layout_store.read_manual_edges(), strip_placement
+    )
+
     # Infer output types from manual edges when no DB variants exist.
     # Always prefer edge inference over params-supplied output_types for
     # functions with no DB history — the node's output_types field may contain
@@ -246,6 +293,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         addpath_dirs=addpath_dirs if addpath_dirs else None,
         python_executable=sys.executable,
         path_inputs=path_input_params if path_input_params else None,
+        sweeps=sweep_params if sweep_params else None,
         output_types=output_types if output_types else None,
         project_root=project_root,
     )
@@ -334,6 +382,9 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         name: path_input_display(obj)
         for name, obj in _reg.get_path_inputs_registry().items()
     }
+    saved_sweeps = {
+        name: list(sw.alternatives) for name, sw in _reg.get_sweeps_registry().items()
+    }
     manual_edges = layout_store.read_manual_edges()
 
     steps: list[dict] = []
@@ -415,6 +466,10 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
                         pi["template"] = saved_pis[pi_name]["template"]
                         pi["root_folder"] = saved_pis[pi_name].get("root_folder")
 
+        sweep_params = _collect_sweep_params(
+            fn_label, saved_sweeps, manual_edges, strip_placement
+        )
+
         steps.append(
             {
                 "function_name": fn_label,
@@ -422,6 +477,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
                 "schema_filter": params.get("schema_filter"),
                 "schema_level": params.get("schema_level"),
                 "path_inputs": path_input_params if path_input_params else None,
+                "sweeps": sweep_params if sweep_params else None,
             }
         )
 

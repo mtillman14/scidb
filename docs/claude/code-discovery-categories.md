@@ -167,14 +167,32 @@ this: locate a zero-arg `_FUNCTION_RE` match, reject if the file has a
 `classdef` (same one-file-one-entity rule as `parse_matlab_function`),
 search the function's own body (up to the next `function`/EOF) for
 `= (scifor\.|scidb\.)?PathInput\(`. Static-only — never runs MATLAB.
-`matlab_registry` tracks these **by name only** (`_matlab_path_inputs:
-dict[str, Path]`) — **known gap**: not yet merged into the GUI canvas's
-`pathInput__` nodes or `execution_service`'s content-matching resolution
-(both Python-only today); a MATLAB pipeline's PathInput resolves through
-the MATLAB bridge calling the getter function natively at run time,
-independent of this registry. Extracting real template/root_folder values
-statically would need a much deeper MATLAB literal-expression parser than
-this file's regex approach.
+`matlab_registry` always tracks these **by name** (`_matlab_path_inputs:
+dict[str, Path]`), and ALSO attempts best-effort literal extraction
+(`matlab_parser.extract_path_input_literal`) — a char-by-char scan of the
+getter body that finds the matching close-paren for the `PathInput(...)`
+call (respecting quoted strings and doubled-quote escaping), splits the
+top-level comma-separated args, and parses each as a MATLAB string/number
+literal. When every needed argument (template, and `root_folder` if given)
+parses as a literal, `matlab_registry` constructs a **real**
+`scifor.PathInput` object and registers it into the same shared
+`scistack_gui.registry` that Python-discovered PathInputs use
+(`registry._register_path_input(name, pi, source=path)`) — so the GUI
+canvas's `pathInput__` nodes, `execution_service.build_run_inputs`'s
+content-matching resolution, and `matlab_command_service`'s MATLAB command
+generation all pick it up automatically, with no MATLAB-specific branching
+downstream. If any argument is not a literal (a variable reference, a
+function call, string concatenation, etc.), extraction returns `None` and
+the getter falls back to name-only tracking — `registry.get_path_input(...)`
+returns `None` for it, and a load error is recorded
+(`_record_load_error`); a MATLAB pipeline using such a PathInput still
+resolves correctly at MATLAB run time (the bridge calls the getter
+natively), it just isn't visible/wireable in the GUI canvas. Refreshing the
+MATLAB config (`load_from_config`) deregisters any previously-registered
+entry whose recorded source no longer classifies as that getter
+(`_deregister_stale_matlab_path_inputs_and_sweeps`, exact-source-path
+match only, so it never touches a same-named Python-discovered
+definition).
 
 ### Portability (cross-user export/import)
 
@@ -234,8 +252,18 @@ resolved input — no reconstruction needed (this used to rebuild
 shape (MATLAB's `isa(x, 'scifor.EachOf')` respects inheritance the same way
 Python's `isinstance` does, so every `isa(..., 'scifor.EachOf')` check in
 `+scidb/for_each.m`/`+scifor/for_each.m` picks up a `Sweep` for free). Same
-"value getter" convention and known name-only gap as PathInput (§4) — see
-`matlab_parser.parse_matlab_sweep` / `matlab_registry._matlab_sweeps`.
+"value getter" convention as PathInput (§4) — see
+`matlab_parser.parse_matlab_sweep` / `matlab_registry._matlab_sweeps` — and
+the same literal-extraction upgrade: `matlab_parser.extract_sweep_literal`
+extracts every positional arg from the `Sweep(...)` call and parses each as
+a literal (all-or-nothing — one non-literal value invalidates the whole
+list), and on success `matlab_registry` constructs a real `scifor.Sweep`
+and registers it into the shared `scistack_gui.registry`, same as
+PathInput. GUI canvas `sweep__` nodes and command generation
+(`matlab_command_service._collect_sweep_params` /
+`api.matlab_command._format_sweep`) now resolve MATLAB-declared Sweeps the
+same way as Python ones; a non-literal getter falls back to name-only
+tracking with the same MATLAB-run-time-only caveat as PathInput.
 
 ### Portability & GUI creation
 
@@ -291,6 +319,24 @@ run history — a genuinely never-run type/constant needs a manual node to
 show up at all (`merge_manual_nodes` is what makes a manual node appear
 regardless of history). PathInput/Sweep nodes are the one exception —
 always registry-derived (§4/§5), never manual.
+
+Each manual `variableNode`/`constantNode` created by discovery gets an
+**arbitrary** id (`discovered_{var,const}_{uuid}`), never the bare
+canonical form (`var__RawA`) — `_get_or_create_node` mints one fresh id per
+`(node_type, label)` the first time it's seen within one pipeline's seed
+pass (cached in a `node_cache` scoped to that single
+`_seed_pipeline_recursive` call), and reuses it for every other step in
+*that* pipeline referencing the same variable/constant. This matters
+because `_pipeline_nodes.node_id` is a global PRIMARY KEY, not scoped by
+`pipeline_id` — two different discovered pipelines that happen to share a
+variable/constant name (e.g. both use a `RawA` input) must NOT write to the
+same row, or the second pipeline's write silently clobbers the first's
+`pipeline_id` (last-write-wins via `ON CONFLICT DO UPDATE`), making the
+node vanish from the first pipeline's graph. `merge_manual_nodes` matches a
+manual node to its DB-derived counterpart by `(type, label)` only, never by
+id (see `.claude/plan-placement-qualified-node-ids.md`), which is exactly
+why an arbitrary id works correctly here — function nodes already followed
+this pattern; var/const nodes previously didn't, and that gap is fixed.
 
 Wired into `bootstrap.open_or_create_project` (initial load, all project
 modes) and `api/project.py._refresh_registries` (loose-script/single-file

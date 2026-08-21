@@ -264,13 +264,16 @@ _PATHINPUT_VALUE_RE = re.compile(r"=\s*(?:scifor\.|scidb\.)?PathInput\s*\(")
 _SWEEP_VALUE_RE = re.compile(r"=\s*(?:scifor\.|scidb\.)?Sweep\s*\(")
 
 
-def _parse_value_getter(path: Path, value_re: "re.Pattern[str]") -> str | None:
-    """Shared implementation for ``parse_matlab_path_input``/
-    ``parse_matlab_sweep``: a zero-arg function whose body contains a
-    construction matching ``value_re``. Static regex only — never runs
-    MATLAB, matching this file's "extract without running MATLAB"
-    principle. Returns the function's name (the object's exposed identity)
-    or ``None``.
+def _getter_context(
+    path: Path, value_re: "re.Pattern[str]"
+) -> "tuple[str, str] | None":
+    """Shared location logic for classification (``_parse_value_getter``)
+    AND literal extraction (``extract_path_input_literal``/
+    ``extract_sweep_literal``): a zero-arg function whose body (up to the
+    next function declaration, or EOF) contains a construction matching
+    ``value_re``. Static regex only — never runs MATLAB, matching this
+    file's "extract without running MATLAB" principle. Returns
+    ``(fn_name, body_text)`` or ``None``.
     """
     try:
         raw = path.read_bytes()
@@ -302,7 +305,15 @@ def _parse_value_getter(path: Path, value_re: "re.Pattern[str]") -> str | None:
         body = body[: next_fn.start()]
     if value_re.search(body) is None:
         return None
-    return fn_name
+    return fn_name, body
+
+
+def _parse_value_getter(path: Path, value_re: "re.Pattern[str]") -> str | None:
+    """Shared implementation for ``parse_matlab_path_input``/
+    ``parse_matlab_sweep``. Returns the function's name (the object's
+    exposed identity) or ``None``."""
+    ctx = _getter_context(path, value_re)
+    return ctx[0] if ctx is not None else None
 
 
 def parse_matlab_path_input(path: Path) -> str | None:
@@ -313,6 +324,179 @@ def parse_matlab_path_input(path: Path) -> str | None:
 def parse_matlab_sweep(path: Path) -> str | None:
     """Parse a MATLAB "Sweep getter" file. See ``_parse_value_getter``."""
     return _parse_value_getter(path, _SWEEP_VALUE_RE)
+
+
+# ---------------------------------------------------------------------------
+# Best-effort literal extraction — construct a REAL PathInput/Sweep object
+# from a getter's construction call, when its arguments are simple literals
+# (quoted strings / numbers). Still purely static text (no MATLAB run): a
+# construction whose arguments reference a MATLAB variable/expression
+# rather than a literal returns None, and the caller falls back to
+# name-only tracking (see matlab_registry.py). See
+# docs/claude/code-discovery-categories.md.
+# ---------------------------------------------------------------------------
+
+_MATLAB_NUMBER_RE = re.compile(r"^[-+]?\d+\.?\d*(?:[eE][-+]?\d+)?$")
+
+
+def _extract_call_args(body: str, value_re: "re.Pattern[str]") -> str | None:
+    """The raw text between the matching parens of the FIRST construction
+    call in ``body`` matching ``value_re`` (``value_re`` must end its match
+    right after the opening ``(``, as ``_PATHINPUT_VALUE_RE``/
+    ``_SWEEP_VALUE_RE`` do). Returns ``None`` if no match, or the parens
+    are unbalanced (malformed/unparseable)."""
+    m = value_re.search(body)
+    if m is None:
+        return None
+    start = m.end()
+    depth = 1
+    i = start
+    n = len(body)
+    while i < n and depth > 0:
+        c = body[i]
+        if c in "'\"":
+            quote = c
+            i += 1
+            while i < n:
+                if body[i] == quote:
+                    if i + 1 < n and body[i + 1] == quote:
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        return None
+    return body[start : i - 1]
+
+
+def _split_matlab_args(args_text: str) -> list[str]:
+    """Split a MATLAB argument list on top-level commas, respecting quoted
+    strings (both ``'...'`` and ``"..."``, each with MATLAB's doubled-quote
+    escaping) and nested brackets, so a comma inside a string literal or a
+    nested ``[...]``/``{...}`` never splits there."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    i = 0
+    n = len(args_text)
+    while i < n:
+        c = args_text[i]
+        if c in "'\"":
+            quote = c
+            current.append(c)
+            i += 1
+            while i < n:
+                current.append(args_text[i])
+                if args_text[i] == quote:
+                    if i + 1 < n and args_text[i + 1] == quote:
+                        current.append(args_text[i + 1])
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c in "([{":
+            depth += 1
+            current.append(c)
+            i += 1
+            continue
+        if c in ")]}":
+            depth -= 1
+            current.append(c)
+            i += 1
+            continue
+        if c == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            i += 1
+            continue
+        current.append(c)
+        i += 1
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _parse_matlab_literal_token(token: str) -> "tuple[bool, object]":
+    """``(True, value)`` if *token* is a simple MATLAB literal (a quoted
+    string or a number), else ``(False, None)`` — a MATLAB variable
+    reference, function call, or expression is deliberately NOT evaluated
+    (this never runs MATLAB)."""
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"":
+        quote = token[0]
+        inner = token[1:-1]
+        return True, inner.replace(quote * 2, quote)
+    if _MATLAB_NUMBER_RE.match(token):
+        return True, (
+            float(token) if ("." in token or "e" in token.lower()) else int(token)
+        )
+    return False, None
+
+
+def extract_path_input_literal(path: Path) -> "tuple[str, str | None] | None":
+    """Best-effort ``(template, root_folder)`` from a PathInput getter's
+    construction call. ``None`` if it isn't a simple literal call (e.g. the
+    template is a MATLAB variable) — the caller then falls back to
+    name-only tracking (matlab_registry.py)."""
+    ctx = _getter_context(path, _PATHINPUT_VALUE_RE)
+    if ctx is None:
+        return None
+    _, body = ctx
+    args_text = _extract_call_args(body, _PATHINPUT_VALUE_RE)
+    if args_text is None:
+        return None
+    args = _split_matlab_args(args_text)
+    if not args:
+        return None
+    ok, template = _parse_matlab_literal_token(args[0])
+    if not ok or not isinstance(template, str):
+        return None
+    root_folder: str | None = None
+    i = 1
+    while i < len(args) - 1:
+        ok_key, key = _parse_matlab_literal_token(args[i])
+        if ok_key and key == "root_folder":
+            ok_val, val = _parse_matlab_literal_token(args[i + 1])
+            if ok_val and isinstance(val, str):
+                root_folder = val
+            i += 2
+            continue
+        i += 1
+    return template, root_folder
+
+
+def extract_sweep_literal(path: Path) -> "list | None":
+    """Best-effort value list from a Sweep getter's construction call.
+    ``None`` if it isn't ALL simple literals (any single non-literal value
+    — a MATLAB variable/expression — invalidates the whole list rather
+    than silently dropping just that one value)."""
+    ctx = _getter_context(path, _SWEEP_VALUE_RE)
+    if ctx is None:
+        return None
+    _, body = ctx
+    args_text = _extract_call_args(body, _SWEEP_VALUE_RE)
+    if args_text is None:
+        return None
+    args = _split_matlab_args(args_text)
+    if not args:
+        return None
+    values = []
+    for tok in args:
+        ok, val = _parse_matlab_literal_token(tok)
+        if not ok:
+            return None
+        values.append(val)
+    return values
 
 
 def classify_matlab_file(
