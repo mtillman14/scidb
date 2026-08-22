@@ -47,7 +47,10 @@ def create_variable(
         return _create_matlab_variable(name, docstring)
 
     # Python variable creation.
-    from scistack_gui.services.target_file_service import get_or_create_target_file
+    from scistack_gui.services.target_file_service import (
+        ensure_scidb_import,
+        get_or_create_target_file,
+    )
 
     target_file, target_err = get_or_create_target_file()
 
@@ -64,11 +67,14 @@ def create_variable(
     lines = ["\n"]
     if docstring:
         escaped = docstring.replace('"""', '\\"\\"\\"')
-        lines.append(f'class {name}(BaseVariable):\n    """{escaped}"""\n    pass\n')
+        lines.append(
+            f'class {name}(scidb.BaseVariable):\n    """{escaped}"""\n    pass\n'
+        )
     else:
-        lines.append(f"class {name}(BaseVariable):\n    pass\n")
+        lines.append(f"class {name}(scidb.BaseVariable):\n    pass\n")
 
     try:
+        ensure_scidb_import(target_file)
         with open(target_file, "a") as f:
             f.writelines(lines)
     except OSError as e:

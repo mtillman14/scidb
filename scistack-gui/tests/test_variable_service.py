@@ -109,7 +109,7 @@ class TestCreateVariablePythonWrite:
         result = create_variable("BrandNewVar")
         assert result["ok"] is True, result.get("error")
         content = setup_module_file.read_text()
-        assert "class BrandNewVar(BaseVariable)" in content
+        assert "class BrandNewVar(scidb.BaseVariable)" in content
 
     def test_docstring_included_when_provided(self, setup_module_file):
         result = create_variable("DocVar", docstring="My docstring")
@@ -143,13 +143,13 @@ class TestCreateVariablePythonWrite:
         result = create_variable("myVar")
         assert result["ok"] is True, result.get("error")
         content = setup_module_file.read_text()
-        assert "class myVar(BaseVariable)" in content
+        assert "class myVar(scidb.BaseVariable)" in content
 
     def test_leading_whitespace_stripped(self, setup_module_file):
         result = create_variable(" WhitespaceVar ")
         assert result["ok"] is True, result.get("error")
         content = setup_module_file.read_text()
-        assert "class WhitespaceVar(BaseVariable)" in content
+        assert "class WhitespaceVar(scidb.BaseVariable)" in content
 
     def test_unwritable_file_returns_error(self, tmp_path):
         """If the target file is unwritable, return a friendly error."""
@@ -163,4 +163,39 @@ class TestCreateVariablePythonWrite:
             assert "Failed to write" in result["error"]
         finally:
             module_file.chmod(0o644)
+            _reset_registry_state()
+
+
+class TestCreateVariableNoPreexistingImport:
+    """Regression coverage: appended declarations use the qualified
+    ``scidb.BaseVariable`` form specifically so they don't depend on the
+    target file already importing anything. A target file with NO
+    pre-existing imports at all (unlike ``setup_module_file`` above, which
+    always pre-seeds ``from scidb import BaseVariable`` by hand) must still
+    produce a file that re-imports cleanly -- this was silently broken
+    before ``ensure_scidb_import`` existed."""
+
+    def test_creates_class_in_empty_file(self, tmp_path):
+        module_file = tmp_path / "empty_variables.py"
+        module_file.write_text("")
+        _registry._module_path = module_file
+        _registry._config = None
+        try:
+            result = create_variable("FreshVar")
+            assert result["ok"] is True, result.get("error")
+            content = module_file.read_text()
+            assert "import scidb" in content
+            assert "class FreshVar(scidb.BaseVariable)" in content
+
+            # The written file must actually be importable/re-scannable —
+            # this is the exact NameError this fix prevents.
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "empty_variables_reimport", module_file
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            assert hasattr(mod, "FreshVar")
+        finally:
             _reset_registry_state()

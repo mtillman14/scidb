@@ -283,32 +283,46 @@ class TestLayoutEndpoints:
 
 
 class TestConstantsEndpoints:
+    """Constants are now source-declared (``NAME = scidb.constant(...)``),
+    same append-only pattern as PathInput/Sweep — see
+    docs/claude/code-discovery-categories.md. Creation needs a writable
+    target file, hence ``client_with_variable_file`` (not plain ``client``)
+    everywhere here."""
+
     def test_get_constants_initially_empty(self, client):
         r = client.get("/api/constants")
         assert r.status_code == 200
         assert r.json() == []
 
-    def test_post_constant_adds_it(self, client):
+    def test_post_constant_adds_it(self, client_with_variable_file):
+        client = client_with_variable_file
         r = client.post("/api/constants", json={"name": "window_size"})
         assert r.status_code == 200
-        assert r.json() == {"ok": True}
+        assert r.json() == {"ok": True, "name": "window_size"}
         constants = client.get("/api/constants").json()
-        assert "window_size" in constants
+        names = [c["name"] for c in constants]
+        assert "window_size" in names
 
-    def test_post_constant_no_duplicate(self, client):
+    def test_post_constant_no_duplicate(self, client_with_variable_file):
+        client = client_with_variable_file
         client.post("/api/constants", json={"name": "alpha"})
         client.post("/api/constants", json={"name": "alpha"})
         constants = client.get("/api/constants").json()
-        assert constants.count("alpha") == 1
+        names = [c["name"] for c in constants]
+        assert names.count("alpha") == 1
 
-    def test_delete_constant_removes_it(self, client):
+    def test_delete_constant_removes_it(self, client_with_variable_file):
+        client = client_with_variable_file
         client.post("/api/constants", json={"name": "alpha"})
         client.post("/api/constants", json={"name": "beta"})
         r = client.delete("/api/constants/alpha")
         assert r.status_code == 200
+        # "Delete" hides the node only (never delete, mark hidden) — the
+        # source declaration (and therefore the registry entry) is untouched.
         constants = client.get("/api/constants").json()
-        assert "alpha" not in constants
-        assert "beta" in constants
+        names = [c["name"] for c in constants]
+        assert "alpha" in names
+        assert "beta" in names
 
     def test_delete_nonexistent_constant_is_ok(self, client):
         r = client.delete("/api/constants/ghost")

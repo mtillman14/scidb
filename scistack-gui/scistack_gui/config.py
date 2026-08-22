@@ -61,7 +61,9 @@ class SciStackConfig:
     """Resolved absolute paths to user .py files."""
 
     variable_file: Path | None = None
-    """The .py file where ``create_variable`` writes new classes."""
+    """The .py file where GUI-created Sweeps/PathInputs/Variables/Constants
+    are appended (default ``src/scistack_entities.py``, see
+    :func:`set_variable_file`)."""
 
     packages: list[str] = field(default_factory=list)
     """Explicit pip-installed package names to scan."""
@@ -937,9 +939,12 @@ def _covered_by_modules(target: Path, raw_modules: list, project_root: Path) -> 
     return False
 
 
-def set_variable_file(db_path: Path, file_path: "Path | None" = None) -> Path:
-    """Set (or auto-create) the ``variable_file`` new PathInput/Sweep/
-    Variable declarations get appended to, and write it into scistack.toml.
+def set_variable_file(
+    db_path: Path, file_path: "Path | str | None" = None
+) -> Path:
+    """Set (or auto-create) the ``variable_file`` new Sweep/PathInput/
+    Variable/Constant declarations get appended to, and write it into
+    scistack.toml.
 
     Only valid for loose-script projects (no pyproject.toml at the resolved
     project root) -- see :func:`_reject_packaged_project`. Packaged
@@ -947,9 +952,16 @@ def set_variable_file(db_path: Path, file_path: "Path | None" = None) -> Path:
     pyproject.toml by hand, same as every other path in that mode.
 
     If *file_path* is ``None``, defaults to
-    ``<project_root>/scistack_variables.py``. The file is created on disk
-    (with a short header comment) if it doesn't already exist -- an
-    existing file's contents are never touched. Mirrors :func:`add_path`'s
+    ``<project_root>/src/scistack_entities.py``. *file_path* may also be a
+    relative path (string or ``Path``), resolved against whatever
+    ``project_root`` this function determines below -- this is what lets
+    the project-creation wizard pass a bare ``"src/scistack_entities.py"``
+    without first having to know where the project root will end up. An
+    absolute *file_path* is used as-is (unchanged behavior for existing
+    callers like the Paths popup's "Change" action). The file is created on
+    disk (with a short header comment and ``import scidb``, so it's
+    immediately valid Python) if it doesn't already exist -- an existing
+    file's contents are never touched. Mirrors :func:`add_path`'s
     first-write seeding behavior when no scistack.toml exists yet.
     """
     logger.info("[config] set_variable_file: db_path=%s, file_path=%s", db_path, file_path)
@@ -984,17 +996,19 @@ def set_variable_file(db_path: Path, file_path: "Path | None" = None) -> Path:
 
     if file_path is not None:
         raw_target = Path(file_path)
-        if not raw_target.is_absolute():
-            raise ValueError(f"Path must be absolute: {file_path}")
-        variable_file = _normalize(raw_target)
+        if raw_target.is_absolute():
+            variable_file = _normalize(raw_target)
+        else:
+            variable_file = _normalize(project_root / raw_target)
     else:
-        variable_file = _normalize(project_root / "scistack_variables.py")
+        variable_file = _normalize(project_root / "src" / "scistack_entities.py")
 
     if not variable_file.exists():
         variable_file.parent.mkdir(parents=True, exist_ok=True)
         variable_file.write_text(
-            '"""Auto-created by the SciStack GUI -- new PathInput/Sweep/Variable\n'
-            'declarations created from the GUI are appended here."""\n'
+            '"""Auto-created by the SciStack GUI -- new Sweep/PathInput/Variable/\n'
+            'Constant declarations created from the GUI are appended here."""\n'
+            "import scidb\n"
         )
         logger.info("[config] set_variable_file: created new file %s", variable_file)
 

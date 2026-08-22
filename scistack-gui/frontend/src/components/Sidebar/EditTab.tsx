@@ -202,7 +202,10 @@ export default function EditTab() {
 
   function fetchConstants() {
     callBackend('get_constants')
-      .then(d => setConstants(d as string[]))
+      .then((items) => {
+        const arr = items as Array<{ name: string }>
+        setConstants(arr.map(i => i.name))
+      })
       .catch(err => {
         console.error(err)
         setDiscoveryError(`Failed to load constants: ${(err as Error).message}`)

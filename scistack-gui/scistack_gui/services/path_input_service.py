@@ -20,53 +20,21 @@ section) — one code path serves both callers.
 
 from __future__ import annotations
 
-import keyword
 import logging
-from pathlib import Path
+
+from scistack_gui.services.target_file_service import (
+    append_and_refresh as _append_and_refresh,
+    validate_entity_name as _validate_name,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _validate_name(name: str) -> "str | None":
-    """Return an error string if *name* isn't a valid top-level identifier
-    for a new PathInput/Sweep binding, else ``None``."""
-    name = name.strip()
-    if not name or not name.isidentifier() or keyword.iskeyword(name):
-        return f"'{name}' is not a valid name."
-    if name.startswith("_"):
-        return "Names must not start with an underscore."
-    return None
-
-
-def _append_and_refresh(line: str, target_file: Path) -> "dict | None":
-    """Write *line* to *target_file* and refresh the registry. Returns an
-    error dict on failure, or ``None`` on success."""
-    from scistack_gui import registry
-
-    try:
-        with open(target_file, "a") as f:
-            f.write(line)
-    except OSError as e:
-        return {"ok": False, "error": f"Failed to write to module file: {e}"}
-
-    try:
-        if registry._config is not None:
-            registry.refresh_all()
-        else:
-            registry.refresh_module()
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": f"Definition was written but refresh failed: {e}",
-        }
-    return None
 
 
 def _path_input_call(template: str, root_folder: "str | None") -> str:
     args = [repr(template)]
     if root_folder:
         args.append(f"root_folder={root_folder!r}")
-    return f"PathInput({', '.join(args)})"
+    return f"scidb.PathInput({', '.join(args)})"
 
 
 def create_path_input(
@@ -75,8 +43,8 @@ def create_path_input(
     root_folder: "str | None" = None,
     alternate_templates: "list[dict] | None" = None,
 ) -> dict:
-    """Append ``NAME = PathInput(...)`` (or, with ``alternate_templates``,
-    ``NAME = EachOf(PathInput(...), PathInput(...), ...)``) to the
+    """Append ``NAME = scidb.PathInput(...)`` (or, with ``alternate_templates``,
+    ``NAME = scidb.EachOf(scidb.PathInput(...), scidb.PathInput(...), ...)``) to the
     configured ``variable_file`` and refresh the registry.
 
     ``alternate_templates`` is only ever populated by
@@ -108,7 +76,7 @@ def create_path_input(
         _path_input_call(alt.get("template", ""), alt.get("root_folder"))
         for alt in (alternate_templates or [])
     )
-    expr = calls[0] if len(calls) == 1 else f"EachOf({', '.join(calls)})"
+    expr = calls[0] if len(calls) == 1 else f"scidb.EachOf({', '.join(calls)})"
     line = f"\n{name} = {expr}\n"
 
     logger.info(
@@ -126,7 +94,7 @@ def create_path_input(
 
 
 def create_sweep(name: str, values: "list[float | int | str]") -> dict:
-    """Append ``NAME = Sweep(...)`` to the configured ``variable_file`` and
+    """Append ``NAME = scidb.Sweep(...)`` to the configured ``variable_file`` and
     refresh the registry. If *values* is empty (the GUI's "New parameter
     sweep" form only collects a name today), scaffolds a single placeholder
     value instead of erroring -- same "create an editable stub, then
@@ -157,7 +125,7 @@ def create_sweep(name: str, values: "list[float | int | str]") -> dict:
         return {"ok": False, "error": target_err}
 
     args = ", ".join(repr(v) for v in values)
-    line = f"\n{name} = Sweep({args})\n"
+    line = f"\n{name} = scidb.Sweep({args})\n"
 
     logger.info(
         "[path_input_service] create_sweep: name=%r %d value(s)", name, len(values)

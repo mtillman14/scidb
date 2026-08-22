@@ -27,6 +27,86 @@ from itertools import product
 logger = logging.getLogger(__name__)
 
 
+def _infer_wired_constants(
+    constant_names: set[str],
+    pending: dict[str, set[str]],
+    constants_registry: dict,
+    *,
+    fn_variants: "list[dict] | None" = None,
+    log_context: str,
+) -> dict[str, list]:
+    """Infer values for a never-run wiring's constant params, in priority
+    order: staged pending values; then, if *fn_variants* is given, any
+    known value from OTHER real DB history call sites of the same function
+    (a constant's known values are a function-level property, e.g. a
+    shared window_seconds constant already has a real value from a
+    different call site — see ``derive_target_for_node``'s docstring for
+    the full rationale); then the constant's source-declared
+    ``scidb.constant(...)`` default. A constant with none of the above is
+    dropped from the returned dict (logged at WARNING).
+
+    Shared by ``derive_fn_targets`` (name-scoped, ``fn_variants=None`` so
+    the middle tier is skipped) and ``derive_target_for_node`` (node-scoped,
+    passes ``fn_variants`` to enable it) so this fallback logic can't drift
+    between the two — it used to be copy-pasted, and the source-declared-
+    default tier was added to only one copy before this consolidation.
+    """
+    no_values_phrase = (
+        "no pending or known values" if fn_variants is not None else "no pending values"
+    )
+    no_default_phrase = (
+        "no pending, known, or source-declared default value"
+        if fn_variants is not None
+        else "no pending values and no source-declared default"
+    )
+
+    inferred: dict[str, list] = {}
+    for cname in constant_names:
+        typed_vals = []
+        for raw in pending.get(cname, set()):
+            try:
+                typed_vals.append(ast.literal_eval(raw))
+            except (ValueError, SyntaxError):
+                typed_vals.append(raw)
+        if not typed_vals and fn_variants is not None:
+            known_vals = {
+                v["constants"][cname]
+                for v in fn_variants
+                if cname in v.get("constants", {})
+            }
+            if known_vals:
+                typed_vals = sorted(known_vals, key=str)
+                logger.debug(
+                    "[execution] %s: constant '%s' has no pending value — "
+                    "reusing known value(s) %s from other call site(s) of "
+                    "this function",
+                    log_context,
+                    cname,
+                    typed_vals,
+                )
+        if typed_vals:
+            inferred[cname] = typed_vals
+        elif cname in constants_registry:
+            default_value = constants_registry[cname].value
+            inferred[cname] = [default_value]
+            logger.info(
+                "[execution] %s: constant '%s' has %s; using source-declared "
+                "default %r",
+                log_context,
+                cname,
+                no_values_phrase,
+                default_value,
+            )
+        else:
+            logger.warning(
+                "[execution] %s: constant '%s' wired but has %s",
+                log_context,
+                cname,
+                no_default_phrase,
+            )
+    return inferred
+
+
 def derive_fn_targets(db, function_name: str) -> list[dict]:
     """The for_each target(s) a function node represents.
 
@@ -134,22 +214,15 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
 
     inferred_constants: dict[str, list] = {}
     if resolved.constant_names:
+        from scistack_gui import registry
+
         pending = pipeline_store.get_pending_constants(db)
-        for cname in resolved.constant_names:
-            typed_vals = []
-            for raw in pending.get(cname, set()):
-                try:
-                    typed_vals.append(ast.literal_eval(raw))
-                except (ValueError, SyntaxError):
-                    typed_vals.append(raw)
-            if typed_vals:
-                inferred_constants[cname] = typed_vals
-            else:
-                logger.warning(
-                    "[execution] '%s': constant '%s' wired but has no pending values",
-                    function_name,
-                    cname,
-                )
+        inferred_constants = _infer_wired_constants(
+            resolved.constant_names,
+            pending,
+            registry.get_constants_registry(),
+            log_context=f"'{function_name}'",
+        )
 
     if inferred_constants:
         const_names = sorted(inferred_constants.keys())
@@ -271,41 +344,16 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
     # wiring clearly means to reuse it, not re-stage it from scratch).
     inferred_constants: dict[str, list] = {}
     if resolved.constant_names:
+        from scistack_gui import registry
+
         pending = pipeline_store.get_pending_constants(db)
-        for cname in resolved.constant_names:
-            typed_vals = []
-            for raw in pending.get(cname, set()):
-                try:
-                    typed_vals.append(ast.literal_eval(raw))
-                except (ValueError, SyntaxError):
-                    typed_vals.append(raw)
-            if not typed_vals:
-                known_vals = {
-                    v["constants"][cname]
-                    for v in fn_variants
-                    if cname in v.get("constants", {})
-                }
-                if known_vals:
-                    typed_vals = sorted(known_vals, key=str)
-                    logger.debug(
-                        "[execution] '%s' (node %s): constant '%s' has no "
-                        "pending value — reusing known value(s) %s from "
-                        "other call site(s) of this function",
-                        function_name,
-                        node_id,
-                        cname,
-                        typed_vals,
-                    )
-            if typed_vals:
-                inferred_constants[cname] = typed_vals
-            else:
-                logger.warning(
-                    "[execution] '%s' (node %s): constant '%s' wired but "
-                    "has no pending or known values",
-                    function_name,
-                    node_id,
-                    cname,
-                )
+        inferred_constants = _infer_wired_constants(
+            resolved.constant_names,
+            pending,
+            registry.get_constants_registry(),
+            fn_variants=fn_variants,
+            log_context=f"'{function_name}' (node {node_id})",
+        )
 
     if inferred_constants:
         const_names = sorted(inferred_constants.keys())

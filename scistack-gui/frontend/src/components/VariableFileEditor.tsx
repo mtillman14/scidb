@@ -1,15 +1,17 @@
 /**
- * VariableFileEditor — the file new PathInput/Sweep/Variable declarations
- * created from the sidebar's "+" buttons get appended to. Rendered inside
- * PathsPopup.tsx, loose-script projects only (packaged projects configure
- * this by hand in pyproject.toml, same as ManagedPathsList's directories).
+ * VariableFileEditor — the file new Sweep/PathInput/Variable/Constant
+ * declarations created from the sidebar's "+" buttons get appended to.
+ * Rendered inside PathsPopup.tsx, loose-script projects only (packaged
+ * projects configure this by hand in pyproject.toml, same as
+ * ManagedPathsList's directories).
  *
  * Backed by set_variable_file/clear_variable_file, which write/rewrite
  * scistack.toml. Leaving the field blank and hitting "Set" auto-creates a
- * default scistack_variables.py in the project root -- this is also what
- * happens transparently the first time a PathInput/Sweep/Variable gets
- * created from the sidebar with nothing configured yet, so this editor is
- * mainly for visibility/override rather than a required setup step.
+ * default src/scistack_entities.py in the project root -- same default the
+ * project-creation wizard now pre-fills eagerly (ProjectBootstrapWizard.tsx)
+ * and what happens transparently the first time an entity gets created from
+ * the sidebar with nothing configured yet, so this editor is mainly for
+ * visibility/override rather than a required setup step.
  */
 
 import { useState } from 'react'

@@ -1908,6 +1908,65 @@ class TestDeriveTargetForNode:
             "constant just because it was never staged as pending"
         )
 
+    def test_never_run_wiring_falls_back_to_source_declared_constant_default(
+        self, client
+    ):
+        """A constant that's genuinely brand new — never staged as pending
+        AND never appearing in any real DB history for this function — must
+        still produce a runnable target if it has a source-declared
+        ``scidb.constant(...)`` default, instead of silently dropping the
+        arg (the same 'wired but has no pending values' gap the previous
+        two tests cover for the staged/known-DB-value cases, now covered
+        for the source-default case)."""
+        import numpy as np
+        from scidb import BaseVariable, constant
+
+        from scistack_gui import registry as _registry
+
+        class OtherSignal4(BaseVariable):
+            pass
+
+        class OtherFiltered4(BaseVariable):
+            pass
+
+        OtherSignal4.save(np.zeros(5), subject=1, session="pre")
+
+        # A source-declared constant that has NEVER been run anywhere —
+        # no DB history, no staged pending value.
+        _registry._register_constant(
+            "brand_new_gain", constant(7, description="test default"), source="test"
+        )
+        try:
+            client.put("/api/layout/mv_o4_in", json={
+                "x": 0, "y": 0, "node_type": "variableNode", "label": "OtherSignal4",
+            })
+            client.put("/api/layout/mf_bp_other4", json={
+                "x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter",
+            })
+            client.put("/api/layout/mv_o4_out", json={
+                "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered4",
+            })
+            client.put("/api/edges/e_o4_in", json={"source": "mv_o4_in", "target": "mf_bp_other4"})
+            client.put("/api/edges/e_o4_out", json={"source": "mf_bp_other4", "target": "mv_o4_out"})
+            client.put("/api/edges/e_o4_const", json={
+                "source": "const__brand_new_gain", "target": "mf_bp_other4",
+                "target_handle": "in__brand_new_gain",
+            })
+
+            from scistack_gui.db import get_db
+            from scistack_gui.services.execution_service import derive_target_for_node
+
+            targets = derive_target_for_node(get_db(), "mf_bp_other4")
+
+            assert len(targets) == 1
+            assert targets[0]["constants"].get("brand_new_gain") == 7, (
+                "must fall back to the source-declared default (7) instead "
+                "of dropping the constant entirely"
+            )
+        finally:
+            _registry._constants.pop("brand_new_gain", None)
+            _registry._constant_sources.pop("brand_new_gain", None)
+
     def test_graduated_node_derives_only_its_own_call_site(self, client):
         """The flip side: an already-graduated node's own wiring must
         resolve to ITS real DB history, not get confused by an unrelated

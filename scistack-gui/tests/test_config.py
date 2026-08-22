@@ -919,22 +919,60 @@ def test_remove_path_rejects_packaged_project(tmp_path):
 def test_set_variable_file_auto_creates_default_when_none_exists(tmp_path):
     """First-ever auto-create on a pure folder-scan project (no scistack.toml/
     pyproject.toml yet): creates scistack.toml seeded with the project root
-    (same reasoning as add_path), creates scistack_variables.py, and points
-    variable_file at it."""
+    (same reasoning as add_path), creates src/scistack_entities.py, and
+    points variable_file at it."""
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
 
     result = set_variable_file(db_path, None)
 
-    expected = _normalize(tmp_path / "scistack_variables.py")
+    expected = _normalize(tmp_path / "src" / "scistack_entities.py")
     assert result == expected
     assert expected.exists()
-    assert expected.read_text()  # non-empty scaffold, not a blank file
+    content = expected.read_text()
+    assert content  # non-empty scaffold, not a blank file
+    assert "import scidb" in content  # immediately valid Python on creation
 
     toml_path = tmp_path / "scistack.toml"
     data = _read_raw_section(toml_path)
     assert data["variable_file"] == str(expected)
     assert str(_normalize(tmp_path)) in data["modules"]
+
+
+def test_set_variable_file_accepts_relative_path(tmp_path):
+    """A relative file_path (as the project-creation wizard now sends,
+    e.g. 'src/scistack_entities.py') resolves against whatever project_root
+    this function determines internally, instead of raising -- this is
+    what lets the wizard pass a bare relative string without first having
+    to know where the project root will end up."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+
+    result = set_variable_file(db_path, "custom/relative_entities.py")
+
+    expected = _normalize(tmp_path / "custom" / "relative_entities.py")
+    assert result == expected
+    assert expected.exists()
+
+    toml_path = tmp_path / "scistack.toml"
+    data = _read_raw_section(toml_path)
+    assert data["variable_file"] == str(expected)
+
+
+def test_set_variable_file_relative_path_resolves_against_existing_root(tmp_path):
+    """When a scistack.toml already exists (not the first-write case), a
+    relative file_path resolves against ITS project_root, not db_path's
+    parent."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "scistack.toml").write_text("")
+    db_path = project_root / "sub" / "proj.duckdb"
+    db_path.parent.mkdir()
+    db_path.write_text("")
+
+    result = set_variable_file(db_path, "src/entities.py")
+
+    assert result == _normalize(project_root / "src" / "entities.py")
 
 
 def test_set_variable_file_explicit_path_registers_module(tmp_path):
@@ -984,11 +1022,16 @@ def test_set_variable_file_skips_module_entry_when_already_covered(tmp_path):
     assert data["modules"] == [str(covering_dir)]
 
 
-def test_set_variable_file_rejects_relative_explicit_path(tmp_path):
+def test_set_variable_file_absolute_path_used_as_is(tmp_path):
+    """An absolute file_path is used verbatim (unchanged behavior for
+    existing callers like the Paths popup's 'Change' action)."""
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
-    with pytest.raises(ValueError):
-        set_variable_file(db_path, Path("relative_variables.py"))
+    absolute = tmp_path / "elsewhere" / "vars.py"
+
+    result = set_variable_file(db_path, absolute)
+
+    assert result == _normalize(absolute)
 
 
 def test_set_variable_file_rejects_packaged_project(tmp_path):

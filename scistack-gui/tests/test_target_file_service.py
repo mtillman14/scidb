@@ -59,9 +59,10 @@ def test_auto_creates_default_when_config_present_but_unset(populated_db, tmp_pa
     target, err = get_or_create_target_file()
 
     assert err is None
-    expected = config_mod._normalize(tmp_path / "scistack_variables.py")
+    expected = config_mod._normalize(tmp_path / "src" / "scistack_entities.py")
     assert target == expected
     assert expected.exists()
+    assert "import scidb" in expected.read_text()
     # In-memory config was refreshed so subsequent calls see it too.
     assert _registry._config.variable_file == expected
 

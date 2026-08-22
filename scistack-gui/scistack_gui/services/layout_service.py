@@ -258,24 +258,35 @@ def set_note(key: str, text: str) -> dict:
     return {"ok": True}
 
 
-def get_constants() -> list[str]:
-    from scistack_gui import layout as layout_store
+def get_constants() -> list[dict]:
+    """Source-scanned — see docs/claude/code-discovery-categories.md."""
+    from scistack_gui import registry
 
-    return layout_store.read_all_constant_names()
+    return [
+        {"name": name, "value": obj.value, "description": obj.description}
+        for name, obj in registry.get_constants_registry().items()
+    ]
 
 
 def create_constant(name: str) -> dict:
-    from scistack_gui import layout as layout_store
+    """Append a new ``NAME = scidb.constant(...)`` to source. There is no
+    ``update_constant`` counterpart — editing an existing Constant's value
+    means editing the source file directly and hitting Refresh Code (same
+    as PathInput/Sweep/Variable); see ``services.constant_service``."""
+    from scistack_gui.services.constant_service import create_constant as _create
 
     logger.debug("Node created (added to palette): type=constant, name=%r", name)
-    layout_store.write_constant(name)
-    return {"ok": True}
+    return _create(name)
 
 
-def delete_constant(name: str) -> dict:
-    from scistack_gui import layout as layout_store
+def delete_constant(name: str, pipeline_id: str = "main") -> dict:
+    """"Delete" hides the node only — the source declaration is never
+    touched (never delete, mark hidden). Reuses the same generic hide-node
+    mechanism functions/variables/PathInputs already use."""
+    from scistack_gui import pipeline_store as ps
+    from scistack_gui.db import get_db
 
-    layout_store.delete_constant(name)
+    ps.hide_node(get_db(), f"const__{name}", pipeline_id=pipeline_id)
     return {"ok": True}
 
 

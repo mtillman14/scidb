@@ -2,7 +2,16 @@
 Browser-frontend project-creation wizard endpoints.
 
 POST /api/bootstrap/create — create a new .duckdb (folder + filename +
-                              schema keys) and load pipeline code into it
+                              schema keys) and load pipeline code into it.
+                              Also eagerly writes scistack.toml + the
+                              configured entities file (default
+                              src/scistack_entities.py) for loose-script
+                              projects, via config.set_variable_file, so a
+                              freshly-created project never sits in the
+                              pure-folder-scan config state that
+                              pre-existing projects opened without ever
+                              running this endpoint still can (see
+                              docs/claude/code-discovery-categories.md).
 POST /api/bootstrap/open   — open an existing .duckdb and load pipeline code
 
 These exist so the standalone browser frontend can bootstrap a project the
@@ -38,6 +47,7 @@ class CreateProjectRequest(BaseModel):
     schema_keys: list[str]
     module: str | None = None
     project: str | None = None
+    variable_file: str | None = "src/scistack_entities.py"
 
 
 class OpenProjectRequest(BaseModel):
@@ -78,8 +88,34 @@ def create_project(req: CreateProjectRequest) -> dict:
         )
 
     db_path = _resolve_db_path(req.folder, req.filename)
+    if db_path.exists():
+        # Checked here (not just inside open_or_create_project, below)
+        # because the eager entities-file setup right after this must NOT
+        # run when creation is ultimately going to fail -- otherwise a
+        # failed "create on an already-existing path" request would still
+        # leave a stray scistack.toml/entities file behind.
+        raise HTTPException(
+            status_code=409, detail=f"Database already exists: {db_path}"
+        )
     module = Path(req.module).expanduser() if req.module else None
     project = Path(req.project).expanduser() if req.project else None
+
+    if req.variable_file:
+        from scistack_gui import config as config_mod
+
+        try:
+            entities_file = config_mod.set_variable_file(db_path, req.variable_file)
+            logger.info(
+                "[api.bootstrap] eagerly configured entities file: %s",
+                entities_file,
+            )
+        except ValueError as exc:
+            # Packaged project (pyproject.toml already present somewhere
+            # above db_path) -- variable_file must be hand-added there;
+            # don't fail project creation over it.
+            logger.info(
+                "[api.bootstrap] skipping eager entities-file setup: %s", exc
+            )
 
     try:
         open_or_create_project(

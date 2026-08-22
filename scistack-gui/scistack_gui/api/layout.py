@@ -105,7 +105,7 @@ def put_note(key: str, body: NoteUpdate):
 
 
 @router.get("/constants")
-def get_constants() -> list[str]:
+def get_constants() -> list[dict]:
     from scistack_gui.services.layout_service import get_constants as _get
 
     return _get()
@@ -119,10 +119,10 @@ def post_constant(body: ConstantCreate):
 
 
 @router.delete("/constants/{name}")
-def delete_constant(name: str):
+def delete_constant(name: str, pipeline_id: str = "main"):
     from scistack_gui.services.layout_service import delete_constant as _del
 
-    return _del(name)
+    return _del(name, pipeline_id)
 
 
 @router.get("/path-inputs")

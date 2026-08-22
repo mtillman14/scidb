@@ -234,10 +234,11 @@ def remove_project_path(path: str) -> dict:
 
 @router.post("/variable-file")
 def set_project_variable_file(body: dict) -> dict:
-    """Set the file new PathInput/Sweep/Variable declarations get appended
-    to (loose-script projects only). Body: ``{"path": "/absolute/path.py"}``
-    or ``{"path": null}``/omitted to auto-create the default
-    ``scistack_variables.py`` in the project root.
+    """Set the file new Sweep/PathInput/Variable/Constant declarations get
+    appended to (loose-script projects only). Body: ``{"path":
+    "/absolute/path.py"}`` (also accepts a relative path, resolved against
+    the project root) or ``{"path": null}``/omitted to auto-create the
+    default ``src/scistack_entities.py`` in the project root.
     """
     from scistack_gui.config import set_variable_file
 
@@ -388,9 +389,14 @@ def _build_registry_backed_result(root: Path):
     ``BaseVariable`` subclasses, and ``scidb.constant()`` instances are all
     covered — the last of those via ``registry.get_constants_registry()``,
     which ``registry._scan_module_constants`` populates alongside functions
-    at every registry load. (This is separate from the GUI-native
-    "Constant node" concept — ``get_constants()``/EditTab's palette — which
-    is about user-created per-run values, not code-level named constants.)
+    at every registry load. As of the source-declared-Constants migration
+    (see docs/claude/code-discovery-categories.md), this is the SAME
+    registry the GUI-native "Constant node" concept — ``get_constants()``/
+    EditTab's palette — now reads from too; the two are no longer separate
+    concepts. The per-combo *value* a constant runs with still comes from
+    ``pipeline_store``'s pending-constant table (a distinct, orthogonal
+    mechanism — see ``execution_service.derive_fn_targets``), independent
+    of the constant's source-declared default.
 
     ``project_code.name`` is the real ``[project].name`` from
     ``pyproject.toml`` when one exists (packaged mode), falling back to the

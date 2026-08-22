@@ -27,6 +27,13 @@
  * which searches upward for a pyproject.toml first and otherwise scans the
  * database's own directory for .py/.m files. Nothing needs to be typed in
  * up front; "Refresh Code" in the header re-scans later once files exist.
+ *
+ * The "Entities file" field (create mode only) is the one exception: it's
+ * passed as `variable_file` to POST /api/bootstrap/create, which eagerly
+ * writes a scistack.toml + that file at project-creation time (see
+ * api/bootstrap.py, config.set_variable_file) — so a freshly-created
+ * project immediately has a real config file instead of only getting one
+ * lazily, the first time an entity is created from the GUI.
  */
 
 import { useState } from "react";
@@ -45,6 +52,9 @@ export default function ProjectBootstrapWizard({ onReady }: Props) {
   const [createFolder, setCreateFolder] = useState("");
   const [createFilename, setCreateFilename] = useState("");
   const [createSchemaKeys, setCreateSchemaKeys] = useState("");
+  const [createVariableFile, setCreateVariableFile] = useState(
+    "src/scistack_entities.py",
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,6 +82,7 @@ export default function ProjectBootstrapWizard({ onReady }: Props) {
           folder: createFolder.trim(),
           filename: createFilename.trim(),
           schema_keys: schemaKeysList,
+          variable_file: createVariableFile.trim() || null,
         });
       } else {
         await callBackend("open_project", {
@@ -144,6 +155,14 @@ export default function ProjectBootstrapWizard({ onReady }: Props) {
                   value={createSchemaKeys}
                   onChange={(e) => setCreateSchemaKeys(e.target.value)}
                   placeholder="subject, session, trial"
+                />
+              </Field>
+              <Field label="Entities file (Sweeps/PathInputs/Variables/Constants created from the GUI, relative to the project root)">
+                <input
+                  style={styles.input}
+                  value={createVariableFile}
+                  onChange={(e) => setCreateVariableFile(e.target.value)}
+                  placeholder="src/scistack_entities.py"
                 />
               </Field>
             </>

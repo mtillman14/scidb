@@ -124,6 +124,27 @@ class TestCreateProjectEndpoint:
         )
         assert resp.status_code == 409
 
+    def test_create_on_existing_path_leaves_no_stray_config_files(
+        self, api_client, tmp_path
+    ):
+        """Regression: the eager entities-file setup must not run before
+        the existing-path check -- otherwise a rejected request would still
+        write scistack.toml/entities files into a folder the caller never
+        intended to modify."""
+        _make_existing_db(tmp_path / "study.duckdb")
+
+        api_client.post(
+            "/api/bootstrap/create",
+            json={
+                "folder": str(tmp_path),
+                "filename": "study",
+                "schema_keys": ["subject"],
+            },
+        )
+
+        assert not (tmp_path / "scistack.toml").exists()
+        assert not (tmp_path / "src").exists()
+
     def test_create_empty_schema_keys_returns_400(self, api_client, tmp_path):
         resp = api_client.post(
             "/api/bootstrap/create",
@@ -152,6 +173,117 @@ class TestCreateProjectEndpoint:
             },
         )
         assert resp.status_code == 400
+
+
+class TestCreateProjectEagerEntitiesFile:
+    """A GUI-created loose-script project now gets scistack.toml + its
+    entities file written eagerly at creation time (default
+    src/scistack_entities.py) -- collapsing what used to be a
+    pure-folder-scan state (no config at all) until the first
+    PathInput/Sweep/Variable/Constant was created from the GUI. See
+    docs/claude/code-discovery-categories.md."""
+
+    def test_create_writes_scistack_toml_and_default_entities_file(
+        self, api_client, tmp_path
+    ):
+        resp = api_client.post(
+            "/api/bootstrap/create",
+            json={
+                "folder": str(tmp_path),
+                "filename": "study",
+                "schema_keys": ["subject"],
+            },
+        )
+        assert resp.status_code == 200
+
+        entities_file = tmp_path / "src" / "scistack_entities.py"
+        assert entities_file.exists()
+        assert "import scidb" in entities_file.read_text()
+
+        toml_path = tmp_path / "scistack.toml"
+        assert toml_path.exists()
+        assert str(entities_file.resolve()) in toml_path.read_text() or str(
+            entities_file
+        ) in toml_path.read_text()
+
+    def test_create_respects_custom_variable_file(self, api_client, tmp_path):
+        resp = api_client.post(
+            "/api/bootstrap/create",
+            json={
+                "folder": str(tmp_path),
+                "filename": "study",
+                "schema_keys": ["subject"],
+                "variable_file": "pipeline/my_entities.py",
+            },
+        )
+        assert resp.status_code == 200
+        assert (tmp_path / "pipeline" / "my_entities.py").exists()
+        assert not (tmp_path / "src" / "scistack_entities.py").exists()
+
+    def test_create_with_null_variable_file_skips_eager_setup(
+        self, api_client, tmp_path
+    ):
+        """Opting out (explicit null) leaves the project in the old
+        pure-folder-scan state -- only entity creation still lazily
+        auto-creates a target file later."""
+        resp = api_client.post(
+            "/api/bootstrap/create",
+            json={
+                "folder": str(tmp_path),
+                "filename": "study",
+                "schema_keys": ["subject"],
+                "variable_file": None,
+            },
+        )
+        assert resp.status_code == 200
+        assert not (tmp_path / "scistack.toml").exists()
+        assert not (tmp_path / "src" / "scistack_entities.py").exists()
+
+    def test_create_skips_eager_setup_for_packaged_project(self, api_client, tmp_path):
+        """A pyproject.toml with [tool.scistack] already present makes this
+        a packaged project -- variable_file must be hand-added there
+        (config._reject_packaged_project), so eager creation is skipped
+        rather than failing the whole database-creation request."""
+        (tmp_path / "pyproject.toml").write_text("[tool.scistack]\n")
+
+        resp = api_client.post(
+            "/api/bootstrap/create",
+            json={
+                "folder": str(tmp_path),
+                "filename": "study",
+                "schema_keys": ["subject"],
+            },
+        )
+        assert resp.status_code == 200
+        assert not (tmp_path / "src" / "scistack_entities.py").exists()
+        assert not (tmp_path / "scistack.toml").exists()
+
+    def test_pathinput_created_after_bootstrap_lands_in_eager_entities_file(
+        self, api_client, tmp_path
+    ):
+        """End-to-end proof of the 'merge' this migration is about: a
+        PathInput created from the GUI right after project creation lands
+        in the SAME file scistack.toml already points at, with no further
+        auto-create prompt needed."""
+        resp = api_client.post(
+            "/api/bootstrap/create",
+            json={
+                "folder": str(tmp_path),
+                "filename": "study",
+                "schema_keys": ["subject"],
+            },
+        )
+        assert resp.status_code == 200
+
+        resp = api_client.post(
+            "/api/path-inputs",
+            json={"name": "RAW_EMG", "template": "{subject}.mat"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        entities_file = tmp_path / "src" / "scistack_entities.py"
+        assert "RAW_EMG = scidb.PathInput('{subject}.mat')" in entities_file.read_text()
 
 
 class TestOpenProjectEndpoint:
