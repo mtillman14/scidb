@@ -11,6 +11,11 @@ collects the pipeline-relevant exports of each module:
 
 The scan imports modules for real — it never parses source text — so the
 objects returned are the live runtime instances the GUI can execute against.
+The generic package-walking mechanics (importing, per-module error capture,
+test-file exclusion, sys.path management) live in ``scifor.discovery`` —
+this module only supplies the scidb-specific classifier (``discover_module``)
+that knows what a BaseVariable/Constant/PathInput/Sweep/``@scistack``
+function actually is.
 
 Import failures are captured per-module as :class:`ModuleError` entries;
 the scan never aborts on a single bad module.
@@ -29,13 +34,9 @@ Typical use::
 
 from __future__ import annotations
 
-import importlib
 import importlib.metadata
-import importlib.util
 import logging
-import pkgutil
 import sys
-import traceback
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,12 +52,29 @@ else:  # pragma: no cover
         import tomli as tomllib  # type: ignore[no-redef]
 
 from scifor import EachOf, PathInput, Sweep
+from scifor.discovery import PathInsert, purge_module, read_project_name, walk_package
 
 from .constant import Constant
 from .pipeline import is_scistack_function
 from .variable import BaseVariable
 
 logger = logging.getLogger(__name__)
+
+
+def is_constant(obj: Any) -> bool:
+    return isinstance(obj, Constant)
+
+
+def is_sweep(obj: Any) -> bool:
+    return isinstance(obj, Sweep)
+
+
+def is_path_input(obj: Any) -> bool:
+    """True for a PathInput, or an EachOf whose every alternative is a
+    PathInput (the "alternate templates" convention)."""
+    return isinstance(obj, PathInput) or (
+        isinstance(obj, EachOf) and all(isinstance(alt, PathInput) for alt in obj.alternatives)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,23 +207,20 @@ def discover_module(module: ModuleType) -> ModuleExports:
             continue
 
         # --- Constant instances ---
-        if isinstance(obj, Constant):
+        if is_constant(obj):
             exports.constants.append((name, obj))
             continue
 
         # --- Sweep instances (checked before PathInput: a Sweep is not
         # itself a PathInput, but is an EachOf, so order doesn't actually
         # matter here — kept explicit for readability) ---
-        if isinstance(obj, Sweep):
+        if is_sweep(obj):
             exports.sweeps.append((name, obj))
             continue
 
         # --- PathInput instances, or an EachOf of PathInputs (alternate
         # templates) ---
-        if isinstance(obj, PathInput) or (
-            isinstance(obj, EachOf)
-            and all(isinstance(alt, PathInput) for alt in obj.alternatives)
-        ):
+        if is_path_input(obj):
             exports.path_inputs.append((name, obj))
             continue
 
@@ -225,74 +240,20 @@ def scan_package(package_name: str) -> PackageResult:
     If the top-level package itself cannot be imported, the result contains
     a single error entry and no module exports.
     """
-    result = PackageResult(name=package_name)
-
-    try:
-        pkg = importlib.import_module(package_name)
-    except Exception:
-        logger.debug(
-            "Failed to import top-level package %s", package_name, exc_info=True
-        )
-        result.errors.append(
-            ModuleError(module_name=package_name, traceback=traceback.format_exc())
-        )
-        return result
-
-    # Scan the top-level package itself.
-    try:
-        result.modules.append(discover_module(pkg))
-    except Exception:
-        logger.exception("discover_module failed for %s", package_name)
-        result.errors.append(
-            ModuleError(module_name=package_name, traceback=traceback.format_exc())
-        )
-
-    # Walk submodules if this is a package (has __path__).
-    pkg_path = getattr(pkg, "__path__", None)
-    if pkg_path is None:
-        return result
-
-    for _importer, modname, _ispkg in pkgutil.walk_packages(
-        pkg_path, prefix=package_name + "."
-    ):
-        try:
-            submod = importlib.import_module(modname)
-        except Exception:
-            logger.debug("Failed to import submodule %s", modname, exc_info=True)
-            result.errors.append(
-                ModuleError(module_name=modname, traceback=traceback.format_exc())
-            )
-            continue
-
-        try:
-            result.modules.append(discover_module(submod))
-        except Exception:
-            logger.exception("discover_module failed for %s", modname)
-            result.errors.append(
-                ModuleError(module_name=modname, traceback=traceback.format_exc())
-            )
-
-    return result
+    wr = walk_package(package_name, discover_module)
+    return PackageResult(
+        name=package_name,
+        modules=[exports for _modname, exports in wr.per_module],
+        errors=[
+            ModuleError(module_name=e.module_name, traceback=e.traceback)
+            for e in wr.errors
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
 # Project-level scanner
 # ---------------------------------------------------------------------------
-def _read_project_name(project_root: Path) -> str | None:
-    """Return ``project.name`` from pyproject.toml, or None if absent."""
-    pyproject = project_root / "pyproject.toml"
-    if not pyproject.exists():
-        return None
-    try:
-        with open(pyproject, "rb") as f:
-            data = tomllib.load(f)
-    except Exception:
-        logger.warning("Failed to parse %s", pyproject, exc_info=True)
-        return None
-    name = data.get("project", {}).get("name")
-    return name if isinstance(name, str) else None
-
-
 def _read_uv_lock_packages(project_root: Path) -> list[str]:
     """Return all package names listed in ``uv.lock``.
 
@@ -357,28 +318,6 @@ def _dist_to_import_names(dist_name: str) -> list[str]:
     return [dist_name.replace("-", "_")]
 
 
-@dataclass
-class _PathInsert:
-    """Context manager that inserts a directory onto sys.path."""
-
-    directory: str
-    _inserted: bool = False
-
-    def __enter__(self) -> _PathInsert:
-        if self.directory not in sys.path:
-            sys.path.insert(0, self.directory)
-            self._inserted = True
-        return self
-
-    def __exit__(self, *exc) -> None:
-        if self._inserted:
-            try:
-                sys.path.remove(self.directory)
-            except ValueError:
-                pass
-        importlib.invalidate_caches()
-
-
 def scan_project(
     project_root: Path,
     *,
@@ -410,7 +349,7 @@ def scan_project(
     logger.debug("scan_project: root=%s", project_root)
 
     # --- Project code ---
-    project_name = _read_project_name(project_root)
+    project_name = read_project_name(project_root)
     project_src_parent = project_root / "src"
 
     if project_name is None:
@@ -424,11 +363,11 @@ def scan_project(
         )
         project_result = PackageResult(name=project_name)
     else:
-        with _PathInsert(str(project_src_parent.resolve())):
+        with PathInsert(str(project_src_parent.resolve())):
             # Ensure a stale cached import of the same package name is
             # dropped — this matters when the same package_name is used
             # across multiple test-fixture projects.
-            _purge_module(project_name)
+            purge_module(project_name)
             project_result = scan_package(project_name)
 
     # --- Libraries from uv.lock ---
@@ -470,20 +409,3 @@ def scan_project(
         libraries[dist_name] = merged
 
     return DiscoveryResult(project_code=project_result, libraries=libraries)
-
-
-def _purge_module(package_name: str) -> None:
-    """Remove a package and all its submodules from ``sys.modules``.
-
-    Needed so that two successive scans of projects that happen to share
-    a ``project.name`` don't return stale cached modules. In normal
-    (non-test) usage the GUI rescans the same project repeatedly, so
-    clearing a stale cache is also what we want there — re-imports pick
-    up any edits the user has made.
-    """
-    prefix = package_name + "."
-    to_drop = [
-        name for name in sys.modules if name == package_name or name.startswith(prefix)
-    ]
-    for name in to_drop:
-        sys.modules.pop(name, None)

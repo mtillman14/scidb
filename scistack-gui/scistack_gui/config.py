@@ -9,9 +9,12 @@ MATLAB .m files.
 import glob as _glob
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from scifor.discovery import is_test_path, read_project_name
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -211,6 +214,14 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
                 else:
                     logger.debug("[config] Adding module file: %s", p)
                 modules.append(p)
+
+    before_count = len(modules)
+    modules = [p for p in modules if not _is_test_file(p)]
+    excluded_count = before_count - len(modules)
+    if excluded_count:
+        logger.debug(
+            "[config] Excluded %d test file(s) from modules discovery", excluded_count
+        )
     logger.info("[config] Resolved %d module files total", len(modules))
 
     # --- variable_file ---
@@ -229,6 +240,27 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     if not isinstance(packages, list):
         raise ValueError("[tool.scistack] packages must be a list of package names.")
     logger.debug("[config] Found %d packages: %s", len(packages), packages)
+
+    # A packaged project (pyproject.toml with a [project].name + src/{name}/
+    # layout) gets its OWN code auto-folded into packages, so it flows
+    # through the same registry.load_from_config -> _load_packages pipeline
+    # used for execution -- otherwise a packaged project relying purely on
+    # this automatic layout (no explicit packages=[...] entry) would show
+    # functions in the "Discovered Code" panel that raise KeyError at
+    # actual run time (registry.get_function never having been populated).
+    # Deliberately NOT uv.lock-based -- this only reads ordinary packaging
+    # metadata ([project].name), so it works regardless of package manager.
+    own_name = read_project_name(project_root)
+    if (
+        own_name
+        and own_name not in packages
+        and (project_root / "src" / own_name).is_dir()
+    ):
+        packages = [*packages, own_name]
+        logger.info(
+            "[config] Auto-folded packaged project's own code (%s) into packages",
+            own_name,
+        )
 
     # --- auto_discover ---
     logger.info("[config] Processing auto_discover setting")
@@ -406,6 +438,16 @@ def _resolve_glob_paths(
                 else:
                     logger.debug("[config] Adding .m file: %s", p)
                 result.append(p)
+
+    before_count = len(result)
+    result = [p for p in result if not _is_test_file(p)]
+    excluded_count = before_count - len(result)
+    if excluded_count:
+        logger.debug(
+            "[config] Excluded %d test file(s) from %s discovery",
+            excluded_count,
+            label,
+        )
     logger.debug("[config] Resolved %d total paths for %s", len(result), label)
     return result
 
@@ -537,19 +579,52 @@ def _is_matlab_skip_dir(name: str) -> bool:
     return name == "private" or name.startswith("@") or name.startswith("+")
 
 
+def _is_test_dir(name: str) -> bool:
+    return name.lower() in {"test", "tests"}
+
+
+# MATLAB test-suite naming convention: a PascalCase ``Test`` prefix (e.g.
+# ``TestForEach.m``) or suffix (e.g. ``SomeFeatureTest.m``). Deliberately
+# case-sensitive on the ``T`` so a lowercase word like ``latest.m`` never
+# matches.
+_MATLAB_TEST_FILE_RE = re.compile(r"^(Test[A-Z]\w*|\w*Test)\.m$")
+
+
+def _is_test_file(p: Path) -> bool:
+    """True if *p* should be excluded from discovery as test-only: any
+    directory component is ``test``/``tests``, a Python filename following
+    ``test_*.py``/``*_test.py``, or a MATLAB filename following the
+    ``Test*.m``/``*Test.m`` PascalCase convention. Functions, variables,
+    constants, PathInputs, Sweeps, and submodules found exclusively in a
+    file matching this rule are never scanned/imported in the first place,
+    so they never reach the final discovery results."""
+    if is_test_path(p):
+        return True
+    return bool(_MATLAB_TEST_FILE_RE.match(p.name))
+
+
 def _walk_source_files(root: Path, suffix: str, *, matlab: bool = False) -> list[Path]:
     """Recursively find files ending in *suffix* under *root*, pruning noise
-    directories (and, for MATLAB, private/class/package folders) as we go."""
+    directories (and, for MATLAB, private/class/package folders) as we go.
+    Test directories and test-named files are excluded (see _is_test_file)."""
     results: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [
             d
             for d in dirnames
-            if not _is_noise_dir(d) and not (matlab and _is_matlab_skip_dir(d))
+            if not _is_noise_dir(d)
+            and not _is_test_dir(d)
+            and not (matlab and _is_matlab_skip_dir(d))
         ]
         for fname in filenames:
             if fname.endswith(suffix):
-                results.append(_normalize(Path(dirpath) / fname))
+                candidate = _normalize(Path(dirpath) / fname)
+                if _is_test_file(candidate):
+                    logger.debug(
+                        "[config] Excluding test file from discovery: %s", candidate
+                    )
+                    continue
+                results.append(candidate)
     return sorted(results)
 
 

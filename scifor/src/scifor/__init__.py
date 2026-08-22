@@ -24,6 +24,16 @@ Example:
 
 from .colname import ColName
 from .column_selection import ColumnSelection
+from .discovery import (
+    ModuleWalkError,
+    PathInsert,
+    WalkResult,
+    is_test_modname,
+    is_test_path,
+    purge_module,
+    read_project_name,
+    walk_package,
+)
 from .each_of import EachOf, Sweep
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
 from .fixed import Fixed
@@ -59,4 +69,13 @@ __all__ = [
     "ColFilter",
     "CompoundFilter",
     "NotFilter",
+    # Discovery
+    "walk_package",
+    "WalkResult",
+    "ModuleWalkError",
+    "is_test_path",
+    "is_test_modname",
+    "read_project_name",
+    "PathInsert",
+    "purge_module",
 ]

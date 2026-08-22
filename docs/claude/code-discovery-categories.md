@@ -398,6 +398,58 @@ priority order:
 Later sources win on name collisions (functions/constants: last-loaded
 wins, with a warning logged; see `_register_function`/`_register_constant`).
 
+## 7. Test-file exclusion (2026-08-22)
+
+Anything found *exclusively* inside a MATLAB or Python test is excluded from
+final discovery results, for all six kinds above. This is enforced by
+filtering at the **file-path/module-name level, before a file is ever
+imported** — since every kind above is only ever discovered as a side effect
+of importing/scanning a module (functions/constants/PathInputs/Sweeps via
+`inspect.getmembers`/`vars()`; variables via `BaseVariable`'s metaclass;
+submodules via `scidb.pipeline._all_pipelines`), preventing the import means
+nothing from that file is ever discovered — one choke point per source tier
+covers all six kinds with no per-category logic needed.
+
+A file/module counts as "test" if EITHER:
+- any path directory component (case-insensitive), or any dotted
+  module-name component, is `test`/`tests`, OR
+- the filename matches a test naming convention — Python `test_*.py` /
+  `*_test.py`; MATLAB `Test*.m` (PascalCase prefix) / `*Test.m` (suffix).
+
+There is no override: even an explicit single-file config entry that names
+a test file (e.g. `modules = ["tests/test_foo.py"]`) is still excluded.
+
+**Shared predicate lives in `scidb`** (the core layer scistack-gui already
+depends on), not duplicated per package:
+- `scidb.discover.is_test_path(path)` / `is_test_modname(modname)` — the
+  directory + Python-filename-convention check. Applied in
+  `discover.py:scan_package`'s `pkgutil.walk_packages` loop (skips a test
+  submodule before import) and reused by `scistack_gui/registry.py`'s
+  `_load_packages` (same `pkgutil.walk_packages` shape, for pip-installed
+  `packages = [...]` config entries).
+- `scistack_gui/config.py:_is_test_file(path)` — wraps `is_test_path` and
+  adds the MATLAB-only `_MATLAB_TEST_FILE_RE` check. Applied in
+  `_walk_source_files` (prunes `test`/`tests` dirnames during any walk, and
+  filters the final per-file result list), `_resolve_glob_paths` (MATLAB
+  `functions`/`variables`/`path_inputs`/`sweeps`/`sources` — covers glob
+  matches, directory-walk results, and explicit single-`.m`-file entries),
+  and `load_config`'s Python `modules` handling (glob branch and explicit
+  single-file branch; the directory branch already routes through the
+  patched `_walk_source_files`).
+
+**No changes needed** in `matlab_parser.py`, `matlab_registry.py`, or
+`pipeline_discovery.py` — they only ever see paths that already passed
+through the upstream filtering above, so a test file's contents (including
+a `scidb.Pipeline`/submodule constructed inside it) simply never get a
+chance to register anywhere.
+
+Confirmed real-world leak this closes: `scimatlab/tests/matlab/helpers/*.m`
+contains plain functions (`sum_all.m`, `col_max.m`, ...) and `BaseVariable`
+classdefs (`RawSignal.m`, `BaselineSignal.m`, ...) that exist solely to
+support the MATLAB test suite — previously fully discoverable if a project
+config pointed at that directory; used as a regression-test fixture in
+`scistack-gui/tests/test_config.py`.
+
 ## See also
 
 - `docs/claude/multi-source-discovery.md` — the `[tool.scistack]` config

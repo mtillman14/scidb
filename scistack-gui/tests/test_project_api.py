@@ -17,15 +17,28 @@ def project_client(populated_db, tmp_path):
     The populated_db fixture creates test.duckdb in tmp_path and wires up
     scistack_gui.db._db_path. Here we add the rest of the project
     structure so the discovery scanner has something to find.
+
+    Mirrors loose_project_client: load the config and feed the registry
+    BEFORE the app starts serving, exactly like the real startup path
+    (__main__.py/server.py always call open_or_create_project, which does
+    this, before the "Discovered Code" panel is ever queried) -- otherwise
+    registry.get_function/etc. stay empty and every test here would only
+    ever be exercising scan_project's now-GUI-unused standalone behavior,
+    not what actually happens in the app.
     """
     from fastapi.testclient import TestClient
+    from scistack_gui import registry
     from scistack_gui.app import create_app
+    from scistack_gui.config import load_config
 
     project_name = "test_project"
 
-    # pyproject.toml next to the database
+    # pyproject.toml next to the database. [tool.scistack] (even empty) is
+    # required for load_config's auto-search (project_path=None) to
+    # recognize this as project-mode config rather than falling back to
+    # folder-scan -- see config._locate_pyproject.
     (tmp_path / "pyproject.toml").write_text(
-        f'[project]\nname = "{project_name}"\nversion = "0.1.0"\n'
+        f'[project]\nname = "{project_name}"\nversion = "0.1.0"\n[tool.scistack]\n'
     )
 
     # Source package with variables, functions, constants
@@ -56,6 +69,9 @@ def project_client(populated_db, tmp_path):
             PROJECT_RATE = constant(1000, description="Sample rate")
         """)
     )
+
+    config = load_config(None, tmp_path / "test.duckdb")
+    registry.load_from_config(config)
 
     # Clear the cached scan result from previous tests.
     _project_mod._last_result = None
@@ -99,6 +115,24 @@ class TestGetProjectCode:
         for mod in data["modules"]:
             all_consts.extend(c["name"] for c in mod["constants"])
         assert "PROJECT_RATE" in all_consts
+
+    def test_displayed_function_also_resolves_for_execution(self, project_client):
+        """Closing proof for the packaged-mode display/execution gap: a
+        function shown in the Discovered Code panel must also be resolvable
+        via registry.get_function -- previously this branch called
+        scidb.discover.scan_project directly, which never populated the
+        registry execution_service.py actually reads at run time, so a
+        displayed function could raise KeyError here."""
+        from scistack_gui import registry
+
+        resp = project_client.get("/api/project/code")
+        all_fns = []
+        for mod in resp.json()["modules"]:
+            all_fns.extend(mod["functions"])
+        assert "project_fcn" in all_fns
+
+        fn = registry.get_function("project_fcn")
+        assert fn(1) == 2
 
 
 class TestRefreshProject:

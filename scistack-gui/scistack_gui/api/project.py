@@ -306,63 +306,31 @@ async def refresh_project() -> dict:
 def _run_scan(*, force_refresh: bool = False) -> None:
     """Run the discovery scanner and cache the result.
 
-    Two data sources, chosen by whether a ``pyproject.toml`` exists at the
-    detected project root:
+    Built entirely from ``registry``/``matlab_registry`` state (see
+    ``_build_registry_backed_result``) for **both** packaged and
+    loose-script/folder-scan projects — this is the exact same registry
+    ``execution_service.py`` reads at run time, so the "Discovered Code"
+    panel can no longer show a function that isn't actually resolvable.
+    A packaged project's own ``src/{name}/`` code is auto-folded into
+    ``config.packages`` by ``scistack_gui/config.py``'s ``load_config``,
+    so it flows through ``registry.load_from_config`` -> ``_load_packages``
+    like any other configured package — previously this branch called
+    ``scidb.discover.scan_project`` directly, which never touched the
+    registry, so a function shown here could raise ``KeyError`` at actual
+    run time. See docs/claude/code-discovery-categories.md.
 
-    - **Packaged projects** (``pyproject.toml`` present): the scidb-layer
-      ``scan_project`` walks ``src/{name}/`` + ``uv.lock`` libraries, same
-      as always.
-    - **Loose-script / folder-scan projects** (no ``pyproject.toml``): there
-      is no ``src/{name}/`` to walk, and ``scan_project`` would report
-      everything empty even though the registry actually has working
-      functions/variables loaded — see docs/claude/multi-source-discovery.md
-      and the "Discovered Code" panel would otherwise silently disagree
-      with what's actually runnable. Build the result from
-      ``registry``/``matlab_registry`` instead, which is the single source
-      of truth for what's actually loaded either way.
+    Note: packaged projects no longer show a separate uv.lock-derived
+    "libraries" section here (``scan_project``'s library-scanning half is
+    unused by the GUI now, kept only as a standalone ``scidb.discover``
+    API feature) — ``libraries`` is always empty in the returned result.
     """
     global _last_result
     root = _project_root()
     logger.info("Running discovery scan on %s (force_refresh=%s)", root, force_refresh)
 
-    if (root / "pyproject.toml").exists():
-        from scidb.discover import scan_project
-
-        # KNOWN GAP: scan_project's own re-imports (scan_package) also
-        # register scidb.Pipeline objects into scidb.pipeline._all_pipelines
-        # as a side effect, same as _refresh_registries' path below — but
-        # this branch never calls discover_and_seed_pipelines, so a
-        # packaged-project pipeline file only gets (re-)seeded via the
-        # initial bootstrap.open_or_create_project pass, not via this
-        # scan/refresh path. Not fixed here — pre-dates this work and
-        # scan_project's relationship to the FUNCTIONAL registry (vs. just
-        # this display panel) needs its own look first.
-        # Skip scidb/scifor/etc. framework packages — they're
-        # infrastructure, not user-facing libraries.
-        _last_result = scan_project(
-            root,
-            skip_dists=[
-                "scidb",
-                "scifor",
-                "sciduckdb",
-                "scilineage",
-                "scipathgen",
-                "scicanonicalhash",
-                "scirun",
-                "scihist",
-                "scistack",
-                "scistack-gui",
-            ],
-        )
-    else:
-        logger.info(
-            "No pyproject.toml at %s; using registry-backed discovery "
-            "(loose-script/folder-scan mode)",
-            root,
-        )
-        if force_refresh:
-            _refresh_registries()
-        _last_result = _build_registry_backed_result(root)
+    if force_refresh:
+        _refresh_registries()
+    _last_result = _build_registry_backed_result(root)
 
     logger.info(
         "Scan complete: project=%s (vars=%d, fns=%d, consts=%d), "
@@ -410,21 +378,28 @@ def _refresh_registries() -> None:
 
 def _build_registry_backed_result(root: Path):
     """Build a ``scidb.discover.DiscoveryResult`` from ``registry``/
-    ``matlab_registry`` state, for projects with no ``pyproject.toml`` to
-    scan. Reuses scidb's own result dataclasses so the existing
-    ``_serialise_*`` helpers (and the frontend rendering code built for
-    ``scan_project``'s output) work completely unchanged.
+    ``matlab_registry`` state — the single source of truth for both
+    packaged and loose-script/folder-scan projects. Reuses scidb's own
+    result dataclasses so the existing ``_serialise_*`` helpers (and the
+    frontend rendering code originally built for ``scan_project``'s output)
+    work completely unchanged.
 
-    Full parity with ``scan_project``: functions, ``BaseVariable``
-    subclasses, and ``scidb.constant()`` instances are all covered — the
-    last of those via ``registry.get_constants_registry()``, which
-    ``registry._scan_module_constants`` populates alongside functions at
-    every registry load. (This is separate from the GUI-native "Constant
-    node" concept — ``get_constants()``/EditTab's palette — which is about
-    user-created per-run values, not code-level named constants.)
+    Full parity with the old ``scan_project``-backed panel: functions,
+    ``BaseVariable`` subclasses, and ``scidb.constant()`` instances are all
+    covered — the last of those via ``registry.get_constants_registry()``,
+    which ``registry._scan_module_constants`` populates alongside functions
+    at every registry load. (This is separate from the GUI-native
+    "Constant node" concept — ``get_constants()``/EditTab's palette — which
+    is about user-created per-run values, not code-level named constants.)
+
+    ``project_code.name`` is the real ``[project].name`` from
+    ``pyproject.toml`` when one exists (packaged mode), falling back to the
+    project directory's own name otherwise (loose-script/folder-scan mode,
+    where there is no pyproject.toml to read).
     """
     from scidb import BaseVariable
     from scidb.discover import DiscoveryResult, ModuleError, ModuleExports, PackageResult
+    from scifor.discovery import read_project_name
     from scistack_gui import matlab_registry, registry
 
     by_source: dict[str, ModuleExports] = {}
@@ -473,5 +448,6 @@ def _build_registry_backed_result(root: Path):
     ]
 
     modules = sorted(by_source.values(), key=lambda m: m.module_name)
-    project_code = PackageResult(name=root.name, modules=modules, errors=errors)
+    project_name = read_project_name(root) or root.name
+    project_code = PackageResult(name=project_name, modules=modules, errors=errors)
     return DiscoveryResult(project_code=project_code, libraries={})

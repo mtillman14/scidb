@@ -10,7 +10,6 @@ import pytest
 from scidb.discover import (
     DiscoveryResult,
     _dist_to_import_names,
-    _read_project_name,
     _read_uv_lock_packages,
     scan_project,
 )
@@ -88,6 +87,45 @@ def project_factory(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # discover_module: pure, per-module scanner
 # ---------------------------------------------------------------------------
+class TestSharedPredicates:
+    """is_constant/is_sweep/is_path_input -- shared with registry.py's
+    _scan_module_constants/_scan_module_path_inputs/_scan_module_sweeps to
+    eliminate duplicated isinstance checks between the two scanners."""
+
+    def test_is_constant(self):
+        from scidb import constant
+        from scidb.discover import is_constant
+
+        assert is_constant(constant(1))
+        assert not is_constant(1)
+
+    def test_is_sweep(self):
+        from scidb import Sweep
+        from scidb.discover import is_sweep
+
+        assert is_sweep(Sweep(1, 2))
+        assert not is_sweep(1)
+
+    def test_is_path_input_direct(self):
+        from scidb import PathInput
+        from scidb.discover import is_path_input
+
+        assert is_path_input(PathInput("{s}.mat"))
+        assert not is_path_input(1)
+
+    def test_is_path_input_each_of_of_path_inputs(self):
+        from scidb import EachOf, PathInput
+        from scidb.discover import is_path_input
+
+        assert is_path_input(EachOf(PathInput("{s}.mat"), PathInput("{t}.mat")))
+
+    def test_is_path_input_each_of_of_plain_values_is_not(self):
+        from scidb import EachOf
+        from scidb.discover import is_path_input
+
+        assert not is_path_input(EachOf(1, 2, 3))
+
+
 class TestDiscoverModule:
     def test_finds_base_variable_subclass(self, project_factory):
         root = project_factory(
@@ -526,18 +564,9 @@ class TestUvLockIntegration:
 # Helper functions
 # ---------------------------------------------------------------------------
 class TestHelpers:
-    def test_read_project_name(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "my_study"\nversion = "0.1.0"\n'
-        )
-        assert _read_project_name(tmp_path) == "my_study"
-
-    def test_read_project_name_missing_file(self, tmp_path):
-        assert _read_project_name(tmp_path) is None
-
-    def test_read_project_name_missing_section(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text("[build-system]\nrequires = []\n")
-        assert _read_project_name(tmp_path) is None
+    # read_project_name moved to scifor.discovery -- see
+    # scifor/tests/test_discovery.py's TestReadProjectName for its direct
+    # unit tests.
 
     def test_read_uv_lock_packages(self, tmp_path):
         (tmp_path / "uv.lock").write_text(
@@ -722,81 +751,9 @@ class TestDiscoveryResultNonEmptyLibraries:
 
 
 # ---------------------------------------------------------------------------
-# _PathInsert context manager
+# PathInsert/purge_module moved to scifor.discovery -- see
+# scifor/tests/test_discovery.py for their direct unit tests.
 # ---------------------------------------------------------------------------
-class TestPathInsert:
-    def test_inserts_and_removes_path(self, tmp_path):
-        from scidb.discover import _PathInsert
-
-        target = str(tmp_path / "my_src")
-        assert target not in sys.path
-        with _PathInsert(target):
-            assert target in sys.path
-        assert target not in sys.path
-
-    def test_does_not_double_insert(self, tmp_path):
-        from scidb.discover import _PathInsert
-
-        target = str(tmp_path / "already")
-        sys.path.insert(0, target)
-        try:
-            initial_count = sys.path.count(target)
-            with _PathInsert(target):
-                assert sys.path.count(target) == initial_count
-            # Should not have removed it since it didn't insert
-            assert target in sys.path
-        finally:
-            sys.path.remove(target)
-
-    def test_invalidates_caches_on_exit(self, tmp_path):
-
-        from scidb.discover import _PathInsert
-
-        target = str(tmp_path / "cache_test")
-        # Just verify it doesn't raise
-        with _PathInsert(target):
-            pass
-
-
-# ---------------------------------------------------------------------------
-# _purge_module
-# ---------------------------------------------------------------------------
-class TestPurgeModule:
-    def test_purge_removes_main_and_sub_modules(self):
-        from scidb.discover import _purge_module
-
-        # Inject fake modules
-        sys.modules["_fake_purge_test"] = type(sys)("_fake_purge_test")
-        sys.modules["_fake_purge_test.sub1"] = type(sys)("_fake_purge_test.sub1")
-        sys.modules["_fake_purge_test.sub2.deep"] = type(sys)(
-            "_fake_purge_test.sub2.deep"
-        )
-
-        _purge_module("_fake_purge_test")
-
-        assert "_fake_purge_test" not in sys.modules
-        assert "_fake_purge_test.sub1" not in sys.modules
-        assert "_fake_purge_test.sub2.deep" not in sys.modules
-
-    def test_purge_does_not_remove_unrelated(self):
-        from scidb.discover import _purge_module
-
-        # Inject fake modules — one unrelated
-        sys.modules["_fake_purge_a"] = type(sys)("_fake_purge_a")
-        sys.modules["_fake_purge_a_other"] = type(sys)("_fake_purge_a_other")
-
-        _purge_module("_fake_purge_a")
-
-        assert "_fake_purge_a" not in sys.modules
-        # _fake_purge_a_other starts with "_fake_purge_a" but not "_fake_purge_a."
-        assert "_fake_purge_a_other" in sys.modules
-        del sys.modules["_fake_purge_a_other"]
-
-    def test_purge_nonexistent_is_noop(self):
-        from scidb.discover import _purge_module
-
-        _purge_module("_definitely_not_in_sys_modules_xyz")
-        # Should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -905,3 +862,58 @@ class TestBaseVariableNotCollected:
         result = scan_project(root)
         all_vars = [v for m in result.project_code.modules for v in m.variables]
         assert len(all_vars) == 0
+
+
+# ---------------------------------------------------------------------------
+# scan_package / scan_project: test-only content excluded from discovery
+#
+# is_test_path/is_test_modname themselves moved to scifor.discovery (the
+# generic, scidb-unaware walking harness) -- see scifor/tests/test_discovery.py
+# for their direct unit tests. These tests exercise the end-to-end behavior
+# through scan_project, which now delegates its walking to scifor.discovery.
+# ---------------------------------------------------------------------------
+class TestExcludesTestOnlyContent:
+    def test_tests_subpackage_excluded_from_scan_project(self, project_factory):
+        root = project_factory(
+            package_name="fix_test_exclusion",
+            files={
+                "prod.py": """
+                    from scidb import constant
+                    PROD_CONST = constant(1, description="production")
+                """,
+                "tests/__init__.py": "",
+                "tests/helpers.py": """
+                    from scidb import constant
+                    TEST_ONLY_CONST = constant(2, description="test-only")
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_constants = [
+            (name, c) for m in result.project_code.modules for name, c in m.constants
+        ]
+        names = {name for name, _ in all_constants}
+        assert "PROD_CONST" in names
+        assert "TEST_ONLY_CONST" not in names
+
+    def test_test_prefixed_module_excluded(self, project_factory):
+        root = project_factory(
+            package_name="fix_test_module_exclusion",
+            files={
+                "prod.py": """
+                    from scidb import constant
+                    PROD_CONST = constant(1)
+                """,
+                "test_helpers.py": """
+                    from scidb import constant
+                    TEST_ONLY_CONST = constant(2)
+                """,
+            },
+        )
+        result = scan_project(root)
+        all_constants = [
+            (name, c) for m in result.project_code.modules for name, c in m.constants
+        ]
+        names = {name for name, _ in all_constants}
+        assert "PROD_CONST" in names
+        assert "TEST_ONLY_CONST" not in names

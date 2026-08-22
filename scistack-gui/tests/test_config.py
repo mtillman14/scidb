@@ -83,6 +83,47 @@ def test_pyproject_without_scistack_section_loads_defaults(tmp_path):
     assert config.auto_discover is True
 
 
+def test_packaged_project_auto_folds_own_name_into_packages(tmp_path):
+    """A packaged project ([project].name + src/{name}/, no explicit
+    [tool.scistack] packages entry) should have its own code auto-folded
+    into config.packages -- otherwise registry.load_from_config never
+    loads it, and a function shown in the "Discovered Code" panel would
+    raise KeyError at actual run time (the packaged-mode execution gap)."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "my_pkg"\nversion = "0.1.0"\n[tool.scistack]\n'
+    )
+    (tmp_path / "src" / "my_pkg").mkdir(parents=True)
+    (tmp_path / "src" / "my_pkg" / "__init__.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    assert config.packages == ["my_pkg"]
+
+
+def test_packaged_project_already_listed_not_duplicated(tmp_path):
+    """If the project's own name is already in [tool.scistack] packages,
+    auto-fold must not add a second entry."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "my_pkg"\nversion = "0.1.0"\n'
+        '[tool.scistack]\npackages = ["my_pkg"]\n'
+    )
+    (tmp_path / "src" / "my_pkg").mkdir(parents=True)
+    (tmp_path / "src" / "my_pkg" / "__init__.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    assert config.packages == ["my_pkg"]
+
+
+def test_packaged_project_without_src_layout_not_auto_folded(tmp_path):
+    """No src/{name}/ directory -- matches scan_project's own precondition,
+    so auto-fold must not add a name that isn't actually importable this way."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "my_pkg"\nversion = "0.1.0"\n[tool.scistack]\n'
+    )
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    assert config.packages == []
+
+
 def test_directory_without_any_toml_falls_back_to_folder_scan(tmp_path):
     """A directory with no toml files no longer raises — it falls back to
     scanning the directory directly for .py/.m files (zero-config mode for
@@ -223,6 +264,58 @@ def test_modules_directory_excludes_noise_directories(tmp_path):
     assert stems == ["real"]
 
 
+def test_modules_directory_excludes_test_files_and_dirs(tmp_path):
+    """Anything under a tests/ dir, or named test_*.py/*_test.py, should be
+    excluded from discovery -- these are found exclusively in a test and
+    must not leak into functions/variables/constants/PathInputs/Sweeps."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('modules = ["lib"]')
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "prod.py").write_text("")
+    (lib / "test_helper.py").write_text("")
+    (lib / "helper_test.py").write_text("")
+    tests_dir = lib / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "fixtures.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.modules)
+    assert stems == ["prod"]
+
+
+def test_explicit_single_test_file_module_entry_still_excluded(tmp_path):
+    """Even an explicitly-listed single file is excluded if it's a test file
+    -- there is no override for explicit config entries."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('modules = ["tests/test_x.py", "prod.py"]')
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_x.py").write_text("")
+    (tmp_path / "prod.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.modules)
+    assert stems == ["prod"]
+
+
+def test_modules_glob_excludes_test_files(tmp_path):
+    """A glob pattern in modules should not match test-named files."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('modules = ["src/**/*.py"]')
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "one.py").write_text("")
+    (src / "test_one.py").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.modules)
+    assert stems == ["one"]
+
+
 # ---------------------------------------------------------------------------
 # matlab.functions / matlab.variables — directory and glob support
 # ---------------------------------------------------------------------------
@@ -333,6 +426,43 @@ def test_matlab_sources_directory_excludes_noise_and_skip_dirs(tmp_path):
     config = load_config(tmp_path, tmp_path / "dummy.duckdb")
     stems = sorted(p.stem for p in config.matlab_sources)
     assert stems == ["keep"]
+
+
+def test_matlab_sources_excludes_test_dir_and_pascal_test_files(tmp_path):
+    """[matlab] sources should exclude anything under a tests/ dir, plus
+    PascalCase Test*.m/*Test.m files even outside a tests/ dir -- these are
+    found exclusively in a MATLAB test and must not leak into discovery."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('[matlab]\nsources = ["mixed"]')
+
+    mixed = tmp_path / "mixed"
+    mixed.mkdir()
+    (mixed / "good.m").write_text("")
+    (mixed / "TestBar.m").write_text("")
+    (mixed / "BazTest.m").write_text("")
+    tests_dir = mixed / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "Foo.m").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.matlab_sources)
+    assert stems == ["good"]
+
+
+def test_matlab_explicit_single_test_file_entry_still_excluded(tmp_path):
+    """Even an explicitly-listed single .m file is excluded if it matches
+    the test naming convention -- no override for explicit config entries."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('[matlab]\nfunctions = ["tests/TestForEach.m", "good.m"]')
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "TestForEach.m").write_text("")
+    (tmp_path / "good.m").write_text("")
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+    stems = sorted(p.stem for p in config.matlab_functions)
+    assert stems == ["good"]
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +705,50 @@ def test_folder_scan_matlab_excludes_private_class_and_package_dirs(tmp_path):
 
     config = load_config(None, tmp_path / "dummy.duckdb")
     assert [p.name for p in config.matlab_sources] == ["public.m"]
+
+
+def test_folder_scan_excludes_test_dirs_and_test_named_files(tmp_path):
+    """Folder-scan must not sweep in tests/ dirs or test-named files for
+    either language -- these are found exclusively in a test."""
+    (tmp_path / "real.py").write_text("")
+    (tmp_path / "test_real.py").write_text("")
+    (tmp_path / "real.m").write_text("function y = real_fn(x)\ny=x;\nend\n")
+    (tmp_path / "TestReal.m").write_text("function y = t(x)\ny=x;\nend\n")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "helper.py").write_text("")
+    (tests_dir / "helper.m").write_text("function y = helper(x)\ny=x;\nend\n")
+
+    config = load_config(None, tmp_path / "dummy.duckdb")
+    assert [p.name for p in config.modules] == ["real.py"]
+    assert [p.name for p in config.matlab_sources] == ["real.m"]
+
+
+def test_folder_scan_matlab_helpers_fixture_excludes_test_only_content(tmp_path):
+    """Real regression test: scimatlab/tests/matlab/helpers/ contains plain
+    functions (sum_all.m, col_max.m, ...) and BaseVariable classdefs
+    (RawSignal.m, BaselineSignal.m, ...) that exist exclusively to support
+    the MATLAB test suite. Copying that fixture under a tests/ dir and
+    folder-scanning it must discover zero of its files."""
+    import shutil
+
+    real_helpers = (
+        Path(__file__).parent.parent.parent
+        / "scimatlab"
+        / "tests"
+        / "matlab"
+        / "helpers"
+    )
+    assert real_helpers.is_dir(), "expected scimatlab/tests/matlab/helpers to exist"
+
+    project_tests_dir = tmp_path / "tests" / "matlab" / "helpers"
+    project_tests_dir.parent.mkdir(parents=True)
+    shutil.copytree(real_helpers, project_tests_dir)
+    (tmp_path / "real.py").write_text("")
+
+    config = load_config(None, tmp_path / "dummy.duckdb")
+    assert [p.name for p in config.modules] == ["real.py"]
+    assert config.matlab_sources == []
 
 
 def test_folder_scan_matlab_addpath_derived_from_sources(tmp_path):

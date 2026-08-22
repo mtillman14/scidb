@@ -467,3 +467,83 @@ class TestDiscoveryOutputSuppression:
         with pytest.raises(KeyError) as exc_info:
             registry.get_variable_class("GhostClass")
         assert "GhostClass" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# _load_packages — test-only submodules excluded from discovery
+# ---------------------------------------------------------------------------
+class TestLoadPackagesExcludesTestSubmodules:
+    def test_tests_subpackage_excluded(self, tmp_path, monkeypatch, caplog):
+        """A pip-installed package's tests/ subpackage must not leak its
+        functions into discovery -- mirrors scidb.discover.scan_package's
+        identical pkgutil.walk_packages exclusion."""
+        import logging
+        import sys
+
+        pkg_name = "regpkgtest_fixture"
+        pkg_dir = tmp_path / pkg_name
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("")
+        (pkg_dir / "prod.py").write_text("def prod_fn(x):\n    return x\n")
+        tests_dir = pkg_dir / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "__init__.py").write_text("")
+        (tests_dir / "helpers.py").write_text("def test_only_fn(x):\n    return x\n")
+
+        monkeypatch.syspath_prepend(str(tmp_path))
+        registry._functions.clear()
+        registry._function_sources.clear()
+        registry._load_errors.clear()
+        try:
+            with caplog.at_level(logging.DEBUG):
+                registry._load_packages([pkg_name])
+
+            assert "prod_fn" in registry._functions
+            assert "test_only_fn" not in registry._functions
+            assert "Skipping test module" in caplog.text
+        finally:
+            for name in list(sys.modules):
+                if name == pkg_name or name.startswith(pkg_name + "."):
+                    del sys.modules[name]
+
+    def test_functions_constants_path_inputs_sweeps_all_registered(
+        self, tmp_path, monkeypatch
+    ):
+        """Basic regression check: rebuilding _load_packages on
+        scifor.discovery.walk_package must not change what gets discovered
+        for a normal (non-test) package."""
+        import sys
+
+        pkg_name = "regpkgtest_full"
+        pkg_dir = tmp_path / pkg_name
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("")
+        (pkg_dir / "stuff.py").write_text(
+            "from scidb import constant, PathInput, Sweep\n"
+            "def real_fn(x):\n    return x\n"
+            "RATE = constant(1000)\n"
+            "RAW = PathInput('{subject}.mat')\n"
+            "WINDOW = Sweep(1, 2, 3)\n"
+        )
+
+        monkeypatch.syspath_prepend(str(tmp_path))
+        registry._functions.clear()
+        registry._function_sources.clear()
+        registry._constants.clear()
+        registry._constant_sources.clear()
+        registry._path_inputs.clear()
+        registry._path_input_sources.clear()
+        registry._sweeps.clear()
+        registry._sweep_sources.clear()
+        registry._load_errors.clear()
+        try:
+            registry._load_packages([pkg_name])
+
+            assert "real_fn" in registry._functions
+            assert "RATE" in registry._constants
+            assert "RAW" in registry._path_inputs
+            assert "WINDOW" in registry._sweeps
+        finally:
+            for name in list(sys.modules):
+                if name == pkg_name or name.startswith(pkg_name + "."):
+                    del sys.modules[name]

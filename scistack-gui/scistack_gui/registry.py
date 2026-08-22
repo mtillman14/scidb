@@ -13,17 +13,17 @@ for_each calls.
 from __future__ import annotations
 
 import contextlib
-import importlib
 import importlib.metadata
 import importlib.util
 import inspect
 import io
 import logging
-import pkgutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from scidb import BaseVariable, Constant, EachOf, PathInput, Sweep
+from scidb.discover import is_constant, is_path_input, is_sweep
+from scifor.discovery import PathInsert, walk_package
 
 if TYPE_CHECKING:
     from scistack_gui.config import SciStackConfig
@@ -248,7 +248,16 @@ def load_from_config(config: SciStackConfig) -> dict:
     _load_file_modules(config.modules)
 
     logger.info("[registry] Loading %d packages", len(config.packages))
-    _load_packages(config.packages)
+    src_dir = config.project_root / "src"
+    if src_dir.is_dir():
+        # A packaged project's own code (auto-folded into config.packages
+        # by config.load_config) is only importable by name if src/ is on
+        # sys.path -- mirrors scidb.discover.scan_project's precondition.
+        # Idempotent/no-op for projects already pip install -e'd.
+        with PathInsert(str(src_dir.resolve())):
+            _load_packages(config.packages)
+    else:
+        _load_packages(config.packages)
 
     if config.auto_discover:
         logger.info("[registry] Auto-discovering entry points")
@@ -319,63 +328,55 @@ def _load_file_modules(paths: list[Path]) -> None:
 
 
 def _load_packages(names: list[str]) -> None:
-    """Import each named package and walk its submodules for functions."""
+    """Import each named package and walk its submodules for functions.
+
+    Walking mechanics (pkgutil, import-error capture, test-module exclusion)
+    are shared with scidb.discover.scan_package via scifor.discovery.walk_package;
+    this function only supplies the "what to do with a successfully imported
+    module" callback (mutate the flat registry dicts, unlike scidb.discover's
+    pure per-module scanner).
+    """
     logger.debug("[registry] Importing %d packages", len(names))
     for pkg_idx, pkg_name in enumerate(names):
         logger.debug(
             "[registry] Processing package %d/%d: %s", pkg_idx + 1, len(names), pkg_name
         )
-        try:
-            with _suppress_user_code_output():
-                pkg = importlib.import_module(pkg_name)
-        except ImportError as e:
+
+        def on_module(mod) -> None:
+            source = f"package:{mod.__name__}"
+            _scan_module_functions(mod, source=source)
+            _scan_module_constants(mod, source=source)
+            _scan_module_path_inputs(mod, source=source)
+            _scan_module_sweeps(mod, source=source)
+
+        fn_count_before = len(_functions)
+        with _suppress_user_code_output():
+            wr = walk_package(pkg_name, on_module)
+
+        if not wr.per_module and wr.errors and wr.errors[0].module_name == pkg_name:
             logger.debug(
-                "[registry] Failed to import package: %s", pkg_name, exc_info=True
+                "[registry] Failed to import package: %s\n%s",
+                pkg_name,
+                wr.errors[0].traceback,
             )
-            _record_load_error(f"package:{pkg_name}", str(e))
+            _record_load_error(f"package:{pkg_name}", wr.errors[0].traceback)
             continue
 
-        # Scan the top-level package module itself.
-        fn_count_before = len(_functions)
-        _scan_module_functions(pkg, source=f"package:{pkg_name}")
+        for e in wr.errors:
+            logger.debug(
+                "[registry] Failed to import submodule: %s\n%s",
+                e.module_name,
+                e.traceback,
+            )
+            _record_load_error(f"package:{e.module_name}", e.traceback)
+
         fn_count_after = len(_functions)
-        _scan_module_constants(pkg, source=f"package:{pkg_name}")
-        _scan_module_path_inputs(pkg, source=f"package:{pkg_name}")
-        _scan_module_sweeps(pkg, source=f"package:{pkg_name}")
         logger.info(
-            "[registry] Loaded package: %s (%d functions from top level)",
+            "[registry] Loaded package: %s (%d functions total, %d submodule(s) walked)",
             pkg_name,
             fn_count_after - fn_count_before,
+            len(wr.per_module) - 1,
         )
-
-        # Walk submodules if it's a package (has __path__).
-        pkg_path = getattr(pkg, "__path__", None)
-        if pkg_path is not None:
-            submodule_count = 0
-            for _importer, modname, _ispkg in pkgutil.walk_packages(
-                pkg_path, prefix=pkg_name + "."
-            ):
-                try:
-                    logger.debug("[registry] Importing submodule: %s", modname)
-                    with _suppress_user_code_output():
-                        submod = importlib.import_module(modname)
-                    _scan_module_functions(submod, source=f"package:{modname}")
-                    _scan_module_constants(submod, source=f"package:{modname}")
-                    _scan_module_path_inputs(submod, source=f"package:{modname}")
-                    _scan_module_sweeps(submod, source=f"package:{modname}")
-                    submodule_count += 1
-                except Exception as e:
-                    logger.debug(
-                        "[registry] Failed to import submodule: %s",
-                        modname,
-                        exc_info=True,
-                    )
-                    _record_load_error(f"package:{modname}", str(e))
-            logger.debug(
-                "[registry] Walked %d submodules in package %s",
-                submodule_count,
-                pkg_name,
-            )
 
 
 def _load_entry_points() -> None:
@@ -514,7 +515,7 @@ def _scan_module_constants(module, *, source: str) -> None:
     for name, obj in vars(module).items():
         if name.startswith("_"):
             continue
-        if isinstance(obj, Constant):
+        if is_constant(obj):
             _register_constant(name, obj, source=source)
             discovered.append(name)
     if discovered:
@@ -569,10 +570,7 @@ def _scan_module_path_inputs(module, *, source: str) -> None:
             continue
         if isinstance(obj, Sweep):
             continue  # a Sweep is an EachOf too; disambiguate before the PathInput check below
-        if isinstance(obj, PathInput) or (
-            isinstance(obj, EachOf)
-            and all(isinstance(alt, PathInput) for alt in obj.alternatives)
-        ):
+        if is_path_input(obj):
             _register_path_input(name, obj, source=source)
             discovered.append(name)
     if discovered:
@@ -620,7 +618,7 @@ def _scan_module_sweeps(module, *, source: str) -> None:
     for name, obj in vars(module).items():
         if name.startswith("_"):
             continue
-        if isinstance(obj, Sweep):
+        if is_sweep(obj):
             _register_sweep(name, obj, source=source)
             discovered.append(name)
     if discovered:
