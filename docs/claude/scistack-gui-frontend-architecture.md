@@ -54,6 +54,31 @@ handlers — there are no REST routes for them, so cancel buttons are
 webview-only in effect. Pre-existing; don't "fix" it casually from the
 frontend side (the fix belongs in the API layer if ever wanted).
 
+**This asymmetry has bitten for real once already** (found 2026-08-22):
+`PathInputSettingsPanel`/`SweepSettingsPanel` called
+`update_path_input`/`update_sweep`/`add_path_input_alternate`/
+`remove_path_input_alternate` — present in neither `server.py`'s METHODS
+table nor any FastAPI router (`scistack_gui/api/layout.py` only has
+GET/POST `/path-inputs`, DELETE `/path-inputs/{name}`, POST
+`/path-inputs/{node_id}/deep-copy`, GET/POST `/sweeps`, DELETE
+`/sweeps/{name}` — no PUT, no `/alternates`). These were removed (or
+never built) when PathInputs/Sweeps/Constants moved to being
+source-scanned (commits `066cc53`, `6738212`, same day) — the frontend
+panels were never updated to match, so every edit silently no-opped
+(PathInput, error swallowed in `.catch(console.error)`) or visibly
+errored (Sweep, shown in its error banner) instead of ever reaching
+source. Symptom from the user's side: "editing a value in the GUI doesn't
+change it — it stays at the default." Fixed by deleting the dead calls
+and the four dead `api.ts` route entries, and rewriting both panels
+read-only (matching `ConstantSettingsPanel`'s existing "source-scanned,
+edit via source + Refresh Code" precedent) — see
+`.claude/plan-gui-three-bug-fixes-26-08-22.md`. There's no compiler check
+that would have caught this: `api.ts`'s route table, `server.py`'s
+METHODS table, and the FastAPI routers are three independently-maintained
+sources of truth kept in sync by convention only. When an RPC method
+stops being backed on the Python side, grep the frontend for its name
+before assuming the frontend copy is still safe to leave in place.
+
 ## Context providers (App.tsx nesting order)
 
 ```
@@ -152,6 +177,28 @@ Scope-fetch invariants (easy to regress):
    jump — EXCEPT across a scope switch (`loadedScope` ref), where the
    previous nodes belong to another canvas and must not leak
    positions. Scope switches also re-run `fitView`.
+4. `fetchPipeline` runs on EVERY `dag_updated` broadcast, not just the
+   mutation that triggered it — the websocket message goes to every
+   connected client, including one mid-edit in a sidebar text field. A
+   node's `put_layout` (e.g. dropping a brand new node elsewhere on the
+   canvas) broadcasts `dag_updated` just like any other mutation, so it
+   can land while an unrelated node has an uncommitted draft sitting in
+   its live-previewed `data` (fields that update the canvas on every
+   keystroke via `onLiveChange` but only persist to the backend on
+   blur/Enter — `useCommittedInput`'s pattern, used by
+   `FunctionSettingsPanel`'s where-filter fields). Found 2026-08-22 via a
+   PathInput template vanishing after a new-node drag (before that
+   panel's fields became read-only — see the asymmetry note above; the
+   bug generalizes to anything using this live-preview pattern, not just
+   PathInputs). Fixed at the source: `ScopeContext` exposes
+   `markNodeDirty`/`clearNodeDirty`/`getDirtyPatch`, a ref-backed
+   per-node pending-patch registry. A field's `onLiveChange` calls
+   `markNodeDirty(id, patch)` alongside its optimistic canvas update; the
+   save path calls `clearNodeDirty(id)` once the backend confirms it;
+   `fetchPipeline`'s node-merge re-applies any still-pending patch on top
+   of the freshly fetched node, the same way it already preserves
+   on-screen positions. Any new live-preview-before-save field needs to
+   wire into this or it inherits the same race.
 
 Pipeline-node identity: the React Flow node id IS the use_id (G1).
 Consequences: deleting a pipelineNode calls `remove_pipeline_use`

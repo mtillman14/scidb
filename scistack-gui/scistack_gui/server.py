@@ -495,6 +495,37 @@ def _h_list_hidden_combos(params):
     return get_hidden_combos(get_db(), params["function_name"])
 
 
+def _h_hide_constant_value(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import hide_constant_value
+
+    return hide_constant_value(
+        get_db(),
+        params["name"],
+        params["value"],
+        params.get("pipeline_id", "main"),
+    )
+
+
+def _h_unhide_constant_value(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import unhide_constant_value
+
+    return unhide_constant_value(
+        get_db(),
+        params["name"],
+        params["value"],
+        params.get("pipeline_id", "main"),
+    )
+
+
+def _h_list_hidden_constant_values(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import get_hidden_constant_values
+
+    return get_hidden_constant_values(get_db(), params.get("pipeline_id", "main"))
+
+
 def _h_create_constant(params):
     from scistack_gui.services.layout_service import create_constant
 
@@ -852,6 +883,9 @@ METHODS = {
     "hide_combo": _h_hide_combo,
     "unhide_combo": _h_unhide_combo,
     "list_hidden_combos": _h_list_hidden_combos,
+    "hide_constant_value": _h_hide_constant_value,
+    "unhide_constant_value": _h_unhide_constant_value,
+    "list_hidden_constant_values": _h_list_hidden_constant_values,
     "create_constant": _h_create_constant,
     "delete_constant": _h_delete_constant,
     "create_path_input": _h_create_path_input,

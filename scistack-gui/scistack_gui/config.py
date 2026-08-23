@@ -1020,9 +1020,14 @@ def set_variable_file(
             variable_file,
         )
 
+    try:
+        variable_file_for_toml: "Path | str" = variable_file.relative_to(project_root)
+    except ValueError:
+        variable_file_for_toml = variable_file
+
     content = _render_scistack_toml(
         modules=raw_modules,
-        variable_file=variable_file,
+        variable_file=variable_file_for_toml,
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
@@ -1034,9 +1039,10 @@ def set_variable_file(
     )
     target_path.write_text(content)
     logger.info(
-        "[config] set_variable_file: wrote %s (variable_file=%s)",
+        "[config] set_variable_file: wrote %s (variable_file=%s, toml value=%s)",
         target_path,
         variable_file,
+        variable_file_for_toml,
     )
     return variable_file
 

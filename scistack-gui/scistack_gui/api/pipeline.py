@@ -621,7 +621,16 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     logger.info("[pipeline] Building nodes (delegating to graph_builder)")
     nodes = gb.build_variable_nodes(agg.all_var_types, record_counts, run_states)
     var_node_count = len(nodes)
-    nodes += gb.build_constant_nodes(agg.const_counts, pending_constants)
+    constants_registry = registry.get_constants_registry()
+    source_const_values = {
+        name: str(const.value) for name, const in constants_registry.items()
+    }
+    hidden_const_values: dict[str, set] = {}
+    for row in _ps.list_hidden_constant_values(db, pipeline_id):
+        hidden_const_values.setdefault(row["const_name"], set()).add(row["value"])
+    nodes += gb.build_constant_nodes(
+        agg.const_counts, pending_constants, source_const_values, hidden_const_values
+    )
     const_node_count = len(nodes) - var_node_count
     nodes += gb.build_path_input_nodes(agg.path_inputs)
     path_input_node_count = len(nodes) - var_node_count - const_node_count
@@ -1162,3 +1171,36 @@ def list_hidden_combos(function_name: str, db: DatabaseManager = Depends(get_db)
     from scistack_gui.services.layout_service import get_hidden_combos
 
     return get_hidden_combos(db, function_name)
+
+
+@router.post("/constants/{name}/hidden_values/{value}")
+def hide_constant_value(
+    name: str,
+    value: str,
+    pipeline_id: str = "main",
+    db: DatabaseManager = Depends(get_db),
+):
+    from scistack_gui.services.layout_service import hide_constant_value as _hide
+
+    return _hide(db, name, value, pipeline_id)
+
+
+@router.delete("/constants/{name}/hidden_values/{value}")
+def unhide_constant_value(
+    name: str,
+    value: str,
+    pipeline_id: str = "main",
+    db: DatabaseManager = Depends(get_db),
+):
+    from scistack_gui.services.layout_service import unhide_constant_value as _unhide
+
+    return _unhide(db, name, value, pipeline_id)
+
+
+@router.get("/constants/hidden_values")
+def list_hidden_constant_values(
+    pipeline_id: str = "main", db: DatabaseManager = Depends(get_db)
+):
+    from scistack_gui.services.layout_service import get_hidden_constant_values
+
+    return get_hidden_constant_values(db, pipeline_id)

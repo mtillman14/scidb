@@ -15,6 +15,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import { callBackend } from '../../api'
 import { useCommittedInput } from '../../hooks/useCommittedInput'
+import { useScope } from '../../context/ScopeContext'
 
 interface VariantRow {
   [constantName: string]: string
@@ -127,6 +128,7 @@ function WhereFilterRow({ nodeId, index, filter, variableNames, onUpdateCanvas, 
 
 export default function FunctionSettingsPanel({ id, label, variants, constantNames, inputTypeNames, schemaFilter, schemaLevel, whereFilters, runOptions }: Props) {
   const { setNodes } = useReactFlow()
+  const { markNodeDirty, clearNodeDirty } = useScope()
   const [schema, setSchema] = useState<SchemaInfo | null>(null)
   const [variableNames, setVariableNames] = useState<string[]>([])
   const [hiddenCombos, setHiddenCombos] = useState<HiddenCombo[]>([])
@@ -201,18 +203,24 @@ export default function FunctionSettingsPanel({ id, label, variants, constantNam
         if (d.whereFilters) config.whereFilters = d.whereFilters
         if (d.runOptions) config.runOptions = d.runOptions
         callBackend('put_node_config', { node_id: id, config })
+          .then(() => clearNodeDirty(id))
+          .catch(err => console.error('[FunctionSettings] save error:', err))
       }
       return updated
     })
-  }, [id, setNodes])
+  }, [id, setNodes, clearNodeDirty])
 
   // Canvas-only variant — updates node data without saving to backend.
-  // Used by useCommittedInput's onLiveChange for text fields.
+  // Used by useCommittedInput's onLiveChange for text fields. Marks the
+  // node dirty so an unrelated dag_updated refetch (e.g. another node's
+  // put_layout from dragging a new node onto the canvas) can't revert this
+  // not-yet-saved draft -- see ScopeContext's markNodeDirty doc.
   const updateNodeDataCanvas = useCallback((patch: Record<string, unknown>) => {
     setNodes(nds => nds.map(node =>
       node.id === id ? { ...node, data: { ...node.data, ...patch } } : node
     ))
-  }, [id, setNodes])
+    markNodeDirty(id, patch)
+  }, [id, setNodes, markNodeDirty])
 
   // Toggle a single value in the schema filter.
   const toggleSchemaValue = useCallback((key: string, value: unknown) => {

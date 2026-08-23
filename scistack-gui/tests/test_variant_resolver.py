@@ -10,6 +10,7 @@ from scistack_gui.domain.variant_resolver import (
     compute_call_id,
     deduplicate_variants,
     filter_disconnected_targets,
+    filter_hidden_constant_value_targets,
     filter_hidden_targets,
     filter_variants,
     hidden_call_ids_for_fn,
@@ -409,6 +410,53 @@ class TestFilterHiddenTargets:
         assert (
             resolve_target_call_id("fn", target, {"hz"}) == compute_call_id("fn", target)
         )
+
+
+class TestFilterHiddenConstantValueTargets:
+    """Coarser than filter_hidden_targets: hides every target using
+    (const_name, value), across every function, by direct content match —
+    no call_id hashing (see filter_hidden_constant_value_targets docstring
+    for why that's sufficient, including for never-run combos)."""
+
+    def _target(self, constants):
+        return {"input_types": {"signal": "RawEMG"}, "output_type": "Out", "constants": constants}
+
+    def test_no_hidden_values_returns_unchanged(self):
+        targets = [self._target({"hz": 10})]
+        assert filter_hidden_constant_value_targets(targets, {}) == targets
+
+    def test_matching_value_dropped(self):
+        targets = [self._target({"hz": 10})]
+        assert filter_hidden_constant_value_targets(targets, {"hz": {"10"}}) == []
+
+    def test_non_matching_value_kept(self):
+        targets = [self._target({"hz": 10})]
+        result = filter_hidden_constant_value_targets(targets, {"hz": {"99"}})
+        assert result == targets
+
+    def test_string_coercion_matches_non_string_constant(self):
+        # constants dicts hold typed values (e.g. int 10); hidden_values are
+        # always strings (persisted that way) -- comparison must coerce.
+        targets = [self._target({"hz": 10})]
+        assert filter_hidden_constant_value_targets(targets, {"hz": {"10"}}) == []
+
+    def test_other_constant_name_unaffected(self):
+        targets = [self._target({"hz": 10})]
+        result = filter_hidden_constant_value_targets(targets, {"other": {"10"}})
+        assert result == targets
+
+    def test_hides_across_multiple_functions_worth_of_targets(self):
+        targets = [
+            {"input_types": {}, "output_type": "A", "constants": {"hz": 10}},
+            {"input_types": {}, "output_type": "B", "constants": {"hz": 10}},
+            {"input_types": {}, "output_type": "C", "constants": {"hz": 20}},
+        ]
+        result = filter_hidden_constant_value_targets(targets, {"hz": {"10"}})
+        assert result == [targets[2]]
+
+    def test_target_missing_the_constant_entirely_is_kept(self):
+        targets = [{"input_types": {}, "output_type": "A", "constants": {}}]
+        assert filter_hidden_constant_value_targets(targets, {"hz": {"10"}}) == targets
 
 
 class TestFilterDisconnectedTargets:

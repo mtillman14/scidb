@@ -94,7 +94,7 @@ export default function PipelineDAG() {
   const { screenToFlowPosition, fitView } = useReactFlow()
   const { selectedNode, setSelectedNode } = useSelectedNode()
   const { setSelectedItem: setSidebarSelectedItem } = useSidebarSelection()
-  const { currentScope, breadcrumb, descend, graphVersion, bumpGraph } = useScope()
+  const { currentScope, breadcrumb, descend, graphVersion, bumpGraph, getDirtyPatch } = useScope()
   const { requestPlan } = usePlanRun()
   const { clipboard, setClipboard } = useClipboard()
   const isFirstLoad = useRef(true)
@@ -130,7 +130,11 @@ export default function PipelineDAG() {
     const savedPositions =
       (layoutData.positions ?? layoutData) as Record<string, { x: number; y: number }>  // handle both new and legacy format
 
-    // Initialise all constant values as checked (selected for running).
+    // Constant node values already carry backend-computed `checked` (from
+    // persisted hide/unhide-constant-value state — see
+    // graph_builder.build_constant_nodes) — no client-side default here
+    // anymore. `checked: true` only backfills a value the backend somehow
+    // omitted it for (defensive, shouldn't happen).
     const initialised = data.nodes.map((node: Node) => {
       if (node.type !== 'constantNode') return node
       return {
@@ -138,7 +142,7 @@ export default function PipelineDAG() {
         data: {
           ...node.data,
           values: ((node.data as { values?: unknown[] }).values ?? []).map(
-            (v: unknown) => ({ ...(v as object), checked: true })
+            (v: unknown) => ({ checked: true, ...(v as object) })
           ),
         },
       }
@@ -159,7 +163,17 @@ export default function PipelineDAG() {
         }
       }
       const merged = { ...savedPositions, ...currentPositions }
-      return applyDagreLayout(initialised, data.edges, merged)
+      const laidOut = applyDagreLayout(initialised, data.edges, merged)
+      // Re-apply any not-yet-persisted sidebar edit (see ScopeContext's
+      // markNodeDirty doc) on top of the freshly fetched node -- otherwise
+      // an unrelated dag_updated broadcast (e.g. another node's put_layout
+      // from dragging a new node onto the canvas) would silently revert an
+      // in-progress, unsaved draft back to the last-saved value.
+      if (scopeChanged) return laidOut
+      return laidOut.map(n => {
+        const patch = getDirtyPatch(n.id)
+        return patch ? { ...n, data: { ...n.data, ...patch } } : n
+      })
     })
     setEdges(data.edges)
 
@@ -185,7 +199,7 @@ export default function PipelineDAG() {
     callBackend('get_hidden_ports', { pipeline_id: currentScope }).then(res => {
       setHiddenPorts(res as HiddenPorts)
     })
-  }, [setNodes, setEdges, fitView, currentScope])
+  }, [setNodes, setEdges, fitView, currentScope, getDirtyPatch])
 
   useEffect(() => {
     fetchPipeline()

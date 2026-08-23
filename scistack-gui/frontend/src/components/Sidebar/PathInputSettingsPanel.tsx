@@ -1,21 +1,19 @@
 /**
  * PathInputSettingsPanel — shown in the sidebar when a PathInput node is selected.
  *
- * Editable fields for path template and root folder.  Changes update the
- * React Flow node data (so the canvas reflects edits live) and persist to
- * the backend on Enter or blur.  Escape reverts to the last saved value.
- *
- * Alternate templates (below the primary) are the PathInput analog of a
- * Constant node's multiple staged values: >1 template under one name runs
- * as EachOf(PathInput(...), PathInput(...), ...) at execution time (see
- * execution_service.build_run_inputs). Same add/remove-row pattern as
- * ConstantSettingsPanel's variant list, one row per alternate.
+ * Read-only: template/root_folder/alternate_templates are source-scanned
+ * (see docs/claude/code-discovery-categories.md and the "PathInputs, Sweeps,
+ * and Submodules read from source" migration). There is no update_path_input/
+ * add_path_input_alternate/remove_path_input_alternate on the backend
+ * anymore -- editing a PathInput means editing its `scidb.PathInput(...)`
+ * declaration in source and hitting "Refresh Code", same as a function body.
+ * This panel used to offer live-editable inputs wired to those since-removed
+ * RPCs; they silently no-opped (or errored) on every save, which is why
+ * edits looked like they were reverting to the default value.
  */
 
-import { useRef, useEffect, useState, useCallback } from 'react'
-import { useReactFlow } from '@xyflow/react'
+import { useCallback, useState } from 'react'
 import { callBackend } from '../../api'
-import { useCommittedInput } from '../../hooks/useCommittedInput'
 import { useScope } from '../../context/ScopeContext'
 
 interface PathInputAlternate {
@@ -38,53 +36,10 @@ function parseTemplateKeys(template: string): string[] {
 }
 
 export default function PathInputSettingsPanel({ id, label, template, root_folder, alternate_templates }: Props) {
-  const { setNodes } = useReactFlow()
   const { bumpGraph } = useScope()
   const [deepCopyError, setDeepCopyError] = useState('')
-  const [altTemplateDraft, setAltTemplateDraft] = useState('')
-  const [altRootDraft, setAltRootDraft] = useState('')
-  const [altError, setAltError] = useState('')
 
-  // Refs so each field's callbacks can read the other field's latest draft
-  // without stale-closure issues.
-  const latestTemplate = useRef(template)
-  const latestRoot = useRef(root_folder ?? '')
-
-  useEffect(() => {
-    latestTemplate.current = template
-    latestRoot.current = root_folder ?? ''
-  }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const updateCanvas = (newTemplate: string, newRoot: string) => {
-    const rootVal = newRoot.trim() || null
-    setNodes(nds => nds.map(n =>
-      n.id === id
-        ? { ...n, data: { ...n.data, template: newTemplate, root_folder: rootVal } }
-        : n
-    ))
-  }
-
-  const saveToBackend = (newTemplate: string, newRoot: string) => {
-    const rootVal = newRoot.trim() || null
-    callBackend('update_path_input', { name: label, template: newTemplate, root_folder: rootVal })
-      .catch(err => console.error('[PathInputSettings] save error:', err))
-  }
-
-  const templateInput = useCommittedInput({
-    initialValue: template,
-    resetKey: id,
-    onLiveChange: val => { latestTemplate.current = val; updateCanvas(val, latestRoot.current) },
-    onSave: val => saveToBackend(val, latestRoot.current),
-  })
-
-  const rootInput = useCommittedInput({
-    initialValue: root_folder ?? '',
-    resetKey: id,
-    onLiveChange: val => { latestRoot.current = val; updateCanvas(latestTemplate.current, val) },
-    onSave: val => saveToBackend(latestTemplate.current, val),
-  })
-
-  const keys = parseTemplateKeys(templateInput.value)
+  const keys = parseTemplateKeys(template)
 
   const handleDeepCopy = useCallback(() => {
     callBackend('deep_copy_path_input', { node_id: id })
@@ -92,59 +47,22 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
       .catch(err => setDeepCopyError((err as Error).message))
   }, [id, bumpGraph])
 
-  const addAlternate = useCallback(() => {
-    const t = altTemplateDraft.trim()
-    if (!t) return
-    const rootVal = altRootDraft.trim() || null
-    callBackend('add_path_input_alternate', { name: label, template: t, root_folder: rootVal })
-      .then(() => {
-        setAltError('')
-        setNodes(nds => nds.map(n =>
-          n.id === id
-            ? { ...n, data: { ...n.data, alternate_templates: [...alternate_templates, { template: t, root_folder: rootVal }] } }
-            : n
-        ))
-        setAltTemplateDraft('')
-        setAltRootDraft('')
-      })
-      .catch(err => setAltError((err as Error).message))
-  }, [id, label, altTemplateDraft, altRootDraft, alternate_templates, setNodes])
-
-  const removeAlternate = useCallback((index: number) => {
-    callBackend('remove_path_input_alternate', { name: label, index })
-      .then(() => {
-        setNodes(nds => nds.map(n =>
-          n.id === id
-            ? { ...n, data: { ...n.data, alternate_templates: alternate_templates.filter((_, i) => i !== index) } }
-            : n
-        ))
-      })
-      .catch(err => setAltError((err as Error).message))
-  }, [id, label, alternate_templates, setNodes])
-
   return (
     <div style={styles.root}>
       <div style={styles.name}>{label}</div>
 
       <section style={styles.section}>
         <div style={styles.sectionTitle}>Path Template</div>
-        <input
-          style={styles.input}
-          placeholder="{subject}/trial_{trial}.mat"
-          {...templateInput}
-        />
+        <div style={styles.value}>{template || '(empty)'}</div>
         <div style={styles.hint}>
-          Shared by name — editing this changes every placement of "{label}".
+          Shared by name — edit the <span style={styles.mono}>scidb.PathInput(...)</span> declaration
+          in source, then hit 🔄 Refresh Code.
         </div>
       </section>
 
       <section style={styles.section}>
         <div style={styles.sectionTitle}>Root Folder</div>
-        <input
-          style={styles.input}
-          placeholder="/data (optional)"
-          {...rootInput}
-        />
+        <div style={styles.value}>{root_folder || '(not set)'}</div>
       </section>
 
       <section style={styles.section}>
@@ -154,44 +72,18 @@ export default function PathInputSettingsPanel({ id, label, template, root_folde
           alternative, results concatenated.
         </div>
 
-        {alternate_templates.length === 0 && (
+        {alternate_templates.length === 0 ? (
           <div style={styles.empty}>No alternates — single template only.</div>
-        )}
-
-        {alternate_templates.map((alt, i) => (
-          <div key={i} style={styles.altRow}>
-            <div style={styles.altRowText}>
+        ) : (
+          alternate_templates.map((alt, i) => (
+            <div key={i} style={styles.altRow}>
               <div style={styles.altTemplateText}>{alt.template}</div>
               {alt.root_folder && (
                 <div style={styles.altRootText}>root: {alt.root_folder}</div>
               )}
             </div>
-            <button style={styles.removeBtn} onClick={() => removeAlternate(i)} title="Remove" type="button">
-              ×
-            </button>
-          </div>
-        ))}
-
-        <div style={styles.addAltForm}>
-          <input
-            style={styles.input}
-            placeholder="{subject}/alt_template.csv"
-            value={altTemplateDraft}
-            onChange={e => setAltTemplateDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') addAlternate() }}
-          />
-          <input
-            style={styles.input}
-            placeholder="root folder (optional)"
-            value={altRootDraft}
-            onChange={e => setAltRootDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') addAlternate() }}
-          />
-          <button style={styles.addAltBtn} onClick={addAlternate} type="button">
-            + Add alternate
-          </button>
-        </div>
-        {altError && <div style={styles.errorText}>{altError}</div>}
+          ))
+        )}
       </section>
 
       <section style={styles.section}>
@@ -240,24 +132,27 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: 0.8,
     marginBottom: 6,
   },
-  input: {
+  value: {
     display: 'block',
     width: '100%',
     background: '#1a1a2e',
-    border: '1px solid #444',
+    border: '1px solid #333',
     borderRadius: 3,
     color: '#e5c8a0',
     fontSize: 11,
     fontFamily: 'monospace',
     padding: '5px 6px',
-    outline: 'none',
     boxSizing: 'border-box',
+    wordBreak: 'break-all',
   },
   hint: {
     fontSize: 10,
     color: '#666',
     marginTop: 4,
     lineHeight: 1.4,
+  },
+  mono: {
+    fontFamily: 'monospace',
   },
   deepCopyBtn: {
     width: '100%',
@@ -297,16 +192,9 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 6,
   },
   altRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
     marginTop: 6,
     borderBottom: '1px solid #1e1e3a',
     paddingBottom: 4,
-  },
-  altRowText: {
-    flex: 1,
-    minWidth: 0,
   },
   altTemplateText: {
     fontFamily: 'monospace',
@@ -319,31 +207,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: '#8a7a60',
     wordBreak: 'break-all',
-  },
-  removeBtn: {
-    flexShrink: 0,
-    background: 'transparent',
-    border: 'none',
-    color: '#666',
-    cursor: 'pointer',
-    fontSize: 14,
-    padding: '0 2px',
-    lineHeight: 1,
-  },
-  addAltForm: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    marginTop: 8,
-  },
-  addAltBtn: {
-    background: '#92702a',
-    border: 'none',
-    borderRadius: 3,
-    color: '#fff',
-    fontSize: 11,
-    padding: '4px 8px',
-    cursor: 'pointer',
-    fontWeight: 600,
   },
 }

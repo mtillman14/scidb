@@ -391,6 +391,41 @@ def filter_hidden_targets(
     return kept
 
 
+def filter_hidden_constant_value_targets(
+    targets: list[dict],
+    hidden_values: dict[str, set[str]],
+) -> list[dict]:
+    """Drop targets whose constants include any hidden ``(name, value)``
+    pair — the ``ConstantNode.tsx`` checkbox's effect on execution.
+
+    Coarser than ``filter_hidden_targets``' per-call_id combo hiding: a
+    hidden constant value excludes every target across every function that
+    uses it, not one function's one Cartesian-product row.
+
+    Unlike ``filter_hidden_targets``, no call_id hashing is involved — a
+    target's hidden-ness is fully determined by which constants it already
+    carries, so it's a direct content match against ``hidden_values``. This
+    also means it's automatically correct for combos that have never run:
+    ``derive_fn_targets``/``derive_target_for_node`` already materialize
+    never-run pending/inferred combos as real target dicts (via
+    ``execution_service._infer_wired_constants``) before this filter ever
+    runs, so there's no separate "hidden but not yet materialized" case to
+    special-case here.
+    """
+    if not hidden_values:
+        return targets
+    kept = []
+    for t in targets:
+        constants = t.get("constants", {})
+        if any(
+            name in constants and str(constants[name]) in values
+            for name, values in hidden_values.items()
+        ):
+            continue
+        kept.append(t)
+    return kept
+
+
 def filter_disconnected_targets(
     targets: list[dict],
     function_name: str,

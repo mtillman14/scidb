@@ -599,6 +599,110 @@ class TestBuildConstantNodes:
         )
         assert pending_entry["record_count"] == 0
 
+    def test_new_source_value_appended_and_tagged(self):
+        const_counts = {"hz": {"10": 3}}
+        nodes = build_constant_nodes(
+            const_counts, pending_constants={}, source_values={"hz": "20"}
+        )
+        values = nodes[0]["data"]["values"]
+        assert {v["value"] for v in values} == {"10", "20"}
+        new_entry = next(v for v in values if v["value"] == "20")
+        assert new_entry["record_count"] == 0
+        assert new_entry["is_current_source_value"] is True
+        old_entry = next(v for v in values if v["value"] == "10")
+        assert "is_current_source_value" not in old_entry
+
+    def test_source_value_matching_existing_db_history_is_tagged_in_place(self):
+        const_counts = {"hz": {"10": 3}}
+        nodes = build_constant_nodes(
+            const_counts, pending_constants={}, source_values={"hz": "10"}
+        )
+        values = nodes[0]["data"]["values"]
+        assert len(values) == 1
+        assert values[0] == {
+            "value": "10",
+            "record_count": 3,
+            "checked": True,
+            "is_current_source_value": True,
+        }
+
+    def test_source_value_matching_pending_is_tagged_in_place(self):
+        nodes = build_constant_nodes(
+            {}, pending_constants={"hz": {"99"}}, source_values={"hz": "99"}
+        )
+        values = nodes[0]["data"]["values"]
+        assert len(values) == 1
+        assert values[0]["is_current_source_value"] is True
+
+    def test_source_edit_leaves_stale_db_history_row_intact(self):
+        # Simulates a further source edit: the registry value moved on to
+        # "30", but "10" still has DB run history and must stay visible
+        # (decision #2 -- DB history never vanishes because of a source edit).
+        const_counts = {"hz": {"10": 3}}
+        nodes = build_constant_nodes(
+            const_counts, pending_constants={}, source_values={"hz": "30"}
+        )
+        values = nodes[0]["data"]["values"]
+        assert {v["value"] for v in values} == {"10", "30"}
+        old_entry = next(v for v in values if v["value"] == "10")
+        assert old_entry["record_count"] == 3
+        assert "is_current_source_value" not in old_entry
+
+    def test_registry_only_constant_with_no_history_still_gets_a_node(self):
+        nodes = build_constant_nodes(
+            {}, pending_constants={}, source_values={"hz": "5"}
+        )
+        assert len(nodes) == 1
+        assert nodes[0]["id"] == "const__hz"
+        assert nodes[0]["data"]["values"] == [
+            {
+                "value": "5",
+                "record_count": 0,
+                "checked": True,
+                "is_current_source_value": True,
+            }
+        ]
+
+    def test_no_source_or_hidden_values_defaults_checked_true(self):
+        const_counts = {"hz": {"10": 3}}
+        nodes = build_constant_nodes(const_counts, pending_constants={})
+        values = nodes[0]["data"]["values"]
+        assert values == [{"value": "10", "record_count": 3, "checked": True}]
+
+    def test_hidden_value_reported_unchecked(self):
+        const_counts = {"hz": {"10": 3, "20": 1}}
+        nodes = build_constant_nodes(
+            const_counts, pending_constants={}, hidden_values={"hz": {"10"}}
+        )
+        values = {v["value"]: v["checked"] for v in nodes[0]["data"]["values"]}
+        assert values == {"10": False, "20": True}
+
+    def test_hidden_pending_value_reported_unchecked(self):
+        # A pending value is only ever staged for a constant that already
+        # has DB history or a source declaration (build_constant_nodes'
+        # all_names union doesn't itself cover a pending-only name -- that
+        # case is a genuinely-new never-run constant, which the GUI shows
+        # via a manual node instead, see pipeline_discovery._seed_step) --
+        # const_counts here keeps this scenario realistic.
+        nodes = build_constant_nodes(
+            {"hz": {"5": 1}},
+            pending_constants={"hz": {"99"}},
+            hidden_values={"hz": {"99"}},
+        )
+        values = {v["value"]: v["checked"] for v in nodes[0]["data"]["values"]}
+        assert values == {"5": True, "99": False}
+
+    def test_hidden_new_source_value_reported_unchecked(self):
+        nodes = build_constant_nodes(
+            {},
+            pending_constants={},
+            source_values={"hz": "5"},
+            hidden_values={"hz": {"5"}},
+        )
+        values = nodes[0]["data"]["values"]
+        assert values[0]["checked"] is False
+        assert values[0]["is_current_source_value"] is True
+
 
 # ---------------------------------------------------------------------------
 # resolve_path_input_name / path_input_display / seed_undiscovered_path_inputs

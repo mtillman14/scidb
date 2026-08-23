@@ -494,3 +494,48 @@ def get_hidden_combos(db, function_name: str) -> dict:
     from scistack_gui import pipeline_store
 
     return {"combos": pipeline_store.list_hidden_combos(db, function_name)}
+
+
+def hide_constant_value(
+    db, const_name: str, value: str, pipeline_id: str = "main"
+) -> dict:
+    """Hide one constant value — excludes it (and, once execution_service
+    consults this, every call site using it) from future runs without
+    deleting any DB history for it."""
+    from scistack_gui import pipeline_store
+
+    logger.info(
+        "[layout_service] hide_constant_value called (const_name=%r, "
+        "value=%r, pipeline_id=%r)",
+        const_name,
+        value,
+        pipeline_id,
+    )
+    pipeline_store.hide_constant_value(db, const_name, value, pipeline_id)
+    _notify_dag_updated()
+    return {"ok": True}
+
+
+def unhide_constant_value(
+    db, const_name: str, value: str, pipeline_id: str = "main"
+) -> dict:
+    from scistack_gui import pipeline_store
+
+    logger.info(
+        "[layout_service] unhide_constant_value called (const_name=%r, "
+        "value=%r, pipeline_id=%r)",
+        const_name,
+        value,
+        pipeline_id,
+    )
+    pipeline_store.unhide_constant_value(db, const_name, value, pipeline_id)
+    _notify_dag_updated()
+    return {"ok": True}
+
+
+def get_hidden_constant_values(db, pipeline_id: "str | None" = "main") -> dict:
+    from scistack_gui import pipeline_store
+
+    return {
+        "hidden_values": pipeline_store.list_hidden_constant_values(db, pipeline_id)
+    }

@@ -107,6 +107,21 @@ def _infer_wired_constants(
     return inferred
 
 
+def _hidden_constant_values(db) -> dict[str, set[str]]:
+    """{const_name: {hidden values}} from the ``ConstantNode.tsx`` checkbox
+    state — grouped once per derivation call so ``filter_hidden_
+    constant_value_targets`` (a pure content-match, no call_id hashing) can
+    check every target in one pass. ``pipeline_id=None`` unions every
+    scope's hides, matching ``get_hidden_node_ids``' fail-open convention —
+    execution is not yet scope-aware (see that function's docstring)."""
+    from scistack_gui import pipeline_store
+
+    hidden: dict[str, set[str]] = {}
+    for row in pipeline_store.list_hidden_constant_values(db, None):
+        hidden.setdefault(row["const_name"], set()).add(row["value"])
+    return hidden
+
+
 def derive_fn_targets(db, function_name: str) -> list[dict]:
     """The for_each target(s) a function node represents.
 
@@ -121,6 +136,14 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     through every branch of this function AND ``derive_target_for_node``
     for no benefit; ``build_run_inputs`` resolves them once, right before
     execution, from the target this function already returns.
+
+    Every returned target has already been filtered against hidden
+    constant values (``filter_hidden_constant_value_targets``) — a hidden
+    value is excluded from both never-run and previously-run combos, and
+    from both this (name-scoped) path and ``derive_target_for_node``'s
+    (node-scoped) path, so the per-node Run and pipeline Run threads (both
+    of which bottom out in one of these two functions) can't accidentally
+    run something the user unchecked.
     """
     from scistack_gui import pipeline_store
     from scistack_gui.api.pipeline import _fn_params_from_registry
@@ -129,6 +152,9 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
         resolve_function_edges,
     )
     from scistack_gui.domain.graph_builder import fn_node_id
+    from scistack_gui.domain.variant_resolver import filter_hidden_constant_value_targets
+
+    hidden_values = _hidden_constant_values(db)
 
     all_variants = db.list_pipeline_variants()
     fn_variants = [v for v in all_variants if v["function_name"] == function_name]
@@ -193,7 +219,7 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
         fn_variants = overridden
 
     if fn_variants:
-        return fn_variants
+        return filter_hidden_constant_value_targets(fn_variants, hidden_values)
 
     # Never-run fallback: infer the call from manual edges.
     sig_params = _fn_params_from_registry(function_name)
@@ -237,11 +263,14 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
                         "constants": constants,
                     }
                 )
-        return targets
-    return [
-        {"input_types": resolved.input_types, "output_type": out, "constants": {}}
-        for out in resolved.output_types
-    ]
+        return filter_hidden_constant_value_targets(targets, hidden_values)
+    return filter_hidden_constant_value_targets(
+        [
+            {"input_types": resolved.input_types, "output_type": out, "constants": {}}
+            for out in resolved.output_types
+        ],
+        hidden_values,
+    )
 
 
 def derive_target_for_node(db, node_id: str) -> list[dict]:
@@ -267,12 +296,18 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
     constant-value variant of THIS wiring, or one freshly-inferred target
     if it has never been run), or ``[]`` if ``node_id`` isn't a function
     node or nothing is derivable from it.
+
+    Every returned target has already been filtered against hidden
+    constant values, same as ``derive_fn_targets`` — see that function's
+    docstring.
     """
     from scistack_gui import pipeline_store
     from scistack_gui.api.pipeline import _fn_params_from_registry
     from scistack_gui.domain.edge_resolver import resolve_function_edges
     from scistack_gui.domain.graph_builder import parse_fn_node_id, wiring_id
+    from scistack_gui.domain.variant_resolver import filter_hidden_constant_value_targets
 
+    hidden_values = _hidden_constant_values(db)
     manual_nodes = pipeline_store.get_manual_nodes(db)
     all_edges = pipeline_store.get_manual_edges(db)
 
@@ -329,7 +364,7 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
                 before - len(matching),
             )
     if matching:
-        return matching
+        return filter_hidden_constant_value_targets(matching, hidden_values)
     if resolved is None:
         # An already-graduated node whose embedded wiring matches nothing
         # in current history (stale) — nothing safe to run as this node.
@@ -357,7 +392,7 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
 
     if inferred_constants:
         const_names = sorted(inferred_constants.keys())
-        return [
+        targets = [
             {
                 "input_types": resolved.input_types,
                 "output_type": out,
@@ -366,10 +401,14 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
             for combo in product(*(inferred_constants[c] for c in const_names))
             for out in resolved.output_types
         ]
-    return [
-        {"input_types": resolved.input_types, "output_type": out, "constants": {}}
-        for out in resolved.output_types
-    ]
+        return filter_hidden_constant_value_targets(targets, hidden_values)
+    return filter_hidden_constant_value_targets(
+        [
+            {"input_types": resolved.input_types, "output_type": out, "constants": {}}
+            for out in resolved.output_types
+        ],
+        hidden_values,
+    )
 
 
 def disconnected_reason(db, function_name: str, node_id: "str | None" = None) -> "str | None":

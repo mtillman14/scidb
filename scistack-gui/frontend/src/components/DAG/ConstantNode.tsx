@@ -2,19 +2,28 @@
  * ConstantNode — represents a named constant in the pipeline.
  *
  * Shows the constant name and a checkboxed list of the distinct values it has
- * taken across pipeline runs. Checked values are "selected" for downstream runs.
+ * taken across pipeline runs. Checked values are "selected" for downstream runs;
+ * unchecking persists as a hide-constant-value (never deletes data — see
+ * pipeline_store.hide_constant_value / execution_service's hidden-constant-value
+ * filtering, .claude/plan-constant-source-of-truth-26-08-22.md).
  *
  * State management: checked state lives inside each value object in the node's
- * `data`. We update it via useReactFlow().setNodes — same pattern as VariableNode.
+ * `data`, seeded from the backend on every graph fetch (build_constant_nodes).
+ * Toggling updates local state immediately (useReactFlow().setNodes — same
+ * pattern as VariableNode) and fires the hide/unhide-constant-value call in the
+ * background; a `dag_updated` broadcast from that call re-fetches the graph and
+ * reconciles if the optimistic update and persisted state ever disagree.
  */
 
 import { useCallback } from 'react'
 import { Handle, Position, useReactFlow } from '@xyflow/react'
+import { callBackend } from '../../api'
 
 export interface ConstantValue {
   value: string
   record_count: number
   checked: boolean
+  is_current_source_value?: boolean
 }
 
 export interface ConstantNodeData {
@@ -31,14 +40,19 @@ export default function ConstantNode({ id, data }: Props) {
   const { setNodes } = useReactFlow()
 
   const toggleValue = useCallback((index: number) => {
+    const target = data.values[index]
+    if (!target) return
+    const nextChecked = !target.checked
     setNodes(nds => nds.map(node => {
       if (node.id !== id) return node
       const values = (node.data.values as ConstantValue[]).map((v, i) =>
-        i === index ? { ...v, checked: !v.checked } : v
+        i === index ? { ...v, checked: nextChecked } : v
       )
       return { ...node, data: { ...node.data, values } }
     }))
-  }, [id, setNodes])
+    const method = nextChecked ? 'unhide_constant_value' : 'hide_constant_value'
+    callBackend(method, { name: data.label, value: target.value }).catch(console.error)
+  }, [id, data.label, data.values, setNodes])
 
   const showCheckboxes = data.values.length > 1
 
@@ -64,6 +78,11 @@ export default function ConstantNode({ id, data }: Props) {
                 <span style={!showCheckboxes || v.checked ? styles.valueLabel : styles.valueLabelUnchecked}>
                   {rowLabel}
                 </span>
+                {v.is_current_source_value && (
+                  <span style={styles.sourceBadge} title="Current value in source code">
+                    src
+                  </span>
+                )}
               </label>
             )
           })}
@@ -125,5 +144,16 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#555',
     fontFamily: 'monospace',
     textDecoration: 'line-through',
+  },
+  sourceBadge: {
+    fontSize: 8,
+    fontWeight: 700,
+    color: '#1e3a2f',
+    background: '#4ecdc4',
+    borderRadius: 3,
+    padding: '1px 3px',
+    marginLeft: 4,
+    letterSpacing: 0.3,
+    flexShrink: 0,
   },
 }

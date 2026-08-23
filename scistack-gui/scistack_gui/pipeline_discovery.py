@@ -304,8 +304,11 @@ def _seed_step(db, pipeline_id: str, spec, node_cache: dict[str, str]) -> None:
             # stages this discovered value, and the manual constantNode
             # makes it a real node even with zero DB history -- the same
             # three things a user adding a constant + pending value by
-            # hand would trigger (build_constant_nodes only renders from
-            # DB-history const_counts otherwise -- see module docstring).
+            # hand would trigger. build_constant_nodes now also renders a
+            # source_values row for any name in registry.get_constants_registry(),
+            # but a plain scalar StepSpec constant isn't necessarily a
+            # registered scidb.constant() bound to a top-level name, so this
+            # manual-node path still covers the case source_values can't.
             from scistack_gui import layout as layout_store
 
             layout_store.write_constant(param)

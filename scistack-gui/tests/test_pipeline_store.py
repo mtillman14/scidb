@@ -71,6 +71,66 @@ class TestHiddenCombos:
         ]
 
 
+class TestHiddenConstantValues:
+    """hide_constant_value/unhide_constant_value never delete data -- they
+    persist a (pipeline_id, const_name, value) exclusion, a coarser
+    granularity than hide_combo (every call site using the pair, across
+    every function, not just one function's one Cartesian-product row)."""
+
+    def test_round_trip(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_constant_value(db, "low_hz", "20")
+        assert pipeline_store.list_hidden_constant_values(db) == [
+            {"const_name": "low_hz", "value": "20"}
+        ]
+
+    def test_unhide_removes_it(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_constant_value(db, "low_hz", "20")
+        pipeline_store.unhide_constant_value(db, "low_hz", "20")
+        assert pipeline_store.list_hidden_constant_values(db) == []
+
+    def test_hide_idempotent(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_constant_value(db, "low_hz", "20")
+        pipeline_store.hide_constant_value(db, "low_hz", "20")
+        assert len(pipeline_store.list_hidden_constant_values(db)) == 1
+
+    def test_unhide_idempotent(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_constant_value(db, "low_hz", "20")
+        pipeline_store.unhide_constant_value(db, "low_hz", "20")
+        pipeline_store.unhide_constant_value(db, "low_hz", "20")
+        assert pipeline_store.list_hidden_constant_values(db) == []
+
+    def test_scoped_to_pipeline_id(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_constant_value(db, "low_hz", "20", pipeline_id="main")
+        pipeline_store.hide_constant_value(db, "low_hz", "30", pipeline_id="other")
+        assert pipeline_store.list_hidden_constant_values(db, "main") == [
+            {"const_name": "low_hz", "value": "20"}
+        ]
+        assert pipeline_store.list_hidden_constant_values(db, "other") == [
+            {"const_name": "low_hz", "value": "30"}
+        ]
+
+    def test_none_pipeline_id_unions_all_scopes(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_constant_value(db, "low_hz", "20", pipeline_id="main")
+        pipeline_store.hide_constant_value(db, "low_hz", "30", pipeline_id="other")
+        all_hidden = pipeline_store.list_hidden_constant_values(db, None)
+        assert len(all_hidden) == 2
+
+    def test_different_values_are_independent(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_constant_value(db, "low_hz", "20")
+        pipeline_store.hide_constant_value(db, "low_hz", "30")
+        pipeline_store.unhide_constant_value(db, "low_hz", "20")
+        assert pipeline_store.list_hidden_constant_values(db) == [
+            {"const_name": "low_hz", "value": "30"}
+        ]
+
+
 class TestHiddenEdges:
     """hide_edge/unhide_edge never delete data -- they're a completely
     separate table from hidden NODES (hiding an edge keeps the node on

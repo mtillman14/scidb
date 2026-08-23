@@ -868,22 +868,75 @@ def build_variable_nodes(
 def build_constant_nodes(
     const_counts: dict[str, dict],
     pending_constants: dict[str, set[str]],
+    source_values: dict[str, str] | None = None,
+    hidden_values: "dict[str, set[str]] | None" = None,
 ) -> list[dict]:
-    """Build React Flow constant nodes."""
+    """Build React Flow constant nodes.
+
+    source_values: current registry value for each constant name (from
+    ``registry.get_constants_registry()``, stringified), so a source-code
+    edit surfaces in the GUI immediately — mirrors the PathInput/Sweep
+    "source is truth" behavior (see
+    docs/claude/... plan-constant-source-of-truth). A constant with no DB
+    history and no pending value still gets a node (parallels
+    ``seed_undiscovered_path_inputs``). Whichever row's value equals the
+    current source value is tagged ``is_current_source_value: True`` — even
+    if that row already existed as DB history or a pending value — so the
+    frontend can badge it distinctly from stale historical rows (decision
+    #2: source edits never remove DB-history rows, they're only tagged or
+    added alongside).
+
+    hidden_values: {const_name: {hidden value strings}} from
+    ``pipeline_store.list_hidden_constant_values`` — every value row gets a
+    ``"checked"`` bool (``value not in hidden_values.get(const_name, ...)``)
+    so ``ConstantNode.tsx``'s checkbox reflects PERSISTED state instead of
+    the previous hardcoded-true (see plan item 4).
+    """
+    source_values = source_values or {}
+    hidden_values = hidden_values or {}
+    all_names = sorted(set(const_counts) | set(source_values))
     logger.info(
         "[graph_builder] build_constant_nodes: building %d constant node(s)",
-        len(const_counts),
+        len(all_names),
     )
     nodes = []
-    for const_name in sorted(const_counts.keys()):
+    for const_name in all_names:
+        hidden_for_name = hidden_values.get(const_name, set())
         values = [
-            {"value": val, "record_count": cnt}
-            for val, cnt in sorted(const_counts[const_name].items())
+            {"value": val, "record_count": cnt, "checked": val not in hidden_for_name}
+            for val, cnt in sorted(const_counts.get(const_name, {}).items())
         ]
         existing_values = {v["value"] for v in values}
         for pval in sorted(pending_constants.get(const_name, set())):
             if pval not in existing_values:
-                values.append({"value": pval, "record_count": 0})
+                values.append(
+                    {
+                        "value": pval,
+                        "record_count": 0,
+                        "checked": pval not in hidden_for_name,
+                    }
+                )
+                existing_values.add(pval)
+        src_val = source_values.get(const_name)
+        if src_val is not None:
+            if src_val not in existing_values:
+                logger.info(
+                    "[graph_builder] merged new source value for constant "
+                    "%r: %r",
+                    const_name,
+                    src_val,
+                )
+                values.append(
+                    {
+                        "value": src_val,
+                        "record_count": 0,
+                        "checked": src_val not in hidden_for_name,
+                    }
+                )
+                existing_values.add(src_val)
+            for v in values:
+                if v["value"] == src_val:
+                    v["is_current_source_value"] = True
         nodes.append(
             {
                 "id": f"const__{const_name}",

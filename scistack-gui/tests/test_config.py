@@ -935,7 +935,12 @@ def test_set_variable_file_auto_creates_default_when_none_exists(tmp_path):
 
     toml_path = tmp_path / "scistack.toml"
     data = _read_raw_section(toml_path)
-    assert data["variable_file"] == str(expected)
+    # Written relative to project_root for portability -- a variable_file
+    # always lives inside the project, unlike modules/sources which may
+    # point at shared directories outside it (see set_variable_file's
+    # docstring and docs/claude/scistack-gui-project-setup-guide.md's
+    # pyproject.toml convention this mirrors).
+    assert data["variable_file"] == "src/scistack_entities.py"
     assert str(_normalize(tmp_path)) in data["modules"]
 
 
@@ -956,7 +961,7 @@ def test_set_variable_file_accepts_relative_path(tmp_path):
 
     toml_path = tmp_path / "scistack.toml"
     data = _read_raw_section(toml_path)
-    assert data["variable_file"] == str(expected)
+    assert data["variable_file"] == "custom/relative_entities.py"
 
 
 def test_set_variable_file_relative_path_resolves_against_existing_root(tmp_path):
@@ -988,7 +993,11 @@ def test_set_variable_file_explicit_path_registers_module(tmp_path):
     assert result == _normalize(explicit)
     assert explicit.exists()
     data = _read_raw_section(toml_file)
-    assert data["variable_file"] == str(_normalize(explicit))
+    # variable_file is written relative to project_root (portability); the
+    # modules entry added alongside it still uses the absolute form, same
+    # as every other modules/sources entry (those may point outside the
+    # project root, so they're never made relative).
+    assert data["variable_file"] == "vars/custom_variables.py"
     assert str(_normalize(explicit)) in data["modules"]
     assert "other" in data["modules"]  # untouched
 
@@ -1032,6 +1041,25 @@ def test_set_variable_file_absolute_path_used_as_is(tmp_path):
     result = set_variable_file(db_path, absolute)
 
     assert result == _normalize(absolute)
+
+
+def test_set_variable_file_outside_project_root_written_absolute(tmp_path):
+    """A variable_file that isn't under project_root at all (e.g. an
+    existing file elsewhere on disk) can't be made relative -- falls back
+    to the absolute form rather than raising."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    db_path = project_root / "proj.duckdb"
+    db_path.write_text("")
+    outside = tmp_path / "elsewhere" / "vars.py"
+    outside.parent.mkdir()
+    outside.write_text("import scidb\n")
+
+    set_variable_file(db_path, outside)
+
+    toml_file = project_root / "scistack.toml"
+    data = _read_raw_section(toml_file)
+    assert data["variable_file"] == str(_normalize(outside))
 
 
 def test_set_variable_file_rejects_packaged_project(tmp_path):

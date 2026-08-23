@@ -8,9 +8,21 @@
  * PipelineDAG re-fetches whenever currentScope or graphVersion changes;
  * scope mutations (create/delete pipeline, place/remove a use, binding
  * edits) call bumpGraph() to trigger a refetch.
+ *
+ * markNodeDirty/clearNodeDirty/getDirtyPatch guard against that refetch:
+ * ANY node's put_layout broadcasts a 'dag_updated' websocket message to
+ * every client, which triggers the exact same refetch path as bumpGraph()
+ * -- including the client that's mid-edit. Sidebar panels that preview
+ * edits live (e.g. FunctionSettingsPanel's where-filter fields, updated on
+ * every keystroke but only persisted on blur/Enter) call markNodeDirty()
+ * alongside their live canvas update; PipelineDAG's fetch-merge re-applies
+ * the pending patch on top of the freshly fetched node so an unrelated
+ * refetch -- like the one triggered by dragging a brand new node onto the
+ * canvas -- can't silently revert an unsaved draft back to the last-saved
+ * value. Cleared once the panel's save round-trip actually lands.
  */
 
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, useRef } from 'react'
 
 export interface BindingSpec {
   key_map?: Record<string, string>
@@ -52,6 +64,9 @@ interface ScopeContextValue {
   renameInPath: (pipeline_id: string, name: string) => void
   graphVersion: number
   bumpGraph: () => void
+  markNodeDirty: (nodeId: string, patch: Record<string, unknown>) => void
+  clearNodeDirty: (nodeId: string) => void
+  getDirtyPatch: (nodeId: string) => Record<string, unknown> | undefined
 }
 
 const ScopeContext = createContext<ScopeContextValue | null>(null)
@@ -92,12 +107,30 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
 
   const bumpGraph = useCallback(() => setGraphVersion(v => v + 1), [])
 
+  // A ref, not state: patches land here on every keystroke and must not
+  // trigger a re-render of the whole scope tree.
+  const dirtyNodeDataRef = useRef<Map<string, Record<string, unknown>>>(new Map())
+
+  const markNodeDirty = useCallback((nodeId: string, patch: Record<string, unknown>) => {
+    const existing = dirtyNodeDataRef.current.get(nodeId) ?? {}
+    dirtyNodeDataRef.current.set(nodeId, { ...existing, ...patch })
+  }, [])
+
+  const clearNodeDirty = useCallback((nodeId: string) => {
+    dirtyNodeDataRef.current.delete(nodeId)
+  }, [])
+
+  const getDirtyPatch = useCallback(
+    (nodeId: string) => dirtyNodeDataRef.current.get(nodeId),
+    []
+  )
+
   const currentScope = breadcrumb[breadcrumb.length - 1].pipeline_id
 
   return (
     <ScopeContext.Provider value={{
       currentScope, breadcrumb, descend, ascendTo, jumpTo, jumpToRoot, renameInPath,
-      graphVersion, bumpGraph,
+      graphVersion, bumpGraph, markNodeDirty, clearNodeDirty, getDirtyPatch,
     }}>
       {children}
     </ScopeContext.Provider>

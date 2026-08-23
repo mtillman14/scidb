@@ -133,6 +133,22 @@ def _ensure_tables(db) -> None:
             variant_key   VARCHAR NOT NULL
         )
     """)
+    # Constant-value hides (checkbox in ConstantNode.tsx) — a coarser
+    # granularity than _pipeline_hidden_combos: hiding (const_name, value)
+    # excludes every call site across every function that uses that pair,
+    # not just one function's one Cartesian-product row. Pipeline-id scoped
+    # from the start, unlike _pipeline_hidden_combos which was left globally
+    # scoped (see get_hidden_node_ids docstring) as a still-deferred
+    # follow-up — see .claude/plan-constant-source-of-truth-26-08-22.md
+    # design item 2.
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_hidden_constant_values (
+            pipeline_id VARCHAR NOT NULL DEFAULT 'main',
+            const_name  VARCHAR NOT NULL,
+            value       VARCHAR NOT NULL,
+            PRIMARY KEY (pipeline_id, const_name, value)
+        )
+    """)
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_edges (
             pipeline_id   VARCHAR NOT NULL DEFAULT 'main',
@@ -1060,6 +1076,59 @@ def list_hidden_combos(db, function_name: str) -> list[dict]:
         {"node_id": node_id, "variant_key": json.loads(variant_key)}
         for node_id, variant_key in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Hidden constant values — see _pipeline_hidden_constant_values above.
+# ---------------------------------------------------------------------------
+
+
+def hide_constant_value(
+    db, const_name: str, value: str, pipeline_id: str = ROOT_PIPELINE_ID
+) -> None:
+    """Mark one constant value as excluded from future runs, without
+    deleting anything (per-value analog of ``hide_node``)."""
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_hidden_constant_values "
+        "(pipeline_id, const_name, value) VALUES (?, ?, ?) "
+        "ON CONFLICT DO NOTHING",
+        [pipeline_id, const_name, value],
+    )
+
+
+def unhide_constant_value(
+    db, const_name: str, value: str, pipeline_id: str = ROOT_PIPELINE_ID
+) -> None:
+    """Restore a previously hidden constant value."""
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_hidden_constant_values "
+        "WHERE pipeline_id = ? AND const_name = ? AND value = ?",
+        [pipeline_id, const_name, value],
+    )
+
+
+def list_hidden_constant_values(
+    db, pipeline_id: "str | None" = ROOT_PIPELINE_ID
+) -> list[dict]:
+    """Return hidden constant values as [{"const_name", "value"}, ...].
+
+    ``pipeline_id=None`` returns every scope's hidden values unioned — same
+    fail-open convention as ``get_hidden_node_ids``.
+    """
+    _ensure_tables(db)
+    if pipeline_id is None:
+        rows = _duck(db)._fetchall(
+            "SELECT const_name, value FROM _pipeline_hidden_constant_values"
+        )
+    else:
+        rows = _duck(db)._fetchall(
+            "SELECT const_name, value FROM _pipeline_hidden_constant_values "
+            "WHERE pipeline_id = ?",
+            [pipeline_id],
+        )
+    return [{"const_name": const_name, "value": value} for const_name, value in rows]
 
 
 # ---------------------------------------------------------------------------

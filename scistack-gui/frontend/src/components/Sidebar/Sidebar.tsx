@@ -222,7 +222,6 @@ export default function Sidebar() {
         )}
         {isSweepNode(selectedNode) && (
           <SweepSettingsPanel
-            id={selectedNode.id}
             label={(selectedNode.data as SweepNodeData).label}
             values={(selectedNode.data as SweepNodeData).values ?? []}
           />

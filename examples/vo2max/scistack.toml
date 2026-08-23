@@ -1,0 +1,14 @@
+# Written by the SciStack GUI's Paths popup.
+# Hand-editing is fine -- this file is re-read on every scan.
+
+modules = [
+    "/Users/mitchelltillman/Documents/general-sqlite-database/examples/vo2max",
+    "/Users/mitchelltillman/Documents/data-analytics-code-libraries",
+]
+variable_file = "src/scistack_entities.py"
+
+[matlab]
+sources = [
+    "/Users/mitchelltillman/Documents/general-sqlite-database/examples/vo2max",
+    "/Users/mitchelltillman/Documents/data-analytics-code-libraries",
+]
