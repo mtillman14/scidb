@@ -8,8 +8,8 @@
  *   - Run output is sent to the sidebar Runs tab via RunLogContext.
  */
 
-import { useState, useCallback, useRef } from 'react'
-import { Handle, Position, useReactFlow } from '@xyflow/react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { Handle, Position, useReactFlow, useUpdateNodeInternals } from '@xyflow/react'
 import { callBackend, isVSCodeMode } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useRunLog } from '../../context/RunLogContext'
@@ -71,6 +71,7 @@ interface Props {
 
 export default function FunctionNode({ id, data }: Props) {
   const { getNodes, getEdges } = useReactFlow()
+  const updateNodeInternals = useUpdateNodeInternals()
   const { currentScope } = useScope()
   const [running, setRunning] = useState(false)
   const [cancelling, setCancelling] = useState(false)
@@ -238,19 +239,64 @@ export default function FunctionNode({ id, data }: Props) {
   const inputParams = data.input_params ?? {}
   const outTypes = data.output_types ?? []
   const constParams = data.constant_params ?? []
-  // All left-side handles: variable inputs first (by param name), then constants
+  // All left-side handles: variable inputs first (by param name), then
+  // parameters.
+  //
+  // The parameter handle id MUST be `param__{name}` — the backend's
+  // PARAM_ID_PREFIX, and exactly what graph_builder.build_edges writes as
+  // the targetHandle of a DB-derived Parameter→function edge. It said
+  // `const__` here (a leftover from before Constants and Sweeps merged into
+  // Parameters), so a synthesized edge's handle never matched a rendered
+  // one, and a hand-drawn edge onto this handle reached the backend with a
+  // prefix nothing recognised. That used to be absorbed by a fallback that
+  // guessed the parameter from the SOURCE NODE'S LABEL — right only when
+  // the declared name and the parameter name happen to coincide. The
+  // fallback is gone (inputs are built from edges alone), so the id has to
+  // be the real one.
   const leftHandles = [
     ...Object.entries(inputParams).map(([param, type]) => ({
       id: `in__${param}`,
       label: param,
       title: type ? `${param}: ${type}` : param,
     })),
-    ...constParams.map(c => ({ id: `const__${c}`, label: c, title: c })),
+    ...constParams.map(c => ({ id: `param__${c}`, label: c, title: c })),
   ]
 
-  const handleStyle = (index: number, total: number): React.CSSProperties => ({
+  // React Flow caches each handle's measured bounds at mount. A node
+  // dropped on the canvas changes its handle set twice afterwards — first
+  // when get_function_params resolves asynchronously, then again on the
+  // dag_updated refetch (PipelineDAG.onDrop) — and every handle's computed
+  // `top` depends on the TOTAL count, so they all move. Without this the
+  // cached bounds stay stale until some unrelated interaction forces a
+  // re-measure, which is why the handle appeared misplaced until another
+  // node was dragged onto the canvas.
+  //
+  // The console.debug is deliberately NOT gated behind a dev-only flag: the
+  // bug is reproduced against built bundles, so a DEV gate would hide the
+  // diagnostic exactly when it's wanted. console.debug sits at the console's
+  // "verbose" level and is hidden unless explicitly enabled.
+  const handleKey = `${leftHandles.map(h => h.id).join('|')}>${outTypes.join('|')}`
+  useEffect(() => {
+    updateNodeInternals(id)
+    // eslint-disable-next-line no-console
+    console.debug(
+      `[FunctionNode ${id}] handle set changed -> ${leftHandles.length} target(s), `
+      + `${outTypes.length} source(s): ${handleKey}`
+    )
+  }, [id, handleKey])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Setting `transform` here overrides React Flow's own rule for the side,
+  // so the X component has to be restored explicitly or the dot sits inset
+  // instead of straddling the node border:
+  //   .react-flow__handle-left  { transform: translate(-50%, -50%) }
+  //   .react-flow__handle-right { transform: translate( 50%, -50%) }
+  const handleStyle = (
+    index: number,
+    total: number,
+    side: 'left' | 'right',
+  ): React.CSSProperties => ({
     top: `${((index + 1) / (total + 1)) * 100}%`,
-    transform: 'translateY(-50%)',
+    transform: `translate(${side === 'left' ? '-50%' : '50%'}, -50%)`,
   })
 
   return (
@@ -266,7 +312,7 @@ export default function FunctionNode({ id, data }: Props) {
               id={h.id}
               type="target"
               position={Position.Left}
-              style={handleStyle(i, leftHandles.length)}
+              style={handleStyle(i, leftHandles.length, 'left')}
               title={h.title}
             />
           ))
@@ -406,7 +452,7 @@ export default function FunctionNode({ id, data }: Props) {
               id={`out__${t}`}
               type="source"
               position={Position.Right}
-              style={handleStyle(i, outTypes.length)}
+              style={handleStyle(i, outTypes.length, 'right')}
               title={t}
             />
           ))

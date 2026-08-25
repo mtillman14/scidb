@@ -66,12 +66,16 @@ def _build_matlab_only_scope(client, pid: str, fn_name: str = "matlab_proc") -> 
     client.put("/api/layout/mv_out", json={
         "x": 20, "y": 0, "node_type": "variableNode", "label": "MatlabOutput", "pipeline_id": pid,
     })
-    client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_a"})
+    client.put("/api/edges/e_in", json={
+        "source": "mv_in", "target": "mf_a", "target_handle": "in__signal",
+    })
     client.put("/api/edges/e_out", json={"source": "mf_a", "target": "mv_out"})
     client.put("/api/layout/mc_gain", json={
         "x": 5, "y": 5, "node_type": "parameterNode", "label": "gain", "pipeline_id": pid,
     })
-    client.put("/api/edges/e_gain", json={"source": "mc_gain", "target": "mf_a"})
+    client.put("/api/edges/e_gain", json={
+        "source": "mc_gain", "target": "mf_a", "target_handle": "in__gain",
+    })
     client.put("/api/parameters/gain/pending/2.5")
 
 
@@ -227,12 +231,16 @@ class TestGenerateMatlabPipelineCommandService:
             client.put("/api/layout/pv_out", json={
                 "x": 20, "y": 40, "node_type": "variableNode", "label": "FilteredSignal", "pipeline_id": pid,
             })
-            client.put("/api/edges/pe_in", json={"source": "pv_in", "target": "pf_a"})
+            client.put("/api/edges/pe_in", json={
+                "source": "pv_in", "target": "pf_a", "target_handle": "in__signal",
+            })
             client.put("/api/edges/pe_out", json={"source": "pf_a", "target": "pv_out"})
             client.put("/api/layout/pc_low_hz", json={
                 "x": 5, "y": 45, "node_type": "parameterNode", "label": "low_hz", "pipeline_id": pid,
             })
-            client.put("/api/edges/pe_low_hz", json={"source": "pc_low_hz", "target": "pf_a"})
+            client.put("/api/edges/pe_low_hz", json={
+                "source": "pc_low_hz", "target": "pf_a", "target_handle": "in__low_hz",
+            })
             client.put("/api/parameters/low_hz/pending/20")
 
             result = generate_matlab_pipeline_command(pid, get_db(), {"mode": "all"})

@@ -64,11 +64,11 @@ class TestPythonBuiltinValidation:
 
 
 # ---------------------------------------------------------------------------
-# Python — successful registration (needs a real DB for persistence)
+# Python — successful creation (needs a real DB for persistence)
 # ---------------------------------------------------------------------------
 
 
-class TestPythonBuiltinRegistration:
+class TestPythonLibraryFunctionCreation:
     def test_stdlib_bare_name(self, populated_db):
         result = svc.create_builtin_function("python", "len")
         assert result["ok"] is True
@@ -81,7 +81,13 @@ class TestPythonBuiltinRegistration:
         result = svc.create_builtin_function("python", "math.sqrt")
         assert result["ok"] is True
         assert result["name"] == "math.sqrt"
-        assert registry.get_function("math.sqrt") is math.sqrt
+        fn = registry.get_function("math.sqrt")
+        # Name-qualified wrapper (library_functions.with_qualified_name):
+        # `sqrt.__name__` is "sqrt", so it gets wrapped to record as
+        # "math.sqrt". `len` above needs no wrapper — its name already matches.
+        assert fn.__wrapped__ is math.sqrt
+        assert fn.__name__ == "math.sqrt"
+        assert fn(9) == 3.0
 
     def test_numpy_allowed(self, populated_db):
         result = svc.create_builtin_function("python", "numpy.mean")
@@ -94,17 +100,74 @@ class TestPythonBuiltinRegistration:
         assert result["ok"] is True
         assert result["name"] == "pandas.read_csv"
 
-    def test_persisted_and_replayed(self, populated_db):
-        """A registered builtin survives registry.load_from_config's
-        .clear() when replayed from the persisted store."""
+    def test_never_stored_in_the_function_registry(self, populated_db):
+        """The whole point of the import-on-demand design: the callable is
+        NOT cached in registry._functions, so no refresh can evict it."""
         svc.create_builtin_function("python", "numpy.mean")
+        assert "numpy.mean" not in registry._functions
+        assert callable(registry.get_function("numpy.mean"))
+
+    def test_survives_a_registry_clear_without_replay(self, populated_db):
+        """Regression for the reported bug: several refresh paths clear
+        registry._functions without calling replay_persisted_builtins, and
+        the run then failed with 'not found in registry'. Resolution by
+        import has no such dependency."""
+        svc.create_builtin_function("python", "pandas.read_csv")
+
         registry._functions.clear()
         registry._function_sources.clear()
-        assert "numpy.mean" not in registry._functions
+
+        assert callable(registry.get_function("pandas.read_csv"))
+
+    def test_persisted_name_is_listed(self, populated_db):
+        """The DB table is now the only record of which library functions
+        exist, so the listing has to come from there."""
+        svc.create_builtin_function("python", "numpy.mean")
+        assert "numpy.mean" in svc.get_python_library_function_names(populated_db)
+
+    def test_replay_reports_python_without_registering(self, populated_db):
+        svc.create_builtin_function("python", "numpy.mean")
+        registry._functions.clear()
 
         replay_result = svc.replay_persisted_builtins(populated_db)
         assert replay_result["counts"]["python"] == 1
-        assert callable(registry.get_function("numpy.mean"))
+        assert "numpy.mean" not in registry._functions
+
+
+# ---------------------------------------------------------------------------
+# Python — conventional import aliases (pd./np.)
+# ---------------------------------------------------------------------------
+
+
+class TestPythonAliases:
+    def test_pd_alias_canonicalized(self, populated_db):
+        result = svc.create_builtin_function("python", "pd.read_csv")
+        assert result["ok"] is True
+        assert result["name"] == "pandas.read_csv"
+
+    def test_np_alias_canonicalized(self, populated_db):
+        result = svc.create_builtin_function("python", "np.mean")
+        assert result["ok"] is True
+        assert result["name"] == "numpy.mean"
+
+    def test_only_the_canonical_name_is_persisted(self, populated_db):
+        """The alias must not reach persistence — two names for one
+        function would fork run history."""
+        svc.create_builtin_function("python", "pd.read_csv")
+        names = svc.get_python_library_function_names(populated_db)
+        assert "pandas.read_csv" in names
+        assert "pd.read_csv" not in names
+
+    def test_alias_resolves_at_lookup_too(self, populated_db):
+        """A node label saved before canonicalization (or typed straight
+        into a run) still resolves rather than dying at run time."""
+        import pandas
+
+        fn = registry.get_function("pd.read_csv")
+        # Name-qualified wrapper (see library_functions.with_qualified_name),
+        # so identity is checked through __wrapped__.
+        assert fn.__wrapped__ is pandas.read_csv
+        assert fn.__name__ == "pandas.read_csv"
 
 
 # ---------------------------------------------------------------------------

@@ -461,15 +461,26 @@ def _run_in_thread(
                 if v["constants"]
                 else function_name
             )
+            # Every binding kind, tagged by origin. This used to print
+            # ``input_types`` alone — variables only — so a healthy
+            # PathInput-fed run logged ``inputs={}``, which is the exact
+            # signature the zero-combo warning below tells you to look for.
+            _binding_summary = {
+                param: (
+                    b["ref"]
+                    if b["kind"] == "variable"
+                    else f"{b['kind']}:{b['ref']}"
+                )
+                for param, b in (v.get("bindings") or {}).items()
+            }
             logger.info(
-                "[run_thread] Target %d/%d -> %s, inputs=%s, output=%s (run_id=%s)",
+                "[run_thread] Target %d/%d -> %s, inputs=%s, constants=%s, "
+                "output=%s (run_id=%s)",
                 idx,
                 len(unique_targets),
                 label,
-                {
-                    k: (type_names if isinstance(type_names, list) else [type_names])
-                    for k, type_names in v["input_types"].items()
-                },
+                _binding_summary or "{} (nothing wired)",
+                v.get("constants") or {},
                 v["output_type"],
                 run_id,
             )
@@ -678,6 +689,24 @@ def _run_in_thread(
             duration_ms,
             run_id,
         )
+        if (
+            success
+            and not cancelled
+            and sum(combo_totals[k] for k in ("completed", "failed", "no_data")) == 0
+        ):
+            # A run that iterated zero times wrote nothing, so every node it
+            # touches stays red while the run itself reports success. Said
+            # out loud because the alternative is inferring it from the
+            # target's binding line several hundred entries earlier.
+            logger.warning(
+                "[run_thread] '%s' completed without running a single "
+                "combination — nothing was computed and no records were "
+                "written, so its nodes will stay red. Check that the "
+                "function's inputs are wired to the right handles and that "
+                "any PathInput resolves to real files (run_id=%s)",
+                function_name,
+                run_id,
+            )
         logger.debug("[run_thread] Emitting run_done message (run_id=%s)", run_id)
         push_message(
             {

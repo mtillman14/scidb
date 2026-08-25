@@ -1655,70 +1655,136 @@ class TestNormalizeInputTypes:
 
 
 class TestCollectSweepParams:
-    """_collect_sweep_params mirrors PathInput's manual-edge collection
-    (matlab_command_service's "Source 2"), but a Sweep has no DB-history
-    source at all — the registry + manual edges are the ONLY source."""
+    """_collect_sweep_params mirrors PathInput's edge collection
+    (matlab_command_service's "Source 2"), but a Parameter has no DB-history
+    source at all — the registry + edges are the ONLY source.
+
+    Both now route through the shared edge_resolver rather than hand-rolling
+    the scan, so the MATLAB generators and the Python execution path agree on
+    what a given canvas means."""
 
     def _edge(self, source, target, target_handle):
         return {"source": source, "target": target, "targetHandle": target_handle}
 
-    def test_wires_sweep_to_matching_function_param(self):
-        from scistack_gui.domain.graph_builder import strip_placement
+    def test_wires_parameter_to_the_param_its_handle_names(self):
         from scistack_gui.services.matlab_command_service import (
             _collect_sweep_params,
         )
 
         edges = [self._edge("param__low_hz", "fn__bandpass_filter", "in__low_hz")]
         result = _collect_sweep_params(
-            "bandpass_filter",
-            {"low_hz": [10, 20, 30]},
-            edges,
-            strip_placement,
+            "bandpass_filter", {"low_hz": [10, 20, 30]}, edges, {}
         )
         assert result == {"low_hz": [10, 20, 30]}
 
+    def test_declared_name_may_differ_from_the_param(self):
+        """Keyed by the PARAM the edge names, looked up by the DECLARED name
+        — the distinction the old hand-rolled scan collapsed."""
+        from scistack_gui.services.matlab_command_service import (
+            _collect_sweep_params,
+        )
+
+        edges = [self._edge("param__test", "fn__bandpass_filter", "in__low_hz")]
+        result = _collect_sweep_params(
+            "bandpass_filter", {"test": [10, 20]}, edges, {}
+        )
+        assert result == {"low_hz": [10, 20]}
+
     def test_ignores_edges_for_other_functions(self):
-        from scistack_gui.domain.graph_builder import strip_placement
         from scistack_gui.services.matlab_command_service import (
             _collect_sweep_params,
         )
 
         edges = [self._edge("param__low_hz", "fn__other_fn", "in__low_hz")]
         result = _collect_sweep_params(
-            "bandpass_filter",
-            {"low_hz": [10, 20, 30]},
-            edges,
-            strip_placement,
+            "bandpass_filter", {"low_hz": [10, 20, 30]}, edges, {}
         )
         assert result == {}
 
-    def test_ignores_non_sweep_source_edges(self):
-        from scistack_gui.domain.graph_builder import strip_placement
+    def test_ignores_non_parameter_source_edges(self):
         from scistack_gui.services.matlab_command_service import (
             _collect_sweep_params,
         )
 
         edges = [self._edge("var__low_hz", "fn__bandpass_filter", "in__low_hz")]
         result = _collect_sweep_params(
-            "bandpass_filter",
-            {"low_hz": [10, 20, 30]},
-            edges,
-            strip_placement,
+            "bandpass_filter", {"low_hz": [10, 20, 30]}, edges, {}
         )
         assert result == {}
 
-    def test_sweep_name_not_in_saved_sweeps_is_skipped(self):
-        from scistack_gui.domain.graph_builder import strip_placement
+    def test_parameter_name_not_in_saved_sweeps_is_skipped(self):
         from scistack_gui.services.matlab_command_service import (
             _collect_sweep_params,
         )
 
         edges = [self._edge("param__unknown", "fn__bandpass_filter", "in__low_hz")]
         result = _collect_sweep_params(
-            "bandpass_filter",
-            {"low_hz": [10, 20, 30]},
+            "bandpass_filter", {"low_hz": [10, 20, 30]}, edges, {}
+        )
+        assert result == {}
+
+    def test_placement_qualified_fn_endpoint_is_recognised(self):
+        """A graduated node's edge carries fn__{name}__{wiring}::{scope};
+        the shared _fn_node_ids adopts it, where the old prefix-only scan
+        matched on a bare split and could miss it."""
+        from scistack_gui.services.matlab_command_service import (
+            _collect_sweep_params,
+        )
+
+        edges = [
+            self._edge(
+                "param__low_hz",
+                "fn__bandpass_filter__0123456789abcdef::main",
+                "in__low_hz",
+            )
+        ]
+        result = _collect_sweep_params(
+            "bandpass_filter", {"low_hz": [10]}, edges, {}
+        )
+        assert result == {"low_hz": [10]}
+
+
+class TestCollectEdgePathInputs:
+    """The PathInput half of the same shared resolution."""
+
+    def _edge(self, source, target, target_handle):
+        return {"source": source, "target": target, "targetHandle": target_handle}
+
+    def test_declared_name_may_differ_from_the_param(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_edge_path_inputs,
+        )
+
+        edges = [
+            self._edge("pathInput__test_pi", "fn__load_raw", "in__filepath")
+        ]
+        result = _collect_edge_path_inputs(
+            "load_raw",
+            {"test_pi": {"template": "{subject}.csv", "root_folder": "/data"}},
             edges,
-            strip_placement,
+            {},
+        )
+        assert result == {
+            "filepath": {"template": "{subject}.csv", "root_folder": "/data"}
+        }
+
+    def test_unknown_declared_name_is_skipped(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_edge_path_inputs,
+        )
+
+        edges = [self._edge("pathInput__gone", "fn__load_raw", "in__filepath")]
+        result = _collect_edge_path_inputs("load_raw", {}, edges, {})
+        assert result == {}
+
+    def test_ignores_edges_for_other_functions(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_edge_path_inputs,
+        )
+
+        edges = [self._edge("pathInput__test_pi", "fn__other", "in__filepath")]
+        result = _collect_edge_path_inputs(
+            "load_raw", {"test_pi": {"template": "x.csv"}}, edges, {}
         )
         assert result == {}
 

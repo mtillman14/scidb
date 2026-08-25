@@ -749,8 +749,18 @@ class SciDuck:
         # NOTE: DuckDB's Python connection returns itself from execute(), so
         # execute() and fetchXxx() share the same connection state.  All callers
         # that fetch results must hold _lock for the entire execute+fetch sequence.
-        # Use _fetchall / _fetchdf for queries that return rows; call _execute
-        # directly (under _lock) only for DDL/DML that needs no fetch.
+        # Use _fetchall / _fetchone / _fetchdf for queries that return rows; call
+        # _execute directly (under _lock) only for DDL/DML that needs no fetch.
+        #
+        # NEVER write `_execute(...).fetchall()` (or .fetchone()/.fetchdf()).
+        # _execute releases _lock when this `with` block exits, so the fetch runs
+        # UNPROTECTED: a concurrent execute() on the shared connection tears the
+        # pending result down mid-fetch and DuckDB raises
+        #   INTERNAL Error: Attempted to dereference shared_ptr that is NULL!
+        # This is intermittent and load-dependent — it crashed a GUI graph build
+        # on 2026-08-25 when GET /path-inputs and GET /pipeline overlapped by 1ms
+        # on two FastAPI threadpool threads. test_no_unlocked_fetch_after_execute
+        # guards the pattern repo-wide.
         thread = threading.get_ident()
         wait_start = time.monotonic()
         with self._lock:
@@ -918,6 +928,39 @@ class SciDuck:
     def fetchall(self, sql: str, params=None) -> list:
         """Public alias for _fetchall — accessible from MATLAB (underscore methods are not)."""
         return self._fetchall(sql, params)
+
+    def _fetchone(self, sql: str, params=None):
+        """First result row, or ``None`` — the locked counterpart to
+        ``_fetchall`` for single-row lookups.
+
+        Exists so callers never have to write ``_execute(...).fetchone()``,
+        which fetches after the lock has already been released. See the NOTE
+        on ``_execute``.
+        """
+        thread = threading.get_ident()
+        wait_start = time.monotonic()
+        with self._lock:
+            waited = time.monotonic() - wait_start
+            foreign_tx = self._tx_owner is not None and self._tx_owner != thread
+            logger.debug(
+                "_fetchone thread=%d waited=%.4fs tx_owner=%s foreign_tx=%s sql=%s",
+                thread, waited, self._tx_owner, foreign_tx, _truncate_sql(sql),
+            )
+            try:
+                if params:
+                    return self.con.execute(sql, params).fetchone()
+                return self.con.execute(sql).fetchone()
+            except Exception:
+                logger.exception(
+                    "_fetchone FAILED thread=%d tx_owner=%s foreign_tx=%s sql=%s",
+                    thread, self._tx_owner, foreign_tx, _truncate_sql(sql),
+                )
+                self._recover_from_autocommit_failure()
+                raise
+
+    def fetchone(self, sql: str, params=None):
+        """Public alias for _fetchone — accessible from MATLAB (underscore methods are not)."""
+        return self._fetchone(sql, params)
 
     def _fetchdf(self, sql: str, params=None) -> pd.DataFrame:
         thread = threading.get_ident()

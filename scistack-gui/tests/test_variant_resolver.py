@@ -248,8 +248,15 @@ class TestMergePendingConstants:
 
 class TestComputeCallId:
     def _target(self, constants=None, input_types=None):
+        types = input_types or {"signal": "RawEMG"}
         return {
-            "input_types": input_types or {"signal": "RawEMG"},
+            # Identity reads `bindings`; `input_types` rides along as the
+            # display view of the same variable bindings.
+            "bindings": {
+                p: {"kind": "variable", "ref": t if isinstance(t, list) else [t]}
+                for p, t in types.items()
+            },
+            "input_types": types,
             "output_type": "Out",
             "constants": constants or {"hz": 10},
         }
@@ -458,14 +465,55 @@ class TestFilterHiddenConstantValueTargets:
         targets = [{"input_types": {}, "output_type": "A", "constants": {}}]
         assert filter_hidden_constant_value_targets(targets, {"hz": {"10"}}) == targets
 
+    def test_hidden_value_is_matched_by_the_declared_name(self):
+        """``constants`` is keyed by the FUNCTION PARAMETER; hidden_values by
+        the Parameter node's DECLARED name. When they differ, comparing them
+        directly matches nothing and every unchecked value runs anyway —
+        the target's Parameter binding is the translation."""
+        targets = [
+            {
+                "input_types": {},
+                "output_type": "A",
+                "constants": {"window": 10},
+                "bindings": {"window": {"kind": "parameter", "ref": "test"}},
+            }
+        ]
+        assert filter_hidden_constant_value_targets(targets, {"test": {"10"}}) == []
+
+    def test_parameter_name_does_not_match_when_declaration_differs(self):
+        """The converse: hiding under the PARAMETER's name must not fire when
+        the declaration is called something else — that value belongs to a
+        different Parameter node's checkbox."""
+        targets = [
+            {
+                "input_types": {},
+                "output_type": "A",
+                "constants": {"window": 10},
+                "bindings": {"window": {"kind": "parameter", "ref": "test"}},
+            }
+        ]
+        result = filter_hidden_constant_value_targets(targets, {"window": {"10"}})
+        assert result == targets
+
+    def test_missing_parameter_binding_falls_back_to_the_param_name(self):
+        """DB-history targets carry no bindings; there the two names are the
+        same string by construction."""
+        targets = [{"input_types": {}, "output_type": "A", "constants": {"hz": 10}}]
+        assert filter_hidden_constant_value_targets(targets, {"hz": {"10"}}) == []
+
 
 class TestFilterDisconnectedTargets:
     def _target(self, input_types=None, output_type="Out", constants=None):
+        # `or` would silently treat an explicitly-passed {} as "use the
+        # default" (empty dict is falsy) — tests below rely on {} being
+        # respected as-is (e.g. a constant-only target with no var inputs).
+        types = {"signal": "RawEMG"} if input_types is None else input_types
         return {
-            # `or` would silently treat an explicitly-passed {} as "use the
-            # default" (empty dict is falsy) — tests below rely on {} being
-            # respected as-is (e.g. a constant-only target with no var inputs).
-            "input_types": {"signal": "RawEMG"} if input_types is None else input_types,
+            "bindings": {
+                p: {"kind": "variable", "ref": t if isinstance(t, list) else [t]}
+                for p, t in types.items()
+            },
+            "input_types": types,
             "output_type": output_type,
             "constants": constants or {},
         }
@@ -478,7 +526,7 @@ class TestFilterDisconnectedTargets:
         from scistack_gui.domain.graph_builder import wiring_id
 
         target = self._target({"signal": "RawEMG"})
-        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"}, {})
         hidden = {f"e__RawEMG__fn__{wid}"}
         assert filter_disconnected_targets([target], "fn", hidden) == []
 
@@ -486,7 +534,7 @@ class TestFilterDisconnectedTargets:
         from scistack_gui.domain.graph_builder import wiring_id
 
         target = self._target({}, constants={"low_hz": 20})
-        wid = wiring_id("fn", {}, {"Out"})
+        wid = wiring_id("fn", {}, {"Out"}, {})
         hidden = {f"e__low_hz__fn__{wid}"}
         assert filter_disconnected_targets([target], "fn", hidden) == []
 
@@ -503,7 +551,7 @@ class TestFilterDisconnectedTargets:
 
         t1 = self._target({"signal": "RawEMG"}, constants={"hz": 10})
         t2 = self._target({"signal": "RawEMG"}, constants={"hz": 20})
-        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"}, {})
         hidden = {f"e__RawEMG__fn__{wid}"}
         assert filter_disconnected_targets([t1, t2], "fn", hidden) == []
 
@@ -514,7 +562,7 @@ class TestFilterDisconnectedTargets:
 
         vo2 = self._target({"signal": "RawVO2"})
         hr = self._target({"signal": "RawHeartRate"})
-        wid_vo2 = wiring_id("fn", {"signal": "RawVO2"}, {"Out"})
+        wid_vo2 = wiring_id("fn", {"signal": "RawVO2"}, {"Out"}, {})
         hidden = {f"e__RawVO2__fn__{wid_vo2}"}
         assert filter_disconnected_targets([vo2, hr], "fn", hidden) == [hr]
 
@@ -522,7 +570,7 @@ class TestFilterDisconnectedTargets:
         from scistack_gui.domain.graph_builder import wiring_id
 
         target = self._target({"signal": ["A", "B"]})
-        wid = wiring_id("fn", {"signal": ["A", "B"]}, {"Out"})
+        wid = wiring_id("fn", {"signal": ["A", "B"]}, {"Out"}, {})
         hidden = {f"e__B__fn__{wid}"}
         assert filter_disconnected_targets([target], "fn", hidden) == []
 
@@ -537,7 +585,7 @@ class TestFilterDisconnectedTargets:
 
         target = self._target({"signal": "RawEMG"})
         target["call_id"] = "stale0000000000"
-        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"}, {})
         hidden = {f"e__RawEMG__fn__{wid}"}
         manual_edges = [
             {
@@ -548,7 +596,13 @@ class TestFilterDisconnectedTargets:
         ]
         result = filter_disconnected_targets([target], "fn", hidden, manual_edges)
         assert result == [
-            {"input_types": {"signal": "OtherEMG"}, "output_type": "Out", "constants": {}}
+            {
+                "bindings": {"signal": {"kind": "variable", "ref": ["OtherEMG"]}},
+                # The view stays in step with the bindings it views.
+                "input_types": {"signal": "OtherEMG"},
+                "output_type": "Out",
+                "constants": {},
+            }
         ]
         assert "call_id" not in result[0]
 
@@ -556,7 +610,7 @@ class TestFilterDisconnectedTargets:
         from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
 
         target = self._target({"signal": "RawEMG"})
-        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"}, {})
         hidden = {f"e__RawEMG__fn__{wid}"}
         manual_edges = [
             {
@@ -573,7 +627,7 @@ class TestFilterDisconnectedTargets:
         from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
 
         target = self._target({"signal": "RawEMG"}, constants={"low_hz": 20})
-        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"})
+        wid = wiring_id("fn", {"signal": "RawEMG"}, {"Out"}, {})
         hidden = {f"e__RawEMG__fn__{wid}", f"e__low_hz__fn__{wid}"}
         manual_edges = [
             {
@@ -590,14 +644,19 @@ class TestFilterDisconnectedTargets:
         from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
 
         target = self._target({"signal": ["A", "B"]})
-        wid = wiring_id("fn", {"signal": ["A", "B"]}, {"Out"})
+        wid = wiring_id("fn", {"signal": ["A", "B"]}, {"Out"}, {})
         hidden = {f"e__B__fn__{wid}"}
         manual_edges = [
             {"target": fn_node_id("fn", wid), "targetHandle": "in__signal", "source": "var__C"}
         ]
         result = filter_disconnected_targets([target], "fn", hidden, manual_edges)
         assert result == [
-            {"input_types": {"signal": "C"}, "output_type": "Out", "constants": {}}
+            {
+                "bindings": {"signal": {"kind": "variable", "ref": ["C"]}},
+                "input_types": {"signal": "C"},
+                "output_type": "Out",
+                "constants": {},
+            }
         ]
 
 

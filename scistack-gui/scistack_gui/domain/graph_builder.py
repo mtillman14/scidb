@@ -117,10 +117,18 @@ defined once here and referenced everywhere rather than spelled inline.
 See docs/claude/entity-editability-model.md (D6).
 """
 
+PATH_INPUT_ID_PREFIX = "pathInput__"
+"""Node-id prefix for every **PathInput**.
+
+Named for the same reason as ``PARAM_ID_PREFIX``: ``edge_resolver`` has to
+recognise a PathInput source to bind it to the parameter its edge names, and
+that recognition should not be a bare string literal repeated across layers.
+"""
+
 # Every prefix a DB-derived (non-manual) canonical id can start with —
 # shared by the layout.json migration and anything else that needs to
 # distinguish "this id names real DB data" from a manual/opaque id.
-_DB_DERIVED_PREFIXES = ("var__", "fn__", PARAM_ID_PREFIX, "pathInput__")
+_DB_DERIVED_PREFIXES = ("var__", "fn__", PARAM_ID_PREFIX, PATH_INPUT_ID_PREFIX)
 
 # Matches domain.scope_filter.ROOT / pipeline_store.ROOT_PIPELINE_ID — kept
 # as a local literal since this module is pure (no DB/store imports).
@@ -193,24 +201,47 @@ class GraduationAction:
 _STATE_WORST_ORDER = {"red": 0, "pending": 1, "green": 2}
 
 
-def wiring_id(fn_name: str, input_params: dict, out_types) -> str:
+def wiring_id(fn_name: str, input_params: dict, out_types, path_inputs: dict) -> str:
     """16-hex id for a function's WIRING: name + loadable-input shape +
     output types — the call_id recipe minus constants, so constant-value
     variants of the same call share one canvas node. Deterministic across
-    graph builds (node ids key saved positions and scope membership)."""
-    payload = json.dumps(
-        {
-            "fn": fn_name,
-            "inputs": {
-                k: (sorted(v) if isinstance(v, (list, set, tuple)) else v)
-                for k, v in sorted(input_params.items())
-            },
-            "outputs": sorted(out_types),
+    graph builds (node ids key saved positions and scope membership).
+
+    ``path_inputs`` (``{param_name: declared PathInput name}``) is part of
+    the shape. Without it, two call sites of one function fed by DIFFERENT
+    PathInputs into the same output variable hashed identically and
+    collapsed onto a single canvas node. It is omitted from the payload when
+    empty — mirroring scidb's ``to_version_keys``, which drops ``__inputs``
+    entirely rather than emitting ``{}`` — so only PathInput-fed nodes have
+    their ids affected by this term.
+    """
+    payload_obj: dict = {
+        "fn": fn_name,
+        "inputs": {
+            k: (sorted(v) if isinstance(v, (list, set, tuple)) else v)
+            for k, v in sorted(input_params.items())
         },
-        sort_keys=True,
-        default=str,
-    )
+        "outputs": sorted(out_types),
+    }
+    if path_inputs:
+        payload_obj["path_inputs"] = dict(sorted(path_inputs.items()))
+    payload = json.dumps(payload_obj, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def path_input_bindings_by_fkey(path_inputs: dict) -> dict[FnKey, dict[str, str]]:
+    """Invert ``AggregatedData.path_inputs`` into ``{fkey: {param: declared
+    PathInput name}}`` — the per-call-site shape ``wiring_id`` needs.
+
+    ``path_inputs`` is keyed by DECLARED name with a ``functions`` list of
+    ``(fkey, param_name)`` memberships, which is the wrong way round for
+    every wiring_id call site.
+    """
+    out: dict[FnKey, dict[str, str]] = {}
+    for pi_name, pi in (path_inputs or {}).items():
+        for fkey, param_name in pi["functions"]:
+            out.setdefault(fkey, {})[param_name] = pi_name
+    return out
 
 
 def group_call_sites_by_wiring(
@@ -255,9 +286,15 @@ def group_call_sites_by_wiring(
     member_map: dict[str, list[str]] = {}
     group_member_states: dict[FnKey, list[str]] = defaultdict(list)
 
+    pi_by_fkey = path_input_bindings_by_fkey(agg.path_inputs)
     for fkey in sorted(agg.fn_input_params.keys()):
         fn, cid = fkey
-        wid = wiring_id(fn, agg.fn_input_params[fkey], agg.fn_outputs.get(fkey, set()))
+        wid = wiring_id(
+            fn,
+            agg.fn_input_params[fkey],
+            agg.fn_outputs.get(fkey, set()),
+            pi_by_fkey.get(fkey, {}),
+        )
         gkey = (fn, wid)
         fkey_to_gkey[fkey] = gkey
 
@@ -800,7 +837,12 @@ def _wiring_group_key(agg: "AggregatedData", fkey: FnKey) -> tuple[str, str]:
     fn, _cid = fkey
     return (
         fn,
-        wiring_id(fn, agg.fn_input_params.get(fkey, {}), agg.fn_outputs.get(fkey, set())),
+        wiring_id(
+            fn,
+            agg.fn_input_params.get(fkey, {}),
+            agg.fn_outputs.get(fkey, set()),
+            path_input_bindings_by_fkey(agg.path_inputs).get(fkey, {}),
+        ),
     )
 
 
@@ -1363,12 +1405,43 @@ def build_edges(
     # Merge manually-created edges.
     logger.debug("[graph_builder] merging %d manual edge(s)", len(manual_edges))
     db_edge_count = len(edges)
+    superseded = 0
     for me in manual_edges:
         if me["source"] in hidden_ids or me["target"] in hidden_ids:
             continue
         if me["id"] in hidden_edge_ids:
             continue
         if any(e["id"] == me["id"] for e in edges):
+            continue
+        # Endpoint dedup, not just id dedup. A manual edge keeps its random
+        # ``manual__xxxx`` id forever, and on graduation its endpoints are
+        # rewritten onto the DB-derived node ids (pipeline_store.
+        # rename_edge_endpoints) — so it ends up describing the very same
+        # connection as a ``e__...`` edge while never colliding by id. The
+        # canvas then drew both, permanently, and deleting one left its twin.
+        # The row stays in _pipeline_edges (hide, never delete): if the
+        # DB-derived edge later disappears, this renders again.
+        # Compare on BARE ids: the DB-derived keys are always canonical,
+        # while a graduated manual edge can carry a ``::scope`` placement
+        # suffix (graduate_manual_node -> placement_id). resolve_scope_view
+        # resolves each endpoint into the viewing scope afterwards, so two
+        # edges over the same canonical pair are the same connection.
+        me_source = strip_placement(me["source"])
+        me_target = strip_placement(me["target"])
+        me_handle = me.get("targetHandle") or me.get("target_handle") or ""
+        if me_source.startswith(PATH_INPUT_ID_PREFIX) and me_handle.startswith("in__"):
+            dedup_key = (me_source, me_target, me_handle[len("in__") :])
+        else:
+            dedup_key = (me_source, me_target)
+        if dedup_key in seen_edges:
+            superseded += 1
+            logger.debug(
+                "[graph_builder] manual edge %s superseded by the DB-derived "
+                "edge for the same connection (%s -> %s)",
+                me["id"],
+                me["source"],
+                me["target"],
+            )
             continue
         edge: dict = {
             "id": me["id"],
@@ -1389,11 +1462,12 @@ def build_edges(
     )
     logger.info(
         "[graph_builder] build_edges complete: %d total edges (%d DB-derived, "
-        "%d manual, %d hidden)",
+        "%d manual, %d hidden, %d manual superseded by DB-derived)",
         len(edges),
         db_edge_count,
         manual_edge_count,
         total_hidden,
+        superseded,
     )
     return edges
 
@@ -1509,10 +1583,11 @@ def hidden_wirings(
     if not hidden_edge_ids:
         return set()
     manual_index = manual_edge_handle_index(manual_edges)
+    pi_by_fkey = path_input_bindings_by_fkey(path_inputs)
     result: set[tuple[str, str]] = set()
     for fkey, params in fn_input_params.items():
         fn, _cid = fkey
-        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()))
+        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()), pi_by_fkey.get(fkey, {}))
         handle_map = inbound_edge_candidates_by_handle(
             fn, wid, params, const_names=fn_constants.get(fkey, set())
         )
@@ -1534,7 +1609,10 @@ def hidden_wirings(
         for fkey, param_name in pi["functions"]:
             fn, _cid = fkey
             wid = wiring_id(
-                fn, fn_input_params.get(fkey, {}), fn_outputs.get(fkey, set())
+                fn,
+                fn_input_params.get(fkey, {}),
+                fn_outputs.get(fkey, set()),
+                pi_by_fkey.get(fkey, {}),
             )
             handle = f"in__{param_name}"
             if f"e__{pi_name}__{param_name}__{fn}__{wid}" not in hidden_edge_ids:
@@ -1558,16 +1636,18 @@ def wiring_disconnected_fkeys(
     fn_input_params: dict[FnKey, dict],
     fn_outputs: dict[FnKey, set],
     wirings: set[tuple[str, str]],
+    path_inputs: dict[str, dict],
 ) -> set[FnKey]:
     """Map a (fn_name, wiring_id) set back to raw pre-grouping call-site
     FnKeys — for feeding domain.run_state.propagate_run_states, which
     still operates per real call site at the point it runs."""
     if not wirings:
         return set()
+    pi_by_fkey = path_input_bindings_by_fkey(path_inputs)
     result: set[FnKey] = set()
     for fkey, params in fn_input_params.items():
         fn, _cid = fkey
-        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()))
+        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()), pi_by_fkey.get(fkey, {}))
         if (fn, wid) in wirings:
             result.add(fkey)
     return result
@@ -1577,6 +1657,7 @@ def wirings_downstream_of(
     fn_input_params: dict[FnKey, dict],
     fn_outputs: dict[FnKey, set],
     seed_wirings: set[tuple[str, str]],
+    path_inputs: dict[str, dict],
 ) -> set[tuple[str, str]]:
     """Every wiring that transitively consumes a seed wiring's output —
     used to report which OTHER functions become un-runnable as a
@@ -1585,11 +1666,12 @@ def wirings_downstream_of(
     wirings, never the seeds (callers already have those)."""
     if not seed_wirings:
         return set()
+    pi_by_fkey = path_input_bindings_by_fkey(path_inputs)
     wiring_outputs: dict[tuple[str, str], set] = {}
     wiring_inputs: dict[tuple[str, str], set] = {}
     for fkey, params in fn_input_params.items():
         fn, _cid = fkey
-        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()))
+        wid = wiring_id(fn, params, fn_outputs.get(fkey, set()), pi_by_fkey.get(fkey, {}))
         wiring_inputs.setdefault((fn, wid), set()).update(params.values())
         wiring_outputs.setdefault((fn, wid), set()).update(fn_outputs.get(fkey, set()))
 

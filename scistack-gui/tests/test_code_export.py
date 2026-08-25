@@ -163,17 +163,22 @@ class TestMatlabCodeExport:
             client.put("/api/layout/mv_out", json={
                 "x": 20, "y": 0, "node_type": "variableNode", "label": "MatlabOutput", "pipeline_id": pid,
             })
-            client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_a"})
+            client.put("/api/edges/e_in", json={
+                "source": "mv_in", "target": "mf_a", "target_handle": "in__signal",
+            })
             client.put("/api/edges/e_out", json={"source": "mf_a", "target": "mv_out"})
             # A pending value ALONE isn't enough — derive_target_for_node's
             # never-run-fallback resolves constants from WIRING
             # (edge_resolver.resolve_function_edges: an edge from a
-            # parameterNode into the function), not just a staged pending
-            # value with no edge at all.
+            # parameterNode into the function, on the handle naming the
+            # parameter it feeds), not just a staged pending value with no
+            # edge at all.
             client.put("/api/layout/mc_gain", json={
                 "x": 5, "y": 5, "node_type": "parameterNode", "label": "gain", "pipeline_id": pid,
             })
-            client.put("/api/edges/e_gain", json={"source": "mc_gain", "target": "mf_a"})
+            client.put("/api/edges/e_gain", json={
+                "source": "mc_gain", "target": "mf_a", "target_handle": "in__gain",
+            })
             client.put("/api/parameters/gain/pending/2.5")
 
             result = export_pipeline_to_code(get_db(), pid)

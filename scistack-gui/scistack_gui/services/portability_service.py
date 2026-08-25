@@ -499,7 +499,11 @@ def _unresolved_labels(node_docs: list[dict]) -> list[str]:
     for n in node_docs:
         ntype, label = n["node_type"], n["label"]
         if ntype == "functionNode":
-            if label not in registry._functions and not matlab_registry.is_matlab_function(label):
+            # lookup_function covers library references (pandas.read_csv),
+            # which resolve by import rather than living in the registry.
+            if registry.lookup_function(label) is None and not matlab_registry.is_matlab_function(
+                label
+            ):
                 unresolved.add(label)
         elif ntype == "variableNode":
             if label not in BaseVariable._all_subclasses:

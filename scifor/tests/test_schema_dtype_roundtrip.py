@@ -121,8 +121,26 @@ def test_explicit_iterable_with_categorical_column():
     assert result["output"].tolist() == [10, 20]
 
 
-def test_flatten_mode_restores_dtype():
-    """DataFrame outputs (flatten mode) also get metadata dtypes restored."""
+def test_spread_mode_restores_dtype():
+    """Spread mode (rows discriminated by an unpinned schema key) also gets
+    metadata dtypes restored — the row-multiplying path is where a per-combo
+    dtype is most easily lost, so it keeps the coverage."""
+    set_schema(["subject", "session"])
+    df = pd.DataFrame({"subject": pd.Categorical([1, 2]), "value": [10, 20]})
+
+    result = for_each(
+        lambda x: pd.DataFrame({"session": ["01", "02"], "v": [x, x]}),
+        inputs={"x": df},
+        subject=[],
+    )
+
+    assert isinstance(result["subject"].dtype, pd.CategoricalDtype)
+    assert len(result) == 4  # 2 subjects x 2 sessions supplied by the data
+
+
+def test_whole_table_output_restores_dtype():
+    """A DataFrame that carries no unpinned schema key is one value per
+    combo, and the metadata dtype still round-trips."""
     set_schema(["subject"])
     df = pd.DataFrame({"subject": pd.Categorical([1, 2]), "value": [10, 20]})
 
@@ -133,7 +151,8 @@ def test_flatten_mode_restores_dtype():
     )
 
     assert isinstance(result["subject"].dtype, pd.CategoricalDtype)
-    assert len(result) == 4
+    assert len(result) == 2
+    assert all(isinstance(v, pd.DataFrame) for v in result["output"])
 
 
 # ---------------------------------------------------------------------------

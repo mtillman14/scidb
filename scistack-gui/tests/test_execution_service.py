@@ -94,9 +94,15 @@ class TestNeverRunComboHiddenConstantValue:
             "/api/layout/mc_low_hz",
             json={"x": 5, "y": 5, "node_type": "parameterNode", "label": "low_hz"},
         )
-        client.put("/api/edges/e_in2", json={"source": "mv_other_in", "target": "mf_bp2"})
+        # Input edges name the parameter they feed; only output edges may
+        # omit a handle (the target variable node IS the binding).
+        client.put("/api/edges/e_in2", json={
+            "source": "mv_other_in", "target": "mf_bp2", "target_handle": "in__signal",
+        })
         client.put("/api/edges/e_out2", json={"source": "mf_bp2", "target": "mv_other_out"})
-        client.put("/api/edges/e_low_hz", json={"source": "mc_low_hz", "target": "mf_bp2"})
+        client.put("/api/edges/e_low_hz", json={
+            "source": "mc_low_hz", "target": "mf_bp2", "target_handle": "in__low_hz",
+        })
 
         db = get_db()
         targets = derive_target_for_node(db, "mf_bp2")
@@ -104,3 +110,129 @@ class TestNeverRunComboHiddenConstantValue:
 
         pipeline_store.hide_parameter_value(db, "low_hz", "20")
         assert derive_target_for_node(db, "mf_bp2") == []
+
+
+class TestDbHistoryPathInputBinding:
+    """A PathInput-driven function that has ALREADY RUN has no manual edge
+    on the canvas — its PathInput→fn edge is synthesised from DB history by
+    graph_builder.build_edges. So the run path cannot get its binding from
+    manual edges alone, and (since name matching is gone) it would otherwise
+    have nothing to resolve from at all.
+
+    _db_path_input_params inverts get_aggregated_variants()["path_inputs"]
+    (keyed by PARAM name, carrying the recorded spec) into per-call-site
+    {param_name: declared_name}, reusing convert_scidb_path_inputs' existing
+    spec→declared-name resolution. This is what keeps every already-run
+    project working across the clean break.
+    """
+
+    @staticmethod
+    def _with_path_input_history(db, monkeypatch, template: str, root_folder=None):
+        """*db* with ONE recorded PathInput in its aggregated history.
+
+        Patches the real database rather than substituting a stub: this code
+        path also reads the D7 name history via pipeline_store, so a fake
+        exposing only get_aggregated_variants isn't enough (and a stub that
+        grew to cover both would just be a second, drifting implementation
+        of the store).
+        """
+        monkeypatch.setattr(
+            db,
+            "get_aggregated_variants",
+            lambda *a, **k: {
+                "path_inputs": {
+                    "filepath_or_buffer": {
+                        "template": template,
+                        "root_folder": root_folder,
+                        "functions": [("read_csv_like", "call1")],
+                    }
+                }
+            },
+        )
+        return db
+
+    def test_declared_name_is_recovered_from_the_recorded_spec(
+        self, populated_db, monkeypatch
+    ):
+        from scidb import PathInput
+
+        from scistack_gui import registry
+        from scistack_gui.services.execution_service import _db_path_input_params
+
+        monkeypatch.setattr(
+            registry,
+            "get_path_inputs_registry",
+            lambda: {"test_pi": PathInput("{subject}/data.csv")},
+        )
+
+        by_call = _db_path_input_params(
+            self._with_path_input_history(populated_db, monkeypatch, "{subject}/data.csv"),
+            "read_csv_like",
+        )
+
+        # The param it filled is remembered, and the spec resolves back to
+        # the name it is declared under in source.
+        assert by_call == {"call1": {"filepath_or_buffer": "test_pi"}}
+
+    def test_other_functions_call_sites_are_not_included(
+        self, populated_db, monkeypatch
+    ):
+        from scidb import PathInput
+
+        from scistack_gui import registry
+        from scistack_gui.services.execution_service import _db_path_input_params
+
+        monkeypatch.setattr(
+            registry,
+            "get_path_inputs_registry",
+            lambda: {"test_pi": PathInput("{subject}/data.csv")},
+        )
+
+        by_call = _db_path_input_params(
+            self._with_path_input_history(populated_db, monkeypatch, "{subject}/data.csv"),
+            "some_other_fn",
+        )
+
+        assert by_call == {}
+
+    def test_history_targets_are_given_their_bindings(
+        self, populated_db, monkeypatch
+    ):
+        from scidb import PathInput
+
+        from scistack_gui import registry
+        from scistack_gui.services.execution_service import _attach_db_path_inputs
+
+        monkeypatch.setattr(
+            registry,
+            "get_path_inputs_registry",
+            lambda: {"test_pi": PathInput("{subject}/data.csv")},
+        )
+
+        targets = [
+            {"input_types": {}, "output_type": "Out", "constants": {}, "call_id": "call1"},
+            {"input_types": {}, "output_type": "Out", "constants": {}, "call_id": "other"},
+        ]
+        result = _attach_db_path_inputs(
+            self._with_path_input_history(populated_db, monkeypatch, "{subject}/data.csv"),
+            "read_csv_like",
+            targets,
+        )
+
+        from scistack_gui.domain.edge_resolver import (
+            BINDING_PARAMETER,
+            BINDING_PATHINPUT,
+            bindings_of_kind,
+        )
+
+        assert bindings_of_kind(result[0]["bindings"], BINDING_PATHINPUT) == {
+            "filepath_or_buffer": "test_pi"
+        }
+        # A call site with no recorded PathInput gets an empty binding, not
+        # another call site's.
+        assert bindings_of_kind(result[1]["bindings"], BINDING_PATHINPUT) == {}
+        # History targets carry concrete recorded constants, so nothing needs
+        # looking up in the Parameter registry.
+        assert all(
+            bindings_of_kind(t["bindings"], BINDING_PARAMETER) == {} for t in result
+        )

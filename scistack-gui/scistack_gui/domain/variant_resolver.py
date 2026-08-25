@@ -211,7 +211,12 @@ def merge_pending_constants(
                     existing_keys.add(key)
                     fn_variants.append(
                         {
-                            "input_types": template["input_types"],
+                            # Carry the template's whole binding set: a pending
+                            # combo of an existing call site is the SAME wiring
+                            # with a different constant value, so it must hash
+                            # to the same wiring/call identity.
+                            "bindings": template.get("bindings", {}),
+                            "input_types": template.get("input_types", {}),
                             "constants": new_constants,
                             "output_type": template["output_type"],
                         }
@@ -294,6 +299,17 @@ def constants_match(db_constants: dict, selected: dict) -> bool:
     return all(str(db_constants.get(k)) == str(v) for k, v in selected.items())
 
 
+def _path_input_version_key(declared_name: str) -> "str | None":
+    """The live PathInput's ``to_key()`` — the same string scidb writes into
+    ``__inputs``. None when the declaration no longer exists in source."""
+    from scistack_gui import registry
+
+    pi = registry.get_path_inputs_registry().get(declared_name)
+    if pi is None:
+        return None
+    return pi.to_key()
+
+
 def compute_call_id(
     function_name: str,
     target: dict,
@@ -309,17 +325,47 @@ def compute_call_id(
     unresolved multi-type input (EachOf) — there's no single call site to
     hash yet. Hiding a specific combo is scoped to constant-value axes only
     (see plan-combo-hiding.md).
+
+    **PathInputs belong in ``__inputs``.** scidb's
+    ``ForEachConfig._serialize_inputs`` puts them there via their own
+    ``to_key()``, explicitly so two templates cannot collapse into one
+    version-key group. Reading only the variable bindings here meant the
+    predicted id for every PathInput-fed function differed from the id scidb
+    actually wrote — so a combo hidden before its first run was hidden under
+    an id no record would ever carry. The key comes from the live PathInput
+    object so there is exactly one spelling of the recipe, scidb's.
     """
     from scidb.foreach_config import call_id_from_version_keys
 
+    from scistack_gui.domain.edge_resolver import BINDING_PATHINPUT, BINDING_VARIABLE
+
     inputs: dict = {}
-    for param, type_val in target.get("input_types", {}).items():
-        if isinstance(type_val, list):
-            if len(type_val) != 1:
+    for param, binding in (target.get("bindings") or {}).items():
+        kind = binding.get("kind")
+        if kind == BINDING_VARIABLE:
+            type_val = binding["ref"]
+            if isinstance(type_val, list):
+                if len(type_val) != 1:
+                    return None
+                inputs[param] = type_val[0]
+            else:
+                inputs[param] = type_val
+        elif kind == BINDING_PATHINPUT:
+            pi_key = _path_input_version_key(binding["ref"])
+            if pi_key is None:
+                # Declared PathInput is gone from source — we cannot
+                # reproduce scidb's key, so fail safe rather than hash a
+                # value we know is wrong.
+                logger.debug(
+                    "[variant_resolver] no call_id for '%s': PathInput %r is no "
+                    "longer declared in source",
+                    function_name,
+                    binding["ref"],
+                )
                 return None
-            inputs[param] = type_val[0]
-        else:
-            inputs[param] = type_val
+            inputs[param] = pi_key
+        # BINDING_PARAMETER contributes nothing: its concrete values travel
+        # in __constants, exactly as in scidb's ForEachConfig.
 
     keys: dict = {
         "__fn": function_name,
@@ -391,6 +437,37 @@ def filter_hidden_targets(
     return kept
 
 
+def is_hidden_value(value, hidden_for_name) -> bool:
+    """Whether *value* is one of the unchecked values for its parameter.
+
+    Compared as strings, because the hidden-value store keeps them that way
+    (it is fed by the node checkbox, whose rows are rendered strings) while a
+    Parameter holds real numbers. Numeric values are ALSO matched against
+    their int/float alternate spelling. A value declared 20 can reach here
+    as ``20.0`` (JSON has one number type, the ``/api/parameters`` model
+    accepts ``float | int``, and DB history may round-trip differently), and
+    a plain ``str()`` comparison would then never match a hidden ``'20'`` --
+    the checkbox would appear to do nothing.
+
+    Lives here, in the pure domain layer, because BOTH routes a Parameter
+    can take to execution have to apply the identical rule:
+    ``filter_hidden_constant_value_targets`` below (values fanned out into
+    targets) and ``execution_service._apply_hidden_values`` (a Parameter
+    handed to ``for_each`` whole). It used to be private to the latter, and
+    the former did a naive ``str()`` compare — so the same checkbox worked
+    on one route and silently did nothing on the other, depending only on
+    whether the value happened to be an int or a float.
+    """
+    candidates = {str(value)}
+    if isinstance(value, bool):
+        pass  # bool is an int subclass; its str() form is the only sane one
+    elif isinstance(value, float) and value.is_integer():
+        candidates.add(str(int(value)))
+    elif isinstance(value, int):
+        candidates.add(str(float(value)))
+    return bool(candidates & set(hidden_for_name))
+
+
 def filter_hidden_constant_value_targets(
     targets: list[dict],
     hidden_values: dict[str, set[str]],
@@ -411,15 +488,34 @@ def filter_hidden_constant_value_targets(
     ``execution_service._infer_wired_constants``) before this filter ever
     runs, so there's no separate "hidden but not yet materialized" case to
     special-case here.
+
+    **The two names must be translated, not compared directly.**
+    ``hidden_values`` is keyed by the Parameter node's DECLARED name (the
+    per-value checkbox writes that), while ``constants`` is keyed by the
+    FUNCTION PARAMETER the value was bound to. They coincide only when the
+    declaration happens to be named after the parameter it feeds; when they
+    differ, comparing them directly silently matches nothing and every
+    unchecked value runs anyway. The target's Parameter bindings
+    (``{param_name: declared_name}``, put on the target by the wiring) are
+    the translation, defaulting to the param name for DB-history targets
+    where the two are the same string by construction.
+
+    Value matching is ``is_hidden_value``'s, shared with
+    ``execution_service._apply_hidden_values`` — a naive ``str()`` compare
+    here would make the checkbox work on one route and not the other purely
+    on whether the value arrived as ``5`` or ``5.0``.
     """
     if not hidden_values:
         return targets
+    from scistack_gui.domain.edge_resolver import BINDING_PARAMETER, bindings_of_kind
+
     kept = []
     for t in targets:
         constants = t.get("constants", {})
+        declared_of = bindings_of_kind(t.get("bindings") or {}, BINDING_PARAMETER)
         if any(
-            name in constants and str(constants[name]) in values
-            for name, values in hidden_values.items()
+            is_hidden_value(value, hidden_values.get(declared_of.get(param, param), ()))
+            for param, value in constants.items()
         ):
             continue
         kept.append(t)
@@ -458,7 +554,13 @@ def filter_disconnected_targets(
     runnable."""
     if not hidden_edge_ids or not targets:
         return targets
-    from scistack_gui.domain.edge_resolver import node_id_to_var_label
+    from scistack_gui.domain.edge_resolver import (
+        BINDING_PATHINPUT,
+        BINDING_VARIABLE,
+        bindings_of_kind,
+        node_id_to_var_label,
+        variable_types_view,
+    )
     from scistack_gui.domain.graph_builder import (
         inbound_edge_candidates_by_handle,
         manual_edge_handle_index,
@@ -469,8 +571,16 @@ def filter_disconnected_targets(
     manual_nodes = manual_nodes or {}
     kept = []
     for t in targets:
-        input_types = t.get("input_types", {})
-        wid = wiring_id(function_name, input_types, {t.get("output_type")})
+        bindings = t.get("bindings") or {}
+        # Bare-string-when-single: wiring_id hashes the value as written, and
+        # DB history spells single types bare.
+        input_types = variable_types_view(bindings)
+        wid = wiring_id(
+            function_name,
+            input_types,
+            {t.get("output_type")},
+            bindings_of_kind(bindings, BINDING_PATHINPUT),
+        )
         handle_map = inbound_edge_candidates_by_handle(
             function_name,
             wid,
@@ -491,22 +601,30 @@ def filter_disconnected_targets(
                 sorted(uncovered),
             )
             continue
-        new_input_types = dict(input_types)
+        new_bindings = dict(bindings)
         for h in hidden_handles:
             if not h.startswith("in__"):
                 continue  # param__ handles: same-source-only reconnect, no value to swap.
             source = manual_index[(function_name, wid, h)].get("source", "")
             var_label = node_id_to_var_label(source, {}, manual_nodes)
             if var_label:
-                new_input_types[h[len("in__") :]] = var_label
-        new_target = {**t, "input_types": new_input_types}
+                new_bindings[h[len("in__") :]] = {
+                    "kind": BINDING_VARIABLE,
+                    "ref": [var_label],
+                }
+        new_target = {**t, "bindings": new_bindings}
+        if "input_types" in t:
+            # Keep the display/wire view in step with the bindings it is a
+            # view OF. Leaving it stale is how the two drifted apart in the
+            # first place.
+            new_target["input_types"] = variable_types_view(new_bindings)
         new_target.pop("call_id", None)
         logger.info(
             "[variant_resolver] target for '%s' (wiring %s) reconnected via manual "
-            "edge(s) — substituting input_types=%s",
+            "edge(s) — substituting bindings=%s",
             function_name,
             wid,
-            new_input_types,
+            new_bindings,
         )
         kept.append(new_target)
     return kept

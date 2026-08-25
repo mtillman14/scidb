@@ -98,7 +98,6 @@ class TestResolveFunctionEdgesOutputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={"var__RawEMG": "RawEMG"},
-            sig_params=[],
         )
         assert result.output_types == ["RawEMG"]
 
@@ -119,7 +118,6 @@ class TestResolveFunctionEdgesOutputs:
             manual_edges=edges,
             manual_nodes=manual_nodes,
             existing_node_labels={},
-            sig_params=[],
         )
         assert result.output_types == ["ProcessedSignal"]
 
@@ -143,7 +141,6 @@ class TestResolveFunctionEdgesOutputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={"var__RawEMG": "RawEMG"},
-            sig_params=[],
         )
         assert result.output_types == ["RawEMG"]
 
@@ -167,7 +164,6 @@ class TestResolveFunctionEdgesOutputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=[],
         )
         assert result.output_types == ["A", "B"]
 
@@ -186,7 +182,6 @@ class TestResolveFunctionEdgesOutputs:
             manual_edges=edges,
             manual_nodes=manual_nodes,
             existing_node_labels={},
-            sig_params=[],
         )
         assert result.output_types == []
 
@@ -211,7 +206,6 @@ class TestResolveFunctionEdgesInputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={"var__RawEMG": "RawEMG"},
-            sig_params=["signal"],
         )
         assert result.input_types == {"signal": ["RawEMG"]}
 
@@ -235,7 +229,6 @@ class TestResolveFunctionEdgesInputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["signal"],
         )
         assert set(result.input_types["signal"]) == {"A", "B"}
 
@@ -259,14 +252,16 @@ class TestResolveFunctionEdgesInputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["signal"],
         )
         assert result.input_types["signal"] == ["A"]
 
-    def test_positional_input_fallback_via_sig_params(self):
-        # No targetHandle — match to first unresolved sig param.
+    def test_handleless_input_edge_is_dropped_not_positionally_assigned(self):
+        # Used to be matched to the first unresolved signature param BY
+        # POSITION. On a function with many params that bound whichever one
+        # happened to be free, which is a guess, not a wiring.
         edges = [
             {
+                "id": "e1",
                 "source": "var__RawEMG",
                 "target": "fn__fn",
                 "targetHandle": "",
@@ -278,20 +273,20 @@ class TestResolveFunctionEdgesInputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={"var__RawEMG": "RawEMG"},
-            sig_params=["signal", "low_hz"],
         )
-        assert result.input_types == {"signal": ["RawEMG"]}
+        assert result.input_types == {}
 
-    def test_positional_fallback_skips_already_named_params(self):
-        # "low_hz" is already named via handle; positional goes to "signal".
+    def test_handleless_edge_does_not_disturb_handled_ones(self):
         edges = [
             {
+                "id": "e1",
                 "source": "var__Hz",
                 "target": "fn__fn",
                 "targetHandle": "in__low_hz",
                 "sourceHandle": "",
             },
             {
+                "id": "e2",
                 "source": "var__RawEMG",
                 "target": "fn__fn",
                 "targetHandle": "",
@@ -303,11 +298,8 @@ class TestResolveFunctionEdgesInputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["signal", "low_hz"],
         )
-        assert "signal" in result.input_types
-        assert result.input_types["signal"] == ["RawEMG"]
-        assert result.input_types["low_hz"] == ["Hz"]
+        assert result.input_types == {"low_hz": ["Hz"]}
 
     def test_fn_node_ids_set_matches_variant_ids(self):
         # Both "fn__fn" and a UUID variant ID should be recognised.
@@ -330,19 +322,20 @@ class TestResolveFunctionEdgesInputs:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["x"],
         )
         assert result.input_types == {"x": ["A"]}
         assert result.output_types == ["B"]
 
 
 # ---------------------------------------------------------------------------
-# resolve_function_edges — constant wiring
+# resolve_function_edges — Parameter wiring
 # ---------------------------------------------------------------------------
 
 
-class TestResolveFunctionEdgesConstants:
-    def test_db_constant_node_by_prefix(self):
+class TestResolveFunctionEdgesParameters:
+    def test_db_parameter_node_by_prefix(self):
+        # build_edges writes the declared name into BOTH the node id and the
+        # handle, so param name == declared name by construction here.
         edges = [
             {
                 "source": "param__low_hz",
@@ -356,12 +349,11 @@ class TestResolveFunctionEdgesConstants:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["signal", "low_hz"],
         )
-        assert "low_hz" in result.constant_names
+        assert result.parameter_params == {"low_hz": "low_hz"}
         assert result.input_types == {}
 
-    def test_constant_via_in_handle(self):
+    def test_parameter_via_in_handle(self):
         edges = [
             {
                 "source": "param__low_hz",
@@ -375,16 +367,59 @@ class TestResolveFunctionEdgesConstants:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["signal", "low_hz"],
         )
-        assert "low_hz" in result.constant_names
+        assert result.parameter_params == {"low_hz": "low_hz"}
 
-    def test_manual_constant_node(self):
+    def test_declared_name_differing_from_param_name_is_kept_separate(self):
+        # The case name-matching could never express: a Parameter declared
+        # 'test' feeding read_csv's 'sep'. The param is the binding key; the
+        # declared name is what the registry and the hidden-value store are
+        # keyed by.
+        edges = [
+            {
+                "source": "param__test",
+                "target": "fn__read_csv",
+                "targetHandle": "in__sep",
+                "sourceHandle": "",
+            }
+        ]
+        result = resolve_function_edges(
+            fn_node_ids={"fn__read_csv"},
+            manual_edges=edges,
+            manual_nodes={},
+            existing_node_labels={},
+        )
+        assert result.parameter_params == {"sep": "test"}
+
+    def test_manual_parameter_node_uses_its_label_as_declared_name(self):
         manual_nodes = {
             "uuid-const": {"type": "parameterNode", "label": "threshold"},
         }
         edges = [
             {
+                "source": "uuid-const",
+                "target": "fn__fn",
+                "targetHandle": "in__cutoff",
+                "sourceHandle": "",
+            }
+        ]
+        result = resolve_function_edges(
+            fn_node_ids={"fn__fn"},
+            manual_edges=edges,
+            manual_nodes=manual_nodes,
+            existing_node_labels={},
+        )
+        assert result.parameter_params == {"cutoff": "threshold"}
+
+    def test_handleless_parameter_edge_is_dropped(self):
+        # Used to fall back to the source node's LABEL as the param name,
+        # which is only ever right when the two names coincide.
+        manual_nodes = {
+            "uuid-const": {"type": "parameterNode", "label": "threshold"},
+        }
+        edges = [
+            {
+                "id": "e1",
                 "source": "uuid-const",
                 "target": "fn__fn",
                 "targetHandle": "",
@@ -396,11 +431,10 @@ class TestResolveFunctionEdgesConstants:
             manual_edges=edges,
             manual_nodes=manual_nodes,
             existing_node_labels={},
-            sig_params=["signal", "threshold"],
         )
-        assert "threshold" in result.constant_names
+        assert result.parameter_params == {}
 
-    def test_constant_not_added_to_input_types(self):
+    def test_parameter_not_added_to_input_types(self):
         edges = [
             {
                 "source": "param__low_hz",
@@ -414,9 +448,109 @@ class TestResolveFunctionEdgesConstants:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["signal", "low_hz"],
         )
         assert "low_hz" not in result.input_types
+
+    def test_placement_qualified_parameter_source_resolves(self):
+        edges = [
+            {
+                "source": "param__low_hz::main",
+                "target": "fn__fn",
+                "targetHandle": "in__cutoff",
+                "sourceHandle": "",
+            }
+        ]
+        result = resolve_function_edges(
+            fn_node_ids={"fn__fn"},
+            manual_edges=edges,
+            manual_nodes={},
+            existing_node_labels={},
+        )
+        assert result.parameter_params == {"cutoff": "low_hz"}
+
+
+# ---------------------------------------------------------------------------
+# resolve_function_edges — PathInput wiring
+# ---------------------------------------------------------------------------
+
+
+class TestResolveFunctionEdgesPathInputs:
+    def test_path_input_binds_to_the_param_its_handle_names(self):
+        # The exact wiring from the GUI session that motivated this: a
+        # PathInput declared 'test_pi' feeding read_csv's first parameter.
+        # Name matching resolved nothing here and the run silently did no
+        # work at all.
+        edges = [
+            {
+                "source": "pathInput__test_pi",
+                "target": "fn__read_csv",
+                "targetHandle": "in__filepath_or_buffer",
+                "sourceHandle": "",
+            }
+        ]
+        result = resolve_function_edges(
+            fn_node_ids={"fn__read_csv"},
+            manual_edges=edges,
+            manual_nodes={},
+            existing_node_labels={},
+        )
+        assert result.path_input_params == {"filepath_or_buffer": "test_pi"}
+        assert result.input_types == {}
+
+    def test_placement_qualified_path_input_source_resolves(self):
+        edges = [
+            {
+                "source": "pathInput__test_pi::main",
+                "target": "fn__read_csv",
+                "targetHandle": "in__filepath_or_buffer",
+                "sourceHandle": "",
+            }
+        ]
+        result = resolve_function_edges(
+            fn_node_ids={"fn__read_csv"},
+            manual_edges=edges,
+            manual_nodes={},
+            existing_node_labels={},
+        )
+        assert result.path_input_params == {"filepath_or_buffer": "test_pi"}
+
+    def test_handleless_path_input_edge_is_dropped(self):
+        edges = [
+            {
+                "id": "e1",
+                "source": "pathInput__test_pi",
+                "target": "fn__read_csv",
+                "targetHandle": "",
+                "sourceHandle": "",
+            }
+        ]
+        result = resolve_function_edges(
+            fn_node_ids={"fn__read_csv"},
+            manual_edges=edges,
+            manual_nodes={},
+            existing_node_labels={},
+        )
+        assert result.path_input_params == {}
+
+    def test_path_input_is_never_a_variable_input(self):
+        # A PathInput resolves FILES, not a versioned record, so it must not
+        # leak into input_types (which becomes for_each's variable classes).
+        edges = [
+            {
+                "source": "pathInput__test_pi",
+                "target": "fn__read_csv",
+                "targetHandle": "in__filepath_or_buffer",
+                "sourceHandle": "",
+            }
+        ]
+        result = resolve_function_edges(
+            fn_node_ids={"fn__read_csv"},
+            manual_edges=edges,
+            manual_nodes={},
+            existing_node_labels={},
+        )
+        assert result.input_types == {}
+        assert result.parameter_params == {}
 
 
 # ---------------------------------------------------------------------------
@@ -445,11 +579,8 @@ class TestResolveFunctionEdgesUnrelated:
             manual_edges=edges,
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["x"],
         )
-        assert result == ResolvedEdges(
-            input_types={}, output_types=[], constant_names=set()
-        )
+        assert result == ResolvedEdges(bindings={}, output_types=[])
 
     def test_empty_edge_list(self):
         result = resolve_function_edges(
@@ -457,11 +588,8 @@ class TestResolveFunctionEdgesUnrelated:
             manual_edges=[],
             manual_nodes={},
             existing_node_labels={},
-            sig_params=["a", "b"],
         )
-        assert result == ResolvedEdges(
-            input_types={}, output_types=[], constant_names=set()
-        )
+        assert result == ResolvedEdges(bindings={}, output_types=[])
 
 
 # ---------------------------------------------------------------------------
@@ -687,3 +815,40 @@ class TestInferManualFnParamToClass:
             existing_node_labels={},
         )
         assert result == {"output_a": "CustomVar"}
+
+
+# ---------------------------------------------------------------------------
+# Handle-id agreement between the canvas and the resolver
+# ---------------------------------------------------------------------------
+
+
+class TestHandleIdsMatchTheFrontend:
+    """The handle ids FunctionNode.tsx renders must be the ones this module
+    recognises, or a hand-drawn edge silently binds nothing.
+
+    This drifted once already: the node rendered `const__{name}` while
+    PARAM_ID_PREFIX (and build_edges' synthesized targetHandle) was
+    `param__{name}`. It went unnoticed because resolve_function_edges had a
+    fallback that guessed the parameter from the source node's LABEL, which
+    is right only when the declared name and the parameter name coincide.
+    """
+
+    def test_parameter_handle_prefix_is_the_backend_constant(self):
+        from pathlib import Path
+
+        from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX
+
+        node = Path(__file__).parent.parent / "frontend/src/components/DAG/FunctionNode.tsx"
+        source = node.read_text()
+        assert f"id: `{PARAM_ID_PREFIX}${{c}}`" in source, (
+            "FunctionNode.tsx's parameter handle id must use PARAM_ID_PREFIX "
+            f"({PARAM_ID_PREFIX!r}) — it is what build_edges writes as the "
+            "targetHandle of a DB-derived Parameter edge, and what "
+            "resolve_function_edges matches on"
+        )
+
+    def test_variable_input_handle_prefix_matches(self):
+        from pathlib import Path
+
+        node = Path(__file__).parent.parent / "frontend/src/components/DAG/FunctionNode.tsx"
+        assert "id: `in__${param}`" in node.read_text()

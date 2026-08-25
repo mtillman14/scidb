@@ -14,7 +14,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { Handle, Position } from '@xyflow/react'
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react'
 import { callBackend, isVSCodeMode } from '../../api'
 import { usePlanRun } from '../../context/PlanRunContext'
 import { useScope, bindingSummary, type BindingSpec } from '../../context/ScopeContext'
@@ -32,9 +32,10 @@ interface Props {
   data: PipelineNodeData
 }
 
-export default function PipelineNode({ data }: Props) {
+export default function PipelineNode({ id, data }: Props) {
   const { requestPlan } = usePlanRun()
   const { bumpGraph } = useScope()
+  const updateNodeInternals = useUpdateNodeInternals()
   const [duplicating, setDuplicating] = useState(false)
   const [draftName, setDraftName] = useState('')
   const [error, setError] = useState('')
@@ -44,11 +45,31 @@ export default function PipelineNode({ data }: Props) {
     if (duplicating) inputRef.current?.focus()
   }, [duplicating])
 
+  // Same stale-handle-bounds problem as FunctionNode: inputs/outputs arrive
+  // from GET /api/pipeline and change on a dag_updated refetch, and every
+  // handle's `top` depends on the total count. See FunctionNode for the
+  // full note.
+  const handleKey = `${data.inputs.join('|')}>${data.outputs.join('|')}`
+  useEffect(() => {
+    updateNodeInternals(id)
+    // eslint-disable-next-line no-console
+    console.debug(
+      `[PipelineNode ${id}] handle set changed -> ${data.inputs.length} input(s), `
+      + `${data.outputs.length} output(s): ${handleKey}`
+    )
+  }, [id, handleKey])  // eslint-disable-line react-hooks/exhaustive-deps
+
   const badge = bindingSummary(data.binding)
 
-  const handleStyle = (index: number, total: number): React.CSSProperties => ({
+  // Overriding `transform` drops React Flow's own X centring for the side —
+  // see the equivalent note in FunctionNode.
+  const handleStyle = (
+    index: number,
+    total: number,
+    side: 'left' | 'right',
+  ): React.CSSProperties => ({
     top: `${((index + 1) / (total + 1)) * 100}%`,
-    transform: 'translateY(-50%)',
+    transform: `translate(${side === 'left' ? '-50%' : '50%'}, -50%)`,
   })
 
   const handleRun = (e: React.MouseEvent) => {
@@ -126,7 +147,7 @@ export default function PipelineNode({ data }: Props) {
           id={`in__${name}`}
           type="target"
           position={Position.Left}
-          style={handleStyle(i, data.inputs.length)}
+          style={handleStyle(i, data.inputs.length, 'left')}
           title={name}
         />
       ))}
@@ -190,7 +211,7 @@ export default function PipelineNode({ data }: Props) {
           id={`out__${name}`}
           type="source"
           position={Position.Right}
-          style={handleStyle(i, data.outputs.length)}
+          style={handleStyle(i, data.outputs.length, 'right')}
           title={name}
         />
       ))}

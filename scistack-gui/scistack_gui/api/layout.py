@@ -20,7 +20,8 @@ class ParameterCreate(BaseModel):
     # One list whatever the count. Numbers stay int-or-float rather than
     # being coerced to float: the hidden-value store keys on the RENDERED
     # string, so silently turning 20 into 20.0 makes an unchecked '20' stop
-    # matching (see execution_service._is_hidden_value).
+    # matching (see domain.variant_resolver.is_hidden_value, which tolerates
+    # both spellings precisely because this field preserves the difference).
     values: list[float | int | str | bool] = []
 
 

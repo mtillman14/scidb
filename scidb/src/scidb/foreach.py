@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -29,6 +30,8 @@ from .pipeline import Pipeline as _Pipeline
 from .pipeline import Step, active_pipeline
 from .provenance_save import GraphRecord as _GraphRecord
 from .variant import Variant
+
+logger = logging.getLogger(__name__)
 
 # Sentinel: distinguishes "pipeline= omitted" (use the ambient active
 # pipeline, if any) from an explicit pipeline=None (force eager execution).
@@ -1358,6 +1361,13 @@ def _for_each_prepare(
         k for k, v in metadata_iterables.items() if isinstance(v, list) and len(v) == 0
     ]
     resolved_db = None
+    # Keys the database could not fill. NOT warned about here: PathInput
+    # discovery (Step 3) fills schema keys from disk and is the normal source
+    # on a first run against a fresh database. Warning at this point produced a
+    # false "0 iterations" line that the real iteration count contradicted
+    # milliseconds later. The warning now fires after Step 3, for keys nothing
+    # could fill — the case that really does mean zero iterations.
+    _unresolved_from_db: list[str] = []
     if needs_resolve:
         Log.debug(
             f"resolving {len(needs_resolve)} empty list(s) from database: {needs_resolve}"
@@ -1377,7 +1387,11 @@ def _for_each_prepare(
         for key in needs_resolve:
             values = resolved_db.distinct_schema_values(key)
             if not values:
-                Log.warn(f"no values found for '{key}' in database, 0 iterations")
+                _unresolved_from_db.append(key)
+                Log.debug(
+                    f"no values found for '{key}' in database — deferring to "
+                    f"PathInput discovery before deciding this is 0 iterations"
+                )
             else:
                 Log.debug(f"resolved '{key}' from database: {len(values)} values")
             metadata_iterables[key] = values
@@ -1415,6 +1429,41 @@ def _for_each_prepare(
             )
     else:
         Log.debug("no PathInput detected, skipping filesystem discovery")
+
+    # Step 3b: Now that discovery has had its turn, report on the keys the
+    # database could not fill (Step 2). Three outcomes, three different lines:
+    # discovery filled it (INFO, says where the values came from), discovery
+    # dropped the key as unsupplyable by this template (DEBUG, expected), or
+    # nothing could fill it (WARN — this one really is 0 iterations).
+    if _unresolved_from_db:
+        _filled_by_discovery: dict[str, int] = {}
+        _still_empty: list[str] = []
+        for key in _unresolved_from_db:
+            if key not in metadata_iterables:
+                Log.debug(
+                    f"'{key}' was dropped by PathInput discovery — the template "
+                    f"has no {{{key}}} placeholder and can never supply it"
+                )
+                continue
+            n_values = len(metadata_iterables.get(key) or [])
+            if n_values:
+                _filled_by_discovery[key] = n_values
+            else:
+                _still_empty.append(key)
+        if _filled_by_discovery:
+            Log.info(
+                "PathInput discovery filled "
+                + ", ".join(
+                    f"'{k}'={n} value(s)"
+                    for k, n in sorted(_filled_by_discovery.items())
+                )
+                + " from disk (the database had none)"
+            )
+        for key in _still_empty:
+            Log.warn(
+                f"no values found for '{key}': the database has none and "
+                f"PathInput discovery could not supply any, 0 iterations"
+            )
 
     # Step 4: Propagate schema keys to scifor so distribute and DataFrame detection work
     Log.debug("propagating schema keys to scifor")
@@ -2974,17 +3023,26 @@ def _resolve_colname_from_db(colname: "ColName", db: Any | None) -> str:
     )
     schema_keys = list(resolved_db.dataset_schema_keys)
 
-    # Query the _variables table for dtype metadata
-    try:
-        row = resolved_db._execute(
-            "SELECT dtype FROM _variables WHERE variable_name = ?",
-            [var_name],
-        ).fetchone()
-    except Exception:
-        row = None
+    # Query the _variables table for dtype metadata.
+    # Goes through SciDuck._fetchone so execute+fetch stay under one lock.
+    # `resolved_db` is a DatabaseManager (the dataset_schema_keys read above
+    # already requires one); the SciDuck it wraps is ._duck — DatabaseManager
+    # itself has no _execute/_fetchone. Errors are NOT swallowed here: this used
+    # to be a bare `except Exception: row = None`, which silently turned an
+    # AttributeError into "variable not saved" and made the fallback below
+    # the only path ever taken.
+    row = resolved_db._duck._fetchone(
+        "SELECT dtype FROM _variables WHERE variable_name = ?",
+        [var_name],
+    )
 
     if row is None:
-        # Variable not yet saved — try using view_name for single-column mode
+        # Variable genuinely not yet saved — try view_name for single-column mode
+        logger.debug(
+            "_resolve_colname_from_db: no _variables dtype row for '%s' "
+            "(not yet saved) — falling back to view_name/type name",
+            var_name,
+        )
         if hasattr(var_type, "view_name"):
             return var_type.view_name()
         return var_name

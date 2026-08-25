@@ -1140,12 +1140,12 @@ def lookup_path_input_name(
     ``None`` — the fallback ``resolve_path_input_name`` consults when a
     recorded template matches no CURRENT declaration."""
     _ensure_tables(db)
-    rows = _duck(db)._execute(
+    row = _duck(db)._fetchone(
         "SELECT name FROM _pipeline_path_input_history "
         "WHERE template = ? AND root_folder = ? LIMIT 1",
         [template, root_folder or ""],
-    ).fetchall()
-    return rows[0][0] if rows else None
+    )
+    return row[0] if row else None
 
 
 def path_input_history_index(db) -> dict:
@@ -1175,7 +1175,7 @@ def list_path_input_history(db, name: "str | None" = None) -> list[dict]:
     sql += " ORDER BY name, template"
     return [
         {"name": r[0], "template": r[1], "root_folder": r[2] or None}
-        for r in _duck(db)._execute(sql, params).fetchall()
+        for r in _duck(db)._fetchall(sql, params)
     ]
 
 

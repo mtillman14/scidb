@@ -1,27 +1,22 @@
 {
   "positions": {
     "main": {
-      "pathInput__test_path_input::main": {
-        "x": 378.551640725762,
-        "y": 99.15680479833824
+      "pathInput__test_pi": {
+        "x": -166.20253164556962,
+        "y": 113.60759493670886
       },
-      "sweep__test_sweep::main": {
-        "x": 470.5,
-        "y": 192.25
+      "fn__pandas.read_csv__b564604e801cc0de::main": {
+        "x": 171.4556962025316,
+        "y": 117.58227848101265
       },
-      "fn__compute_cgam__iiq170": {
-        "x": 640.680023791314,
-        "y": 83.07530591524062
-      },
-      "const__test_const__cwb7u0": {
-        "x": 651.5169435894687,
-        "y": 199.98096910692706
+      "var__cpet_data_raw::main": {
+        "x": 397.5189873417721,
+        "y": 100.56962025316456
       }
     }
   },
   "constants": [],
   "notes": {},
   "positions_scoped": true,
-  "placements_migrated": true,
-  "pipeline_db_migrated": true
+  "placements_migrated": true
 }

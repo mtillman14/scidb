@@ -376,12 +376,14 @@ class TestFilterHidden:
             "bandpass",
             agg.fn_input_params[bp_key],
             agg.fn_outputs[bp_key],
+            {},
         )
         filter_hidden(agg, {"var__Filtered"}, strip_var_type_values=False)
         after_wid = wiring_id(
             "bandpass",
             agg.fn_input_params[bp_key],
             agg.fn_outputs[bp_key],
+            {},
         )
         assert before_wid == after_wid
 
@@ -518,7 +520,7 @@ class TestPendingValueGroupCoverage:
         assert covered_groups == {
             (
                 "compute_rolling_vo2",
-                wiring_id("compute_rolling_vo2", {"signal": "RawVO2"}, {"RollingVO2"}),
+                wiring_id("compute_rolling_vo2", {"signal": "RawVO2"}, {"RollingVO2"}, {}),
             )
         }
 
@@ -1134,6 +1136,138 @@ class TestBuildEdges:
         matching = [e for e in edges if e["id"] == edge_id]
         assert len(matching) == 1
 
+    def test_manual_edge_superseded_by_db_edge_for_same_connection(self):
+        """A manual edge keeps its random ``manual__xxxx`` id forever, and
+        graduation rewrites its endpoints onto the DB-derived node ids — so it
+        describes the same connection as an ``e__...`` edge while never
+        colliding by id. Both used to render: 4 edges for 2 connections
+        (examples/vo2max/scidb.log), and deleting one left its twin.
+        """
+        edges = build_edges(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={self.F_KEY: {"Out"}},
+            const_fns={},
+            path_inputs={},
+            manual_edges=[
+                {
+                    "id": "manual__u0cfjq",
+                    "source": "var__Raw",
+                    "target": self.F_NODE,
+                    "sourceHandle": "",
+                    "targetHandle": "in__signal",
+                },
+                {
+                    "id": "manual__n6rg9z",
+                    "source": self.F_NODE,
+                    "target": "var__Out",
+                    "sourceHandle": "",
+                    "targetHandle": "",
+                },
+            ],
+            hidden_ids=set(),
+        )
+        assert len(edges) == 2, [(e["id"], e["source"], e["target"]) for e in edges]
+        assert not any(e["id"].startswith("manual__") for e in edges)
+
+    def test_manual_path_input_edge_deduped_by_source_target_and_param(self):
+        edges = build_edges(
+            fn_input_params={},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={
+                "mypath": {
+                    "template": "",
+                    "root_folder": None,
+                    "functions": {(self.F_KEY, "filepath")},
+                }
+            },
+            manual_edges=[
+                {
+                    "id": "manual__aaa",
+                    "source": "pathInput__mypath",
+                    "target": self.F_NODE,
+                    "sourceHandle": "",
+                    "targetHandle": "in__filepath",
+                }
+            ],
+            hidden_ids=set(),
+        )
+        pi_edges = [e for e in edges if e["source"] == "pathInput__mypath"]
+        assert len(pi_edges) == 1
+        assert not pi_edges[0]["id"].startswith("manual__")
+
+    def test_manual_path_input_edge_to_different_param_is_kept(self):
+        """Same PathInput feeding a DIFFERENT parameter is a real second
+        connection, not a duplicate."""
+        edges = build_edges(
+            fn_input_params={},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={
+                "mypath": {
+                    "template": "",
+                    "root_folder": None,
+                    "functions": {(self.F_KEY, "filepath")},
+                }
+            },
+            manual_edges=[
+                {
+                    "id": "manual__aaa",
+                    "source": "pathInput__mypath",
+                    "target": self.F_NODE,
+                    "sourceHandle": "",
+                    "targetHandle": "in__other_path",
+                }
+            ],
+            hidden_ids=set(),
+        )
+        pi_edges = [e for e in edges if e["source"] == "pathInput__mypath"]
+        assert len(pi_edges) == 2
+
+    def test_hidden_db_edge_is_not_resurrected_by_a_manual_twin(self):
+        """Hiding a connection must stay hidden: the DB branch records its
+        endpoint key BEFORE the hidden check, so the manual duplicate is
+        suppressed too."""
+        edges = build_edges(
+            fn_input_params={self.F_KEY: {"signal": "Raw"}},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={},
+            manual_edges=[
+                {
+                    "id": "manual__dupe",
+                    "source": "var__Raw",
+                    "target": self.F_NODE,
+                    "sourceHandle": "",
+                    "targetHandle": "in__signal",
+                }
+            ],
+            hidden_ids=set(),
+            hidden_edge_ids={f"e__Raw__f__{self.F_CID}"},
+        )
+        assert not [
+            e for e in edges if e["source"] == "var__Raw" and e["target"] == self.F_NODE
+        ]
+
+    def test_manual_edge_with_no_db_counterpart_still_renders(self):
+        edges = build_edges(
+            fn_input_params={},
+            fn_outputs={},
+            const_fns={},
+            path_inputs={},
+            manual_edges=[
+                {
+                    "id": "manual__lonely",
+                    "source": "var__Raw",
+                    "target": self.F_NODE,
+                    "sourceHandle": "",
+                    "targetHandle": "in__signal",
+                }
+            ],
+            hidden_ids=set(),
+        )
+        assert [e["id"] for e in edges] == ["manual__lonely"]
+
     def test_two_call_sites_produce_distinct_edges_to_same_input(self):
         cid_a, cid_b = _cid("a"), _cid("b")
         ka, kb = ("f", cid_a), ("f", cid_b)
@@ -1257,7 +1391,7 @@ class TestHiddenWirings:
     F_KEY = ("f", F_CID)
 
     def test_hidden_var_input_marks_wiring(self):
-        wid = wiring_id("f", {"signal": "Raw"}, set())
+        wid = wiring_id("f", {"signal": "Raw"}, set(), {})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {"signal": "Raw"}},
             fn_outputs={},
@@ -1268,7 +1402,7 @@ class TestHiddenWirings:
         assert result == {("f", wid)}
 
     def test_hidden_const_input_marks_wiring(self):
-        wid = wiring_id("f", {}, set())
+        wid = wiring_id("f", {}, set(), {})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {}},
             fn_outputs={},
@@ -1279,7 +1413,10 @@ class TestHiddenWirings:
         assert result == {("f", wid)}
 
     def test_hidden_path_input_marks_wiring(self):
-        wid = wiring_id("f", {}, set())
+        # The PathInput is part of the wiring shape now, so its id must be
+        # computed WITH the binding — computing it without would produce the
+        # id of a different (PathInput-less) wiring and match nothing.
+        wid = wiring_id("f", {}, set(), {"filepath": "mypath"})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {}},
             fn_outputs={},
@@ -1291,7 +1428,7 @@ class TestHiddenWirings:
 
     def test_hidden_output_edge_does_not_mark_wiring(self):
         # fn -> var (output) hides are cosmetic only — never disconnect.
-        wid = wiring_id("f", {}, {"Out"})
+        wid = wiring_id("f", {}, {"Out"}, {})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {}},
             fn_outputs={self.F_KEY: {"Out"}},
@@ -1315,7 +1452,7 @@ class TestHiddenWirings:
         # Two call sites (different constant values) of the SAME wiring —
         # hiding the shared var input marks the wiring once, not per-call-site.
         ka, kb = ("f", _cid("a")), ("f", _cid("b"))
-        wid = wiring_id("f", {"signal": "Raw"}, set())
+        wid = wiring_id("f", {"signal": "Raw"}, set(), {})
         result = hidden_wirings(
             fn_input_params={ka: {"signal": "Raw"}, kb: {"signal": "Raw"}},
             fn_outputs={},
@@ -1329,7 +1466,7 @@ class TestHiddenWirings:
         # A manual edge onto the SAME handle (in__signal) a hidden inbound
         # edge used to feed — even with a DIFFERENT source variable — must
         # clear the disconnected state (the "stuck disconnected" bug).
-        wid = wiring_id("f", {"signal": "Raw"}, set())
+        wid = wiring_id("f", {"signal": "Raw"}, set(), {})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {"signal": "Raw"}},
             fn_outputs={},
@@ -1349,7 +1486,7 @@ class TestHiddenWirings:
     def test_manual_reconnect_to_different_handle_stays_disconnected(self):
         # A manual edge onto an UNRELATED handle does not cover the hidden
         # one — the wiring must stay disconnected.
-        wid = wiring_id("f", {"signal": "Raw"}, set())
+        wid = wiring_id("f", {"signal": "Raw"}, set(), {})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {"signal": "Raw"}},
             fn_outputs={},
@@ -1369,7 +1506,7 @@ class TestHiddenWirings:
     def test_partial_reconnection_stays_disconnected(self):
         # Two hidden handles (var + const); only the var one is covered by
         # a manual edge. The wiring must stay disconnected until BOTH are.
-        wid = wiring_id("f", {"signal": "Raw"}, set())
+        wid = wiring_id("f", {"signal": "Raw"}, set(), {})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {"signal": "Raw"}},
             fn_outputs={},
@@ -1389,7 +1526,7 @@ class TestHiddenWirings:
     def test_manual_edge_scope_suffixed_target_still_matches(self):
         # A manual edge targeting a scope-placed node id (canonical id ::
         # pipeline_id) must still be recognized as covering the handle.
-        wid = wiring_id("f", {"signal": "Raw"}, set())
+        wid = wiring_id("f", {"signal": "Raw"}, set(), {})
         result = hidden_wirings(
             fn_input_params={self.F_KEY: {"signal": "Raw"}},
             fn_outputs={},
@@ -1410,27 +1547,32 @@ class TestHiddenWirings:
 class TestWiringDisconnectedFkeys:
     def test_maps_wirings_back_to_call_sites(self):
         ka, kb = ("f", _cid("a")), ("f", _cid("b"))
-        wid = wiring_id("f", {"signal": "Raw"}, set())
+        wid = wiring_id("f", {"signal": "Raw"}, set(), {})
         result = wiring_disconnected_fkeys(
             fn_input_params={ka: {"signal": "Raw"}, kb: {"signal": "Raw"}},
             fn_outputs={},
             wirings={("f", wid)},
+            path_inputs={},
         )
         assert result == {ka, kb}
 
     def test_unrelated_wiring_not_included(self):
         ka = ("f", _cid("a"))
-        other_wid = wiring_id("f", {"signal": "Other"}, set())
+        other_wid = wiring_id("f", {"signal": "Other"}, set(), {})
         result = wiring_disconnected_fkeys(
             fn_input_params={ka: {"signal": "Raw"}},
             fn_outputs={},
             wirings={("f", other_wid)},
+            path_inputs={},
         )
         assert result == set()
 
     def test_empty_wirings_is_empty(self):
         result = wiring_disconnected_fkeys(
-            fn_input_params={("f", _cid()): {}}, fn_outputs={}, wirings=set()
+            fn_input_params={("f", _cid()): {}},
+            fn_outputs={},
+            wirings=set(),
+            path_inputs={},
         )
         assert result == set()
 
@@ -1438,12 +1580,13 @@ class TestWiringDisconnectedFkeys:
 class TestWiringsDownstreamOf:
     def test_direct_consumer_marked_downstream(self):
         a_key, b_key = ("A", _cid("a")), ("B", _cid("b"))
-        wid_a = wiring_id("A", {}, {"Out"})
-        wid_b = wiring_id("B", {"x": "Out"}, set())
+        wid_a = wiring_id("A", {}, {"Out"}, {})
+        wid_b = wiring_id("B", {"x": "Out"}, set(), {})
         result = wirings_downstream_of(
             fn_input_params={a_key: {}, b_key: {"x": "Out"}},
             fn_outputs={a_key: {"Out"}, b_key: set()},
             seed_wirings={("A", wid_a)},
+            path_inputs={},
         )
         assert result == {("B", wid_b)}
 
@@ -1451,13 +1594,14 @@ class TestWiringsDownstreamOf:
         a_key = ("A", _cid("a"))
         b_key = ("B", _cid("b"))
         c_key = ("C", _cid("c"))
-        wid_a = wiring_id("A", {}, {"Mid"})
-        wid_b = wiring_id("B", {"x": "Mid"}, {"Final"})
-        wid_c = wiring_id("C", {"y": "Final"}, set())
+        wid_a = wiring_id("A", {}, {"Mid"}, {})
+        wid_b = wiring_id("B", {"x": "Mid"}, {"Final"}, {})
+        wid_c = wiring_id("C", {"y": "Final"}, set(), {})
         result = wirings_downstream_of(
             fn_input_params={a_key: {}, b_key: {"x": "Mid"}, c_key: {"y": "Final"}},
             fn_outputs={a_key: {"Mid"}, b_key: {"Final"}, c_key: set()},
             seed_wirings={("A", wid_a)},
+            path_inputs={},
         )
         assert result == {("B", wid_b), ("C", wid_c)}
 
@@ -1465,28 +1609,30 @@ class TestWiringsDownstreamOf:
         # A both produces AND consumes "Out" (self-referencing wiring) — a
         # naive BFS would re-add the seed to its own downstream set.
         a_key = ("A", _cid("a"))
-        wid_a = wiring_id("A", {"x": "Out"}, {"Out"})
+        wid_a = wiring_id("A", {"x": "Out"}, {"Out"}, {})
         result = wirings_downstream_of(
             fn_input_params={a_key: {"x": "Out"}},
             fn_outputs={a_key: {"Out"}},
             seed_wirings={("A", wid_a)},
+            path_inputs={},
         )
         assert result == set()
 
     def test_unrelated_wiring_not_marked(self):
         a_key = ("A", _cid("a"))
         unrelated_key = ("U", _cid("u"))
-        wid_a = wiring_id("A", {}, {"Out"})
-        wid_u = wiring_id("U", {}, {"Unrelated"})
+        wid_a = wiring_id("A", {}, {"Out"}, {})
+        wid_u = wiring_id("U", {}, {"Unrelated"}, {})
         result = wirings_downstream_of(
             fn_input_params={a_key: {}, unrelated_key: {}},
             fn_outputs={a_key: {"Out"}, unrelated_key: {"Unrelated"}},
             seed_wirings={("A", wid_a)},
+            path_inputs={},
         )
         assert ("U", wid_u) not in result
 
     def test_empty_seed_is_empty(self):
-        assert wirings_downstream_of({}, {}, set()) == set()
+        assert wirings_downstream_of({}, {}, set(), {}) == set()
 
 
 class TestCandidateEdgeId:
@@ -1881,15 +2027,15 @@ def _two_site_agg():
 
 class TestWiringId:
     def test_deterministic_and_constant_independent(self):
-        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
-        assert wid == wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"}, {})
+        assert wid == wiring_id("bp", {"signal": "Raw"}, {"Filtered"}, {})
         assert len(wid) == 16
 
     def test_different_wiring_different_id(self):
-        base = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
-        assert wiring_id("bp", {"signal": "Other"}, {"Filtered"}) != base
-        assert wiring_id("bp", {"signal": "Raw"}, {"Smoothed"}) != base
-        assert wiring_id("other", {"signal": "Raw"}, {"Filtered"}) != base
+        base = wiring_id("bp", {"signal": "Raw"}, {"Filtered"}, {})
+        assert wiring_id("bp", {"signal": "Other"}, {"Filtered"}, {}) != base
+        assert wiring_id("bp", {"signal": "Raw"}, {"Smoothed"}, {}) != base
+        assert wiring_id("other", {"signal": "Raw"}, {"Filtered"}, {}) != base
 
 
 class TestGroupCallSitesByWiring:
@@ -1903,7 +2049,7 @@ class TestGroupCallSitesByWiring:
 
         grouped, node_states, member_map = group_call_sites_by_wiring(agg, states)
 
-        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"}, {})
         gkey = ("bp", wid)
         assert list(grouped.fn_input_params) == [gkey]
         # Variant rows keep per-call-site call_id and state.
@@ -1943,7 +2089,7 @@ class TestGroupCallSitesByWiring:
             agg, states, pending_constants={"low_hz": {"99"}}
         )
 
-        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"})
+        wid = wiring_id("bp", {"signal": "Raw"}, {"Filtered"}, {})
         rows = grouped.fn_variants_map[("bp", wid)]
         staged = [r for r in rows if r.get("staged")]
         assert staged == [
@@ -1978,10 +2124,10 @@ class TestGroupCallSitesByWiring:
         )
 
         vo2_wid = wiring_id(
-            "compute_rolling_vo2", {"signal": "RawVO2"}, {"RollingVO2"}
+            "compute_rolling_vo2", {"signal": "RawVO2"}, {"RollingVO2"}, {}
         )
         hr_wid = wiring_id(
-            "compute_rolling_vo2", {"signal": "RawHeartRate"}, {"RollingHR"}
+            "compute_rolling_vo2", {"signal": "RawHeartRate"}, {"RollingHR"}, {}
         )
         vo2_rows = grouped.fn_variants_map[("compute_rolling_vo2", vo2_wid)]
         hr_rows = grouped.fn_variants_map[("compute_rolling_vo2", hr_wid)]

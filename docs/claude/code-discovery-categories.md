@@ -492,3 +492,7 @@ config pointed at that directory; used as a regression-test fixture in
   replaced the value-getter convention in §4/§5).
   **Design only — not yet implemented**; check its status header and
   `.claude/plan-gui-entity-editing-26-08-24.md` before relying on it.
+- `docs/claude/function-input-resolution.md` — the **execution** half: how a
+  discovered Parameter/PathInput actually reaches `for_each(inputs=)`. Note
+  that the declared name a category here carries is NOT what binds it to a
+  function parameter — the canvas edge is (as of 2026-08-25).

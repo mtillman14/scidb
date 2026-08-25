@@ -16,9 +16,16 @@
  *
  * A refused write is SHOWN, never silently reverted — see useSourceEdit for
  * why that matters.
+ *
+ * The Generate section restores the vector-valued controls the old
+ * SweepSettingsPanel had before the Sweep/Constant merge (D6) dropped them:
+ * a whole list at once, either typed as a list or generated as a range from
+ * start/end plus a step size or a target number of steps. Generation is
+ * purely a frontend concern — the backend only ever receives the final flat
+ * list, through the same `update_parameter` every other control here uses.
  */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ParameterValue } from '../DAG/ParameterNode'
 import { formatLocation, useSourceEdit } from './useSourceEdit'
 
@@ -27,6 +34,9 @@ interface Props {
   label: string
   values: ParameterValue[]
 }
+
+type GenMode = 'list' | 'range'
+type RangeKind = 'step' | 'count'
 
 /** The values source currently declares, in node order. */
 function declaredValues(values: ParameterValue[]): string[] {
@@ -43,11 +53,63 @@ function coerce(raw: string): number | string | boolean {
   return t
 }
 
+function parseListDraft(text: string): number[] {
+  return text
+    .split(/[,\s]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+    .map(Number)
+    .filter(n => !Number.isNaN(n))
+}
+
+/** Round away float noise (0.1 + 0.2 -> 0.30000000000000004) without
+ *  clobbering intentionally precise values — 10 significant decimals is far
+ *  past anything a parameter step size would legitimately need. */
+function clean(n: number): number {
+  return Math.round(n * 1e10) / 1e10
+}
+
+function generateRange(start: number, end: number, third: number, kind: RangeKind): number[] {
+  if (Number.isNaN(start) || Number.isNaN(end) || Number.isNaN(third)) return []
+  if (kind === 'count') {
+    const count = Math.floor(third)
+    if (count < 1) return []
+    if (count === 1) return [clean(start)]
+    const step = (end - start) / (count - 1)
+    return Array.from({ length: count }, (_, i) => clean(start + i * step))
+  }
+  // step-size mode
+  const step = third
+  if (step === 0) return start === end ? [clean(start)] : []
+  const count = Math.floor((end - start) / step + 1e-9) + 1
+  if (count < 1) return []
+  return Array.from({ length: count }, (_, i) => clean(start + i * step))
+}
+
 export default function ParameterSettingsPanel({ label, values }: Props) {
   const [draft, setDraft] = useState('')
   const { submit, error, readOnlyAt, saving, clearError } = useSourceEdit()
 
   const declared = declaredValues(values)
+
+  // --- Generate section ---
+  const [genOpen, setGenOpen] = useState(false)
+  const [genMode, setGenMode] = useState<GenMode>('list')
+  const [listDraft, setListDraft] = useState(declared.join(', '))
+  const [start, setStart] = useState('0')
+  const [end, setEnd] = useState('10')
+  const [third, setThird] = useState('1')
+  const [rangeKind, setRangeKind] = useState<RangeKind>('step')
+
+  // No re-seeding effect: Sidebar remounts this panel per node (key={id}),
+  // so the useState initializer above already runs on every selection
+  // change — and NOT on the dag_updated refetch that follows a save, which
+  // would otherwise clobber an in-flight edit.
+
+  const preview = useMemo(() => {
+    if (genMode === 'list') return parseListDraft(listDraft)
+    return generateRange(Number(start), Number(end), Number(third), rangeKind)
+  }, [genMode, listDraft, start, end, third, rangeKind])
 
   const write = (next: string[]) =>
     submit('update_parameter', { name: label, values: next.map(coerce) })
@@ -70,6 +132,11 @@ export default function ParameterSettingsPanel({ label, values }: Props) {
       return
     }
     await write(next)
+  }
+
+  const applyGenerated = async () => {
+    if (preview.length === 0) return
+    await submit('update_parameter', { name: label, values: preview })
   }
 
   return (
@@ -128,6 +195,128 @@ export default function ParameterSettingsPanel({ label, values }: Props) {
         {declared.length > 1 && (
           <div style={styles.hint}>
             Each value runs as its own for_each call.
+          </div>
+        )}
+      </section>
+
+      <section style={styles.section}>
+        <button
+          style={styles.disclosure}
+          onClick={() => setGenOpen(o => !o)}
+          type="button"
+          title="Set every value at once — paste a list, or generate a range"
+        >
+          {genOpen ? '▾' : '▸'} Generate
+        </button>
+
+        {genOpen && (
+          <div style={styles.genBody}>
+            <div style={styles.modeRow}>
+              <button
+                style={genMode === 'list' ? styles.modeBtnActive : styles.modeBtn}
+                onClick={() => setGenMode('list')}
+                type="button"
+              >
+                List
+              </button>
+              <button
+                style={genMode === 'range' ? styles.modeBtnActive : styles.modeBtn}
+                onClick={() => setGenMode('range')}
+                type="button"
+              >
+                Range
+              </button>
+            </div>
+
+            {genMode === 'list' ? (
+              <>
+                <input
+                  style={styles.genInput}
+                  placeholder="1, 2, 5, 10"
+                  value={listDraft}
+                  disabled={saving}
+                  onChange={e => { setListDraft(e.target.value); clearError() }}
+                />
+                <div style={styles.hint}>Comma- or space-separated numbers.</div>
+              </>
+            ) : (
+              <>
+                <div style={styles.rangeGrid}>
+                  <label style={styles.rangeField}>
+                    <span style={styles.rangeLabel}>Start</span>
+                    <input
+                      style={styles.genInput}
+                      type="number"
+                      value={start}
+                      disabled={saving}
+                      onChange={e => { setStart(e.target.value); clearError() }}
+                    />
+                  </label>
+                  <label style={styles.rangeField}>
+                    <span style={styles.rangeLabel}>End</span>
+                    <input
+                      style={styles.genInput}
+                      type="number"
+                      value={end}
+                      disabled={saving}
+                      onChange={e => { setEnd(e.target.value); clearError() }}
+                    />
+                  </label>
+                  <label style={styles.rangeField}>
+                    <span style={styles.rangeLabel}>
+                      {rangeKind === 'step' ? 'Step size' : '# of steps'}
+                    </span>
+                    <input
+                      style={styles.genInput}
+                      type="number"
+                      value={third}
+                      disabled={saving}
+                      onChange={e => { setThird(e.target.value); clearError() }}
+                    />
+                  </label>
+                </div>
+                <div style={styles.modeRow}>
+                  <button
+                    style={rangeKind === 'step' ? styles.modeBtnActive : styles.modeBtn}
+                    onClick={() => setRangeKind('step')}
+                    type="button"
+                  >
+                    By step size
+                  </button>
+                  <button
+                    style={rangeKind === 'count' ? styles.modeBtnActive : styles.modeBtn}
+                    onClick={() => setRangeKind('count')}
+                    type="button"
+                  >
+                    By # of steps
+                  </button>
+                </div>
+              </>
+            )}
+
+            <div style={styles.sectionTitle}>Preview</div>
+            <div style={styles.previewText}>
+              {preview.length === 0
+                ? 'No values — check your input.'
+                : preview.length <= 8
+                ? preview.join(', ')
+                : `${preview.slice(0, 6).join(', ')}, … (${preview.length} total)`}
+            </div>
+            {preview.length > 1 && (
+              <div style={styles.hint}>
+                Runs {preview.length}× — one for_each call per value.
+              </div>
+            )}
+
+            <button
+              style={preview.length === 0 ? styles.replaceBtnDisabled : styles.replaceBtn}
+              onClick={applyGenerated}
+              disabled={saving || preview.length === 0}
+              type="button"
+              title="Rewrite the declaration in source with exactly these values"
+            >
+              {saving ? '…' : 'Replace values'}
+            </button>
           </div>
         )}
       </section>
@@ -242,6 +431,113 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 5,
     fontSize: 10,
     color: '#666',
+  },
+  disclosure: {
+    background: 'transparent',
+    border: 'none',
+    padding: 0,
+    cursor: 'pointer',
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#666',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  genBody: {
+    marginTop: 8,
+  },
+  modeRow: {
+    display: 'flex',
+    gap: 4,
+    marginBottom: 8,
+  },
+  modeBtn: {
+    flex: 1,
+    padding: '4px 0',
+    background: 'transparent',
+    color: '#888',
+    border: '1px solid #333',
+    borderRadius: 3,
+    cursor: 'pointer',
+    fontSize: 10,
+    fontWeight: 600,
+  },
+  modeBtnActive: {
+    flex: 1,
+    padding: '4px 0',
+    background: '#1e3a2f',
+    color: '#4ecdc4',
+    border: '1px solid #2a9d8f',
+    borderRadius: 3,
+    cursor: 'pointer',
+    fontSize: 10,
+    fontWeight: 600,
+  },
+  genInput: {
+    display: 'block',
+    width: '100%',
+    background: '#1a1a2e',
+    border: '1px solid #333',
+    borderRadius: 3,
+    color: '#b2ded9',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    padding: '4px 6px',
+    outline: 'none',
+    boxSizing: 'border-box',
+  },
+  rangeGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr 1fr',
+    gap: 5,
+    marginBottom: 8,
+  },
+  rangeField: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    minWidth: 0,
+  },
+  rangeLabel: {
+    fontSize: 9,
+    color: '#666',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    whiteSpace: 'nowrap',
+  },
+  previewText: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: '#e5e5e5',
+    background: '#12122a',
+    border: '1px solid #333',
+    borderRadius: 3,
+    padding: '4px 6px',
+    wordBreak: 'break-all',
+  },
+  replaceBtn: {
+    width: '100%',
+    marginTop: 10,
+    padding: '5px 0',
+    background: '#2a9d8f',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 3,
+    cursor: 'pointer',
+    fontSize: 11,
+    fontWeight: 700,
+  },
+  replaceBtnDisabled: {
+    width: '100%',
+    marginTop: 10,
+    padding: '5px 0',
+    background: '#2a2a3e',
+    color: '#666',
+    border: 'none',
+    borderRadius: 3,
+    cursor: 'not-allowed',
+    fontSize: 11,
+    fontWeight: 700,
   },
   error: {
     background: 'rgba(255, 77, 79, 0.12)',

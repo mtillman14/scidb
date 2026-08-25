@@ -7,8 +7,8 @@
  *
  * Replaces the former ConstantNode + SweepNode. The merge went in the
  * constant node's direction because it was already the richer widget: the
- * old sweep node had no per-value checkboxes, no `src` badge and no
- * DB-history rows, and now inherits all three.
+ * old sweep node had no per-value checkboxes and no DB-history rows, and
+ * now inherits both.
  *
  * Shows the name and a checkboxed list of the distinct values it has taken
  * across pipeline runs, plus whatever source currently declares. Checked
@@ -16,6 +16,11 @@
  * hidden value and never deletes data (see
  * pipeline_store.hide_constant_value, and execution_service's filtering,
  * which excludes unchecked values from multi-value fan-outs too).
+ *
+ * The canvas deliberately shows the bare value and nothing else — no record
+ * count, no `src` badge, no EachOf fan-out badge. All three are still in
+ * `data` and all three are surfaced by ParameterSettingsPanel; on the node
+ * they were noise on what should read as a short list of values.
  *
  * State management: checked state lives inside each value object in the
  * node's `data`, seeded from the backend on every graph fetch
@@ -68,10 +73,6 @@ export default function ParameterNode({ id, data }: Props) {
   }, [id, data.label, data.values, setNodes])
 
   const showCheckboxes = data.values.length > 1
-  // A Parameter whose source declares several values fans out at execution
-  // time -- one for_each call per value, via EachOf (see
-  // execution_service.build_run_inputs).
-  const sourceValueCount = data.values.filter(v => v.is_current_source_value).length
 
   return (
     <div style={styles.container}>
@@ -80,35 +81,21 @@ export default function ParameterNode({ id, data }: Props) {
 
       {data.values.length > 0 && (
         <div style={styles.listbox}>
-          {data.values.map((v, i) => {
-            const rowLabel = `${v.value} · ${v.record_count} rec${v.record_count !== 1 ? 's' : ''}`
-            return (
-              <label key={i} style={showCheckboxes ? styles.valueRow : styles.valueRowNoCheck}>
-                {showCheckboxes && (
-                  <input
-                    type="checkbox"
-                    checked={v.checked}
-                    onChange={() => toggleValue(i)}
-                    style={styles.checkbox}
-                  />
-                )}
-                <span style={!showCheckboxes || v.checked ? styles.valueLabel : styles.valueLabelUnchecked}>
-                  {rowLabel}
-                </span>
-                {v.is_current_source_value && (
-                  <span style={styles.sourceBadge} title="Current value in source code">
-                    src
-                  </span>
-                )}
-              </label>
-            )
-          })}
-        </div>
-      )}
-
-      {sourceValueCount > 1 && (
-        <div style={styles.countBadge}>
-          {sourceValueCount} values — EachOf
+          {data.values.map((v, i) => (
+            <label key={i} style={showCheckboxes ? styles.valueRow : styles.valueRowNoCheck}>
+              {showCheckboxes && (
+                <input
+                  type="checkbox"
+                  checked={v.checked}
+                  onChange={() => toggleValue(i)}
+                  style={styles.checkbox}
+                />
+              )}
+              <span style={!showCheckboxes || v.checked ? styles.valueLabel : styles.valueLabelUnchecked}>
+                {v.value}
+              </span>
+            </label>
+          ))}
         </div>
       )}
     </div>
@@ -167,23 +154,5 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#555',
     fontFamily: 'monospace',
     textDecoration: 'line-through',
-  },
-  sourceBadge: {
-    fontSize: 8,
-    fontWeight: 700,
-    color: '#1e3a2f',
-    background: '#4ecdc4',
-    borderRadius: 3,
-    padding: '1px 3px',
-    marginLeft: 4,
-    letterSpacing: 0.3,
-    flexShrink: 0,
-  },
-  countBadge: {
-    marginTop: 3,
-    fontSize: 10,
-    fontFamily: 'monospace',
-    color: '#4ecdc4',
-    fontWeight: 600,
   },
 }

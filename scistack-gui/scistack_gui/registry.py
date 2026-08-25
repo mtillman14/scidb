@@ -25,6 +25,8 @@ from scidb import BaseVariable, EachOf, Parameter, PathInput
 from scidb.discover import is_parameter, is_path_input
 from scifor.discovery import PathInsert, walk_package
 
+from scistack_gui import library_functions
+
 if TYPE_CHECKING:
     from scistack_gui.config import SciStackConfig
 
@@ -606,20 +608,6 @@ def get_path_input(name: str) -> "PathInput | EachOf | None":
     return _path_inputs.get(name)
 
 
-def register_builtin_function(name: str, fn) -> None:
-    """Register a manually-declared reference to a built-in/library
-    function (validated by scistack_gui.api.builtin_functions) — e.g.
-    ``numpy.mean``. Distinct from ``_scan_module_functions``' discovery
-    path: this is a deliberate, user-initiated registration for something
-    the user did NOT write themselves, not something found by scanning a
-    file. Survives registry refreshes via
-    scistack_gui.api.builtin_functions.replay_persisted_builtins, since
-    (unlike file-based functions) there's no file on disk to rediscover it
-    from.
-    """
-    _register_function(name, fn, source="builtin")
-
-
 def _register_function(name: str, fn, *, source: str) -> None:
     """Register a single function, warning on name collisions."""
     existing_source = _function_sources.get(name)
@@ -672,11 +660,39 @@ def _diff_summary(
 # ---------------------------------------------------------------------------
 
 
-def get_function(name: str):
+def lookup_function(name: str):
+    """Resolve *name* to a callable, or return ``None``.
+
+    Two sources, in order:
+
+    1. ``_functions`` — functions discovered by scanning the user's source.
+    2. :func:`scistack_gui.library_functions.resolve` — a library reference
+       (``pandas.read_csv``, ``numpy.mean``, a stdlib call), imported on
+       demand.
+
+    Library functions are deliberately never stored in ``_functions``: this
+    dict is cleared by every refresh, and the replay that used to restore
+    them was missing from several refresh paths, so a Parameter edit or a
+    Variable creation silently evicted them (see library_functions'
+    module docstring). Importing on demand has no such failure mode.
+    """
     fn = _functions.get(name)
+    if fn is not None:
+        return fn
+    if not library_functions.is_library_reference(name):
+        return None
+    fn = library_functions.resolve(name)
+    if fn is not None:
+        logger.debug("[registry] Resolved '%s' as a library function by import", name)
+    return fn
+
+
+def get_function(name: str):
+    fn = lookup_function(name)
     if fn is None:
         raise KeyError(
-            f"Function '{name}' not found in registry. "
+            f"Function '{name}' not found in registry, and is not an importable "
+            f"library function (numpy/pandas/stdlib). "
             f"Did you pass --module or --project with the script that defines it?"
         )
     return fn

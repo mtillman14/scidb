@@ -41,9 +41,12 @@ def _parse_path_input(value: str) -> dict | None:
 def _fn_params_from_registry(fn_name: str) -> list[str]:
     """Return non-private parameter names from the registered function's signature.
 
-    Falls back to the MATLAB registry if the function isn't a Python function.
+    ``lookup_function`` covers both discovered user code and library
+    references (``pandas.read_csv``), which are imported on demand rather
+    than stored in the registry. Falls back to the MATLAB registry if the
+    function isn't a Python function.
     """
-    fn = registry._functions.get(fn_name)
+    fn = registry.lookup_function(fn_name)
     if fn is not None:
         try:
             return [
@@ -141,7 +144,9 @@ def _own_state_for_function(
     from scidb import BaseVariable
     from scihist import check_node_state
 
-    fn_obj = registry._functions.get(fn_name)
+    # lookup_function also covers library references, which resolve by
+    # import — without it a pandas.read_csv node reads as permanently red.
+    fn_obj = registry.lookup_function(fn_name)
     if fn_obj is None:
         # Try MATLAB registry — build a proxy with the right hash.
         from scistack_gui import matlab_registry
@@ -271,11 +276,18 @@ def _compute_run_states(
 
     from scistack_gui import matlab_registry
 
+    # Fill in the two kinds of function that aren't in registry._functions:
+    # library references (pandas.read_csv — resolved by import) and MATLAB
+    # functions (a proxy carrying the right hash). Only for names actually
+    # on this canvas, so neither lookup is paid for the whole registry.
     for fn_name in fn_input_params.keys():
         fn_name_str, _ = fn_name
-        if fn_name_str not in fn_registry and matlab_registry.is_matlab_function(
-            fn_name_str
-        ):
+        if fn_name_str in fn_registry:
+            continue
+        library_fn = registry.lookup_function(fn_name_str)
+        if library_fn is not None:
+            fn_registry[fn_name_str] = library_fn
+        elif matlab_registry.is_matlab_function(fn_name_str):
             fn_registry[fn_name_str] = _build_matlab_fn_proxy(fn_name_str)
 
     # Build nodes list for batched state checking
@@ -481,7 +493,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         manual_edges=manual_edges_for_fn_lookup,
     )
     disconnected_fkeys = gb.wiring_disconnected_fkeys(
-        agg.fn_input_params, agg.fn_outputs, disconnected_wirings
+        agg.fn_input_params, agg.fn_outputs, disconnected_wirings, agg.path_inputs
     )
     if disconnected_wirings:
         logger.info(
@@ -750,13 +762,11 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     existing_node_labels = {n["id"]: n["data"]["label"] for n in nodes}
 
     def _resolve_manual_fn_wiring(node_id: str, fn_label: str):
-        sig_params = _fn_params_from_registry(fn_label)
         resolved = resolve_function_edges(
             fn_node_ids={node_id},
             manual_edges=manual_edges_list,
             manual_nodes=manual_nodes,
             existing_node_labels=existing_node_labels,
-            sig_params=sig_params,
         )
         inferred_inputs = {p: ts[0] for p, ts in resolved.input_types.items() if ts}
         return resolved, inferred_inputs
@@ -806,7 +816,12 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         if not resolved.output_types:
             still_to_add.append(node_id)
             continue
-        my_wiring = gb.wiring_id(meta["label"], inferred_inputs, set(resolved.output_types))
+        my_wiring = gb.wiring_id(
+            meta["label"],
+            inferred_inputs,
+            set(resolved.output_types),
+            resolved.path_input_params,
+        )
         matches = [
             n["id"]
             for n in nodes
@@ -917,7 +932,6 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
                 manual_edges=manual_edges_list,
                 manual_nodes=manual_nodes,
                 existing_node_labels=existing_node_labels,
-                sig_params=sig_params,
             )
             inferred_inputs = {p: ts[0] for p, ts in resolved.input_types.items() if ts}
             resolved_input_params = {p: inferred_inputs.get(p, "") for p in sig_params}

@@ -19,10 +19,22 @@ def get_pipeline_graph(db, pipeline_id: str = "main") -> dict:
     Delegates to api/pipeline._build_graph which already orchestrates
     domain modules. This service function provides a stable entry point
     for both protocol adapters.
+
+    Failures are logged here before propagating. FastAPI runs the sync
+    handler on a threadpool thread, so an uncaught exception surfaces only
+    on uvicorn's stderr and never reaches scidb.log — on 2026-08-25 that
+    left a graph build that just stopped mid-log with no error at all, and
+    the traceback had to be recovered from the terminal by hand.
     """
     from scistack_gui.api.pipeline import _build_graph
 
-    return _build_graph(db, pipeline_id)
+    try:
+        return _build_graph(db, pipeline_id)
+    except Exception:
+        logger.exception(
+            "[pipeline] graph build FAILED (scope=%s) — see traceback", pipeline_id
+        )
+        raise
 
 
 def get_function_params(fn_name: str) -> list[str]:
@@ -80,13 +92,21 @@ def get_function_source(fn_name: str) -> dict:
                 "— there is no source file to show.",
             }
         return {"ok": True, "file": str(info.file_path), "line": 1}
-    fn = registry._functions.get(fn_name)
+    fn = registry.lookup_function(fn_name)
     if fn is None:
         return {
             "ok": False,
             "error": f"Function '{fn_name}' is not registered (pass --module at startup).",
         }
     try:
+        # Unwrap FIRST, and unwrap for both halves. inspect is inconsistent
+        # here: getsourcelines() calls unwrap() internally, but getsourcefile()
+        # reads __code__.co_filename and does not. On a wrapped callable —
+        # a library reference carries a name-qualifying wrapper, see
+        # library_functions.with_qualified_name — that mismatch returns the
+        # WRAPPER's file paired with the WRAPPED function's line number, i.e.
+        # an arbitrary line of library_functions.py.
+        fn = inspect.unwrap(fn)
         file = inspect.getsourcefile(fn) or inspect.getfile(fn)
         _, line = inspect.getsourcelines(fn)
     except (TypeError, OSError) as e:
@@ -119,7 +139,7 @@ def get_function_doc(fn_name: str) -> dict:
             "signature": signature,
             "docstring": info.docstring,
         }
-    fn = registry._functions.get(fn_name)
+    fn = registry.lookup_function(fn_name)
     if fn is None:
         return {
             "ok": False,
@@ -167,20 +187,30 @@ def get_info() -> dict:
 
 
 def get_registry() -> dict:
-    """Return all registered functions, variables, and MATLAB functions."""
+    """Return all registered functions, variables, and MATLAB functions.
+
+    Python library references (``pandas.read_csv``) are NOT in
+    ``registry._functions`` — they're imported on demand — so the persisted
+    list is unioned in here. That table is their only record.
+    """
     from scidb import BaseVariable
     from scistack_gui import matlab_registry, registry
 
+    library_fns = _python_library_function_names()
     matlab_fns = matlab_registry.get_all_function_names()
     matlab_mismatched = matlab_registry.get_mismatched_function_names()
     load_errors = [*registry.get_load_errors(), *matlab_registry.get_load_errors()]
     logger.info(
-        "get_registry: %d python fns, %d matlab fns, %d vars, %d load errors",
+        "get_registry: %d python fns (+%d library refs), %d matlab fns, "
+        "%d vars, %d load errors",
         len(registry._functions),
+        len(library_fns),
         len(matlab_fns),
         len(BaseVariable._all_subclasses),
         len(load_errors),
     )
+    if library_fns:
+        logger.info("library_functions: %s", library_fns)
     if matlab_fns:
         logger.info("matlab_functions: %s", matlab_fns)
     if matlab_mismatched:
@@ -188,12 +218,29 @@ def get_registry() -> dict:
     if load_errors:
         logger.warning("get_registry: %d discovery load error(s): %s", len(load_errors), load_errors)
     return {
-        "functions": sorted(registry._functions.keys()),
+        "functions": sorted(set(registry._functions) | set(library_fns)),
         "variables": sorted(BaseVariable._all_subclasses.keys()),
         "matlab_functions": matlab_fns,
         "matlab_functions_mismatched": matlab_mismatched,
         "load_errors": load_errors,
     }
+
+
+def _python_library_function_names() -> list[str]:
+    """Persisted Python library references, or ``[]`` if no DB is open.
+
+    ``get_registry`` is reachable before a database exists (the browser
+    frontend calls it while showing the project-creation wizard), so a
+    missing DB is a normal state here, not an error.
+    """
+    from scistack_gui.db import get_db, is_loaded
+    from scistack_gui.services.builtin_function_service import (
+        get_python_library_function_names,
+    )
+
+    if not is_loaded():
+        return []
+    return get_python_library_function_names(get_db())
 
 
 def get_variables_list() -> list[dict]:

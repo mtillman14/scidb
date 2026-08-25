@@ -84,39 +84,89 @@ def _sort_inferred_by_params_order(
     return ordered
 
 
-def _collect_sweep_params(
-    function_name: str, saved_sweeps: dict, manual_edges: list[dict], strip_placement
-) -> dict[str, list]:
-    """``{param_name: [values]}`` for every Parameter node whose source form
-    is a Sweep, manually wired into *function_name*'s ``in__{param}`` handle.
+def _fn_node_ids(function_name: str, manual_edges: list[dict], manual_nodes: dict):
+    """Every canvas node id that represents *function_name* — the legacy
+    ``fn__{name}`` form, manual nodes carrying it as their label, and any
+    edge endpoint whose bare id is ``fn__{name}`` or ``fn__{name}__{suffix}``
+    (a wiring id, a manual suffix, or either with a ``::{scope}`` placement).
+    """
+    from scistack_gui.domain.graph_builder import strip_placement
 
-    Unlike PathInput, a Sweep has no DB-history representation at all — it
-    always fans out to ``EachOf``/``Sweep`` fresh at execution time, never
-    staged as one recorded value (see
-    docs/claude/code-discovery-categories.md) — so this only ever has ONE
-    source (registry + manual edge), not the two-source
+    prefix = f"fn__{function_name}"
+    ids = {prefix}
+    for nid, meta in manual_nodes.items():
+        if meta.get("type") == "functionNode" and meta.get("label") == function_name:
+            ids.add(nid)
+    for edge in manual_edges:
+        for endpoint in (edge.get("source"), edge.get("target")):
+            if not endpoint or endpoint in ids:
+                continue
+            bare = strip_placement(endpoint)
+            if bare == prefix or bare.startswith(prefix + "__"):
+                ids.add(endpoint)
+    return ids
+
+
+def _resolve_matlab_wiring(function_name: str, manual_edges: list[dict], manual_nodes: dict):
+    """``ResolvedEdges`` for *function_name*'s canvas wiring.
+
+    The MATLAB command generators used to hand-roll this edge scan twice
+    (once here per function, once in the pipeline generator), which is how
+    they and the Python execution path drifted apart — they read the
+    ``in__{param}`` handle to map a PathInput to the parameter it fills,
+    while ``build_run_inputs`` matched by name and could not. One resolver
+    now serves both (``feedback_avoid_scifor_scidb_duplication``).
+    """
+    from scistack_gui.domain.edge_resolver import resolve_function_edges
+
+    return resolve_function_edges(
+        fn_node_ids=_fn_node_ids(function_name, manual_edges, manual_nodes),
+        manual_edges=manual_edges,
+        manual_nodes=manual_nodes,
+        existing_node_labels={},
+    )
+
+
+def _collect_sweep_params(
+    function_name: str, saved_sweeps: dict, manual_edges: list[dict], manual_nodes: dict
+) -> dict[str, list]:
+    """``{param_name: [values]}`` for every Parameter node wired into
+    *function_name*.
+
+    Unlike PathInput, a Parameter has no DB-history representation at all —
+    it always fans out to ``EachOf`` fresh at execution time, never staged as
+    one recorded value (see docs/claude/code-discovery-categories.md) — so
+    this only ever has ONE source (registry + edge), not the two-source
     DB-variants-then-edges resolution ``path_input_params`` needs. Shared
     between ``generate_matlab_command`` (single function) and
     ``generate_matlab_pipeline_command`` (whole pipeline, called per node).
-    """
-    sweep_params: dict[str, list] = {}
-    for edge in manual_edges:
-        src = edge.get("source", "")
-        tgt = edge.get("target", "")
-        th = edge.get("targetHandle", "")
-        from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX
 
-        if not (src.startswith(PARAM_ID_PREFIX) and th.startswith("in__")):
-            continue
-        tgt_parts = tgt.split("__")
-        if len(tgt_parts) < 2 or tgt_parts[0] != "fn" or tgt_parts[1] != function_name:
-            continue
-        bare_src = strip_placement(src)
-        sw_name = bare_src[len(PARAM_ID_PREFIX) :]
-        param_name = th[len("in__") :]
-        if sw_name in saved_sweeps:
-            sweep_params[param_name] = saved_sweeps[sw_name]
-    return sweep_params
+    Keyed by parameter name, looked up by declared name — the two differ
+    whenever a Parameter feeds a parameter of another name.
+    """
+    resolved = _resolve_matlab_wiring(function_name, manual_edges, manual_nodes)
+    return {
+        param_name: saved_sweeps[decl_name]
+        for param_name, decl_name in resolved.parameter_params.items()
+        if decl_name in saved_sweeps
+    }
+
+
+def _collect_edge_path_inputs(
+    function_name: str, saved_pis: dict, manual_edges: list[dict], manual_nodes: dict
+) -> dict[str, dict]:
+    """``{param_name: {"template", "root_folder"}}`` for every PathInput node
+    wired into *function_name*, resolved from the edge that names the
+    parameter — never from a name coincidence."""
+    resolved = _resolve_matlab_wiring(function_name, manual_edges, manual_nodes)
+    return {
+        param_name: {
+            "template": saved_pis[decl_name].get("template", ""),
+            "root_folder": saved_pis[decl_name].get("root_folder"),
+        }
+        for param_name, decl_name in resolved.path_input_params.items()
+        if decl_name in saved_pis
+    }
 
 
 def generate_matlab_command(function_name: str, db, params: dict) -> dict:
@@ -136,11 +186,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     from scistack_gui.api.matlab_command import generate_matlab_command as _fmt
     from scistack_gui.db import get_db_path
     from scistack_gui.domain.edge_resolver import infer_manual_fn_output_types
-    from scistack_gui.domain.graph_builder import (
-        parse_path_input,
-        path_input_display,
-        strip_placement,
-    )
+    from scistack_gui.domain.graph_builder import parse_path_input, path_input_display
 
     db_path = str(get_db_path())
 
@@ -176,55 +222,27 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
             if pi is not None:
                 path_input_params[param_name] = pi
 
-    # Source 2: layout manual edges — for functions not yet in the DB.
+    # Source 2: canvas edges — for functions not yet in the DB, and as the
+    # live overlay for those that are (the edge's current PathInput wins
+    # over whatever template history happens to have recorded).
     saved_pis = {
         name: path_input_display(obj)
         for name, obj in registry.get_path_inputs_registry().items()
     }
-    for edge in layout_store.read_manual_edges():
-        src = edge.get("source", "")
-        tgt = edge.get("target", "")
-        th = edge.get("targetHandle", "")
-        if not (src.startswith("pathInput__") and th.startswith("in__")):
-            continue
-        tgt_parts = tgt.split("__")
-        if len(tgt_parts) < 2 or tgt_parts[0] != "fn":
-            continue
-        tgt_fn_name = tgt_parts[1]
-        if tgt_fn_name != function_name:
-            continue
-        bare_src = strip_placement(src)
-        pi_name = (
-            bare_src.split("__")[1]
-            if len(bare_src.split("__")) >= 2
-            else bare_src[len("pathInput__") :]
-        )
-        param_name = th[len("in__") :]
-        if pi_name in saved_pis:
-            path_input_params[param_name] = {
-                "template": saved_pis[pi_name].get("template", ""),
-                "root_folder": saved_pis[pi_name].get("root_folder"),
-            }
+    manual_edges = layout_store.read_manual_edges()
+    manual_nodes = layout_store.get_manual_nodes()
+    path_input_params.update(
+        _collect_edge_path_inputs(function_name, saved_pis, manual_edges, manual_nodes)
+    )
 
-    # Overlay saved templates onto DB-variant-derived PathInput params.
-    for param_name, pi in path_input_params.items():
-        for edge in layout_store.read_manual_edges():
-            th = edge.get("targetHandle", "")
-            if th == f"in__{param_name}":
-                src = strip_placement(edge.get("source", ""))
-                pi_name = src.split("__")[1] if len(src.split("__")) >= 2 else ""
-                if pi_name in saved_pis and saved_pis[pi_name].get("template"):
-                    pi["template"] = saved_pis[pi_name]["template"]
-                    pi["root_folder"] = saved_pis[pi_name].get("root_folder")
-
-    # Collect Sweep param mappings (registry + manual edges only — no
-    # DB-history source, see _collect_sweep_params).
+    # Collect Parameter mappings (registry + edges only — no DB-history
+    # source, see _collect_sweep_params).
     saved_sweeps = {
         name: list(sw.alternatives)
         for name, sw in registry.get_parameters_registry().items()
     }
     sweep_params = _collect_sweep_params(
-        function_name, saved_sweeps, layout_store.read_manual_edges(), strip_placement
+        function_name, saved_sweeps, manual_edges, manual_nodes
     )
 
     # Infer output types from manual edges when no DB variants exist.
@@ -236,17 +254,9 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     # re-sort them to match the function signature order from params.
     output_types: list[str] = params.get("output_types") or []
     if not fn_variants:
-        manual_nodes = layout_store.get_manual_nodes()
-        fn_node_ids = {f"fn__{function_name}"}
-        for nid, meta in manual_nodes.items():
-            if (
-                meta.get("type") == "functionNode"
-                and meta.get("label") == function_name
-            ):
-                fn_node_ids.add(nid)
         inferred = infer_manual_fn_output_types(
-            fn_node_ids,
-            layout_store.read_manual_edges(),
+            _fn_node_ids(function_name, manual_edges, manual_nodes),
+            manual_edges,
             manual_nodes,
             existing_node_labels={},
         )
@@ -345,11 +355,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         generate_matlab_pipeline_command as _fmt,
     )
     from scistack_gui.db import get_db_path
-    from scistack_gui.domain.graph_builder import (
-        parse_path_input,
-        path_input_display,
-        strip_placement,
-    )
+    from scistack_gui.domain.graph_builder import parse_path_input, path_input_display
     from scistack_gui.domain.variant_resolver import (
         filter_hidden_targets,
         hidden_call_ids_for_fn,
@@ -395,6 +401,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         name: list(sw.alternatives) for name, sw in _reg.get_parameters_registry().items()
     }
     manual_edges = layout_store.read_manual_edges()
+    manual_nodes = layout_store.get_manual_nodes()
 
     steps: list[dict] = []
     warnings: list[str] = []
@@ -436,7 +443,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
             unique_targets.append({**target, "input_types": flat_input_types})
 
         # Path inputs for this function — same two-source resolution
-        # (DB-variant input_types + manual edges + saved templates) as
+        # (DB-variant input_types, then canvas edges as the live overlay) as
         # generate_matlab_command, applied per-node here.
         path_input_params: dict[str, dict] = {}
         for t in unique_targets:
@@ -444,39 +451,12 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
                 pi = parse_path_input(str(type_val))
                 if pi is not None:
                     path_input_params[param_name] = pi
-        for edge in manual_edges:
-            src = edge.get("source", "")
-            tgt = edge.get("target", "")
-            th = edge.get("targetHandle", "")
-            if not (src.startswith("pathInput__") and th.startswith("in__")):
-                continue
-            tgt_parts = tgt.split("__")
-            if len(tgt_parts) < 2 or tgt_parts[0] != "fn" or tgt_parts[1] != fn_label:
-                continue
-            bare_src = strip_placement(src)
-            pi_name = (
-                bare_src.split("__")[1]
-                if len(bare_src.split("__")) >= 2
-                else bare_src[len("pathInput__") :]
-            )
-            param_name = th[len("in__") :]
-            if pi_name in saved_pis:
-                path_input_params[param_name] = {
-                    "template": saved_pis[pi_name].get("template", ""),
-                    "root_folder": saved_pis[pi_name].get("root_folder"),
-                }
-        for param_name, pi in path_input_params.items():
-            for edge in manual_edges:
-                th = edge.get("targetHandle", "")
-                if th == f"in__{param_name}":
-                    src = strip_placement(edge.get("source", ""))
-                    pi_name = src.split("__")[1] if len(src.split("__")) >= 2 else ""
-                    if pi_name in saved_pis and saved_pis[pi_name].get("template"):
-                        pi["template"] = saved_pis[pi_name]["template"]
-                        pi["root_folder"] = saved_pis[pi_name].get("root_folder")
+        path_input_params.update(
+            _collect_edge_path_inputs(fn_label, saved_pis, manual_edges, manual_nodes)
+        )
 
         sweep_params = _collect_sweep_params(
-            fn_label, saved_sweeps, manual_edges, strip_placement
+            fn_label, saved_sweeps, manual_edges, manual_nodes
         )
 
         steps.append(

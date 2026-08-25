@@ -72,7 +72,7 @@ def _bp_group_node_id() -> str:
     so they group into a single node id."""
     return fn_node_id(
         "bandpass_filter",
-        wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"}),
+        wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"}, {}),
     )
 
 
@@ -266,7 +266,9 @@ def test_differently_wired_manual_node_does_not_graduate_or_show_green(client):
         "/api/layout/mv_other_out",
         json={"x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered"},
     )
-    client.put("/api/edges/e_in2", json={"source": "mv_other_in", "target": "mf_bp2"})
+    client.put("/api/edges/e_in2", json={
+        "source": "mv_other_in", "target": "mf_bp2", "target_handle": "in__signal",
+    })
     client.put("/api/edges/e_out2", json={"source": "mf_bp2", "target": "mv_other_out"})
 
     nodes = client.get("/api/pipeline").json()["nodes"]
@@ -338,7 +340,9 @@ def test_manual_node_graduates_after_running_despite_shared_label_ambiguity(clie
     client.put("/api/layout/mv_o4_out", json={
         "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered4",
     })
-    client.put("/api/edges/e_o4_in", json={"source": "mv_o4_in", "target": "mf_bp_other4"})
+    client.put("/api/edges/e_o4_in", json={
+        "source": "mv_o4_in", "target": "mf_bp_other4", "target_handle": "in__signal",
+    })
     client.put("/api/edges/e_o4_out", json={"source": "mf_bp_other4", "target": "mv_o4_out"})
     client.put("/api/edges/e_o4_const", json={
         "source": "param__low_hz", "target": "mf_bp_other4", "target_handle": "in__low_hz",
@@ -405,7 +409,9 @@ def test_disconnected_duplicate_survives_wired_siblings_graduation(client):
         "/api/layout/mv_wired_out",
         json={"x": 20, "y": 0, "node_type": "variableNode", "label": "FilteredSignal"},
     )
-    client.put("/api/edges/e_wired_in", json={"source": "mv_wired_in", "target": "mf_wired"})
+    client.put("/api/edges/e_wired_in", json={
+        "source": "mv_wired_in", "target": "mf_wired", "target_handle": "in__signal",
+    })
     client.put("/api/edges/e_wired_out", json={"source": "mf_wired", "target": "mv_wired_out"})
 
     # A second manual node, same label, with NO edges at all.

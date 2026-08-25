@@ -1,5 +1,7 @@
 """Tests for scifor.for_each in standalone (no-DB) mode."""
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -1165,18 +1167,88 @@ def test_no_data_combo_in_iterate_mode_skips_even_with_as_table():
     assert len(received) == 4  # 2 subjects x 2 columns
 
 
-def test_flatten_mode_dataframe_outputs():
-    """When fn returns DataFrames, metadata is replicated per row."""
+def test_dataframe_output_without_schema_columns_stays_whole():
+    """A returned DataFrame whose columns say nothing about WHERE its rows
+    belong is one value per combo, not one row per combo.
+
+    Every row of ``{"val": [10, 20, 30]}`` addresses the same subject, so
+    spreading them would file three indistinguishable records at one address
+    (the vo2max explosion: one 322-row CSV became 322 records).
+    """
     set_schema(["subject"])
     result = for_each(
         lambda: pd.DataFrame({"val": [10.0, 20.0, 30.0]}),
         inputs={},
         subject=[1, 2],
     )
-    # 2 subjects * 3 rows each = 6 total rows
-    assert len(result) == 6
+    assert len(result) == 2  # one row per subject
     assert "subject" in result.columns
+    assert list(result["subject"]) == [1, 2]
+    # The whole table travels in the output column.
+    for value in result["output"]:
+        assert isinstance(value, pd.DataFrame)
+        assert list(value["val"]) == [10.0, 20.0, 30.0]
+
+
+def test_dataframe_output_with_unpinned_schema_column_spreads():
+    """The case the spread is FOR: the returned rows carry a schema key the
+    call did not pin, so each row addresses its own location."""
+    set_schema(["subject", "session"])
+    result = for_each(
+        lambda: pd.DataFrame({"session": ["01", "02", "03"], "val": [1.0, 2.0, 3.0]}),
+        inputs={},
+        subject=[1, 2],
+    )
+    # 2 subjects x 3 sessions supplied by the data = 6 rows
+    assert len(result) == 6
+    assert sorted(set(result["session"])) == ["01", "02", "03"]
     assert "val" in result.columns
+
+
+def test_distribute_composes_with_whole_table_rule():
+    """distribute splits BEFORE result collection and stamps each piece with
+    its own distribute_key, so the pieces arrive already addressed and the
+    rule leaves them alone: one row per piece, as before."""
+    set_schema(["subject", "session"])
+    result = for_each(
+        lambda: pd.DataFrame({"val": [10.0, 20.0, 30.0]}),
+        inputs={},
+        distribute=True,
+        subject=[1],
+    )
+    # 3 pieces, filed at session=1..3 (one level below the deepest iterated key)
+    assert len(result) == 3
+    assert sorted(result["session"]) == [1, 2, 3]
+
+
+def test_distribute_at_deepest_key_still_raises():
+    """There is no escape hatch below the deepest key, and that guard is what
+    makes 'add a schema level' the honest answer rather than distribute."""
+    set_schema(["subject", "session"])
+    with pytest.raises(ValueError, match="no lower level to distribute to"):
+        for_each(
+            lambda: pd.DataFrame({"val": [1.0, 2.0]}),
+            inputs={},
+            distribute=True,
+            subject=[1],
+            session=["01"],
+        )
+
+
+def test_pinned_schema_column_in_output_warns(caplog):
+    """A returned schema-key column that the combo ALREADY pins adds no
+    address information and collides with the metadata column of the same
+    name — pandas keeps whichever lands last, silently."""
+    set_schema(["subject"])
+    with caplog.at_level(logging.WARNING, logger="scifor"):
+        for_each(
+            lambda: pd.DataFrame({"subject": [99], "val": [1.0]}),
+            inputs={},
+            subject=[1, 2],
+        )
+    assert any("collide" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]
 
 
 # ---------------------------------------------------------------------------

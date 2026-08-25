@@ -1,46 +1,46 @@
 """
 Manual built-in/library function references.
 
-Validates and registers a reference to a function the user did NOT write
-themselves (e.g. ``numpy.mean``, ``pandas.read_csv``, a Python stdlib
-call, or a native MATLAB command like ``mean``) as a normal function node,
-alongside — never instead of — auto-discovered functions from the user's
-own code. Shared by both the FastAPI route (``api/builtin_functions.py``)
-and the JSON-RPC handler (``server.py``, VS Code extension mode).
+Validates a reference to a function the user did NOT write themselves
+(e.g. ``numpy.mean``, ``pandas.read_csv``, a Python stdlib call, or a
+native MATLAB command like ``mean``) so it can be used as a normal
+function node, alongside — never instead of — auto-discovered functions
+from the user's own code. Shared by both the FastAPI route
+(``api/builtin_functions.py``) and the JSON-RPC handler (``server.py``,
+VS Code extension mode).
 
 Python references are restricted to the standard library plus numpy/pandas
-(exactly what this feature is scoped to, not a general import backdoor).
+(exactly what this feature is scoped to, not a general import backdoor),
+and conventional import aliases are accepted and canonicalized —
+``pd.read_csv`` is stored as ``pandas.read_csv``. Both rules live in
+:mod:`scistack_gui.library_functions`.
+
 MATLAB references are validated by shelling out to a real MATLAB
 installation (``matlab -batch "disp(exist(...))"``) since there is no
 lightweight way to confirm a MATLAB builtin/toolbox function exists
 without one.
 
-Manually-declared builtins aren't rediscovered by scanning disk, so they
-are persisted (see ``pipeline_store.write_builtin_function``) and replayed
-via :func:`replay_persisted_builtins` after every startup DB init and
-every registry refresh (``pipeline_service.refresh_module``), both of
-which clear the in-memory function registries.
+**Python and MATLAB references are handled asymmetrically on purpose.**
+Both are persisted (see ``pipeline_store.write_builtin_function``) because
+neither is rediscovered by scanning disk. But a Python reference is never
+put into ``registry._functions``: it is imported on demand at every use
+site (:mod:`scistack_gui.library_functions`), so there is nothing to
+replay and no refresh path that can evict it. A MATLAB reference has no
+import equivalent — it must be re-registered into ``matlab_registry``,
+which is what :func:`replay_persisted_builtins` still exists to do.
 """
 
 from __future__ import annotations
 
-import importlib
 import logging
 import re
 import shutil
 import subprocess
-import sysconfig
-from pathlib import Path
 
-from scistack_gui import registry
+from scistack_gui import library_functions
 from scistack_gui.matlab_parser import MatlabFunctionInfo
 
 logger = logging.getLogger(__name__)
-
-# Python: importable module roots this feature is scoped to (plus the
-# standard library itself, checked separately). Not a general
-# arbitrary-import backdoor — matches exactly what was asked for.
-_ALLOWED_PY_PACKAGE_ROOTS = {"numpy", "pandas"}
 
 # MATLAB: a strict identifier check BEFORE the name ever touches a
 # constructed shell command — never interpolate raw user input otherwise.
@@ -74,99 +74,35 @@ def create_builtin_function(language: str, reference: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_python_builtin(reference: str) -> tuple[dict | None, str | None, object]:
-    """Validate *reference* and resolve it to a real callable.
-
-    Returns ``(error_response, None, None)`` on failure, or
-    ``(None, qualified_name, fn)`` on success. Shared by creation (which
-    also persists) and replay-on-refresh (which doesn't need to persist
-    again, but does need to re-validate — cheap for Python, unlike MATLAB).
-    """
-    if "." in reference:
-        module_path, _, attr_name = reference.rpartition(".")
-    else:
-        module_path, attr_name = "builtins", reference
-
-    if not attr_name.isidentifier():
-        return (
-            {"ok": False, "error": f"'{reference}' is not a valid Python reference."},
-            None,
-            None,
-        )
-
-    if module_path != "builtins":
-        root = module_path.split(".")[0]
-        if root not in _ALLOWED_PY_PACKAGE_ROOTS:
-            try:
-                root_mod = importlib.import_module(root)
-            except ImportError:
-                return (
-                    {"ok": False, "error": f"'{root}' is not installed or not importable."},
-                    None,
-                    None,
-                )
-            if not _is_stdlib_module(root_mod):
-                return (
-                    {
-                        "ok": False,
-                        "error": (
-                            f"'{root}' is not allowed — built-in function references "
-                            "are restricted to the Python standard library, numpy, "
-                            "and pandas."
-                        ),
-                    },
-                    None,
-                    None,
-                )
-
-    try:
-        mod = importlib.import_module(module_path)
-    except ImportError as e:
-        return {"ok": False, "error": f"Could not import '{module_path}': {e}"}, None, None
-
-    fn = getattr(mod, attr_name, None)
-    if fn is None:
-        return (
-            {"ok": False, "error": f"'{attr_name}' not found in '{module_path}'."},
-            None,
-            None,
-        )
-    if not callable(fn):
-        return {"ok": False, "error": f"'{reference}' is not callable."}, None, None
-
-    qualified_name = attr_name if module_path == "builtins" else f"{module_path}.{attr_name}"
-    return None, qualified_name, fn
-
-
-def _is_stdlib_module(mod) -> bool:
-    """True if *mod* lives in the standard library.
-
-    Deliberately avoids ``sys.stdlib_module_names`` (Python 3.10+ only —
-    this project's floor is 3.9): a module with no ``__file__`` is a
-    built-in/frozen module (``sys``, ``itertools`` — definitely stdlib);
-    otherwise check whether its file lives under the interpreter's stdlib
-    directory.
-    """
-    file = getattr(mod, "__file__", None)
-    if file is None:
-        return True
-    stdlib_dir = Path(sysconfig.get_paths()["stdlib"]).resolve()
-    try:
-        Path(file).resolve().relative_to(stdlib_dir)
-        return True
-    except ValueError:
-        return False
-
-
 def _create_python_builtin(reference: str) -> dict:
-    error, qualified_name, fn = _resolve_python_builtin(reference)
+    """Validate and persist a Python library reference.
+
+    Note what is NOT done here: the resolved callable is thrown away rather
+    than registered. It is re-imported on demand by
+    ``registry.lookup_function`` — see this module's docstring.
+    """
+    error, qualified_name, _fn = library_functions.validate(reference)
     if error is not None:
+        logger.info(
+            "[builtin_function_service] Rejected Python reference %r: %s",
+            reference,
+            error["error"],
+        )
         return error
 
-    registry.register_builtin_function(qualified_name, fn)
     _persist_builtin(qualified_name, "python")
 
-    logger.info("[builtin_function_service] Registered Python builtin: %s", qualified_name)
+    if qualified_name != reference.strip():
+        logger.info(
+            "[builtin_function_service] Recorded Python library function: %s "
+            "(canonicalized from %r)",
+            qualified_name,
+            reference,
+        )
+    else:
+        logger.info(
+            "[builtin_function_service] Recorded Python library function: %s", qualified_name
+        )
     return {"ok": True, "name": qualified_name}
 
 
@@ -259,21 +195,43 @@ def _persist_builtin(name: str, language: str) -> None:
     pipeline_store.write_builtin_function(get_db(), name, language)
 
 
+def get_python_library_function_names(db) -> list[str]:
+    """Every persisted Python library reference.
+
+    The DB table is now the ONLY record of which library functions the
+    user has added — they are not in ``registry._functions`` — so anything
+    listing available functions (``pipeline_service.get_registry``) has to
+    read it here.
+    """
+    from scistack_gui import pipeline_store
+
+    try:
+        rows = pipeline_store.get_builtin_functions(db)
+    except Exception as e:  # no DB open yet, or a fresh one without the table
+        logger.debug("[builtin_function_service] Could not read library functions: %s", e)
+        return []
+    return [row["name"] for row in rows if row["language"] == "python"]
+
+
 def replay_persisted_builtins(db) -> dict:
-    """Re-register every persisted manual builtin function reference.
+    """Re-register every persisted MATLAB builtin, and re-check Python ones.
 
     Called after startup DB init and after every registry refresh
-    (``registry.load_from_config``/``refresh_all`` and
-    ``matlab_registry.load_from_config``/``refresh_all`` all clear the
-    in-memory registries — builtins have no file on disk to be
-    rediscovered from, so they must be explicitly replayed).
+    (``matlab_registry.load_from_config``/``refresh_all`` clear the
+    in-memory MATLAB registry, and a MATLAB builtin has no file on disk to
+    be rediscovered from, so it must be explicitly replayed).
 
-    Python references are cheaply re-validated (a plain import — catches
-    e.g. numpy having been uninstalled since). MATLAB references are
-    NOT re-validated by shelling out to MATLAB again — that's slow and
-    would make every refresh fail hard if MATLAB happens to be
-    momentarily unavailable; a MATLAB builtin already passed validation
-    once, at creation time, and that's trusted on replay.
+    **Python references are no longer registered here** — they are
+    imported on demand at every use site, so there is nothing to restore
+    and no refresh path that can evict them (see the module docstring).
+    They are still cheaply re-validated, because that is what surfaces
+    "numpy was uninstalled since" as a reported failure now instead of a
+    mystery at run time.
+
+    MATLAB references are NOT re-validated by shelling out to MATLAB
+    again — that's slow and would make every refresh fail hard if MATLAB
+    happens to be momentarily unavailable; a MATLAB builtin already passed
+    validation once, at creation time, and that's trusted on replay.
     """
     from scistack_gui import pipeline_store
 
@@ -283,11 +241,10 @@ def replay_persisted_builtins(db) -> dict:
     for row in rows:
         name, language = row["name"], row["language"]
         if language == "python":
-            error, qualified_name, fn = _resolve_python_builtin(name)
+            error, _qualified_name, _fn = library_functions.validate(name)
             if error is not None:
                 failed.append({"name": name, "error": error["error"]})
                 continue
-            registry.register_builtin_function(qualified_name, fn)
             counts["python"] += 1
         elif language == "matlab":
             _register_matlab_builtin_in_memory(name)

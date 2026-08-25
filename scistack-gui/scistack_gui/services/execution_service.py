@@ -30,22 +30,38 @@ logger = logging.getLogger(__name__)
 
 
 def _infer_wired_constants(
-    constant_names: set[str],
+    parameter_params: dict[str, str],
     pending: dict[str, set[str]],
     constants_registry: dict,
     *,
     fn_variants: "list[dict] | None" = None,
     log_context: str,
 ) -> dict[str, list]:
-    """Infer values for a never-run wiring's constant params, in priority
+    """Infer values for a never-run wiring's Parameter params, in priority
     order: staged pending values; then, if *fn_variants* is given, any
     known value from OTHER real DB history call sites of the same function
     (a constant's known values are a function-level property, e.g. a
     shared window_seconds constant already has a real value from a
     different call site — see ``derive_target_for_node``'s docstring for
-    the full rationale); then the constant's source-declared
-    ``scidb.constant(...)`` default. A constant with none of the above is
-    dropped from the returned dict (logged at WARNING).
+    the full rationale); then the Parameter's source-declared value(s). A
+    parameter with none of the above is dropped from the returned dict
+    (logged at WARNING).
+
+    *parameter_params* is ``{param_name: declared_name}`` straight from the
+    wiring (``ResolvedEdges.parameter_params``, the Parameter view over its
+    ``bindings``). The distinction is
+    load-bearing and the two names are NOT interchangeable:
+
+    * ``pending`` and *constants_registry* are keyed by the **declared**
+      name — the pending table is written by the Parameter node's own UI,
+      and the registry by the source declaration;
+    * DB history (``fn_variants[i]["constants"]``) and the returned dict are
+      keyed by the **parameter** name, because that is what scidb records
+      and what ``for_each`` is ultimately called with.
+
+    Looking the registry up by parameter name is what made a Parameter
+    declared ``test`` and wired to ``sep`` report "wired but has no
+    source-declared default value" and get silently dropped.
 
     Shared by ``derive_fn_targets`` (name-scoped, ``fn_variants=None`` so
     the middle tier is skipped) and ``derive_target_for_node`` (node-scoped,
@@ -63,53 +79,123 @@ def _infer_wired_constants(
     )
 
     inferred: dict[str, list] = {}
-    for cname in constant_names:
+    for param_name, decl_name in parameter_params.items():
         typed_vals = []
-        for raw in pending.get(cname, set()):
+        for raw in pending.get(decl_name, set()):
             try:
                 typed_vals.append(ast.literal_eval(raw))
             except (ValueError, SyntaxError):
                 typed_vals.append(raw)
         if not typed_vals and fn_variants is not None:
             known_vals = {
-                v["constants"][cname]
+                v["constants"][param_name]
                 for v in fn_variants
-                if cname in v.get("constants", {})
+                if param_name in v.get("constants", {})
             }
             if known_vals:
                 typed_vals = sorted(known_vals, key=str)
                 logger.debug(
-                    "[execution] %s: constant '%s' has no pending value — "
+                    "[execution] %s: parameter '%s' has no pending value — "
                     "reusing known value(s) %s from other call site(s) of "
                     "this function",
                     log_context,
-                    cname,
+                    param_name,
                     typed_vals,
                 )
         if typed_vals:
-            inferred[cname] = typed_vals
-        elif cname in constants_registry:
+            inferred[param_name] = typed_vals
+        elif decl_name in constants_registry:
             # EVERY declared value, not just the first: a Parameter with
             # several values is a fan-out, and silently taking one would
             # turn a multi-combo run into a single one.
-            declared = list(constants_registry[cname].values)
-            inferred[cname] = declared
+            declared = list(constants_registry[decl_name].values)
+            inferred[param_name] = declared
             logger.info(
-                "[execution] %s: parameter '%s' has %s; using source-declared "
-                "value(s) %r",
+                "[execution] %s: parameter '%s' (declared '%s') has %s; using "
+                "source-declared value(s) %r",
                 log_context,
-                cname,
+                param_name,
+                decl_name,
                 no_values_phrase,
                 declared,
             )
         else:
             logger.warning(
-                "[execution] %s: constant '%s' wired but has %s",
+                "[execution] %s: parameter '%s' (declared '%s') wired but has %s",
                 log_context,
-                cname,
+                param_name,
+                decl_name,
                 no_default_phrase,
             )
     return inferred
+
+
+def _db_path_input_params(db, function_name: str) -> dict[str, dict[str, str]]:
+    """``{call_id: {param_name: declared PathInput name}}`` for *function_name*
+    from real DB history.
+
+    A PathInput is never a citizen of ``input_types``/``constants`` (it
+    resolves *files*, not a versioned record), so a target derived from DB
+    history carries no trace of one. The mapping does exist, though, in
+    ``get_aggregated_variants()["path_inputs"]`` — keyed by PARAM name, with
+    a ``functions`` list of the call sites that used it — and
+    ``convert_scidb_path_inputs`` already resolves each recorded spec back to
+    its source-declared name (via the registry, falling back to the D7
+    name↔value history). This inverts that into per-call-site bindings.
+
+    This is what lets the run path be wiring-only with no name-matching
+    fallback: a source-declared pipeline that has already run has no MANUAL
+    edge on the canvas — its PathInput edges are synthesised from exactly
+    this data by ``graph_builder.build_edges`` — so without this it would
+    have nothing to resolve from.
+    """
+    from scistack_gui import pipeline_store, registry
+    from scistack_gui.domain.graph_builder import convert_scidb_path_inputs
+
+    path_inputs = convert_scidb_path_inputs(
+        db.get_aggregated_variants()["path_inputs"],
+        registry.get_path_inputs_registry(),
+        pipeline_store.path_input_history_index(db),
+    )
+    by_call: dict[str, dict[str, str]] = {}
+    for pi_name, pi in path_inputs.items():
+        for fkey, param_name in pi["functions"]:
+            fn, call_id = fkey
+            if fn == function_name:
+                by_call.setdefault(call_id, {})[param_name] = pi_name
+    return by_call
+
+
+def _attach_db_path_inputs(db, function_name: str, targets: list[dict]) -> list[dict]:
+    """Give each DB-history target its unified ``bindings``, so every target
+    reaching ``build_run_inputs`` has the same shape regardless of whether it
+    came from history or from inference.
+
+    A history target arrives with ``input_types`` (its recorded variable
+    inputs) and no trace of the PathInput that fed it — that mapping lives in
+    the aggregated variants instead, which ``_db_path_input_params`` inverts.
+    Both become bindings here, and this is the ONLY place a target's bindings
+    are assembled from history.
+
+    No Parameter bindings: a history target's ``constants`` already hold
+    concrete recorded values, so nothing needs looking up in the Parameter
+    registry.
+    """
+    if not targets:
+        return targets
+    from scistack_gui.domain.edge_resolver import pathinput_binding, variable_binding
+
+    by_call = _db_path_input_params(db, function_name)
+    for t in targets:
+        bindings: dict[str, dict] = {}
+        for param, type_val in (t.get("input_types") or {}).items():
+            bindings[param] = variable_binding(
+                list(type_val) if isinstance(type_val, (list, tuple, set)) else [type_val]
+            )
+        for param, decl_name in by_call.get(t.get("call_id"), {}).items():
+            bindings[param] = pathinput_binding(decl_name)
+        t.setdefault("bindings", bindings)
+    return targets
 
 
 def _hidden_constant_values(db) -> dict[str, set[str]]:
@@ -125,6 +211,31 @@ def _hidden_constant_values(db) -> dict[str, set[str]]:
     for row in pipeline_store.list_hidden_parameter_values(db, None):
         hidden.setdefault(row["const_name"], set()).add(row["value"])
     return hidden
+
+
+def _inferred_targets(resolved, inferred_constants: dict[str, list]) -> list[dict]:
+    """Targets for a never-run wiring: the Cartesian product of its inferred
+    Parameter values × its output types, each carrying the wiring's
+    edge-derived bindings so ``build_run_inputs`` can resolve them.
+
+    Shared by both derivation paths, which had byte-identical copies of this
+    product (``feedback_avoid_scifor_scidb_duplication``).
+    """
+    # ``input_types`` rides along as the display/wire view of the variable
+    # bindings (run metadata, node params); ``bindings`` is the source of
+    # truth every identity and execution path reads.
+    base = {"bindings": resolved.bindings, "input_types": resolved.input_types}
+    if not inferred_constants:
+        return [
+            {**base, "output_type": out, "constants": {}}
+            for out in resolved.output_types
+        ]
+    names = sorted(inferred_constants)
+    return [
+        {**base, "output_type": out, "constants": dict(zip(names, combo, strict=False))}
+        for combo in product(*(inferred_constants[n] for n in names))
+        for out in resolved.output_types
+    ]
 
 
 def derive_fn_targets(db, function_name: str) -> list[dict]:
@@ -162,7 +273,14 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
     hidden_values = _hidden_constant_values(db)
 
     all_variants = db.list_pipeline_variants()
-    fn_variants = [v for v in all_variants if v["function_name"] == function_name]
+    # Bindings are attached HERE, not on the way out: every filter below
+    # (disconnected wiring, hidden constant values) reads them, so a target
+    # that reached them binding-less would be judged on an empty wiring.
+    fn_variants = _attach_db_path_inputs(
+        db,
+        function_name,
+        [v for v in all_variants if v["function_name"] == function_name],
+    )
 
     all_edges = pipeline_store.get_manual_edges(db)
     manual_nodes = pipeline_store.get_manual_nodes(db)
@@ -227,13 +345,11 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
         return filter_hidden_constant_value_targets(fn_variants, hidden_values)
 
     # Never-run fallback: infer the call from manual edges.
-    sig_params = _fn_params_from_registry(function_name)
     resolved = resolve_function_edges(
         fn_node_ids=fn_node_ids,
         manual_edges=all_edges,
         manual_nodes=manual_nodes,
         existing_node_labels={},
-        sig_params=sig_params,
     )
     if not resolved.output_types:
         logger.warning(
@@ -244,37 +360,19 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
         return []
 
     inferred_constants: dict[str, list] = {}
-    if resolved.constant_names:
+    if resolved.parameter_params:
         from scistack_gui import registry
 
         pending = pipeline_store.get_pending_constants(db)
         inferred_constants = _infer_wired_constants(
-            resolved.constant_names,
+            resolved.parameter_params,
             pending,
             registry.get_parameters_registry(),
             log_context=f"'{function_name}'",
         )
 
-    if inferred_constants:
-        const_names = sorted(inferred_constants.keys())
-        targets = []
-        for combo in product(*(inferred_constants[c] for c in const_names)):
-            constants = dict(zip(const_names, combo, strict=False))
-            for out in resolved.output_types:
-                targets.append(
-                    {
-                        "input_types": resolved.input_types,
-                        "output_type": out,
-                        "constants": constants,
-                    }
-                )
-        return filter_hidden_constant_value_targets(targets, hidden_values)
     return filter_hidden_constant_value_targets(
-        [
-            {"input_types": resolved.input_types, "output_type": out, "constants": {}}
-            for out in resolved.output_types
-        ],
-        hidden_values,
+        _inferred_targets(resolved, inferred_constants), hidden_values
     )
 
 
@@ -330,28 +428,46 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
         return []
 
     all_variants = db.list_pipeline_variants()
-    fn_variants = [v for v in all_variants if v["function_name"] == function_name]
+    # Same as derive_fn_targets: bind first, so every filter below sees the
+    # target's real wiring rather than an empty one.
+    fn_variants = _attach_db_path_inputs(
+        db,
+        function_name,
+        [v for v in all_variants if v["function_name"] == function_name],
+    )
 
     if node_wiring is None:
         # Manual (not yet graduated) node — resolve ITS OWN wiring from
         # its own edges only, never from any other node sharing the label.
-        sig_params = _fn_params_from_registry(function_name)
         resolved = resolve_function_edges(
             fn_node_ids={node_id},
             manual_edges=all_edges,
             manual_nodes=manual_nodes,
             existing_node_labels={},
-            sig_params=sig_params,
         )
         if not resolved.output_types:
             return []
         inferred_inputs = {p: ts[0] for p, ts in resolved.input_types.items() if ts}
-        node_wiring = wiring_id(function_name, inferred_inputs, set(resolved.output_types))
+        node_wiring = wiring_id(
+            function_name,
+            inferred_inputs,
+            set(resolved.output_types),
+            resolved.path_input_params,
+        )
 
+    # PathInputs are part of the wiring shape, so both sides of this
+    # comparison must carry them or a PathInput-fed node matches nothing.
+    pi_by_call = _db_path_input_params(db, function_name)
     matching = [
         v
         for v in fn_variants
-        if wiring_id(function_name, v["input_types"], {v["output_type"]}) == node_wiring
+        if wiring_id(
+            function_name,
+            v["input_types"],
+            {v["output_type"]},
+            pi_by_call.get(v.get("call_id"), {}),
+        )
+        == node_wiring
     ]
     hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
     if hidden_edge_ids and matching:
@@ -383,36 +499,20 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
     # user wiring the SAME shared constant node into a new RawHeartRate
     # wiring clearly means to reuse it, not re-stage it from scratch).
     inferred_constants: dict[str, list] = {}
-    if resolved.constant_names:
+    if resolved.parameter_params:
         from scistack_gui import registry
 
         pending = pipeline_store.get_pending_constants(db)
         inferred_constants = _infer_wired_constants(
-            resolved.constant_names,
+            resolved.parameter_params,
             pending,
             registry.get_parameters_registry(),
             fn_variants=fn_variants,
             log_context=f"'{function_name}' (node {node_id})",
         )
 
-    if inferred_constants:
-        const_names = sorted(inferred_constants.keys())
-        targets = [
-            {
-                "input_types": resolved.input_types,
-                "output_type": out,
-                "constants": dict(zip(const_names, combo, strict=False)),
-            }
-            for combo in product(*(inferred_constants[c] for c in const_names))
-            for out in resolved.output_types
-        ]
-        return filter_hidden_constant_value_targets(targets, hidden_values)
     return filter_hidden_constant_value_targets(
-        [
-            {"input_types": resolved.input_types, "output_type": out, "constants": {}}
-            for out in resolved.output_types
-        ],
-        hidden_values,
+        _inferred_targets(resolved, inferred_constants), hidden_values
     )
 
 
@@ -448,10 +548,16 @@ def disconnected_reason(db, function_name: str, node_id: "str | None" = None) ->
             node_wiring = parsed[1]
 
     all_variants = db.list_pipeline_variants()
+    pi_by_call = _db_path_input_params(db, function_name)
     for v in all_variants:
         if v["function_name"] != function_name:
             continue
-        wid = wiring_id(function_name, v["input_types"], {v["output_type"]})
+        wid = wiring_id(
+            function_name,
+            v["input_types"],
+            {v["output_type"]},
+            pi_by_call.get(v.get("call_id"), {}),
+        )
         if node_wiring is not None and wid != node_wiring:
             continue
         for pname, vtype in v["input_types"].items():
@@ -511,7 +617,7 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
     )
     if not seed:
         return []
-    downstream = wirings_downstream_of(fn_input_params, fn_outputs, seed)
+    downstream = wirings_downstream_of(fn_input_params, fn_outputs, seed, path_inputs)
 
     scope_labels = set(_scope_function_labels(db, pipeline_id))
 
@@ -674,33 +780,16 @@ def _hidden_values_for_run(db) -> dict:
     return _hidden_constant_values(db)
 
 
-def _is_hidden_value(value, hidden_for_name: set) -> bool:
-    """Whether *value* is one of the unchecked values for its parameter.
-
-    Compared as strings, because the hidden-value store keeps them that way
-    (it is fed by the node checkbox, whose rows are rendered strings) while a
-    Parameter holds real numbers. Numeric values are ALSO matched against
-    their int/float alternate spelling. A value declared 20 can reach here
-    as ``20.0`` (JSON has one number type, and DB history may round-trip
-    differently), and a plain ``str()`` comparison would then never match a
-    hidden ``'20'`` -- the checkbox would appear to do nothing.
-    """
-    candidates = {str(value)}
-    if isinstance(value, bool):
-        pass  # bool is an int subclass; its str() form is the only sane one
-    elif isinstance(value, float) and value.is_integer():
-        candidates.add(str(int(value)))
-    elif isinstance(value, int):
-        candidates.add(str(float(value)))
-    return bool(candidates & hidden_for_name)
-
-
 def _apply_hidden_values(param, name: str, function_name: str, hidden: dict):
     """*param* with its unchecked values removed.
 
-    Values are compared as STRINGS: the hidden-value store keeps them that
-    way (it is fed by the node checkbox, whose rows are rendered strings),
-    while a Parameter holds real ints/floats/strs.
+    *name* is the Parameter's DECLARED name — what the node checkbox writes
+    into the hidden-value store — not the signature parameter it feeds.
+
+    Matching is ``variant_resolver.is_hidden_value``'s, shared with
+    ``filter_hidden_constant_value_targets``: the store holds rendered
+    strings while a Parameter holds real ints/floats/strs, and the two
+    routes a Parameter can take to execution must apply the same rule.
 
     Every value unchecked is a contradiction -- the user has excluded the
     whole fan-out yet left the parameter wired -- so it raises rather than
@@ -709,11 +798,13 @@ def _apply_hidden_values(param, name: str, function_name: str, hidden: dict):
     """
     from scidb import Parameter
 
+    from scistack_gui.domain.variant_resolver import is_hidden_value
+
     hidden_for_name = hidden.get(name, set())
     if not hidden_for_name:
         return param
 
-    kept = [v for v in param.values if not _is_hidden_value(v, hidden_for_name)]
+    kept = [v for v in param.values if not is_hidden_value(v, hidden_for_name)]
     if not kept:
         raise ValueError(
             f"every value of parameter '{name}' is unchecked, so "
@@ -745,83 +836,139 @@ def build_run_inputs(target: dict, function_name: str, db=None) -> dict:
     two independently-drifting copies, which is what let PathInput
     resolution go missing from both for a long time.
 
-    PathInput and Sweep params are resolved LAST, by elimination: neither
-    is ever a citizen of ``target["input_types"]``/``target["constants"]``
-    — a PathInput has no versioned variable class (it resolves *files*,
-    not a DB record) and a Sweep's whole point is to become
-    ``EachOf(...)`` fresh at execution time rather than a single staged
-    value — so both are absent from DB history too, regardless of
-    whether the rest of the target came from history or inference.
-    Whatever signature params variable/constant resolution left unfilled
-    are checked by name against the source-scanned PathInput/Sweep
-    registries (``registry.get_path_inputs_registry``/
-    ``get_parameters_registry`` — see
-    docs/claude/code-discovery-categories.md), so this is the single place
-    a live ``scifor.PathInput`` object or a numeric ``EachOf`` ever gets
-    constructed for execution.
+    Every input comes from the target's ``bindings`` — one dict, keyed by
+    function parameter, each entry tagged ``variable`` / ``pathinput`` /
+    ``parameter``, produced by the WIRING (an edge's ``targetHandle`` for a
+    never-run node, ``_attach_db_path_inputs`` for one with history). For the
+    latter two kinds the ``ref`` is a DECLARED name resolved against the
+    registry here; this is the single place a live ``scifor.PathInput`` object
+    or a fanned-out ``Parameter`` is ever constructed for execution.
 
-    This match is by PARAMETER NAME, not by wiring edge — deliberately the
-    same wiring-agnostic "shared by name" simplification this function
-    always used (a PathInput/Sweep is resolved globally by matching the
-    unfilled signature param's name against the registry, not by tracing
-    which specific canvas edge feeds this node). A PathInput/Sweep meant to
-    fill a param here must be named the same as that parameter; if it's
-    bound to a different name (e.g. shared across two functions under two
-    different param names), only the GUI's wiring-aware node/edge display
-    (``graph_builder.resolve_path_input_name``) resolves that — this
-    execution-time fallback does not.
+    Scalar ``constants`` stay a separate field, mirroring scidb's own split
+    between ``__inputs`` and ``__constants``.
+
+    **The binding is the edge, never the name.** This function used to
+    resolve by elimination — whatever signature params were left unfilled
+    got looked up by name in the PathInput/Parameter registries, which are
+    keyed by DECLARED name — so a PathInput declared ``test_pi`` feeding
+    ``read_csv``'s ``filepath_or_buffer`` matched nothing and the function
+    silently ran with ``inputs={}``, iterating zero times and writing no
+    records while reporting success. A declared name and the parameter it
+    fills are simply different things (``graph_builder.build_edges`` has
+    encoded both in its PathInput edge ids all along); the registry lookup
+    below is therefore by declared name, and the result is bound under the
+    parameter name.
 
     Hidden (unchecked) Parameter values are filtered out here (D6). A
     SCALAR constant is already excluded upstream --
     ``filter_hidden_constant_value_targets`` drops the whole target -- but a
-    MULTI-VALUED Parameter is resolved by name below and handed to
-    ``for_each`` whole, which then fans it out INSIDE scidb, where the GUI's
-    hidden-value state is not visible. Without filtering here, unchecking one
-    value of a multi-value Parameter looked right in the UI and still ran.
+    MULTI-VALUED Parameter is handed to ``for_each`` whole, which then fans
+    it out INSIDE scidb, where the GUI's hidden-value state is not visible.
+    Without filtering here, unchecking one value of a multi-value Parameter
+    looked right in the UI and still ran.
     """
     from scidb import EachOf
     from scistack_gui import registry
     from scistack_gui.api.pipeline import _fn_params_from_registry
+    from scistack_gui.domain.edge_resolver import (
+        BINDING_PARAMETER,
+        BINDING_PATHINPUT,
+        BINDING_VARIABLE,
+    )
+
+    # The registry already holds live PathInput/Parameter objects — no
+    # reconstruction needed (unlike the old layout.json-backed dicts, which
+    # stored plain template/values data that had to be rebuilt here).
+    path_inputs_by_name = registry.get_path_inputs_registry()
+    params_by_name = registry.get_parameters_registry()
+    hidden_values = _hidden_values_for_run(db)
 
     inputs: dict = {}
-    for param, type_names in target["input_types"].items():
-        if isinstance(type_names, list):
+    # Constants first: a Parameter binding whose value was already recorded as
+    # a concrete constant must not be re-expanded into the whole sweep.
+    inputs.update(target["constants"])
+
+    for param, binding in (target.get("bindings") or {}).items():
+        kind = binding["kind"]
+        ref = binding["ref"]
+
+        if kind == BINDING_VARIABLE:
+            type_names = ref if isinstance(ref, list) else [ref]
             if len(type_names) > 1:
                 inputs[param] = EachOf(
                     *(registry.get_variable_class(t) for t in type_names)
                 )
             elif type_names:
                 inputs[param] = registry.get_variable_class(type_names[0])
-        else:
-            inputs[param] = registry.get_variable_class(type_names)
-    inputs.update(target["constants"])
 
-    missing = [p for p in _fn_params_from_registry(function_name) if p not in inputs]
-    if missing:
-        # The registry already holds live PathInput/EachOf/Sweep objects —
-        # no reconstruction needed (unlike the old layout.json-backed
-        # dicts, which stored plain template/values data that had to be
-        # rebuilt into a real object here).
-        path_inputs_by_name = registry.get_path_inputs_registry()
-        params_by_name = registry.get_parameters_registry()
-        hidden_values = _hidden_values_for_run(db)
-        for param in missing:
-            pi = path_inputs_by_name.get(param)
-            if pi is not None:
-                inputs[param] = pi
-                logger.info(
-                    "[execution] '%s': input '%s' resolved via %s",
+        elif kind == BINDING_PATHINPUT:
+            pi = path_inputs_by_name.get(ref)
+            if pi is None:
+                logger.warning(
+                    "[execution] '%s': parameter '%s' is wired to PathInput '%s', "
+                    "which is no longer declared in source — leaving it unbound",
                     function_name,
                     param,
-                    pi,
+                    ref,
                 )
                 continue
+            inputs[param] = pi
+            logger.info(
+                "[execution] '%s': input '%s' resolved via PathInput '%s' (%s)",
+                function_name,
+                param,
+                ref,
+                pi,
+            )
 
-            sw = params_by_name.get(param)
-            if sw is not None:
-                inputs[param] = _apply_hidden_values(
-                    sw, param, function_name, hidden_values
+        elif kind == BINDING_PARAMETER:
+            if param in inputs:
+                # A recorded scalar from DB history already fills it.
+                continue
+            p = params_by_name.get(ref)
+            if p is None:
+                logger.warning(
+                    "[execution] '%s': parameter '%s' is wired to Parameter '%s', "
+                    "which is no longer declared in source — leaving it unbound",
+                    function_name,
+                    param,
+                    ref,
                 )
+                continue
+            # Hidden values are keyed by the PARAMETER NODE's declared name
+            # (the checkbox writes that name), not the signature param it feeds.
+            inputs[param] = _apply_hidden_values(
+                p, ref, function_name, hidden_values
+            )
+
+        else:
+            logger.warning(
+                "[execution] '%s': parameter '%s' has unknown binding kind %r "
+                "— leaving it unbound",
+                function_name,
+                param,
+                kind,
+            )
+
+    unbound = [p for p in _fn_params_from_registry(function_name) if p not in inputs]
+    if unbound:
+        # Not necessarily an error — optional params with defaults are
+        # legitimately unbound — but it is the first thing to check when a
+        # run does nothing, so it is stated rather than left to be inferred
+        # from an empty inputs dict.
+        logger.info(
+            "[execution] '%s': %d signature param(s) left unbound by the "
+            "wiring (using their defaults): %s",
+            function_name,
+            len(unbound),
+            ", ".join(unbound),
+        )
+    logger.info(
+        "[execution] '%s': built inputs for %d param(s): %s",
+        function_name,
+        len(inputs),
+        ", ".join(sorted(inputs)) or "(none)",
+    )
     return inputs
 
 
@@ -884,9 +1031,17 @@ def _scope_function_node_ids(db, pipeline_id: str) -> list[tuple[str, str]]:
     # not one per fn_name (a name can have several unplaced wirings at
     # once, each needing its own step).
     if pipeline_id == "main":
+        pi_by_fn: dict[str, dict] = {}
         for v in db.list_pipeline_variants():
             fn = v["function_name"]
-            wid = wiring_id(fn, v["input_types"], {v["output_type"]})
+            if fn not in pi_by_fn:
+                pi_by_fn[fn] = _db_path_input_params(db, fn)
+            wid = wiring_id(
+                fn,
+                v["input_types"],
+                {v["output_type"]},
+                pi_by_fn[fn].get(v.get("call_id"), {}),
+            )
             if (fn, wid) not in placed_wirings:
                 _add(fn_node_id(fn, wid), fn)
     return node_ids

@@ -584,11 +584,40 @@ def for_each(
         if display_keys
         else "no metadata"
     )
+    # The per-key previews are each key's FULL value list, so their product can
+    # exceed the real iteration count — combos get filtered out beforehand
+    # (PathInput discovery dropping combos with no file on disk, where=,
+    # skip_computed). Reporting "4 iterations: subject=3 values, session=2
+    # values" without saying so reads as an arithmetic error.
+    _cartesian = 1
+    for _k in display_keys:
+        _cartesian *= len(metadata_iterables[_k])
+    _pruned_note = ""
+    if display_keys and _cartesian > total:
+        _pruned_note = (
+            f" (of {_cartesian} possible combination(s); "
+            f"{_cartesian - total} filtered out before iteration)"
+        )
     Log.info(
-        f"for_each({fn_name}) — {total} iteration{'s' if total != 1 else ''}: "
-        f"{meta_summary}",
+        f"for_each({fn_name}) — {total} iteration{'s' if total != 1 else ''}"
+        f"{_pruned_note}: {meta_summary}",
         layer="scifor",
     )
+    # Which combos were dropped is the actual diagnostic question. Only worth
+    # materialising the product for a small one.
+    if _pruned_note and _cartesian <= 1000:
+        _kept = {tuple(str(c.get(k)) for k in display_keys) for c in all_combos}
+        _dropped = [
+            dict(zip(display_keys, combo, strict=False))
+            for combo in product(*(metadata_iterables[k] for k in display_keys))
+            if tuple(str(v) for v in combo) not in _kept
+        ]
+        Log.debug(
+            "filtered out %d combination(s): %s",
+            len(_dropped),
+            _dropped,
+            layer="scifor",
+        )
 
     _inputs_str = _format_inputs(inputs)
     Log.info(f"inputs: {_inputs_str}", layer="scifor")
@@ -984,7 +1013,7 @@ def for_each(
         layer="scifor",
     )
     return _results_to_output_dataframe(
-        collected_rows, resolved_output_names, schema_col_dtypes
+        collected_rows, resolved_output_names, schema_col_dtypes, full_schema_keys
     )
 
 
@@ -1989,10 +2018,82 @@ def _restore_schema_column_dtypes(
 # ---------------------------------------------------------------------------
 
 
+def _spread_decision(
+    collected_rows: list[tuple[dict, tuple]],
+    schema_keys: "list | tuple",
+) -> tuple[bool, list[str], list[str], int]:
+    """Should a DataFrame return value's ROWS become separate records?
+
+    Returns ``(spread, discriminating_keys, pinned_collisions, max_rows)``.
+
+    **Rows spread unless spreading would silently multiply records at one
+    address.** A record's address is its schema keys, so rows spread when:
+
+    1. the DataFrame carries a schema key the combination does NOT already
+       pin — each row then addresses its own location, and scidb files it
+       there (it reads every non-``__`` column of the row as that record's
+       metadata). This is what the spread is FOR: a function iterating
+       ``subject`` alone returning one row per ``session``; **or**
+    2. there is at most one row — spreading cannot multiply anything, so the
+       wide row simply becomes the result table's columns. This is the
+       ``for_columns`` shape (one reassembled ``1 x N`` row per combo) and
+       every ``distribute`` piece (``df.iloc[[i]]``), both of which depend on
+       that spread and produce exactly one record per combo either way.
+
+    Everything else — a MULTI-row table with nothing to distinguish where its
+    rows go — is one record per combination. That is the only case whose
+    behavior changes, and it is the bug: one 322-row CSV became 322 records
+    at a single ``(subject, session)``, distinguishable only by their
+    contents.
+
+    ``distribute=True`` needs no clause here: it splits upstream of result
+    collection and stamps each piece with its own ``distribute_key``, so the
+    pieces arrive as pinned single rows and take condition 2.
+    """
+    real_keys = [
+        k
+        for k in (schema_keys or [])
+        if "__rid_" not in str(k) and "__vsig_" not in str(k)
+    ]
+    discriminating: set[str] = set()
+    collisions: set[str] = set()
+    combos_with: int = 0
+    max_rows = 0
+    for metadata, result_tuple in collected_rows:
+        pinned = set(metadata.keys())
+        row_disc: set[str] = set()
+        for value in result_tuple:
+            cols = {str(c) for c in value.columns}
+            max_rows = max(max_rows, len(value))
+            row_disc |= {k for k in real_keys if k in cols and k not in pinned}
+            collisions |= {k for k in real_keys if k in cols and k in pinned}
+        if row_disc:
+            combos_with += 1
+        discriminating |= row_disc
+
+    if discriminating and combos_with != len(collected_rows):
+        # Some combos supply the finer address and others don't, so the same
+        # output would be filed at two different granularities. Spread (the
+        # rows that DO carry the key must reach their own locations) and say
+        # so — this is an authoring bug in the function, not a config choice.
+        Log.warn(
+            "inconsistent output addressing: %d of %d combination(s) return "
+            "schema key(s) %s, the rest do not — the records will not all be "
+            "filed at the same granularity",
+            combos_with,
+            len(collected_rows),
+            sorted(discriminating),
+            layer="scifor",
+        )
+    spread = bool(discriminating) or max_rows <= 1
+    return spread, sorted(discriminating), sorted(collisions), max_rows
+
+
 def _results_to_output_dataframe(
     collected_rows: list[tuple[dict, tuple]],
     output_names: list[str],
     col_dtypes: "dict | None" = None,
+    schema_keys: "list | tuple" = (),
 ) -> "pd.DataFrame":
     """Build a combined DataFrame from all for_each results."""
     import pandas as pd
@@ -2000,14 +2101,51 @@ def _results_to_output_dataframe(
     if not collected_rows:
         return pd.DataFrame()
 
-    # Check if all outputs are DataFrames (flatten mode)
+    # Check if all outputs are DataFrames (candidates for row spreading)
     all_dataframes = all(
         isinstance(value, pd.DataFrame)
         for _, result_tuple in collected_rows
         for value in result_tuple
     )
 
+    spread = False
     if all_dataframes:
+        spread, disc_keys, collisions, max_rows = _spread_decision(
+            collected_rows, schema_keys
+        )
+        _out = ", ".join(str(n) for n in output_names) or "output"
+        if collisions:
+            Log.warn(
+                "output %s returns schema key column(s) %s that the combination "
+                "already pins — the metadata and data columns collide and the "
+                "data column silently wins. Rename or drop them.",
+                _out,
+                collisions,
+                layer="scifor",
+            )
+        if spread and disc_keys:
+            Log.info(
+                "output %s: %d-row DataFrame(s) discriminated by unpinned schema "
+                "key(s) %s — spreading rows into separate records",
+                _out,
+                max_rows,
+                disc_keys,
+                layer="scifor",
+            )
+        elif not spread:
+            Log.info(
+                "output %s: %d-row DataFrame carries no unpinned schema-key "
+                "column, so every row shares one address — saving the whole "
+                "table as ONE record per combination. To file rows separately "
+                "they need a finer address: return a schema-key column, or "
+                "pass distribute=True to spread them one level below the "
+                "deepest iterated key.",
+                _out,
+                max_rows,
+                layer="scifor",
+            )
+
+    if spread:
         parts = []
         for metadata, result_tuple in collected_rows:
             combined_data = pd.concat(
@@ -2020,7 +2158,7 @@ def _results_to_output_dataframe(
             )
         result = pd.concat(parts, ignore_index=True)
         Log.debug(
-            "collect_results (flatten mode): DataFrame with %d row(s), %d column(s)",
+            "collect_results (spread mode): DataFrame with %d row(s), %d column(s)",
             len(result),
             len(result.columns),
             layer="scifor",

@@ -771,9 +771,29 @@ class TestSweeps:
 
 
 class TestSweepExecutionResolution:
-    """Sweep values resolve to EachOf(...) at execution time — same
+    """Parameter values resolve to EachOf(...) at execution time — same
     resolution point build_run_inputs already uses for PathInput (see
-    TestPathInputExecutionResolution), extended rather than duplicated."""
+    TestPathInputExecutionResolution), extended rather than duplicated.
+
+    The binding always comes from the target's Parameter ``bindings``
+    (``{param_name: {"kind": "parameter", "ref": declared_name}}``), which
+    the wiring produces. These tests pass it explicitly to keep them at unit
+    level; see ``TestEdgeDrivenBinding`` for the end-to-end path that builds
+    it from a real canvas edge.
+    """
+
+    @staticmethod
+    def _binding(**pairs):
+        """A target binding *pairs* of ``param_name=declared_name``."""
+        return {
+            "bindings": {
+                param: {"kind": "parameter", "ref": decl}
+                for param, decl in pairs.items()
+            },
+            "input_types": {},
+            "output_type": "X",
+            "constants": {},
+        }
 
     @staticmethod
     def _register_fn(name: str, params: str = "window_seconds"):
@@ -800,7 +820,7 @@ class TestSweepExecutionResolution:
 
         from scistack_gui.services.execution_service import build_run_inputs
 
-        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        target = self._binding(window_seconds="window_seconds")
         inputs = build_run_inputs(target, "compute_rolling_sweep")
 
         assert isinstance(inputs["window_seconds"], EachOf)
@@ -824,33 +844,83 @@ class TestSweepExecutionResolution:
 
         from scistack_gui.services.execution_service import build_run_inputs
 
-        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        target = self._binding(window_seconds="window_seconds")
         inputs = build_run_inputs(target, "compute_rolling_sweep2")
 
         assert isinstance(inputs["window_seconds"], EachOf)
         assert inputs["window_seconds"].alternatives == [30]
 
-    def test_unregistered_param_leaves_param_unresolved(
-        self, client_with_variable_file
-    ):
-        """No Sweep (or PathInput) named after the param -> fail safe
-        (param absent from inputs)."""
+    def test_unwired_param_is_left_unresolved(self, client_with_variable_file):
+        """Nothing wired to the param -> fail safe (param absent from
+        inputs), so the function's own default applies."""
         self._register_fn("compute_rolling_sweep3")
 
         from scistack_gui.services.execution_service import build_run_inputs
 
-        target = {"input_types": {}, "output_type": "X", "constants": {}}
-        inputs = build_run_inputs(target, "compute_rolling_sweep3")
+        inputs = build_run_inputs(self._binding(), "compute_rolling_sweep3")
 
         assert "window_seconds" not in inputs
 
-    def test_path_input_and_sweep_names_resolve_independently(
+    def test_name_coincidence_alone_does_not_resolve(
         self, client_with_variable_file
     ):
-        """A function with both a PathInput-backed param and a Sweep-
-        backed param gets both resolved correctly in one call — the two
-        registries (checked in sequence per missing param) don't
-        interfere with each other."""
+        """A Parameter declared with exactly the param's name, but NOT
+        wired to it, must not be picked up. Resolution is the edge, and an
+        unwired declaration is not a binding — this is the behaviour that
+        replaced name matching outright."""
+        client = client_with_variable_file
+        client.post(
+            "/api/parameters", json={"name": "window_seconds", "values": [10, 20]}
+        )
+        self._register_fn("compute_rolling_sweep4")
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        inputs = build_run_inputs(self._binding(), "compute_rolling_sweep4")
+
+        assert "window_seconds" not in inputs
+
+    def test_declared_name_may_differ_from_the_param_it_fills(
+        self, client_with_variable_file
+    ):
+        """The whole point of binding by edge: a Parameter declared 'test'
+        can fill a param named 'window_seconds'. Name matching could not
+        express this at all."""
+        from scidb import EachOf
+
+        client = client_with_variable_file
+        client.post("/api/parameters", json={"name": "test", "values": [1, 2]})
+        self._register_fn("compute_rolling_sweep5")
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = self._binding(window_seconds="test")
+        inputs = build_run_inputs(target, "compute_rolling_sweep5")
+
+        assert isinstance(inputs["window_seconds"], EachOf)
+        assert inputs["window_seconds"].alternatives == [1, 2]
+
+    def test_binding_to_a_deleted_declaration_is_skipped_not_fatal(
+        self, client_with_variable_file
+    ):
+        """The declaration can be removed from source after the edge was
+        drawn. That leaves the param unbound (with a WARNING), never an
+        exception mid-run."""
+        self._register_fn("compute_rolling_sweep6")
+
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        target = self._binding(window_seconds="no_such_parameter")
+        inputs = build_run_inputs(target, "compute_rolling_sweep6")
+
+        assert "window_seconds" not in inputs
+
+    def test_path_input_and_parameter_bindings_resolve_independently(
+        self, client_with_variable_file
+    ):
+        """A function with both a PathInput-backed param and a Parameter-
+        backed param gets both resolved in one call — the two registries
+        don't interfere with each other."""
         from scidb import EachOf, PathInput
 
         client = client_with_variable_file
@@ -863,7 +933,8 @@ class TestSweepExecutionResolution:
 
         from scistack_gui.services.execution_service import build_run_inputs
 
-        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        target = self._binding(window_seconds="window_seconds")
+        target["bindings"]["data_dir"] = {"kind": "pathinput", "ref": "data_dir"}
         inputs = build_run_inputs(target, "mixed_fn")
 
         assert isinstance(inputs["data_dir"], PathInput)
@@ -894,25 +965,29 @@ class TestSweepExecutionResolution:
         db = get_db()
         pipeline_store.hide_parameter_value(db, "window_seconds", "20")
 
-        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        target = self._binding(window_seconds="window_seconds")
         inputs = build_run_inputs(target, "fn_with_unchecked", db)
 
         # 10/30 arrive as floats: POST /api/parameters coerces to list[float].
         assert inputs["window_seconds"].alternatives == [10.0, 30.0]
 
     def test_hidden_value_matches_across_int_float_spelling(self):
-        """The store holds rendered strings; a Parameter holds numbers. POST
-        /api/parameters coerces to float, so a value declared 20 arrives as 20.0
-        -- a plain str() comparison would never match a hidden '20' and the
-        checkbox would silently do nothing."""
-        from scistack_gui.services.execution_service import _is_hidden_value
+        """The store holds rendered strings; a Parameter holds numbers. The
+        /api/parameters model accepts ``float | int``, so the SAME declared
+        value can arrive as 20 or 20.0 depending on how it was written -- a
+        plain str() comparison would never match a hidden '20' and the
+        checkbox would silently do nothing.
 
-        assert _is_hidden_value(20.0, {"20"})
-        assert _is_hidden_value(20, {"20.0"})
-        assert _is_hidden_value(20.0, {"20.0"})
-        assert _is_hidden_value("x", {"x"})
-        assert not _is_hidden_value(20.5, {"20"})
-        assert not _is_hidden_value(21.0, {"20"})
+        Lives in the domain layer because both hidden-value routes share it
+        (see is_hidden_value's docstring)."""
+        from scistack_gui.domain.variant_resolver import is_hidden_value
+
+        assert is_hidden_value(20.0, {"20"})
+        assert is_hidden_value(20, {"20.0"})
+        assert is_hidden_value(20.0, {"20.0"})
+        assert is_hidden_value("x", {"x"})
+        assert not is_hidden_value(20.5, {"20"})
+        assert not is_hidden_value(21.0, {"20"})
 
     def test_unchecking_every_value_is_an_explicit_error(
         self, client_with_variable_file
@@ -933,9 +1008,33 @@ class TestSweepExecutionResolution:
         for v in ("10", "20"):
             pipeline_store.hide_parameter_value(db, "window_seconds", v)
 
-        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        target = self._binding(window_seconds="window_seconds")
         with pytest.raises(ValueError, match="every value of parameter"):
             build_run_inputs(target, "fn_all_unchecked", db)
+
+    def test_unchecking_uses_the_declared_name_not_the_param_name(
+        self, client_with_variable_file
+    ):
+        """The checkbox writes the PARAMETER NODE's declared name, so the
+        hidden-value lookup has to use that too. Looking it up by the
+        signature param it happens to feed made unchecking a value on a
+        Parameter whose names differ silently do nothing.
+        """
+        from scistack_gui import pipeline_store
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        client = client_with_variable_file
+        client.post("/api/parameters", json={"name": "test", "values": [10, 20, 30]})
+        self._register_fn("fn_declared_name_hide")
+
+        db = get_db()
+        pipeline_store.hide_parameter_value(db, "test", "20")
+
+        target = self._binding(window_seconds="test")
+        inputs = build_run_inputs(target, "fn_declared_name_hide", db)
+
+        assert inputs["window_seconds"].alternatives == [10.0, 30.0]
 
     def test_unhidden_values_run_unchanged(self, client_with_variable_file):
         """No hidden values means the declared Parameter passes through
@@ -951,10 +1050,232 @@ class TestSweepExecutionResolution:
         from scistack_gui import registry
 
         declared = registry.get_parameters_registry()["window_seconds"]
-        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        target = self._binding(window_seconds="window_seconds")
         inputs = build_run_inputs(target, "fn_no_hides", get_db())
 
         assert inputs["window_seconds"] is declared
+
+
+class TestEdgeDrivenBinding:
+    """End-to-end: a function's inputs are built from the CANVAS EDGES,
+    never from a name coincidence between a declaration and a signature
+    parameter.
+
+    Motivated by a real GUI session (examples/vo2max/scidb.log, runs
+    6ila96uv / 9lt11d5m): a PathInput declared `test_pi` was wired into
+    `pd.read_csv`, and because `read_csv` has no parameter called
+    `test_pi`, the name match resolved nothing. for_each was called with
+    `inputs={}`, fell back to schema-key iteration on an empty database,
+    ran 0 iterations, wrote no records — and reported success, leaving the
+    function and its output variable red with nothing in the log saying
+    why.
+    """
+
+    @staticmethod
+    def _register_fn(name: str, params: str):
+        from scistack_gui import registry
+
+        with open(registry._module_path, "a") as f:
+            f.write(f"\n\ndef {name}({params}):\n    return {params.split(',')[0]}\n")
+        registry.refresh_module()
+
+    def _wire(self, client, *, fn: str, fn_node: str, out_var: str, source: str,
+              handle: str):
+        client.put(f"/api/layout/{fn_node}", json={
+            "x": 0, "y": 0, "node_type": "functionNode", "label": fn,
+        })
+        client.put(f"/api/layout/{fn_node}_out", json={
+            "x": 10, "y": 0, "node_type": "variableNode", "label": out_var,
+        })
+        client.put(f"/api/edges/{fn_node}_e_out", json={
+            "source": fn_node, "target": f"{fn_node}_out",
+        })
+        client.put(f"/api/edges/{fn_node}_e_in", json={
+            "source": source, "target": fn_node, "target_handle": handle,
+        })
+
+    def test_path_input_whose_name_differs_from_the_param_resolves(
+        self, client_with_variable_file
+    ):
+        """The exact failure from the log, in miniature."""
+        from scidb import PathInput
+
+        client = client_with_variable_file
+        self._register_fn("read_csv_like", "filepath_or_buffer")
+        client.post("/api/path-inputs", json={
+            "name": "test_pi", "template": "{subject}/{subject}_CPET.csv",
+        })
+        self._wire(
+            client,
+            fn="read_csv_like",
+            fn_node="mf_readcsv",
+            out_var="CpetRaw",
+            source="pathInput__test_pi",
+            handle="in__filepath_or_buffer",
+        )
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            build_run_inputs,
+            derive_fn_targets,
+        )
+
+        targets = derive_fn_targets(get_db(), "read_csv_like")
+        assert targets, "output wiring should make a target derivable"
+        inputs = build_run_inputs(targets[0], "read_csv_like")
+
+        pi = inputs["filepath_or_buffer"]
+        assert isinstance(pi, PathInput)
+        assert pi.path_template == "{subject}/{subject}_CPET.csv"
+
+    def test_parameter_whose_name_differs_from_the_param_resolves(
+        self, client_with_variable_file
+    ):
+        """A wired Parameter is FANNED OUT AT DERIVATION: one target per
+        declared value, each carrying a scalar under the parameter name.
+        (The single-EachOf shape belongs to the other route — a Parameter
+        resolved in build_run_inputs and handed to for_each whole, which
+        then fans out inside scidb. Both produce the same runs.)
+
+        What matters here is that the values reach the target at all, under
+        the PARAMETER's name, from a declaration named something else.
+        """
+        client = client_with_variable_file
+        self._register_fn("summarize_like", "window")
+        client.post("/api/parameters", json={"name": "test", "values": [5, 10]})
+        self._wire(
+            client,
+            fn="summarize_like",
+            fn_node="mf_summarize",
+            out_var="Summary",
+            source="param__test",
+            handle="in__window",
+        )
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            build_run_inputs,
+            derive_fn_targets,
+        )
+
+        targets = derive_fn_targets(get_db(), "summarize_like")
+
+        assert {t["constants"]["window"] for t in targets} == {5.0, 10.0}
+        # The binding survives onto the target, so the hidden-value filter
+        # can translate the parameter back to its declaration.
+        assert targets[0]["bindings"]["window"] == {
+            "kind": "parameter",
+            "ref": "test",
+        }
+
+        inputs = build_run_inputs(targets[0], "summarize_like")
+        assert inputs["window"] == targets[0]["constants"]["window"]
+
+    def test_unchecking_a_value_filters_a_differently_named_parameter(
+        self, client_with_variable_file
+    ):
+        """The fan-out above is keyed by PARAMETER name while the checkbox
+        store is keyed by DECLARED name. Comparing them directly matches
+        nothing when they differ, so every unchecked value would run anyway
+        — the same declared-vs-parameter confusion as the registry lookup,
+        one layer further on."""
+        from scistack_gui import pipeline_store
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import derive_fn_targets
+
+        client = client_with_variable_file
+        self._register_fn("summarize_like2", "window")
+        client.post("/api/parameters", json={"name": "test", "values": [5, 10]})
+        self._wire(
+            client,
+            fn="summarize_like2",
+            fn_node="mf_summarize2",
+            out_var="Summary2",
+            source="param__test",
+            handle="in__window",
+        )
+
+        db = get_db()
+        # Hidden as '5.0' while the declaration holds int 5 — the store's
+        # spelling is whatever the checkbox rendered, so the match has to be
+        # int/float-tolerant (is_hidden_value), exactly as it already was on
+        # the other route.
+        pipeline_store.hide_parameter_value(db, "test", "5.0")
+
+        targets = derive_fn_targets(db, "summarize_like2")
+
+        assert {t["constants"]["window"] for t in targets} == {10}
+
+    def test_declaration_named_after_the_param_but_unwired_does_not_resolve(
+        self, client_with_variable_file
+    ):
+        """The converse, and the reason this is a clean break rather than a
+        fallback: a PathInput named exactly like the parameter, with NO edge
+        to it, must not be picked up. Under name matching this silently
+        bound; now the param is left to its default."""
+        client = client_with_variable_file
+        self._register_fn("loader_like", "filepath")
+        client.post("/api/path-inputs", json={
+            "name": "filepath", "template": "data.csv",
+        })
+        # Output wiring only — nothing feeding the input.
+        client.put("/api/layout/mf_unwired", json={
+            "x": 0, "y": 0, "node_type": "functionNode", "label": "loader_like",
+        })
+        client.put("/api/layout/mv_unwired", json={
+            "x": 10, "y": 0, "node_type": "variableNode", "label": "Unwired",
+        })
+        client.put("/api/edges/e_unwired_out", json={
+            "source": "mf_unwired", "target": "mv_unwired",
+        })
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            build_run_inputs,
+            derive_fn_targets,
+        )
+
+        targets = derive_fn_targets(get_db(), "loader_like")
+        assert targets
+        inputs = build_run_inputs(targets[0], "loader_like")
+
+        assert "filepath" not in inputs
+
+    def test_wrong_handle_binds_the_param_it_actually_names(
+        self, client_with_variable_file
+    ):
+        """Dropping a connection on the wrong handle is a real, easy mistake
+        (the log's edge landed on `in__dtype_backend` instead of
+        `in__filepath_or_buffer`). It must bind what the edge SAYS — being
+        wrong here is recoverable and visible; silently rebinding to the
+        param we guess was meant is neither."""
+        from scidb import PathInput
+
+        client = client_with_variable_file
+        self._register_fn("two_param_fn", "filepath_or_buffer, dtype_backend")
+        client.post("/api/path-inputs", json={
+            "name": "test_pi", "template": "x.csv",
+        })
+        self._wire(
+            client,
+            fn="two_param_fn",
+            fn_node="mf_two",
+            out_var="TwoOut",
+            source="pathInput__test_pi",
+            handle="in__dtype_backend",
+        )
+
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import (
+            build_run_inputs,
+            derive_fn_targets,
+        )
+
+        targets = derive_fn_targets(get_db(), "two_param_fn")
+        inputs = build_run_inputs(targets[0], "two_param_fn")
+
+        assert isinstance(inputs["dtype_backend"], PathInput)
+        assert "filepath_or_buffer" not in inputs
 
 
 class TestDuplicatePipeline:
@@ -1723,7 +2044,9 @@ class TestHiddenPortsFiltering:
                 "pipeline_id": pid,
             },
         )
-        client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_proc"})
+        client.put("/api/edges/e_in", json={
+            "source": "mv_in", "target": "mf_proc", "target_handle": "in__signal",
+        })
         client.put("/api/edges/e_out", json={"source": "mf_proc", "target": "mv_out"})
 
     def test_hidden_ports_endpoint_reflects_current_state(self, client):
@@ -1914,7 +2237,9 @@ class TestDeriveTargetForNode:
         client.put("/api/layout/mv_o_out", json={
             "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered2",
         })
-        client.put("/api/edges/e_o_in", json={"source": "mv_o_in", "target": "mf_bp_other"})
+        client.put("/api/edges/e_o_in", json={
+            "source": "mv_o_in", "target": "mf_bp_other", "target_handle": "in__signal",
+        })
         client.put("/api/edges/e_o_out", json={"source": "mf_bp_other", "target": "mv_o_out"})
         client.put("/api/parameters/low_hz/pending/99")
         client.put("/api/edges/e_o_const", json={
@@ -1971,7 +2296,9 @@ class TestDeriveTargetForNode:
         client.put("/api/layout/mv_o3_out", json={
             "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered3",
         })
-        client.put("/api/edges/e_o3_in", json={"source": "mv_o3_in", "target": "mf_bp_other3"})
+        client.put("/api/edges/e_o3_in", json={
+            "source": "mv_o3_in", "target": "mf_bp_other3", "target_handle": "in__signal",
+        })
         client.put("/api/edges/e_o3_out", json={"source": "mf_bp_other3", "target": "mv_o3_out"})
         # Wire the REAL, already-known low_hz constant (value 20, from the
         # populated_db fixture's real bandpass_filter(RawSignal) run) —
@@ -2061,7 +2388,7 @@ class TestDeriveTargetForNode:
         from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
         from scistack_gui.services.execution_service import derive_target_for_node
 
-        real_wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"})
+        real_wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"}, {})
         real_node_id = fn_node_id("bandpass_filter", real_wid)
 
         targets = derive_target_for_node(get_db(), real_node_id)
@@ -2094,7 +2421,7 @@ class TestDeriveTargetForNode:
 
         OtherSignal7.save(np.zeros(5), subject=1, session="pre")
 
-        real_wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"})
+        real_wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"}, {})
         real_node_id = fn_node_id("bandpass_filter", real_wid)
         db = get_db()
 
@@ -2368,7 +2695,12 @@ class TestDeriveTargetForNode:
             "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered5",
         })
         client.put(
-            "/api/edges/e_o5_in", json={"source": "mv_o5_in", "target": "mf_bp_other5"}
+            "/api/edges/e_o5_in",
+            json={
+                "source": "mv_o5_in",
+                "target": "mf_bp_other5",
+                "target_handle": "in__signal",
+            },
         )
         client.put(
             "/api/edges/e_o5_out", json={"source": "mf_bp_other5", "target": "mv_o5_out"}
@@ -2403,18 +2735,36 @@ class TestDeriveTargetForNode:
 
 
 class TestPathInputExecutionResolution:
-    """Regression coverage: a PathInput-backed function param is resolved
-    by NAME in build_run_inputs, not by derive_fn_targets/
-    derive_target_for_node — a PathInput is never a citizen of
-    input_types or DB variant history (it resolves files, not a versioned
-    variable), so neither branch of target derivation ever saw it. Before
-    this fix, NEITHER the never-run fallback NOR an already-run DB-history
-    target ever constructed a live scifor.PathInput anywhere in
-    scistack-gui — a PathInput-driven function couldn't be run through the
-    GUI at all, first run or re-run. api/run.py and
-    execution_service.build_backend_pipeline used to carry two
-    independently-drifting copies of the input-building logic; both now
-    call the one shared execution_service.build_run_inputs."""
+    """Regression coverage: a PathInput-backed function param is resolved in
+    build_run_inputs, not in derive_fn_targets/derive_target_for_node — a
+    PathInput is never a citizen of input_types or DB variant history (it
+    resolves files, not a versioned variable), so neither branch of target
+    derivation ever constructs one. Before that fix, NEITHER the never-run
+    fallback NOR an already-run DB-history target ever built a live
+    scifor.PathInput anywhere in scistack-gui — a PathInput-driven function
+    couldn't be run through the GUI at all, first run or re-run. api/run.py
+    and execution_service.build_backend_pipeline used to carry two
+    independently-drifting copies of the input-building logic; both now call
+    the one shared execution_service.build_run_inputs.
+
+    The binding itself comes from the target's PathInput ``bindings``, built
+    by the WIRING — originally it was a name match between the PathInput's
+    declared name and the signature param, which silently resolved nothing
+    whenever the two differed (see TestEdgeDrivenBinding)."""
+
+    @staticmethod
+    def _target(output_type: str, path_input_params: "dict | None" = None):
+        """A target binding ``filepath`` to *path_input_params*
+        (``{param_name: declared_name}``, defaulting to nothing wired)."""
+        return {
+            "bindings": {
+                param: {"kind": "pathinput", "ref": decl}
+                for param, decl in (path_input_params or {}).items()
+            },
+            "input_types": {},
+            "output_type": output_type,
+            "constants": {},
+        }
 
     @staticmethod
     def _register_loader(name: str):
@@ -2489,6 +2839,11 @@ class TestPathInputExecutionResolution:
         client.put(
             "/api/edges/e_load2_out", json={"source": "mf_load2", "target": "mv_loaded2"}
         )
+        client.put("/api/edges/e_load2_in", json={
+            "source": "pathInput__filepath",
+            "target": "mf_load2",
+            "target_handle": "in__filepath",
+        })
 
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import (
@@ -2525,6 +2880,11 @@ class TestPathInputExecutionResolution:
         client.put(
             "/api/edges/e_load3_out", json={"source": "mf_load3", "target": "mv_loaded3"}
         )
+        client.put("/api/edges/e_load3_in", json={
+            "source": "pathInput__filepath",
+            "target": "mf_load3",
+            "target_handle": "in__filepath",
+        })
 
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import (
@@ -2543,15 +2903,15 @@ class TestPathInputExecutionResolution:
     def test_missing_stored_pathinput_leaves_param_unresolved(
         self, client_with_variable_file
     ):
-        """No stored PathInput matches the name -> fail safe (the param is
-        simply absent from inputs), matching the KeyError-tolerant contract
-        callers already rely on for other unresolvable params — not a
-        crash inside build_run_inputs."""
+        """Nothing wired to the param -> fail safe (the param is simply
+        absent from inputs), matching the KeyError-tolerant contract callers
+        already rely on for other unresolvable params — not a crash inside
+        build_run_inputs."""
         self._register_loader("load_raw4")
 
         from scistack_gui.services.execution_service import build_run_inputs
 
-        target = {"input_types": {}, "output_type": "LoadedThing4", "constants": {}}
+        target = self._target("LoadedThing4")
         inputs = build_run_inputs(target, "load_raw4")
 
         assert "filepath" not in inputs
@@ -2579,7 +2939,7 @@ class TestPathInputExecutionResolution:
 
         from scistack_gui.services.execution_service import build_run_inputs
 
-        target = {"input_types": {}, "output_type": "LoadedThing5", "constants": {}}
+        target = self._target("LoadedThing5", {"filepath": "filepath"})
         inputs = build_run_inputs(target, "load_raw5")
 
         assert isinstance(inputs["filepath"], EachOf)
@@ -2603,7 +2963,7 @@ class TestPathInputExecutionResolution:
 
         from scistack_gui.services.execution_service import build_run_inputs
 
-        target = {"input_types": {}, "output_type": "LoadedThing6", "constants": {}}
+        target = self._target("LoadedThing6", {"filepath": "filepath"})
         inputs = build_run_inputs(target, "load_raw6")
 
         assert isinstance(inputs["filepath"], PathInput)

@@ -2007,10 +2007,14 @@ def get_data_column_name(py_class, db=None):
     var_name = py_class.__name__
     schema_keys = list(_db.dataset_schema_keys)
 
-    row = _db._execute(
+    # Via SciDuck._fetchone so execute+fetch stay under one lock. `_db` is a
+    # DatabaseManager (the dataset_schema_keys read above already requires
+    # one); the SciDuck it wraps is ._duck. `_db._execute` was an
+    # AttributeError — DatabaseManager has no _execute.
+    row = _db._duck._fetchone(
         "SELECT dtype FROM _variables WHERE variable_name = ?",
         [var_name],
-    ).fetchone()
+    )
 
     if row is None:
         # Variable not yet saved — fall back to view_name

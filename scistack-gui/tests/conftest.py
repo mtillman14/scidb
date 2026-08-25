@@ -186,7 +186,7 @@ def bp_node_id(populated_db):
     wiring_id, not any single call site's call_id."""
     from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
 
-    wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"})
+    wid = wiring_id("bandpass_filter", {"signal": "RawSignal"}, {"FilteredSignal"}, {})
     return fn_node_id("bandpass_filter", wid)
 
 
