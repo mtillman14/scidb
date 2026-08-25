@@ -168,13 +168,13 @@ class TestMatlabCodeExport:
             # A pending value ALONE isn't enough — derive_target_for_node's
             # never-run-fallback resolves constants from WIRING
             # (edge_resolver.resolve_function_edges: an edge from a
-            # constantNode into the function), not just a staged pending
+            # parameterNode into the function), not just a staged pending
             # value with no edge at all.
             client.put("/api/layout/mc_gain", json={
-                "x": 5, "y": 5, "node_type": "constantNode", "label": "gain", "pipeline_id": pid,
+                "x": 5, "y": 5, "node_type": "parameterNode", "label": "gain", "pipeline_id": pid,
             })
             client.put("/api/edges/e_gain", json={"source": "mc_gain", "target": "mf_a"})
-            client.put("/api/constants/gain/pending/2.5")
+            client.put("/api/parameters/gain/pending/2.5")
 
             result = export_pipeline_to_code(get_db(), pid)
             assert result["language"] == "matlab"
@@ -225,15 +225,13 @@ class TestSerializationHelpers:
         each = EachOfStub(RawSignal, 20)
         assert _matlab_literal(each) == "scifor.EachOf(RawSignal(), 20)"
 
-    def test_matlab_literal_real_sweep_duck_types_as_each_of(self):
-        """A real scidb.Sweep (not a stub) -- confirms the new Sweep class
-        needed zero changes here: it duck-types via .alternatives exactly
-        like a bare EachOf, so it renders as scifor.EachOf(...) (de-sugared
-        -- Sweep has no distinct MATLAB literal form, same as Python's own
-        repr(), see docs/claude/code-discovery-categories.md)."""
-        from scidb import Sweep
+    def test_matlab_literal_real_parameter_duck_types_as_each_of(self):
+        """A real Parameter duck-types via .alternatives exactly like a bare
+        EachOf, so it renders as scifor.EachOf(...) -- de-sugared, because
+        MATLAB has no distinct Parameter literal form here."""
+        from scidb import Parameter
 
-        window = Sweep(10, 20, 30)
+        window = Parameter(10, 20, 30)
         assert _matlab_literal(window) == "scifor.EachOf(10, 20, 30)"
 
     def test_matlab_literal_real_path_input(self):
@@ -253,15 +251,16 @@ class TestSerializationHelpers:
             == 'scifor.PathInput("{subject}.mat", \'root_folder\', "/data")'
         )
 
-    def test_py_literal_real_sweep_reprs_as_each_of(self):
-        """Same de-sugaring on the Python side -- repr(Sweep(...)) prints
-        "EachOf(...)" (Sweep doesn't override __repr__), which is still
-        perfectly valid, runnable Python since EachOf is already imported
-        in every generated script's header."""
-        from scidb import Sweep
+    def test_py_literal_real_parameter_round_trips(self):
+        """A Parameter reprs as itself, so the exported script keeps the
+        declaration form rather than de-sugaring to EachOf. That only works
+        because Parameter is in the generated header import -- if it ever
+        leaves that import, every exported script with a Parameter breaks
+        with NameError."""
+        from scidb import Parameter
 
-        window = Sweep(10, 20, 30)
-        assert _py_literal(window) == "EachOf(10, 20, 30)"
+        window = Parameter(10, 20, 30)
+        assert _py_literal(window) == "Parameter(10, 20, 30, description='')"
 
     def test_py_literal_real_path_input(self):
         from scidb import PathInput

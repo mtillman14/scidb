@@ -164,13 +164,33 @@ class ForEachConfig:
         JSON-serializability reason -- despite _is_loadable now excluding it
         (its per-combo resolution moved to scifor's for_each loop), it still
         belongs in ``__inputs`` via its own ``to_key()``, not here.
+
+        A single-valued :class:`~scidb.parameter.Parameter` is **unwrapped to
+        its value**. The wrapper is a discovery/documentation aid, never part
+        of computation identity: ``Parameter(30)`` and a bare ``30`` are the
+        same input and must hash identically, or the same pipeline forks in
+        history depending on how it was declared. Without unwrapping, the
+        wrapper reached ``canonical_hash`` as an unknown type and raised
+        ``ValueError: Unserializable data type``.
+
+        In normal execution a Parameter never actually gets this far --
+        ``for_each`` expands it as an ``EachOf`` first, so ``self.inputs``
+        already holds the concrete value. This stays as the defence for a
+        ``ForEachConfig`` built directly, and as the thing that makes the
+        one-value case provably identical either way.
         """
         from scifor import ColName, PathInput, PathOutput
 
         from .foreach import _is_loadable
+        from .parameter import Parameter
+
+        def _unwrap(v):
+            if isinstance(v, Parameter) and len(v.alternatives) == 1:
+                return v.alternatives[0]
+            return v
 
         return {
-            k: v
+            k: _unwrap(v)
             for k, v in self.inputs.items()
             if not _is_loadable(v) and not isinstance(v, (ColName, PathOutput, PathInput))
         }

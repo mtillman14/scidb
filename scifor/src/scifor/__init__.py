@@ -34,7 +34,7 @@ from .discovery import (
     read_project_name,
     walk_package,
 )
-from .each_of import EachOf, Sweep
+from .each_of import EachOf
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
 from .fixed import Fixed
 from .foreach import ColumnFunctionError, ForColumnsError, NoDataError, for_each
@@ -61,7 +61,6 @@ __all__ = [
     "ColumnSelection",
     "ColName",
     "EachOf",
-    "Sweep",
     "PathInput",
     "PathOutput",
     # Filters

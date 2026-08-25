@@ -6,11 +6,15 @@ Mirrors ``variable_service.create_variable``'s exact pattern: PathInput/
 Sweep are source-scanned (see docs/claude/code-discovery-categories.md), so
 "create from the GUI" means appending a real declaration to the configured
 ``variable_file`` and refreshing the registry — never writing to
-layout.json. There is deliberately no "update" counterpart: editing an
-existing PathInput/Sweep's value means editing the source file directly and
-hitting Refresh Code, same as editing a function body today — no
-source-rewrite machinery exists here (mirrors ``create_variable``, which is
-also append-only).
+layout.json.
+
+The declaration text itself is rendered by ``scidb.source_edit``
+(``render_path_input``/``render_parameter``), which owns the declaration
+grammar, so creation and the eventual in-place editing can never drift
+apart in what they write. There is no "update" counterpart here yet —
+editing an existing PathInput/Sweep's value still means editing source and
+hitting Refresh Code; see
+``.claude/plan-gui-entity-editing-26-08-24.md`` Stage 5.
 
 This is also what ``portability_service.import_pipeline_document`` calls to
 materialize a bundled PathInput/Sweep the importer doesn't already have
@@ -28,13 +32,6 @@ from scistack_gui.services.target_file_service import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _path_input_call(template: str, root_folder: "str | None") -> str:
-    args = [repr(template)]
-    if root_folder:
-        args.append(f"root_folder={root_folder!r}")
-    return f"scidb.PathInput({', '.join(args)})"
 
 
 def create_path_input(
@@ -71,13 +68,9 @@ def create_path_input(
     if target_file is None:
         return {"ok": False, "error": target_err}
 
-    calls = [_path_input_call(template, root_folder)]
-    calls.extend(
-        _path_input_call(alt.get("template", ""), alt.get("root_folder"))
-        for alt in (alternate_templates or [])
-    )
-    expr = calls[0] if len(calls) == 1 else f"scidb.EachOf({', '.join(calls)})"
-    line = f"\n{name} = {expr}\n"
+    from scidb.source_edit import render_path_input
+
+    line = f"\n{name} = {render_path_input(template, root_folder, alternate_templates)}\n"
 
     logger.info(
         "[path_input_service] create_path_input: name=%r template=%r root_folder=%r "
@@ -85,7 +78,7 @@ def create_path_input(
         name,
         template,
         root_folder,
-        len(calls) - 1,
+        len(alternate_templates or []),
     )
     err = _append_and_refresh(line, target_file)
     if err:
@@ -93,44 +86,32 @@ def create_path_input(
     return {"ok": True, "name": name}
 
 
-def create_sweep(name: str, values: "list[float | int | str]") -> dict:
-    """Append ``NAME = scidb.Sweep(...)`` to the configured ``variable_file`` and
-    refresh the registry. If *values* is empty (the GUI's "New parameter
-    sweep" form only collects a name today), scaffolds a single placeholder
-    value instead of erroring -- same "create an editable stub, then
-    hand-edit source and hit Refresh" pattern ``create_path_input`` already
-    uses for an empty template.
+def update_path_input(
+    name: str,
+    template: str,
+    root_folder: "str | None" = None,
+    alternate_templates: "list[dict] | None" = None,
+) -> dict:
+    """Rewrite an existing PathInput declaration in place.
 
-    Returns ``{"ok": True, "name": name}`` on success, ``{"ok": False,
-    "error": ...}`` on failure.
+    Note the asymmetry documented in
+    ``docs/claude/entity-editability-model.md`` Rule 2: *adding* an alternate
+    template is always safe, whereas *replacing* the primary template changes
+    what prior runs content-match against. D7's name-history table is what
+    keeps that non-destructive.
     """
-    from scistack_gui import registry
+    from scidb.source_edit import render_path_input
 
-    err = _validate_name(name)
-    if err:
-        return {"ok": False, "error": err}
-    if name in registry.get_sweeps_registry():
-        return {"ok": False, "error": f"A Sweep named '{name}' already exists."}
-    if not values:
-        values = [0]
-        logger.info(
-            "[path_input_service] create_sweep: no values given for %r, "
-            "scaffolding a placeholder %r", name, values,
-        )
+    from scistack_gui.matlab_parser import render_matlab_path_input
+    from scistack_gui.services.target_file_service import update_declaration
 
-    from scistack_gui.services.target_file_service import get_or_create_target_file
-
-    target_file, target_err = get_or_create_target_file()
-    if target_file is None:
-        return {"ok": False, "error": target_err}
-
-    args = ", ".join(repr(v) for v in values)
-    line = f"\n{name} = scidb.Sweep({args})\n"
-
-    logger.info(
-        "[path_input_service] create_sweep: name=%r %d value(s)", name, len(values)
+    return update_declaration(
+        "path_input",
+        name,
+        python_expr=render_path_input(template, root_folder, alternate_templates),
+        matlab_expr=render_matlab_path_input(
+            template, root_folder, alternate_templates
+        ),
     )
-    err = _append_and_refresh(line, target_file)
-    if err:
-        return err
-    return {"ok": True, "name": name}
+
+

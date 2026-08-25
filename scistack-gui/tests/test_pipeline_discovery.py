@@ -53,11 +53,11 @@ class TestDiscoverAndSeedPipelines:
         assert fn_nodes[0]["label"] == "_bandpass"
 
         # Manual variable/constant nodes are required, not just edges --
-        # build_variable_nodes/build_constant_nodes only render from DB
+        # build_variable_nodes/build_parameter_nodes only render from DB
         # history, so a never-run type/constant needs a manual node to
         # show up at all (see _seed_step's docstring). Node ids are
         # ARBITRARY (discovered_var_*/discovered_const_*), not the bare
-        # canonical var__RawA/const__low_hz form -- see
+        # canonical var__RawA/param__low_hz form -- see
         # _get_or_create_node's docstring for why (avoids a cross-pipeline
         # id collision on the shared _pipeline_nodes primary key). Look
         # up by (type, label) instead, same as merge_manual_nodes does.
@@ -69,7 +69,7 @@ class TestDiscoverAndSeedPipelines:
 
         raw_a_id = _node_id("variableNode", "RawA")
         filtered_a_id = _node_id("variableNode", "FilteredA")
-        low_hz_id = _node_id("constantNode", "low_hz")
+        low_hz_id = _node_id("parameterNode", "low_hz")
 
         edges = ps.get_manual_edges(db)
         source_ids = {e["source"] for e in edges}
@@ -145,7 +145,7 @@ class TestDiscoverAndSeedPipelines:
         nodes = ps.get_manual_nodes(db, pid)
         const_node_id = next(
             nid for nid, n in nodes.items()
-            if n["type"] == "constantNode" and n["label"] == "low_hz"
+            if n["type"] == "parameterNode" and n["label"] == "low_hz"
         )
         edges = ps.get_manual_edges(db)
         assert any(e["source"] == const_node_id for e in edges)
@@ -243,13 +243,13 @@ class TestDiscoverAndSeedPipelines:
         assert any(e["source"] == "pathInput__filepath" for e in edges)
 
     def test_named_sweep_wires_by_registered_name(self, populated_db):
-        from scidb import Sweep
+        from scidb import Parameter
         from scistack_gui import registry
 
         db = populated_db
-        window = Sweep(10, 20, 30)
-        registry._sweeps["WINDOW"] = window
-        registry._sweep_sources["WINDOW"] = "test"
+        window = Parameter(10, 20, 30)
+        registry._parameters["WINDOW"] = window
+        registry._parameter_sources["WINDOW"] = "test"
 
         def _fn(window_seconds):
             return window_seconds
@@ -260,7 +260,7 @@ class TestDiscoverAndSeedPipelines:
         discover_and_seed_pipelines(db)
 
         edges = ps.get_manual_edges(db)
-        assert any(e["source"] == "sweep__WINDOW" for e in edges)
+        assert any(e["source"] == "param__WINDOW" for e in edges)
 
     def test_no_candidates_is_a_cheap_noop(self, populated_db):
         result = discover_and_seed_pipelines(populated_db)

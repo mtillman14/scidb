@@ -11,6 +11,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _param_prefix() -> str:
+    """The Parameter node-id prefix. Imported lazily so this module keeps
+    its no-top-level-domain-imports shape."""
+    from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX
+
+    return PARAM_ID_PREFIX
+
+
 def _notify_dag_updated() -> None:
     """Broadcast dag_updated after a WIRING mutation (node create/delete,
     edge create/delete) so the canvas refetches and freshly placed nodes
@@ -258,35 +266,61 @@ def set_note(key: str, text: str) -> dict:
     return {"ok": True}
 
 
-def get_constants() -> list[dict]:
-    """Source-scanned — see docs/claude/code-discovery-categories.md."""
+def get_parameters() -> list[dict]:
+    """Source-scanned — see docs/claude/code-discovery-categories.md.
+
+    ``values`` is always a list, whatever the count: a Parameter holding one
+    value is not a different shape from one holding several (D6)."""
     from scistack_gui import registry
 
     return [
-        {"name": name, "value": obj.value, "description": obj.description}
-        for name, obj in registry.get_constants_registry().items()
+        {
+            "name": name,
+            "values": list(p.values),
+            "description": p.description,
+        }
+        for name, p in registry.get_parameters_registry().items()
     ]
 
 
-def create_constant(name: str) -> dict:
-    """Append a new ``NAME = scidb.constant(...)`` to source. There is no
-    ``update_constant`` counterpart — editing an existing Constant's value
-    means editing the source file directly and hitting Refresh Code (same
-    as PathInput/Sweep/Variable); see ``services.constant_service``."""
-    from scistack_gui.services.constant_service import create_constant as _create
+def create_parameter(name: str, values: "list | None" = None) -> dict:
+    """Append a new ``NAME = scidb.Parameter(...)`` to source. See
+    :func:`update_parameter` for editing an existing one."""
+    from scistack_gui.services.parameter_service import create_parameter as _create
 
-    logger.debug("Node created (added to palette): type=constant, name=%r", name)
-    return _create(name)
+    logger.debug("Node created (added to palette): type=parameter, name=%r", name)
+    return _create(name, values or [])
 
 
-def delete_constant(name: str, pipeline_id: str = "main") -> dict:
+def update_parameter(
+    name: str, values: list, description: str = ""
+) -> dict:
+    """Rewrite an existing Parameter's declaration in source.
+
+    Writes are confined to the configured entities file; a Parameter declared
+    anywhere else comes back ``{"ok": False, "reason": "read_only"}`` with
+    the ``file``/``line`` to point the user at. See
+    ``docs/claude/entity-editability-model.md``.
+
+    Range generation (start/end/step) stays a frontend concern — this always
+    receives the final, already-computed flat list.
+    """
+    from scistack_gui.services.parameter_service import update_parameter as _update
+
+    result = _update(name, values, description)
+    if result.get("ok"):
+        _notify_dag_updated()
+    return result
+
+
+def delete_parameter(name: str, pipeline_id: str = "main") -> dict:
     """"Delete" hides the node only — the source declaration is never
     touched (never delete, mark hidden). Reuses the same generic hide-node
     mechanism functions/variables/PathInputs already use."""
     from scistack_gui import pipeline_store as ps
     from scistack_gui.db import get_db
 
-    ps.hide_node(get_db(), f"const__{name}", pipeline_id=pipeline_id)
+    ps.hide_node(get_db(), f"{_param_prefix()}{name}", pipeline_id=pipeline_id)
     return {"ok": True}
 
 
@@ -304,15 +338,33 @@ def get_path_inputs() -> list[dict]:
 def create_path_input(
     name: str, template: str = "", root_folder: "str | None" = None
 ) -> dict:
-    """Append a new ``NAME = PathInput(...)`` to source. There is no
-    ``update_path_input``/``add_path_input_alternate``/
-    ``remove_path_input_alternate`` counterpart — editing an existing
-    PathInput's value means editing the source file directly and hitting
-    Refresh Code (same as editing a function body); see
-    ``services.path_input_service``."""
+    """Append a new ``NAME = PathInput(...)`` to source. See
+    :func:`update_path_input` for editing an existing one."""
     from scistack_gui.services.path_input_service import create_path_input as _create
 
     return _create(name, template, root_folder)
+
+
+def update_path_input(
+    name: str,
+    template: str,
+    root_folder: "str | None" = None,
+    alternate_templates: "list[dict] | None" = None,
+) -> dict:
+    """Rewrite an existing PathInput's declaration in source.
+
+    Passing ``alternate_templates`` is how a PathInput becomes
+    multi-template: it re-renders as
+    ``EachOf(PathInput(...), PathInput(...))`` under the same name, which
+    keeps the node's identity and every run recorded against the original
+    template (see ``docs/claude/entity-editability-model.md`` Rule 1).
+    """
+    from scistack_gui.services.path_input_service import update_path_input as _update
+
+    result = _update(name, template, root_folder, alternate_templates)
+    if result.get("ok"):
+        _notify_dag_updated()
+    return result
 
 
 def delete_path_input(name: str, pipeline_id: str = "main") -> dict:
@@ -326,31 +378,6 @@ def delete_path_input(name: str, pipeline_id: str = "main") -> dict:
     return {"ok": True}
 
 
-def get_sweeps() -> list[dict]:
-    """Source-scanned — see docs/claude/code-discovery-categories.md."""
-    from scistack_gui import registry
-
-    return [
-        {"name": name, "values": list(sw.alternatives)}
-        for name, sw in registry.get_sweeps_registry().items()
-    ]
-
-
-def create_sweep(name: str, values: "list[float | int | str]") -> dict:
-    """Append a new ``NAME = Sweep(...)`` to source. No ``update_sweep``
-    counterpart — see ``create_path_input``'s docstring; same reasoning."""
-    from scistack_gui.services.path_input_service import create_sweep as _create
-
-    return _create(name, values)
-
-
-def delete_sweep(name: str, pipeline_id: str = "main") -> dict:
-    """"Delete" hides the node only — see ``delete_path_input``."""
-    from scistack_gui import pipeline_store as ps
-    from scistack_gui.db import get_db
-
-    ps.hide_node(get_db(), f"sweep__{name}", pipeline_id=pipeline_id)
-    return {"ok": True}
 
 
 def deep_copy_path_input(node_id: str) -> dict:
@@ -496,7 +523,7 @@ def get_hidden_combos(db, function_name: str) -> dict:
     return {"combos": pipeline_store.list_hidden_combos(db, function_name)}
 
 
-def hide_constant_value(
+def hide_parameter_value(
     db, const_name: str, value: str, pipeline_id: str = "main"
 ) -> dict:
     """Hide one constant value — excludes it (and, once execution_service
@@ -505,30 +532,30 @@ def hide_constant_value(
     from scistack_gui import pipeline_store
 
     logger.info(
-        "[layout_service] hide_constant_value called (const_name=%r, "
+        "[layout_service] hide_parameter_value called (const_name=%r, "
         "value=%r, pipeline_id=%r)",
         const_name,
         value,
         pipeline_id,
     )
-    pipeline_store.hide_constant_value(db, const_name, value, pipeline_id)
+    pipeline_store.hide_parameter_value(db, const_name, value, pipeline_id)
     _notify_dag_updated()
     return {"ok": True}
 
 
-def unhide_constant_value(
+def unhide_parameter_value(
     db, const_name: str, value: str, pipeline_id: str = "main"
 ) -> dict:
     from scistack_gui import pipeline_store
 
     logger.info(
-        "[layout_service] unhide_constant_value called (const_name=%r, "
+        "[layout_service] unhide_parameter_value called (const_name=%r, "
         "value=%r, pipeline_id=%r)",
         const_name,
         value,
         pipeline_id,
     )
-    pipeline_store.unhide_constant_value(db, const_name, value, pipeline_id)
+    pipeline_store.unhide_parameter_value(db, const_name, value, pipeline_id)
     _notify_dag_updated()
     return {"ok": True}
 
@@ -537,5 +564,5 @@ def get_hidden_constant_values(db, pipeline_id: "str | None" = "main") -> dict:
     from scistack_gui import pipeline_store
 
     return {
-        "hidden_values": pipeline_store.list_hidden_constant_values(db, pipeline_id)
+        "hidden_values": pipeline_store.list_hidden_parameter_values(db, pipeline_id)
     }

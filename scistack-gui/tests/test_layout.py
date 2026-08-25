@@ -167,13 +167,13 @@ class TestConstants:
     def test_delete_constant(self, layout_path):
         layout_store.write_constant("low_hz")
         layout_store.write_constant("high_hz")
-        layout_store.delete_constant("low_hz")
+        layout_store.delete_parameter_from_palette("low_hz")
         constants = layout_store.read_constants()
         assert "low_hz" not in constants
         assert "high_hz" in constants
 
     def test_delete_nonexistent_constant_is_a_noop(self, layout_path):
-        layout_store.delete_constant("does_not_exist")  # must not raise
+        layout_store.delete_parameter_from_palette("does_not_exist")  # must not raise
         assert layout_store.read_constants() == []
 
 

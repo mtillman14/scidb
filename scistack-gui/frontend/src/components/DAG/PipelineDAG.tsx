@@ -33,9 +33,8 @@ import '@xyflow/react/dist/style.css'
 
 import VariableNode from './VariableNode'
 import FunctionNode from './FunctionNode'
-import ConstantNode from './ConstantNode'
+import ParameterNode from './ParameterNode'
 import PathInputNode from './PathInputNode'
-import SweepNode from './SweepNode'
 import PipelineNode, { type PipelineNodeData } from './PipelineNode'
 import RunsDock from '../RunsDock'
 import { applyDagreLayout } from '../../layout'
@@ -52,9 +51,8 @@ import { useClipboard } from '../../context/ClipboardContext'
 const nodeTypes = {
   variableNode: VariableNode,
   functionNode: FunctionNode,
-  constantNode: ConstantNode,
+  parameterNode: ParameterNode,
   pathInputNode: PathInputNode,
-  sweepNode: SweepNode,
   pipelineNode: PipelineNode,
 }
 
@@ -136,7 +134,7 @@ export default function PipelineDAG() {
     // anymore. `checked: true` only backfills a value the backend somehow
     // omitted it for (defensive, shouldn't happen).
     const initialised = data.nodes.map((node: Node) => {
-      if (node.type !== 'constantNode') return node
+      if (node.type !== 'parameterNode') return node
       return {
         ...node,
         data: {
@@ -236,7 +234,7 @@ export default function PipelineDAG() {
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     setContextMenu(null)
-    if (node.type === 'functionNode' || node.type === 'constantNode' || node.type === 'variableNode' || node.type === 'pathInputNode' || node.type === 'sweepNode' || node.type === 'pipelineNode') {
+    if (node.type === 'functionNode' || node.type === 'parameterNode' || node.type === 'variableNode' || node.type === 'pathInputNode' || node.type === 'pipelineNode') {
       setSelectedNode(node)
       setSidebarSelectedItem(null)
     } else {
@@ -464,7 +462,7 @@ export default function PipelineDAG() {
     const { nodeType, label } = JSON.parse(raw) as { nodeType: string; label: string }
 
     const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const prefix = nodeType === 'functionNode' ? 'fn' : nodeType === 'constantNode' ? 'const' : nodeType === 'pathInputNode' ? 'pathInput' : nodeType === 'sweepNode' ? 'sweep' : 'var'
+    const prefix = nodeType === 'functionNode' ? 'fn' : nodeType === 'parameterNode' ? 'param' : nodeType === 'pathInputNode' ? 'pathInput' : 'var'
     const nodeId = `${prefix}__${label}__${Math.random().toString(36).slice(2, 8)}`
     pendingCenterRef.current.set(nodeId, position)
 
@@ -504,9 +502,8 @@ export default function PipelineDAG() {
             label,
             ...(nodeType === 'variableNode' ? { total_records: 0, run_state: 'red' } : {}),
             ...(nodeType === 'functionNode' ? fnExtra : {}),
-            ...(nodeType === 'constantNode' ? { values: [] } : {}),
+            ...(nodeType === 'parameterNode' ? { values: [], source_kind: 'constant' } : {}),
             ...(nodeType === 'pathInputNode' ? { template: '', root_folder: null, alternate_templates: [] } : {}),
-            ...(nodeType === 'sweepNode' ? { values: [] } : {}),
           },
         }
         return [...prev, newNode]

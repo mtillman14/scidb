@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from scistack_gui.domain.graph_builder import strip_placement
+from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX, strip_placement
 
 logger = logging.getLogger(__name__)
 
@@ -98,29 +98,30 @@ def resolve_function_edges(
             # Edge into this function (input or constant).
             th = edge.get("targetHandle") or ""
 
-            # Check if source is a constant node.
+            # Check if source is a Parameter node (Constant or Sweep — one
+            # concept and one id prefix since D6).
             is_const = False
             const_label = None
             bare_source = strip_placement(source)
-            if bare_source.startswith("const__"):
+            if bare_source.startswith(PARAM_ID_PREFIX):
                 is_const = True
                 src_meta = manual_nodes.get(source)
                 if src_meta:
                     const_label = src_meta["label"]
                 else:
-                    # DB-derived constant: bare ID is "const__<name>",
-                    # possibly placement-qualified as "const__<name>::{scope}".
-                    const_label = bare_source.replace("const__", "", 1)
+                    # DB-derived Parameter: bare ID is "param__<name>",
+                    # possibly placement-qualified as "param__<name>::{scope}".
+                    const_label = bare_source.replace(PARAM_ID_PREFIX, "", 1)
             else:
                 src_meta = manual_nodes.get(source)
-                if src_meta and src_meta.get("type") == "constantNode":
+                if src_meta and src_meta.get("type") == "parameterNode":
                     is_const = True
                     const_label = src_meta["label"]
 
             if is_const and const_label is not None:
                 # Determine param name from targetHandle or fall back to label.
-                if th.startswith("const__"):
-                    constant_names.add(th.replace("const__", "", 1))
+                if th.startswith(PARAM_ID_PREFIX):
+                    constant_names.add(th.replace(PARAM_ID_PREFIX, "", 1))
                 elif th.startswith("in__"):
                     constant_names.add(th.replace("in__", "", 1))
                 else:

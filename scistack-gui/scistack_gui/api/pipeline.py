@@ -426,7 +426,9 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     # — see graph_builder.convert_scidb_path_inputs).
     path_input_registry = registry.get_path_inputs_registry()
     agg.path_inputs = gb.convert_scidb_path_inputs(
-        scidb_agg["path_inputs"], path_input_registry
+        scidb_agg["path_inputs"],
+        path_input_registry,
+        _ps.path_input_history_index(db),
     )
     gb.seed_undiscovered_path_inputs(agg.path_inputs, path_input_registry)
 
@@ -606,38 +608,39 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     )
 
     # --- Load sweeps (source-scanned — see docs/claude/code-discovery-categories.md).
-    # "Delete" only hides the sweep__ node (layout_service.delete_sweep) —
-    # the source declaration is never touched — so this must filter by
-    # hidden_ids explicitly; unlike var__/const__/pathInput__ nodes, sweeps
-    # have no DB-derived aggregation path that filter_hidden already covers.
-    saved_sweeps = [
-        {"name": name, "values": list(sw.alternatives)}
-        for name, sw in registry.get_sweeps_registry().items()
-        if f"sweep__{name}" not in hidden_ids
-    ]
-    logger.debug("[pipeline] loaded %d sweep(s) from registry", len(saved_sweeps))
+    # "Delete" only hides the node (layout_service.delete_parameter) — the source
+    # declaration is never touched — so this must filter by hidden_ids
+    # explicitly; unlike var__/pathInput__ nodes, a Parameter's declared
+    # values have no DB-derived aggregation path that filter_hidden covers.
+    source_parameters = {
+        name: p
+        for name, p in registry.get_parameters_registry().items()
+        if f"{gb.PARAM_ID_PREFIX}{name}" not in hidden_ids
+    }
+    logger.debug(
+        "[pipeline] loaded %d parameter(s) from registry", len(source_parameters)
+    )
 
     # --- Build nodes (pure) ---
     logger.info("[pipeline] Building nodes (delegating to graph_builder)")
     nodes = gb.build_variable_nodes(agg.all_var_types, record_counts, run_states)
     var_node_count = len(nodes)
-    constants_registry = registry.get_constants_registry()
-    source_const_values = {
-        name: str(const.value) for name, const in constants_registry.items()
-    }
     hidden_const_values: dict[str, set] = {}
-    for row in _ps.list_hidden_constant_values(db, pipeline_id):
+    for row in _ps.list_hidden_parameter_values(db, pipeline_id):
         hidden_const_values.setdefault(row["const_name"], set()).add(row["value"])
-    nodes += gb.build_constant_nodes(
-        agg.const_counts, pending_constants, source_const_values, hidden_const_values
+    # Constants and Sweeps are ONE node kind (Parameters, D6) — built
+    # together so a Parameter never changes node type or id when a second
+    # value turns its declaration from a Constant into a Sweep.
+    nodes += gb.build_parameter_nodes(
+        agg.const_counts,
+        pending_constants,
+        source_parameters,
+        hidden_const_values,
     )
     const_node_count = len(nodes) - var_node_count
     nodes += gb.build_path_input_nodes(agg.path_inputs)
     path_input_node_count = len(nodes) - var_node_count - const_node_count
-    nodes += gb.build_sweep_nodes(saved_sweeps)
-    sweep_node_count = (
-        len(nodes) - var_node_count - const_node_count - path_input_node_count
-    )
+    sweep_node_count = 0
     nodes += gb.build_function_nodes(
         agg.fn_input_params,
         agg.fn_outputs,
@@ -1125,7 +1128,7 @@ def get_function_doc(fn_name: str):
     return _get_doc(fn_name)
 
 
-@router.put("/constants/{name}/pending/{value}")
+@router.put("/parameters/{name}/pending/{value}")
 async def add_pending_constant_value(name: str, value: str):
     from scistack_gui.services.layout_service import put_pending_constant
 
@@ -1134,7 +1137,7 @@ async def add_pending_constant_value(name: str, value: str):
     return {"ok": True}
 
 
-@router.delete("/constants/{name}/pending/{value}")
+@router.delete("/parameters/{name}/pending/{value}")
 async def remove_pending_constant_value(name: str, value: str):
     from scistack_gui.services.layout_service import delete_pending_constant
 
@@ -1173,32 +1176,32 @@ def list_hidden_combos(function_name: str, db: DatabaseManager = Depends(get_db)
     return get_hidden_combos(db, function_name)
 
 
-@router.post("/constants/{name}/hidden_values/{value}")
-def hide_constant_value(
+@router.post("/parameters/{name}/hidden_values/{value}")
+def hide_parameter_value(
     name: str,
     value: str,
     pipeline_id: str = "main",
     db: DatabaseManager = Depends(get_db),
 ):
-    from scistack_gui.services.layout_service import hide_constant_value as _hide
+    from scistack_gui.services.layout_service import hide_parameter_value as _hide
 
     return _hide(db, name, value, pipeline_id)
 
 
-@router.delete("/constants/{name}/hidden_values/{value}")
-def unhide_constant_value(
+@router.delete("/parameters/{name}/hidden_values/{value}")
+def unhide_parameter_value(
     name: str,
     value: str,
     pipeline_id: str = "main",
     db: DatabaseManager = Depends(get_db),
 ):
-    from scistack_gui.services.layout_service import unhide_constant_value as _unhide
+    from scistack_gui.services.layout_service import unhide_parameter_value as _unhide
 
     return _unhide(db, name, value, pipeline_id)
 
 
-@router.get("/constants/hidden_values")
-def list_hidden_constant_values(
+@router.get("/parameters/hidden_values")
+def list_hidden_parameter_values(
     pipeline_id: str = "main", db: DatabaseManager = Depends(get_db)
 ):
     from scistack_gui.services.layout_service import get_hidden_constant_values

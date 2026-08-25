@@ -279,14 +279,14 @@ class TestExportImportCrossDatabase:
         client.put("/api/layout/pi_a", json={
             "x": 0, "y": 0, "node_type": "pathInputNode", "label": "gait_data", "pipeline_id": pid,
         })
-        client.post("/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]})
+        client.post("/api/parameters", json={"name": "window_seconds", "values": [10, 20, 30]})
         client.put("/api/layout/sw_a", json={
-            "x": 0, "y": 0, "node_type": "sweepNode", "label": "window_seconds", "pipeline_id": pid,
+            "x": 0, "y": 0, "node_type": "parameterNode", "label": "window_seconds", "pipeline_id": pid,
         })
-        client.put("/api/constants/export_gain/pending/20")
-        client.put("/api/constants/export_gain/pending/40")
+        client.put("/api/parameters/export_gain/pending/20")
+        client.put("/api/parameters/export_gain/pending/40")
         client.put("/api/layout/const_a", json={
-            "x": 0, "y": 0, "node_type": "constantNode", "label": "export_gain", "pipeline_id": pid,
+            "x": 0, "y": 0, "node_type": "parameterNode", "label": "export_gain", "pipeline_id": pid,
         })
 
         source_db = get_db()
@@ -304,10 +304,10 @@ class TestExportImportCrossDatabase:
         # different server process with a different --module would.
         registry._path_inputs.clear()
         registry._path_input_sources.clear()
-        registry._sweeps.clear()
-        registry._sweep_sources.clear()
+        registry._parameters.clear()
+        registry._parameter_sources.clear()
         target_file = tmp_path / "other_user_vars.py"
-        target_file.write_text("from scidb import EachOf, PathInput, Sweep\n")
+        target_file.write_text("from scidb import EachOf, Parameter, PathInput\n")
         registry._module_path = target_file
 
         result = import_pipeline_document(target_db, document)
@@ -315,7 +315,7 @@ class TestExportImportCrossDatabase:
         assert result["materialization_errors"] == []
 
         path_inputs = registry.get_path_inputs_registry()
-        sweeps = registry.get_sweeps_registry()
+        sweeps = registry.get_parameters_registry()
 
         from scistack_gui.domain.graph_builder import path_input_display
 

@@ -125,7 +125,7 @@ def test_grouped_node_has_single_edge_set(two_call_sites_client):
     const_edges = [
         e
         for e in graph["edges"]
-        if e["source"] == "const__low_hz" and e["target"] == nid
+        if e["source"] == "param__low_hz" and e["target"] == nid
     ]
     out_edges = [
         e
@@ -341,7 +341,7 @@ def test_manual_node_graduates_after_running_despite_shared_label_ambiguity(clie
     client.put("/api/edges/e_o4_in", json={"source": "mv_o4_in", "target": "mf_bp_other4"})
     client.put("/api/edges/e_o4_out", json={"source": "mf_bp_other4", "target": "mv_o4_out"})
     client.put("/api/edges/e_o4_const", json={
-        "source": "const__low_hz", "target": "mf_bp_other4", "target_handle": "in__low_hz",
+        "source": "param__low_hz", "target": "mf_bp_other4", "target_handle": "in__low_hz",
     })
 
     # Simulate the manual node having been successfully run (what

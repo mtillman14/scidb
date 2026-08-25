@@ -64,9 +64,9 @@ def project_client(populated_db, tmp_path):
     )
     (src / "constants.py").write_text(
         textwrap.dedent("""
-            from scidb import constant
+            from scidb import Parameter
 
-            PROJECT_RATE = constant(1000, description="Sample rate")
+            PROJECT_RATE = Parameter(1000, description="Sample rate")
         """)
     )
 
@@ -113,7 +113,7 @@ class TestGetProjectCode:
         data = resp.json()
         all_consts = []
         for mod in data["modules"]:
-            all_consts.extend(c["name"] for c in mod["constants"])
+            all_consts.extend(c["name"] for c in mod["parameters"])
         assert "PROJECT_RATE" in all_consts
 
     def test_displayed_function_also_resolves_for_execution(self, project_client):
@@ -188,9 +188,9 @@ def loose_project_client(populated_db, tmp_path):
     )
     (tmp_path / "constants_module.py").write_text(
         textwrap.dedent("""
-            from scidb import constant
+            from scidb import Parameter
 
-            LOOSE_RATE = constant(500, description="Loose sample rate")
+            LOOSE_RATE = Parameter(500, description="Loose sample rate")
         """)
     )
 
@@ -209,8 +209,8 @@ def loose_project_client(populated_db, tmp_path):
             sys.modules.pop(mod_name, None)
     registry._functions.clear()
     registry._function_sources.clear()
-    registry._constants.clear()
-    registry._constant_sources.clear()
+    registry._parameters.clear()
+    registry._parameter_sources.clear()
     registry._module_paths.clear()
     registry._load_errors.clear()
     registry._config = None
@@ -255,15 +255,15 @@ class TestLooseProjectCode:
 
     def test_constant_discovered(self, loose_project_client):
         # Full parity with scan_project's packaged-project behavior:
-        # scidb.constant() instances in loose scripts must show up here too.
+        # scidb.Parameter() instances in loose scripts must show up here too.
         code_resp = loose_project_client.get("/api/project/code").json()
-        all_consts = [c["name"] for mod in code_resp["modules"] for c in mod["constants"]]
+        all_consts = [c["name"] for mod in code_resp["modules"] for c in mod["parameters"]]
         assert "LOOSE_RATE" in all_consts
 
     def test_constant_value_and_description(self, loose_project_client):
         code_resp = loose_project_client.get("/api/project/code").json()
         entries = {
-            c["name"]: c for mod in code_resp["modules"] for c in mod["constants"]
+            c["name"]: c for mod in code_resp["modules"] for c in mod["parameters"]
         }
         entry = entries["LOOSE_RATE"]
         assert entry["value"] == "500"

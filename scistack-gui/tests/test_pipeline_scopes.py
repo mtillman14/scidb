@@ -695,11 +695,11 @@ class TestSweeps:
     def test_create_and_list(self, client_with_variable_file):
         client = client_with_variable_file
         r = client.post(
-            "/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]}
+            "/api/parameters", json={"name": "window_seconds", "values": [10, 20, 30]}
         )
         assert r.status_code == 200
 
-        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
+        by_name = {s["name"]: s for s in client.get("/api/parameters").json()}
         assert by_name["window_seconds"]["values"] == [10, 20, 30]
 
     def test_create_without_values_scaffolds_placeholder(self, client_with_variable_file):
@@ -710,32 +710,32 @@ class TestSweeps:
         values must succeed with a placeholder, mirroring how
         create_path_input already scaffolds an empty template."""
         client = client_with_variable_file
-        r = client.post("/api/sweeps", json={"name": "window_seconds"})
+        r = client.post("/api/parameters", json={"name": "window_seconds"})
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
-        by_name = {s["name"]: s for s in client.get("/api/sweeps").json()}
+        by_name = {s["name"]: s for s in client.get("/api/parameters").json()}
         assert by_name["window_seconds"]["values"] == [0]
 
     def test_delete_sweep_hides_node_but_keeps_source_declaration(
         self, client_with_variable_file
     ):
-        """"Delete" hides the sweep__ node only — the source declaration
-        (and hence the /api/sweeps listing, which reads the registry
+        """"Delete" hides the param__ node only — the source declaration
+        (and hence the /api/parameters listing, which reads the registry
         directly) is untouched. Never delete, mark hidden."""
         client = client_with_variable_file
         client.post(
-            "/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]}
+            "/api/parameters", json={"name": "window_seconds", "values": [10, 20, 30]}
         )
-        r = client.delete("/api/sweeps/window_seconds")
+        r = client.delete("/api/parameters/window_seconds")
         assert r.status_code == 200
 
-        names = {s["name"] for s in client.get("/api/sweeps").json()}
+        names = {s["name"] for s in client.get("/api/parameters").json()}
         assert "window_seconds" in names  # still a valid source declaration
 
         graph = client.get("/api/pipeline").json()
         assert not any(
-            n["type"] == "sweepNode" and n["data"]["label"] == "window_seconds"
+            n["type"] == "parameterNode" and n["data"]["label"] == "window_seconds"
             for n in graph["nodes"]
         )
 
@@ -743,16 +743,16 @@ class TestSweeps:
         """A Sweep node behaves like a Constant node on the canvas: place
         it, wire it into a function's in__{param} handle. The manual
         node_id (sweep_a) GRADUATES to the canonical placement-qualified
-        id (sweep__window_seconds::main) once the graph rebuilds — same
+        id (param__window_seconds::main) once the graph rebuilds — same
         mechanism PathInput/Constant nodes already use (see
         _DB_DERIVED_PREFIXES) — so look it up by label, not by the raw id
         assigned at creation."""
         client = client_with_variable_file
         client.post(
-            "/api/sweeps", json={"name": "window_seconds", "values": [10]}
+            "/api/parameters", json={"name": "window_seconds", "values": [10]}
         )
         client.put("/api/layout/sweep_a", json={
-            "x": 0, "y": 0, "node_type": "sweepNode", "label": "window_seconds",
+            "x": 0, "y": 0, "node_type": "parameterNode", "label": "window_seconds",
         })
         client.put("/api/layout/fn_a", json={
             "x": 10, "y": 0, "node_type": "functionNode", "label": "some_fn",
@@ -765,9 +765,9 @@ class TestSweeps:
         graph = client.get("/api/pipeline").json()
         node = next(
             n for n in graph["nodes"]
-            if n["type"] == "sweepNode" and n["data"]["label"] == "window_seconds"
+            if n["type"] == "parameterNode" and n["data"]["label"] == "window_seconds"
         )
-        assert node["id"] == "sweep__window_seconds::main"
+        assert node["id"] == "param__window_seconds::main"
 
 
 class TestSweepExecutionResolution:
@@ -779,7 +779,7 @@ class TestSweepExecutionResolution:
     def _register_fn(name: str, params: str = "window_seconds"):
         """Append a real function definition to the configured
         variable_file, rather than injecting into registry._functions
-        directly — create_path_input/create_sweep now call
+        directly — create_path_input/create_parameter now call
         registry.refresh_module(), which re-scans that ONE file from
         scratch and would otherwise wipe a dict-injected function."""
         from scistack_gui import registry
@@ -794,7 +794,7 @@ class TestSweepExecutionResolution:
 
         client = client_with_variable_file
         client.post(
-            "/api/sweeps", json={"name": "window_seconds", "values": [10, 20, 30]}
+            "/api/parameters", json={"name": "window_seconds", "values": [10, 20, 30]}
         )
         self._register_fn("compute_rolling_sweep")
 
@@ -819,7 +819,7 @@ class TestSweepExecutionResolution:
         from scidb import EachOf
 
         client = client_with_variable_file
-        client.post("/api/sweeps", json={"name": "window_seconds", "values": [30]})
+        client.post("/api/parameters", json={"name": "window_seconds", "values": [30]})
         self._register_fn("compute_rolling_sweep2")
 
         from scistack_gui.services.execution_service import build_run_inputs
@@ -858,7 +858,7 @@ class TestSweepExecutionResolution:
 
         client.post("/api/path-inputs", json={"name": "data_dir", "template": "{subject}"})
         client.post(
-            "/api/sweeps", json={"name": "window_seconds", "values": [30, 60]}
+            "/api/parameters", json={"name": "window_seconds", "values": [30, 60]}
         )
 
         from scistack_gui.services.execution_service import build_run_inputs
@@ -869,6 +869,92 @@ class TestSweepExecutionResolution:
         assert isinstance(inputs["data_dir"], PathInput)
         assert isinstance(inputs["window_seconds"], EachOf)
         assert inputs["window_seconds"].alternatives == [30, 60]
+
+    def test_unchecked_values_are_excluded_from_the_run(
+        self, client_with_variable_file
+    ):
+        """The per-value checkbox must reach EXECUTION, not just display.
+
+        A scalar constant is filtered upstream (the whole target is
+        dropped), but a multi-valued Parameter is handed to for_each whole
+        and fanned out inside scidb, where the GUI's hidden-value state is
+        invisible -- so unchecking one value used to look right in the UI
+        and still run.
+        """
+        from scistack_gui import pipeline_store
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        client = client_with_variable_file
+        client.post(
+            "/api/parameters", json={"name": "window_seconds", "values": [10, 20, 30]}
+        )
+        self._register_fn("fn_with_unchecked")
+
+        db = get_db()
+        pipeline_store.hide_parameter_value(db, "window_seconds", "20")
+
+        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        inputs = build_run_inputs(target, "fn_with_unchecked", db)
+
+        # 10/30 arrive as floats: POST /api/parameters coerces to list[float].
+        assert inputs["window_seconds"].alternatives == [10.0, 30.0]
+
+    def test_hidden_value_matches_across_int_float_spelling(self):
+        """The store holds rendered strings; a Parameter holds numbers. POST
+        /api/parameters coerces to float, so a value declared 20 arrives as 20.0
+        -- a plain str() comparison would never match a hidden '20' and the
+        checkbox would silently do nothing."""
+        from scistack_gui.services.execution_service import _is_hidden_value
+
+        assert _is_hidden_value(20.0, {"20"})
+        assert _is_hidden_value(20, {"20.0"})
+        assert _is_hidden_value(20.0, {"20.0"})
+        assert _is_hidden_value("x", {"x"})
+        assert not _is_hidden_value(20.5, {"20"})
+        assert not _is_hidden_value(21.0, {"20"})
+
+    def test_unchecking_every_value_is_an_explicit_error(
+        self, client_with_variable_file
+    ):
+        """Running the full set (or an arbitrary one) would produce exactly
+        the records the user unchecked, so this raises instead."""
+        import pytest
+
+        from scistack_gui import pipeline_store
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        client = client_with_variable_file
+        client.post("/api/parameters", json={"name": "window_seconds", "values": [10, 20]})
+        self._register_fn("fn_all_unchecked")
+
+        db = get_db()
+        for v in ("10", "20"):
+            pipeline_store.hide_parameter_value(db, "window_seconds", v)
+
+        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        with pytest.raises(ValueError, match="every value of parameter"):
+            build_run_inputs(target, "fn_all_unchecked", db)
+
+    def test_unhidden_values_run_unchanged(self, client_with_variable_file):
+        """No hidden values means the declared Parameter passes through
+        untouched -- not rebuilt, so identity-sensitive callers see the
+        registry object itself."""
+        from scistack_gui.db import get_db
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        client = client_with_variable_file
+        client.post("/api/parameters", json={"name": "window_seconds", "values": [10, 20]})
+        self._register_fn("fn_no_hides")
+
+        from scistack_gui import registry
+
+        declared = registry.get_parameters_registry()["window_seconds"]
+        target = {"input_types": {}, "output_type": "X", "constants": {}}
+        inputs = build_run_inputs(target, "fn_no_hides", get_db())
+
+        assert inputs["window_seconds"] is declared
 
 
 class TestDuplicatePipeline:
@@ -1213,7 +1299,7 @@ class TestPasteNodes:
 
 class TestScopedNodeEdgeHiding:
     """Regression tests for plan-scope-hidden-nodes-edges.md: a hidden
-    canonical node/edge (var__/fn__/const__/pathInput__, and its
+    canonical node/edge (var__/fn__/param__/pathInput__, and its
     e__{fn}__{wiring_id}__{...} edges) used to be recorded and read back
     GLOBALLY, not per pipeline scope. Since graph_builder.wiring_id is
     scope-independent by design (two pipelines with identical, unedited
@@ -1830,9 +1916,9 @@ class TestDeriveTargetForNode:
         })
         client.put("/api/edges/e_o_in", json={"source": "mv_o_in", "target": "mf_bp_other"})
         client.put("/api/edges/e_o_out", json={"source": "mf_bp_other", "target": "mv_o_out"})
-        client.put("/api/constants/low_hz/pending/99")
+        client.put("/api/parameters/low_hz/pending/99")
         client.put("/api/edges/e_o_const", json={
-            "source": "const__low_hz", "target": "mf_bp_other", "target_handle": "in__low_hz",
+            "source": "param__low_hz", "target": "mf_bp_other", "target_handle": "in__low_hz",
         })
 
         from scistack_gui.db import get_db
@@ -1891,7 +1977,7 @@ class TestDeriveTargetForNode:
         # populated_db fixture's real bandpass_filter(RawSignal) run) —
         # deliberately WITHOUT staging any pending value for it.
         client.put("/api/edges/e_o3_const", json={
-            "source": "const__low_hz", "target": "mf_bp_other3", "target_handle": "in__low_hz",
+            "source": "param__low_hz", "target": "mf_bp_other3", "target_handle": "in__low_hz",
         })
 
         from scistack_gui.db import get_db
@@ -1914,12 +2000,12 @@ class TestDeriveTargetForNode:
         """A constant that's genuinely brand new — never staged as pending
         AND never appearing in any real DB history for this function — must
         still produce a runnable target if it has a source-declared
-        ``scidb.constant(...)`` default, instead of silently dropping the
+        ``scidb.Parameter(...)`` default, instead of silently dropping the
         arg (the same 'wired but has no pending values' gap the previous
         two tests cover for the staged/known-DB-value cases, now covered
         for the source-default case)."""
         import numpy as np
-        from scidb import BaseVariable, constant
+        from scidb import BaseVariable, Parameter
 
         from scistack_gui import registry as _registry
 
@@ -1933,8 +2019,8 @@ class TestDeriveTargetForNode:
 
         # A source-declared constant that has NEVER been run anywhere —
         # no DB history, no staged pending value.
-        _registry._register_constant(
-            "brand_new_gain", constant(7, description="test default"), source="test"
+        _registry._register_parameter(
+            "brand_new_gain", Parameter(7, description="test default"), source="test"
         )
         try:
             client.put("/api/layout/mv_o4_in", json={
@@ -1949,7 +2035,7 @@ class TestDeriveTargetForNode:
             client.put("/api/edges/e_o4_in", json={"source": "mv_o4_in", "target": "mf_bp_other4"})
             client.put("/api/edges/e_o4_out", json={"source": "mf_bp_other4", "target": "mv_o4_out"})
             client.put("/api/edges/e_o4_const", json={
-                "source": "const__brand_new_gain", "target": "mf_bp_other4",
+                "source": "param__brand_new_gain", "target": "mf_bp_other4",
                 "target_handle": "in__brand_new_gain",
             })
 
@@ -1964,8 +2050,8 @@ class TestDeriveTargetForNode:
                 "of dropping the constant entirely"
             )
         finally:
-            _registry._constants.pop("brand_new_gain", None)
-            _registry._constant_sources.pop("brand_new_gain", None)
+            _registry._parameters.pop("brand_new_gain", None)
+            _registry._parameter_sources.pop("brand_new_gain", None)
 
     def test_graduated_node_derives_only_its_own_call_site(self, client):
         """The flip side: an already-graduated node's own wiring must
@@ -2144,7 +2230,7 @@ class TestDeriveTargetForNode:
             build_backend_pipeline,
         )
 
-        client.put("/api/constants/low_hz/pending/42")
+        client.put("/api/parameters/low_hz/pending/42")
 
         built: dict = {}
         pipe = build_backend_pipeline(get_db(), "main", built)
@@ -2153,7 +2239,7 @@ class TestDeriveTargetForNode:
             assert spec.inputs["low_hz"] == 42  # literal_eval'd, not "42"
         finally:
             _discard_compiled(built)
-            client.delete("/api/constants/low_hz/pending/42")
+            client.delete("/api/parameters/low_hz/pending/42")
 
     def test_compile_excludes_hidden_combo(self, client):
         """A hidden combo must never compile into a pipeline step -- Run
@@ -2187,14 +2273,14 @@ class TestDeriveTargetForNode:
     def test_plan_previews_staged_variant_as_red(self, client):
         """The plan dialog shows what materializing the staged value will
         run: the overridden variant has no records yet -> red, full grid."""
-        client.put("/api/constants/low_hz/pending/42")
+        client.put("/api/parameters/low_hz/pending/42")
         try:
             entries = client.get("/api/pipelines/main/plan").json()
             by_name = {e["step"]: e for e in entries}
             assert by_name["bandpass_filter"]["state"] == "red"
             assert by_name["bandpass_filter"]["n_combos"] == 4
         finally:
-            client.delete("/api/constants/low_hz/pending/42")
+            client.delete("/api/parameters/low_hz/pending/42")
 
     def test_pull_run_materializes_staged_value_and_pending_clears(self, client):
         """The full Stage-2 loop: stage a value -> pull run writes the
@@ -2204,7 +2290,7 @@ class TestDeriveTargetForNode:
         from scistack_gui.db import get_db
         from scistack_gui.services.execution_service import run_pipeline
 
-        client.put("/api/constants/low_hz/pending/42")
+        client.put("/api/parameters/low_hz/pending/42")
 
         result = run_pipeline(get_db(), "main", mode="until", target="bandpass_filter")
 
@@ -2288,7 +2374,7 @@ class TestDeriveTargetForNode:
             "/api/edges/e_o5_out", json={"source": "mf_bp_other5", "target": "mv_o5_out"}
         )
         client.put("/api/edges/e_o5_const", json={
-            "source": "const__low_hz",
+            "source": "param__low_hz",
             "target": "mf_bp_other5",
             "target_handle": "in__low_hz",
         })
@@ -2334,7 +2420,7 @@ class TestPathInputExecutionResolution:
     def _register_loader(name: str):
         """Append a real function definition to the configured
         variable_file, rather than injecting into registry._functions
-        directly — create_path_input/create_sweep now call
+        directly — create_path_input/create_parameter now call
         registry.refresh_module(), which re-scans that ONE file from
         scratch and would otherwise wipe a dict-injected function."""
         from scistack_gui import registry

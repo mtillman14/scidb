@@ -15,8 +15,18 @@ from scistack_gui.db import get_db
 logger = logging.getLogger(__name__)
 
 
-class ConstantCreate(BaseModel):
+class ParameterCreate(BaseModel):
     name: str
+    # One list whatever the count. Numbers stay int-or-float rather than
+    # being coerced to float: the hidden-value store keys on the RENDERED
+    # string, so silently turning 20 into 20.0 makes an unchecked '20' stop
+    # matching (see execution_service._is_hidden_value).
+    values: list[float | int | str | bool] = []
+
+
+class ParameterUpdate(BaseModel):
+    values: list[float | int | str | bool] = []
+    description: str = ""
 
 
 class PathInputCreate(BaseModel):
@@ -25,9 +35,10 @@ class PathInputCreate(BaseModel):
     root_folder: str | None = None
 
 
-class SweepCreate(BaseModel):
-    name: str
-    values: list[float] = []
+class PathInputUpdate(BaseModel):
+    template: str
+    root_folder: str | None = None
+    alternate_templates: list[dict] | None = None
 
 
 class EdgeCreate(BaseModel):
@@ -104,23 +115,46 @@ def put_note(key: str, body: NoteUpdate):
     return _set(key, body.text)
 
 
-@router.get("/constants")
-def get_constants() -> list[dict]:
-    from scistack_gui.services.layout_service import get_constants as _get
+@router.get("/parameters")
+def get_parameters() -> list[dict]:
+    from scistack_gui.services.layout_service import get_parameters as _get
 
     return _get()
 
 
-@router.post("/constants")
-def post_constant(body: ConstantCreate):
-    from scistack_gui.services.layout_service import create_constant
+@router.post("/parameters")
+def post_parameter(body: ParameterCreate):
+    """Create a Parameter. ``values`` is the final, already-computed flat
+    list -- range generation (start/end/step) is a frontend concern. Empty
+    scaffolds a placeholder, matching the 'New parameter' form, which only
+    collects a name."""
+    from scistack_gui.services.layout_service import create_parameter
 
-    return create_constant(body.name)
+    return create_parameter(body.name, body.values)
 
 
-@router.delete("/constants/{name}")
-def delete_constant(name: str, pipeline_id: str = "main"):
-    from scistack_gui.services.layout_service import delete_constant as _del
+@router.put("/parameters/{name}")
+def put_parameter(name: str, body: ParameterUpdate):
+    """Rewrite an existing Parameter's declaration in source.
+
+    One route whatever the value count -- adding a value is adding an
+    argument, not a change of kind (D6).
+
+    Returns ``{"ok": False, "reason": "read_only", "file", "line"}`` when the
+    Parameter is declared outside the configured entities file, so the
+    frontend can render "declared in foo.py:42" rather than a generic hint.
+    An empty ``values`` is rejected: emptying a Parameter would silently drop
+    every variant it produces.
+    """
+    from scistack_gui.services.layout_service import update_parameter
+
+    return update_parameter(name, body.values, body.description)
+
+
+@router.delete("/parameters/{name}")
+def delete_parameter(name: str, pipeline_id: str = "main"):
+    """Hides the node only — the source declaration is untouched."""
+    from scistack_gui.services.layout_service import delete_parameter as _del
 
     return _del(name, pipeline_id)
 
@@ -141,14 +175,25 @@ def post_path_input(body: PathInputCreate):
     return create_path_input(body.name, body.template, body.root_folder)
 
 
+@router.put("/path-inputs/{name}")
+def put_path_input(name: str, body: PathInputUpdate):
+    """Rewrite an existing PathInput's declaration in source.
+
+    ``alternate_templates`` re-renders it as ``EachOf(PathInput(...), ...)``
+    under the same name — that is what "multiple templates" is, not a
+    separate concept.
+    """
+    from scistack_gui.services.layout_service import update_path_input
+
+    return update_path_input(
+        name, body.template, body.root_folder, body.alternate_templates
+    )
+
+
 @router.delete("/path-inputs/{name}")
 def delete_path_input(name: str, pipeline_id: str = "main"):
-    """Hides the node only — the source declaration is untouched. There is
-    no update/alternates endpoint anymore: PathInput is source-scanned (see
-    docs/claude/code-discovery-categories.md); edit the source file and hit
-    Refresh Code to change a template, or add an ``EachOf(PathInput(...),
-    ...)`` alternative directly in source for multiple templates under one
-    name."""
+    """Hides the node only — the source declaration is untouched (never
+    delete, mark hidden). To CHANGE a template, use ``PUT`` above."""
     from scistack_gui.services.layout_service import delete_path_input as _del
 
     return _del(name, pipeline_id)
@@ -165,39 +210,6 @@ def post_deep_copy_path_input(node_id: str):
         return deep_copy_path_input(node_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-
-@router.get("/sweeps")
-def get_sweeps() -> list[dict]:
-    from scistack_gui.services.layout_service import get_sweeps as _get
-
-    result = _get()
-    logger.info("GET /sweeps → %s", result)
-    return result
-
-
-@router.post("/sweeps")
-def post_sweep(body: SweepCreate):
-    """Creates a new source-scanned Sweep in one call — range generation
-    (start/end/step or start/end/count) is a frontend concern; this always
-    receives the final, already-computed flat list of values. There is no
-    update endpoint: Sweep is source-scanned (see
-    docs/claude/code-discovery-categories.md); edit the source file and hit
-    Refresh Code to change its values."""
-    logger.info("POST /sweeps body=%s", body)
-    from scistack_gui.services.layout_service import create_sweep
-
-    result = create_sweep(body.name, body.values)
-    logger.info("POST /sweeps → %s", result)
-    return result
-
-
-@router.delete("/sweeps/{name}")
-def delete_sweep(name: str, pipeline_id: str = "main"):
-    """Hides the node only — the source declaration is untouched."""
-    from scistack_gui.services.layout_service import delete_sweep as _del
-
-    return _del(name, pipeline_id)
 
 
 @router.put("/edges/{edge_id}")

@@ -24,14 +24,3 @@ class EachOf:
     def __repr__(self) -> str:
         items = ", ".join(getattr(a, "__name__", repr(a)) for a in self.alternatives)
         return f"EachOf({items})"
-
-
-class Sweep(EachOf):
-    """Named sugar for :class:`EachOf`: a fixed list of alternatives for one
-    constant parameter, meant to be bound to a top-level module name so it's
-    discoverable the same way a ``scidb.constant()`` value is —
-    ``WINDOW_SECONDS = Sweep(30, 45, 60)`` — rather than written inline at a
-    call site. Behaves identically to ``EachOf`` in every other respect
-    (``isinstance(x, EachOf)`` is ``True`` for a ``Sweep``); see
-    ``docs/claude/code-discovery-categories.md``.
-    """

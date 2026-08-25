@@ -78,20 +78,24 @@ class SciStackConfig:
     matlab_variables: list[Path] = field(default_factory=list)
     """Resolved absolute paths to MATLAB .m classdef files (BaseVariable subclasses)."""
 
-    matlab_path_inputs: list[Path] = field(default_factory=list)
-    """Resolved absolute paths to MATLAB PathInput getter files (see
-    matlab_parser.parse_matlab_path_input and
-    docs/claude/code-discovery-categories.md)."""
-
-    matlab_sweeps: list[Path] = field(default_factory=list)
-    """Resolved absolute paths to MATLAB Sweep getter files (see
-    matlab_parser.parse_matlab_sweep)."""
-
     matlab_addpath: list[Path] = field(default_factory=list)
     """MATLAB path entries (auto-derived from parent dirs of functions, variables, and variable_dir)."""
 
     matlab_variable_dir: Path | None = None
-    """Directory where ``create_variable`` writes new .m classdef files."""
+    """Directory where ``create_variable`` writes new .m classdef files.
+
+    Distinct from ``matlab_entities_file`` and NOT merged into it: a
+    ``BaseVariable`` subclass is a *type*, and MATLAB requires one public
+    classdef per file named after the file, so variables cannot live in the
+    shared entities script."""
+
+    matlab_entities_file: Path | None = None
+    """The MATLAB analogue of ``variable_file``: a plain script of
+    ``NAME = scidb.Sweep(...)`` top-level bindings, and the only MATLAB file
+    the GUI ever writes entity declarations into (see
+    docs/claude/entity-editability-model.md). Value getters remain fully
+    supported for discovery, but — like a Python declaration outside
+    ``variable_file`` — are read-only."""
 
     matlab_sources: list[Path] = field(default_factory=list)
     """Unclassified .m files, from folder-scan fallback OR an explicit
@@ -287,12 +291,6 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     matlab_variables = _resolve_glob_paths(
         project_root, matlab_section.get("variables", []), "matlab.variables"
     )
-    matlab_path_inputs = _resolve_glob_paths(
-        project_root, matlab_section.get("path_inputs", []), "matlab.path_inputs"
-    )
-    matlab_sweeps = _resolve_glob_paths(
-        project_root, matlab_section.get("sweeps", []), "matlab.sweeps"
-    )
     # Unified, unclassified .m paths -- same auto-classify-per-file behavior
     # as folder-scan mode's matlab_sources (see classify_matlab_file), just
     # reachable from an explicit config too. This is what lets a single
@@ -309,14 +307,21 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     else:
         logger.debug("[config] No matlab_variable_dir configured")
 
-    # Dedupe: any file in matlab.variables/path_inputs/sweeps must not
-    # ALSO be parsed as a plain function. This handles the common case
-    # where matlab.functions points at a parent directory (e.g. "src/")
-    # that contains those files as a subtree.
-    logger.info("[config] Deduplicating MATLAB functions vs variables/path_inputs/sweeps")
-    non_function_path_set = {
-        p.resolve() for p in (*matlab_variables, *matlab_path_inputs, *matlab_sweeps)
-    }
+    matlab_entities_file: Path | None = None
+    raw_mef = matlab_section.get("entities_file")
+    if raw_mef is not None:
+        matlab_entities_file = _normalize(project_root / raw_mef)
+        logger.info(
+            "[config] matlab_entities_file set to: %s", matlab_entities_file
+        )
+    else:
+        logger.debug("[config] No matlab_entities_file configured")
+
+    # Dedupe: any file in matlab.variables must not ALSO be parsed as a
+    # plain function. This handles the common case where matlab.functions
+    # points at a parent directory (e.g. "src/") containing it as a subtree.
+    logger.info("[config] Deduplicating MATLAB functions vs variables")
+    non_function_path_set = {p.resolve() for p in matlab_variables}
     original_fn_count = len(matlab_functions)
     matlab_functions = [
         p for p in matlab_functions if p.resolve() not in non_function_path_set
@@ -325,7 +330,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     if excluded:
         logger.info(
             "[config] Excluded %d file(s) from matlab.functions because they are "
-            "also declared in matlab.variables/path_inputs/sweeps.",
+            "also declared in matlab.variables.",
             excluded,
         )
 
@@ -336,14 +341,12 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         addpath_set.add(p.parent)
     for p in matlab_variables:
         addpath_set.add(p.parent)
-    for p in matlab_path_inputs:
-        addpath_set.add(p.parent)
-    for p in matlab_sweeps:
-        addpath_set.add(p.parent)
     for p in matlab_sources:
         addpath_set.add(p.parent)
     if matlab_variable_dir is not None:
         addpath_set.add(matlab_variable_dir)
+    if matlab_entities_file is not None:
+        addpath_set.add(matlab_entities_file.parent)
     matlab_addpath = sorted(addpath_set)
     logger.debug("[config] MATLAB addpath contains %d directories", len(matlab_addpath))
 
@@ -356,25 +359,23 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         auto_discover=auto_discover,
         matlab_functions=matlab_functions,
         matlab_variables=matlab_variables,
-        matlab_path_inputs=matlab_path_inputs,
-        matlab_sweeps=matlab_sweeps,
         matlab_addpath=matlab_addpath,
         matlab_variable_dir=matlab_variable_dir,
+        matlab_entities_file=matlab_entities_file,
         matlab_sources=matlab_sources,
     )
     logger.info(
         "[config] Configuration loaded from %s: %d modules, %d packages, auto_discover=%s, "
-        "%d MATLAB functions, %d MATLAB variables, %d MATLAB path inputs, "
-        "%d MATLAB sweeps, %d MATLAB sources",
+        "%d MATLAB functions, %d MATLAB variables, %d MATLAB sources, "
+        "entities_file=%s",
         toml_path,
         len(modules),
         len(packages),
         auto_discover,
         len(matlab_functions),
         len(matlab_variables),
-        len(matlab_path_inputs),
-        len(matlab_sweeps),
         len(matlab_sources),
+        matlab_entities_file,
     )
     return config
 
@@ -707,10 +708,9 @@ def _render_scistack_toml(
     auto_discover: bool,
     matlab_functions: list,
     matlab_variables: list,
-    matlab_path_inputs: list,
-    matlab_sweeps: list,
     matlab_sources: list,
     matlab_variable_dir,
+    matlab_entities_file=None,
 ) -> str:
     """Render a complete scistack.toml from known [tool.scistack] fields.
 
@@ -733,10 +733,9 @@ def _render_scistack_toml(
     if (
         matlab_functions
         or matlab_variables
-        or matlab_path_inputs
-        or matlab_sweeps
         or matlab_sources
         or matlab_variable_dir
+        or matlab_entities_file
     ):
         lines.append("")
         lines.append("[matlab]")
@@ -744,14 +743,12 @@ def _render_scistack_toml(
             lines.append(f"functions = {_toml_array(matlab_functions)}")
         if matlab_variables:
             lines.append(f"variables = {_toml_array(matlab_variables)}")
-        if matlab_path_inputs:
-            lines.append(f"path_inputs = {_toml_array(matlab_path_inputs)}")
-        if matlab_sweeps:
-            lines.append(f"sweeps = {_toml_array(matlab_sweeps)}")
         if matlab_sources:
             lines.append(f"sources = {_toml_array(matlab_sources)}")
         if matlab_variable_dir is not None:
             lines.append(f"variable_dir = {_toml_str(str(matlab_variable_dir))}")
+        if matlab_entities_file is not None:
+            lines.append(f"entities_file = {_toml_str(str(matlab_entities_file))}")
     lines.append("")
     return "\n".join(lines)
 
@@ -865,10 +862,9 @@ def add_path(db_path: Path, new_path: Path) -> Path:
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
         matlab_variables=list(matlab_section.get("variables", [])),
-        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
-        matlab_sweeps=list(matlab_section.get("sweeps", [])),
         matlab_sources=raw_sources,
         matlab_variable_dir=matlab_section.get("variable_dir"),
+        matlab_entities_file=matlab_section.get("entities_file"),
     )
     target_path.write_text(content)
     logger.info("[config] add_path: wrote %s (added %s)", target_path, new_str)
@@ -913,10 +909,9 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
         matlab_variables=list(matlab_section.get("variables", [])),
-        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
-        matlab_sweeps=list(matlab_section.get("sweeps", [])),
         matlab_sources=raw_sources,
         matlab_variable_dir=matlab_section.get("variable_dir"),
+        matlab_entities_file=matlab_section.get("entities_file"),
     )
     toml_path.write_text(content)
     logger.info("[config] remove_path: wrote %s (removed %s)", toml_path, target)
@@ -1032,10 +1027,9 @@ def set_variable_file(
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
         matlab_variables=list(matlab_section.get("variables", [])),
-        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
-        matlab_sweeps=list(matlab_section.get("sweeps", [])),
         matlab_sources=raw_sources,
         matlab_variable_dir=matlab_section.get("variable_dir"),
+        matlab_entities_file=matlab_section.get("entities_file"),
     )
     target_path.write_text(content)
     logger.info(
@@ -1070,10 +1064,9 @@ def clear_variable_file(db_path: Path) -> Path:
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
         matlab_variables=list(matlab_section.get("variables", [])),
-        matlab_path_inputs=list(matlab_section.get("path_inputs", [])),
-        matlab_sweeps=list(matlab_section.get("sweeps", [])),
         matlab_sources=list(matlab_section.get("sources", [])),
         matlab_variable_dir=matlab_section.get("variable_dir"),
+        matlab_entities_file=matlab_section.get("entities_file"),
     )
     toml_path.write_text(content)
     logger.info("[config] clear_variable_file: wrote %s (cleared variable_file)", toml_path)

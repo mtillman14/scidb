@@ -11,6 +11,12 @@ import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
+# Same import dance as scistack_gui.config, so this test runs on 3.10 too.
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - 3.10 fallback
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from scistack_gui.app import create_app
 from scistack_gui.bootstrap import open_or_create_project
 
@@ -202,9 +208,13 @@ class TestCreateProjectEagerEntitiesFile:
 
         toml_path = tmp_path / "scistack.toml"
         assert toml_path.exists()
-        assert str(entities_file.resolve()) in toml_path.read_text() or str(
-            entities_file
-        ) in toml_path.read_text()
+        # Recorded RELATIVE to the project root, not absolutely, so the
+        # scistack.toml stays portable across machines (set_variable_file's
+        # variable_file_for_toml, added in 89f4f35). This assertion used to
+        # look for the absolute path and had been failing since that commit.
+        with open(toml_path, "rb") as f:
+            written = tomllib.load(f)
+        assert written["variable_file"] == str(entities_file.relative_to(tmp_path))
 
     def test_create_respects_custom_variable_file(self, api_client, tmp_path):
         resp = api_client.post(

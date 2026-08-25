@@ -51,22 +51,24 @@ else:  # pragma: no cover
     except ModuleNotFoundError:
         import tomli as tomllib  # type: ignore[no-redef]
 
-from scifor import EachOf, PathInput, Sweep
+from scifor import EachOf, PathInput
 from scifor.discovery import PathInsert, purge_module, read_project_name, walk_package
 
-from .constant import Constant
+from .parameter import Parameter
 from .pipeline import is_scistack_function
 from .variable import BaseVariable
 
 logger = logging.getLogger(__name__)
 
 
-def is_constant(obj: Any) -> bool:
-    return isinstance(obj, Constant)
+def is_parameter(obj: Any) -> bool:
+    """True for a Parameter -- one value or many.
 
-
-def is_sweep(obj: Any) -> bool:
-    return isinstance(obj, Sweep)
+    A bare EachOf is deliberately NOT a Parameter: only a named, top-level
+    declaration is GUI-visible, the same rule that applied to Sweep before
+    the merge (see docs/claude/entity-editability-model.md D6).
+    """
+    return isinstance(obj, Parameter)
 
 
 def is_path_input(obj: Any) -> bool:
@@ -87,18 +89,16 @@ class ModuleExports:
     module_name: str
     variables: list[type] = field(default_factory=list)
     functions: list[Any] = field(default_factory=list)
-    constants: list[tuple[str, Constant]] = field(default_factory=list)
+    parameters: list[tuple[str, Parameter]] = field(default_factory=list)
     path_inputs: list[tuple[str, Any]] = field(default_factory=list)
-    sweeps: list[tuple[str, Sweep]] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
         return not (
             self.variables
             or self.functions
-            or self.constants
+            or self.parameters
             or self.path_inputs
-            or self.sweeps
         )
 
     @property
@@ -106,9 +106,8 @@ class ModuleExports:
         return (
             len(self.variables)
             + len(self.functions)
-            + len(self.constants)
+            + len(self.parameters)
             + len(self.path_inputs)
-            + len(self.sweeps)
         )
 
 
@@ -142,16 +141,12 @@ class PackageResult:
         return sum(len(m.functions) for m in self.modules)
 
     @property
-    def constant_count(self) -> int:
-        return sum(len(m.constants) for m in self.modules)
+    def parameter_count(self) -> int:
+        return sum(len(m.parameters) for m in self.modules)
 
     @property
     def path_input_count(self) -> int:
         return sum(len(m.path_inputs) for m in self.modules)
-
-    @property
-    def sweep_count(self) -> int:
-        return sum(len(m.sweeps) for m in self.modules)
 
 
 @dataclass
@@ -206,16 +201,12 @@ def discover_module(module: ModuleType) -> ModuleExports:
                 exports.functions.append(obj)
             continue
 
-        # --- Constant instances ---
-        if is_constant(obj):
-            exports.constants.append((name, obj))
-            continue
-
-        # --- Sweep instances (checked before PathInput: a Sweep is not
-        # itself a PathInput, but is an EachOf, so order doesn't actually
-        # matter here — kept explicit for readability) ---
-        if is_sweep(obj):
-            exports.sweeps.append((name, obj))
+        # --- Parameter instances. Checked BEFORE PathInput: a Parameter is
+        # an EachOf, and is_path_input accepts an EachOf whose alternatives
+        # are all PathInputs, so a Parameter wrapping PathInputs would
+        # otherwise be classified as a PathInput. ---
+        if is_parameter(obj):
+            exports.parameters.append((name, obj))
             continue
 
         # --- PathInput instances, or an EachOf of PathInputs (alternate

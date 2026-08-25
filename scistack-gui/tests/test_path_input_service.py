@@ -2,7 +2,7 @@
 Unit tests for scistack_gui.services.path_input_service.
 
 Validation tests need no DB. File-writing tests use tmp_path and a real
-Python module file, exercising the full create_path_input/create_sweep
+Python module file, exercising the full create_path_input
 path — including the qualified ``scidb.X`` append form and the shared
 ``ensure_scidb_import`` idempotency it depends on.
 """
@@ -10,7 +10,7 @@ path — including the qualified ``scidb.X`` append form and the shared
 from __future__ import annotations
 
 import scistack_gui.registry as _registry
-from scistack_gui.services.path_input_service import create_path_input, create_sweep
+from scistack_gui.services.path_input_service import create_path_input
 
 
 def _reset_registry_state():
@@ -102,40 +102,3 @@ class TestCreatePathInputWrite:
         create_path_input("RAW", "{subject}.mat")
         result = create_path_input("RAW", "{other}.mat")
         assert result["ok"] is False
-        assert "already exists" in result["error"]
-
-
-class TestCreateSweepValidation:
-    def test_empty_name_rejected(self):
-        result = create_sweep("", [1, 2, 3])
-        assert result["ok"] is False
-
-
-class TestCreateSweepWrite:
-    def setup_method(self):
-        _reset_registry_state()
-
-    def teardown_method(self):
-        _reset_registry_state()
-
-    def test_creates_declaration_in_empty_file(self, tmp_path):
-        module_file = tmp_path / "empty_entities.py"
-        module_file.write_text("")
-        _registry._module_path = module_file
-
-        result = create_sweep("WINDOW_SECONDS", [10, 20, 30])
-        assert result["ok"] is True, result.get("error")
-        content = module_file.read_text()
-        assert "import scidb" in content
-        assert "WINDOW_SECONDS = scidb.Sweep(10, 20, 30)" in content
-        assert "WINDOW_SECONDS" in _registry.get_sweeps_registry()
-
-    def test_empty_values_scaffolds_placeholder(self, tmp_path):
-        module_file = tmp_path / "entities.py"
-        module_file.write_text("import scidb\n")
-        _registry._module_path = module_file
-
-        result = create_sweep("EMPTY_SWEEP", [])
-        assert result["ok"] is True, result.get("error")
-        content = module_file.read_text()
-        assert "EMPTY_SWEEP = scidb.Sweep(0)" in content

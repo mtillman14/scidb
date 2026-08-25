@@ -112,7 +112,7 @@ class TestPipeline:
     def test_constant_node_present(self, client):
         nodes = client.get("/api/pipeline").json()["nodes"]
         node_ids = {n["id"] for n in nodes}
-        assert "const__low_hz" in node_ids
+        assert "param__low_hz" in node_ids
 
     def test_variable_node_has_total_records(self, client):
         nodes = client.get("/api/pipeline").json()["nodes"]
@@ -153,7 +153,7 @@ class TestPipeline:
         matches = [
             e
             for e in edges
-            if e["source"] == "const__low_hz" and e["target"] == bp_node_id
+            if e["source"] == "param__low_hz" and e["target"] == bp_node_id
         ]
         assert len(matches) >= 1
 
@@ -278,54 +278,54 @@ class TestLayoutEndpoints:
 
 
 # ---------------------------------------------------------------------------
-# /api/constants
+# /api/parameters
 # ---------------------------------------------------------------------------
 
 
 class TestConstantsEndpoints:
-    """Constants are now source-declared (``NAME = scidb.constant(...)``),
+    """Constants are now source-declared (``NAME = scidb.Parameter(...)``),
     same append-only pattern as PathInput/Sweep — see
     docs/claude/code-discovery-categories.md. Creation needs a writable
     target file, hence ``client_with_variable_file`` (not plain ``client``)
     everywhere here."""
 
     def test_get_constants_initially_empty(self, client):
-        r = client.get("/api/constants")
+        r = client.get("/api/parameters")
         assert r.status_code == 200
         assert r.json() == []
 
     def test_post_constant_adds_it(self, client_with_variable_file):
         client = client_with_variable_file
-        r = client.post("/api/constants", json={"name": "window_size"})
+        r = client.post("/api/parameters", json={"name": "window_size"})
         assert r.status_code == 200
         assert r.json() == {"ok": True, "name": "window_size"}
-        constants = client.get("/api/constants").json()
+        constants = client.get("/api/parameters").json()
         names = [c["name"] for c in constants]
         assert "window_size" in names
 
     def test_post_constant_no_duplicate(self, client_with_variable_file):
         client = client_with_variable_file
-        client.post("/api/constants", json={"name": "alpha"})
-        client.post("/api/constants", json={"name": "alpha"})
-        constants = client.get("/api/constants").json()
+        client.post("/api/parameters", json={"name": "alpha"})
+        client.post("/api/parameters", json={"name": "alpha"})
+        constants = client.get("/api/parameters").json()
         names = [c["name"] for c in constants]
         assert names.count("alpha") == 1
 
     def test_delete_constant_removes_it(self, client_with_variable_file):
         client = client_with_variable_file
-        client.post("/api/constants", json={"name": "alpha"})
-        client.post("/api/constants", json={"name": "beta"})
-        r = client.delete("/api/constants/alpha")
+        client.post("/api/parameters", json={"name": "alpha"})
+        client.post("/api/parameters", json={"name": "beta"})
+        r = client.delete("/api/parameters/alpha")
         assert r.status_code == 200
         # "Delete" hides the node only (never delete, mark hidden) — the
         # source declaration (and therefore the registry entry) is untouched.
-        constants = client.get("/api/constants").json()
+        constants = client.get("/api/parameters").json()
         names = [c["name"] for c in constants]
         assert "alpha" in names
         assert "beta" in names
 
     def test_delete_nonexistent_constant_is_ok(self, client):
-        r = client.delete("/api/constants/ghost")
+        r = client.delete("/api/parameters/ghost")
         assert r.status_code == 200
 
 
@@ -484,7 +484,7 @@ class TestDisconnectedEdges:
         assert out_node["data"]["run_state"] == "red"
 
     def test_delete_const_input_edge_also_disconnects(self, client, bp_node_id):
-        edge = self._find_edge(client, "const__low_hz", bp_node_id)
+        edge = self._find_edge(client, "param__low_hz", bp_node_id)
         self._delete(client, edge)
 
         nodes = client.get("/api/pipeline").json()["nodes"]
@@ -544,10 +544,10 @@ class TestDisconnectedEdges:
         r = client.put(
             "/api/edges/manual__newconst",
             json={
-                "source": "const__brand_new_constant",
+                "source": "param__brand_new_constant",
                 "target": bp_node_id,
                 "source_handle": None,
-                "target_handle": "const__brand_new_constant",
+                "target_handle": "param__brand_new_constant",
             },
         )
         assert r.status_code == 200
@@ -718,7 +718,7 @@ class TestDisconnectedEdges:
 
         var_edge = self._find_edge(client, "var__RawSignal", bp_node_id)
         self._delete(client, var_edge)
-        const_edge = self._find_edge(client, "const__low_hz", bp_node_id)
+        const_edge = self._find_edge(client, "param__low_hz", bp_node_id)
         self._delete(client, const_edge)
 
         client.put(
@@ -1376,9 +1376,9 @@ class TestPendingConstantLifecycle:
         return fn_min_state_across_call_sites(nodes, "bandpass_filter")
 
     def _const_values(self, client):
-        """Return the set of value strings under const__low_hz."""
+        """Return the set of value strings under param__low_hz."""
         nodes = client.get("/api/pipeline").json()["nodes"]
-        cnode = next(n for n in nodes if n["id"] == "const__low_hz")
+        cnode = next(n for n in nodes if n["id"] == "param__low_hz")
         return {v["value"] for v in cnode["data"]["values"]}
 
     def test_starts_green(self, client):
@@ -1387,7 +1387,7 @@ class TestPendingConstantLifecycle:
     def test_adding_pending_value_marks_consumer_pending(self, client):
         assert self._fn_state(client) == "green"
 
-        r = client.put("/api/constants/low_hz/pending/42")
+        r = client.put("/api/parameters/low_hz/pending/42")
         assert r.status_code == 200
 
         # Consumer downgraded green → pending.
@@ -1399,15 +1399,15 @@ class TestPendingConstantLifecycle:
         assert var_node["data"].get("run_state") == "pending"
 
     def test_pending_value_appears_under_constant_node(self, client):
-        client.put("/api/constants/low_hz/pending/42")
+        client.put("/api/parameters/low_hz/pending/42")
         values = self._const_values(client)
         assert "42" in values
 
     def test_removing_pending_restores_green(self, client):
-        client.put("/api/constants/low_hz/pending/42")
+        client.put("/api/parameters/low_hz/pending/42")
         assert self._fn_state(client) == "pending"
 
-        r = client.delete("/api/constants/low_hz/pending/42")
+        r = client.delete("/api/parameters/low_hz/pending/42")
         assert r.status_code == 200
 
         assert self._fn_state(client) == "green"
@@ -1418,7 +1418,7 @@ class TestPendingConstantLifecycle:
         """Running for_each with the pending scale produces matching records;
         on the next /api/pipeline call, auto_clean_pending_constants removes
         the pending row and the node returns to green."""
-        client.put("/api/constants/low_hz/pending/42")
+        client.put("/api/parameters/low_hz/pending/42")
         assert self._fn_state(client) == "pending"
 
         # Simulate the user running with the new constant value.
@@ -1445,7 +1445,7 @@ class TestPendingConstantLifecycle:
         RawSignal.save(np.ones(10), subject=1, session="pre")
         assert self._fn_state(client) == "red"
 
-        client.put("/api/constants/low_hz/pending/99")
+        client.put("/api/parameters/low_hz/pending/99")
         assert self._fn_state(client) == "red"
 
 
@@ -1522,7 +1522,7 @@ class TestPendingConstantRecovery:
 
         # Add pending on top of red — still red (the pending downgrade only
         # applies to green nodes; red already needs attention).
-        client_partial.put("/api/constants/low_hz/pending/42")
+        client_partial.put("/api/parameters/low_hz/pending/42")
         assert self._fn_state(client_partial) == "red"
 
         # Complete both variants.
@@ -1556,7 +1556,7 @@ class TestPendingConstantRecovery:
         # Prior state: no fn node visible (no variants), so state == None.
         assert self._fn_state(client_never_run) is None
 
-        client_never_run.put("/api/constants/low_hz/pending/42")
+        client_never_run.put("/api/parameters/low_hz/pending/42")
 
         # Still no variants → still no fn node.
         assert self._fn_state(client_never_run) is None

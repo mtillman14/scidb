@@ -70,12 +70,10 @@ def clear_db_state():
     _scifor.set_schema([])
     # Keep only the test functions registered across tests
     _registry._functions.clear()
-    _registry._constants.clear()
-    _registry._constant_sources.clear()
+    _registry._parameters.clear()
+    _registry._parameter_sources.clear()
     _registry._path_inputs.clear()
     _registry._path_input_sources.clear()
-    _registry._sweeps.clear()
-    _registry._sweep_sources.clear()
     _registry._config = None
     _registry._module_path = None
     from scidb.pipeline import _reset_pipeline_state as _reset_pipelines
@@ -91,10 +89,10 @@ def clear_db_state():
     _gui_db._db_path = None
     _scifor.set_schema([])
     _registry._functions.clear()
+    _registry._parameters.clear()
+    _registry._parameter_sources.clear()
     _registry._path_inputs.clear()
     _registry._path_input_sources.clear()
-    _registry._sweeps.clear()
-    _registry._sweep_sources.clear()
     _registry._config = None
     _registry._module_path = None
     _reset_pipelines()
@@ -167,15 +165,15 @@ def client(populated_db):
 @pytest.fixture
 def client_with_variable_file(client, tmp_path):
     """``client``, plus a writable ``_registry._module_path`` so
-    create_path_input/create_sweep (which append a new NAME = PathInput(...)/
-    Sweep(...) declaration and then re-import the file — see
+    create_path_input/create_parameter (which append a new NAME = PathInput(...)/
+    Parameter(...) declaration and then re-import the file — see
     path_input_service.py) have somewhere to write. Single-file (legacy)
     mode: ``_config`` stays None, so ``_target_file()`` falls back to
     ``_module_path`` — matches how a real loose-script project without a
     pyproject.toml/scistack.toml would be configured.
     """
     target = tmp_path / "pipeline_vars.py"
-    target.write_text("from scidb import EachOf, PathInput, Sweep\n")
+    target.write_text("from scidb import EachOf, Parameter, PathInput\n")
     _registry._module_path = target
     yield client
 

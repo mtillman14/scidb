@@ -53,21 +53,67 @@ def _wrap_for_sentinel(command_text: str) -> str:
     )
 
 
+class SidecarBusyError(RuntimeError):
+    """Raised when a second command arrives while one is still running.
+
+    The protocol is one command at a time over a single stdin/stdout pair:
+    two concurrent writers interleave their text into MATLAB's input and
+    then race for each other's sentinels, which corrupts BOTH runs and
+    reports whichever finishes first as the answer to both. Refusing is the
+    only safe response — see :attr:`MatlabSidecar._busy`.
+    """
+
+
 class MatlabSidecar:
     """One lazily-started, kept-warm MATLAB process, driven over its own
-    stdin/stdout. Not safe for concurrent ``run_command`` calls from
-    multiple threads at once — callers (``api/run.py``) serialize access
-    via the module-level singleton + the existing per-run-id execution
-    model (one MATLAB pipeline run at a time)."""
+    stdin/stdout.
+
+    Serialised by an explicit ``_busy`` flag. This used to rely on callers
+    happening to run one MATLAB pipeline at a time; that held by accident,
+    not by contract, and nothing enforced it. A second concurrent
+    ``run_command`` now raises :class:`SidecarBusyError` instead of silently
+    interleaving.
+    """
 
     def __init__(self) -> None:
         self._proc: subprocess.Popen | None = None
         self._stdout_queue: "Queue[str | None]" = Queue()
         self._reader_thread: threading.Thread | None = None
+        self._busy = False
+        self._busy_lock = threading.Lock()
+        self._health_error: str | None = None
+        """Why the engine was judged unusable, or None. A MATLAB that
+        launches but can't reach Python is a SETUP problem; without this it
+        surfaces as a pipeline failure on the first py.* call."""
+        self._health_checked = False
+        """Whether the probe has run for the CURRENT process. Cleared by
+        start(), so a restart re-probes."""
 
     @property
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def is_busy(self) -> bool:
+        return self._busy
+
+    def status(self) -> dict:
+        """Snapshot for the GUI's engine indicator: ``{state, pid, error}``
+        where state is one of ``unavailable`` (no ``matlab`` on PATH),
+        ``stopped``, ``ready``, ``busy``."""
+        if not sidecar_capable():
+            state = "unavailable"
+        elif not self.is_running:
+            state = "stopped"
+        elif self._busy:
+            state = "busy"
+        else:
+            state = "ready"
+        return {
+            "state": state,
+            "pid": self._proc.pid if self._proc is not None else None,
+            "error": self._health_error,
+        }
 
     def start(self) -> bool:
         """Launch MATLAB if not already running. Returns False (no
@@ -79,6 +125,22 @@ class MatlabSidecar:
         if matlab_bin is None:
             logger.warning("MatlabSidecar.start: 'matlab' not found on PATH")
             return False
+
+        if self._proc is not None:
+            # Replacing a process that already exited (crash, external kill,
+            # or a force-cancel). Its reader thread pushed an EOF `None` when
+            # the pipe closed; leaving that queued makes the NEXT
+            # run_command see "process exited before completion" and abort a
+            # perfectly healthy engine. stop() drains for the explicit path;
+            # this covers the implicit auto-restart one.
+            logger.info(
+                "MatlabSidecar.start: previous MATLAB process is gone "
+                "(exit=%s) — restarting and draining its stale output",
+                self._proc.poll(),
+            )
+            self._drain_queue()
+            self._proc = None
+            self._reader_thread = None
         logger.info("MatlabSidecar.start: launching %s", matlab_bin)
         self._proc = subprocess.Popen(
             [matlab_bin, "-nodesktop", "-nosplash", "-nodisplay"],
@@ -93,7 +155,69 @@ class MatlabSidecar:
         )
         self._reader_thread.start()
         logger.info("MatlabSidecar.start: MATLAB process started (pid=%s)", self._proc.pid)
+        self._health_error = None
+        self._health_checked = False
         return True
+
+    def restart(self) -> bool:
+        """Kill and relaunch. Used to recover from a wedged engine, and by
+        the caller that just force-cancelled one."""
+        logger.info("MatlabSidecar.restart: recycling the MATLAB process")
+        self.stop()
+        return self.start()
+
+    def check_health(self, timeout: float = 60.0) -> "str | None":
+        """Verify the engine can actually reach Python. Returns an error
+        string, or ``None`` if healthy.
+
+        **Probed once per process lifetime, then cached.** ``pyenv`` cannot
+        change under a running MATLAB, so re-probing before every run would
+        add a full round-trip to each one for an answer that cannot have
+        changed. ``start()`` clears the cache, so a restart re-probes.
+
+        ``start()`` only checks that ``matlab`` is on PATH. A MATLAB that
+        launches fine but has no ``pyenv`` configured fails on the FIRST
+        ``py.*`` call — which happens deep inside ``scihist.configure_database``,
+        so it surfaces to the user as a pipeline error rather than the setup
+        problem it is. Probing once, up front, lets the caller say so
+        plainly (same spirit as docs/claude/phase-8-startup-diagnostics.md).
+
+        Best-effort: a probe that times out is reported, not raised, so a
+        slow-but-working engine is never killed on our say-so.
+        """
+        if not self.is_running:
+            return "MATLAB is not running."
+        if self._health_checked:
+            return self._health_error
+
+        lines: list[str] = []
+        try:
+            ok = self.run_command(
+                "    disp(['SCISTACK_PYENV:' char(pyenv().Version)]);",
+                lines.append,
+                timeout=timeout,
+            )
+        except SidecarBusyError:
+            return None  # mid-run: not a health signal, don't disturb it
+        except Exception as e:
+            self._health_checked = True
+            self._health_error = f"MATLAB health probe failed: {e}"
+            return self._health_error
+
+        self._health_checked = True
+        joined = "".join(lines)
+        if not ok or "SCISTACK_PYENV:" not in joined:
+            self._health_error = (
+                "MATLAB started, but its Python bridge is not configured "
+                "(pyenv). Run pyenv('Version', '<path-to-python>') in MATLAB, "
+                "or set it in your startup.m — otherwise every scidb call "
+                "will fail. See scimatlab/README.md."
+            )
+            return self._health_error
+
+        self._health_error = None
+        logger.info("MatlabSidecar.check_health: pyenv OK (%s)", joined.strip())
+        return None
 
     def _read_stdout(self) -> None:
         proc = self._proc
@@ -112,6 +236,13 @@ class MatlabSidecar:
         """Kill the sidecar process — used for best-effort cancellation
         (``force_cancel_run``) and to recover from a wedged/dead process.
         Safe to call when nothing is running."""
+        # Unconditionally, and BEFORE the early return: killing the process
+        # means nothing is in flight by definition. An in-flight
+        # run_command's own `finally` also clears this, but that thread is
+        # blocked reading stdout and only unblocks once the process dies —
+        # so without this a restart() could observe a stale "busy" and
+        # refuse the very command it was recycled to accept.
+        self._busy = False
         if self._proc is None:
             return
         logger.info("MatlabSidecar.stop: terminating MATLAB process (pid=%s)", self._proc.pid)
@@ -121,8 +252,12 @@ class MatlabSidecar:
             logger.exception("MatlabSidecar.stop: failed to kill MATLAB process")
         self._proc = None
         self._reader_thread = None
-        # Drain any output queued from the dying process so a subsequent
-        # start()+run_command() begins with a clean queue.
+        self._drain_queue()
+
+    def _drain_queue(self) -> None:
+        """Discard output queued from a dead process, so the next
+        ``start()``/``run_command()`` begins clean. Shared by ``stop()`` and
+        ``start()``'s auto-restart path."""
         while True:
             try:
                 self._stdout_queue.get_nowait()
@@ -142,11 +277,33 @@ class MatlabSidecar:
         first, so the caller's run console shows the MATLAB error message).
 
         Raises RuntimeError if the sidecar isn't running (call ``start()``
-        first) or MATLAB's process exits mid-command; raises TimeoutError
-        if ``timeout`` elapses with no sentinel seen.
+        first) or MATLAB's process exits mid-command;
+        :class:`SidecarBusyError` if another command is still in flight;
+        TimeoutError if ``timeout`` elapses with no sentinel seen.
         """
         if not self.is_running:
             raise RuntimeError("MatlabSidecar.run_command: sidecar is not running")
+
+        # Claim the engine before writing a single byte. Checked and set
+        # under one lock so two threads can't both see "free" and proceed.
+        with self._busy_lock:
+            if self._busy:
+                raise SidecarBusyError(
+                    "The MATLAB engine is already running a command. Wait for "
+                    "it to finish, or cancel it, before starting another."
+                )
+            self._busy = True
+        try:
+            return self._run_locked(command_text, on_line, timeout)
+        finally:
+            self._busy = False
+
+    def _run_locked(
+        self,
+        command_text: str,
+        on_line: Callable[[str], None],
+        timeout: float | None,
+    ) -> bool:
         proc = self._proc
         assert proc is not None and proc.stdin is not None
 

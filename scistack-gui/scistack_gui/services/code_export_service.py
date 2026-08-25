@@ -154,7 +154,7 @@ def _py_header(db) -> str:
         "if this file has been moved).",
         '"""',
         "",
-        "from scidb import EachOf, PathInput, configure_database, for_each",
+        "from scidb import EachOf, Parameter, PathInput, configure_database, for_each",
         "",
     ]
 
@@ -395,7 +395,7 @@ def _generate_matlab_script(db, pipeline_id: str, pipeline_ids: list) -> tuple[s
     lines = [_matlab_header(db), ""]
     for i in order:
         fn_label, target = steps[i]
-        inputs = build_run_inputs(target, fn_label)
+        inputs = build_run_inputs(target, fn_label, db)
         output_cls = registry.get_variable_class(target["output_type"])
         inputs_src = _matlab_struct(inputs)
         outputs_src = "{" + _matlab_literal(output_cls) + "}"

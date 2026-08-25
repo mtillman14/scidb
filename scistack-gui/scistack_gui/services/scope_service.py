@@ -365,9 +365,8 @@ def _clone_nodes(
     prefix_by_type = {
         "functionNode": "fn",
         "variableNode": "var",
-        "constantNode": "const",
+        "parameterNode": "param",
         "pathInputNode": "pathInput",
-        "sweepNode": "sweep",
     }
 
     node_id_set = None if node_ids is None else set(node_ids)

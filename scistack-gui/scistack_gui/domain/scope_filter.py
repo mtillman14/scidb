@@ -4,7 +4,7 @@ Pure scope logic for nested pipelines (plan-gui-nested-pipelines.md Part A).
 Three concerns, all side-effect-free:
 
 - **Membership**: which pipeline scope a node belongs to. Manual nodes carry
-  a ``pipeline_id`` in the document; DB-derived nodes (var__/fn__/const__/
+  a ``pipeline_id`` in the document; DB-derived nodes (var__/fn__/param__/
   pathInput__ built from history) belong to the scope their POSITION is
   saved in — dragging a node onto a sub-pipeline's canvas writes its
   position into that scope, which IS the membership record. A node with no

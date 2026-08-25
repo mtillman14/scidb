@@ -56,19 +56,22 @@ def _serialise_module_exports(mod) -> dict:
             or getattr(getattr(f, "fcn", None), "__name__", str(f))
             for f in mod.functions
         ],
-        "constants": [
+        "parameters": [
             {
                 "name": name,
-                "value": repr(c.value),
-                "description": c.description,
-                "source_file": c.source_file,
-                "source_line": c.source_line,
+                # Every declared value: a Parameter may hold one or many,
+                # and showing only the first would misreport a fan-out.
+                "value": repr(p.values[0]) if len(p.values) == 1 else repr(p.values),
+                "values": [repr(v) for v in p.values],
+                "description": p.description,
+                "source_file": p.source_file,
+                "source_line": p.source_line,
             }
-            for name, c in mod.constants
+            for name, p in mod.parameters
         ],
         "variable_count": len(mod.variables),
         "function_count": len(mod.functions),
-        "constant_count": len(mod.constants),
+        "parameter_count": len(mod.parameters),
     }
 
 
@@ -86,7 +89,7 @@ def _serialise_package_result(pkg) -> dict:
         "errors": [_serialise_module_error(e) for e in pkg.errors],
         "variable_count": pkg.variable_count,
         "function_count": pkg.function_count,
-        "constant_count": pkg.constant_count,
+        "parameter_count": pkg.parameter_count,
         "is_empty": pkg.is_empty,
     }
 
@@ -334,12 +337,12 @@ def _run_scan(*, force_refresh: bool = False) -> None:
     _last_result = _build_registry_backed_result(root)
 
     logger.info(
-        "Scan complete: project=%s (vars=%d, fns=%d, consts=%d), "
+        "Scan complete: project=%s (vars=%d, fns=%d, params=%d), "
         "libraries=%d (shown=%d)",
         _last_result.project_code.name,
         _last_result.project_code.variable_count,
         _last_result.project_code.function_count,
-        _last_result.project_code.constant_count,
+        _last_result.project_code.parameter_count,
         len(_last_result.libraries),
         len(_last_result.non_empty_libraries()),
     )
@@ -387,13 +390,12 @@ def _build_registry_backed_result(root: Path):
 
     Full parity with the old ``scan_project``-backed panel: functions,
     ``BaseVariable`` subclasses, and ``scidb.constant()`` instances are all
-    covered — the last of those via ``registry.get_constants_registry()``,
-    which ``registry._scan_module_constants`` populates alongside functions
-    at every registry load. As of the source-declared-Constants migration
-    (see docs/claude/code-discovery-categories.md), this is the SAME
-    registry the GUI-native "Constant node" concept — ``get_constants()``/
-    EditTab's palette — now reads from too; the two are no longer separate
-    concepts. The per-combo *value* a constant runs with still comes from
+    covered — the last of those via ``registry.get_parameters_registry()``,
+    which ``registry._scan_module_parameters`` populates alongside functions
+    at every registry load. As of the source-declared migration (see
+    docs/claude/code-discovery-categories.md), this is the SAME registry the
+    GUI-native Parameter node concept — ``get_parameters()``/ EditTab's
+    palette — reads from; the two are not separate concepts. The per-combo *value* a constant runs with still comes from
     ``pipeline_store``'s pending-constant table (a distinct, orthogonal
     mechanism — see ``execution_service.derive_fn_targets``), independent
     of the constant's source-declared default.
@@ -444,9 +446,9 @@ def _build_registry_backed_result(root: Path):
         # back to str(f) for anything without one, which is already fn_name.
         module_for(source).functions.append(fn_name)
 
-    for name, const in registry.get_constants_registry().items():
-        source = registry._constant_sources.get(name, "<unknown>")
-        module_for(source).constants.append((name, const))
+    for name, param in registry.get_parameters_registry().items():
+        source = registry._parameter_sources.get(name, "<unknown>")
+        module_for(source).parameters.append((name, param))
 
     errors = [
         ModuleError(module_name=e["source"], traceback=e["error"])

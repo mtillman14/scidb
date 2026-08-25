@@ -12,6 +12,16 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def _entities_script() -> "str | None":
+    """The configured ``[matlab] entities_file``, if any — its declarations
+    have to be in scope before a generated command references one by name."""
+    from scistack_gui import matlab_registry
+
+    config = getattr(matlab_registry, "_config", None)
+    entities = getattr(config, "matlab_entities_file", None)
+    return str(entities) if entities else None
+
+
 def _normalize_input_types(input_types: dict) -> "tuple[dict, list[str]]":
     """Collapse a target's ``input_types`` to the flat ``{param: type_name}``
     shape ``api.matlab_command``'s generator expects.
@@ -77,8 +87,8 @@ def _sort_inferred_by_params_order(
 def _collect_sweep_params(
     function_name: str, saved_sweeps: dict, manual_edges: list[dict], strip_placement
 ) -> dict[str, list]:
-    """``{param_name: [values]}`` for every sweep__ node manually wired into
-    *function_name*'s ``in__{param}`` handle.
+    """``{param_name: [values]}`` for every Parameter node whose source form
+    is a Sweep, manually wired into *function_name*'s ``in__{param}`` handle.
 
     Unlike PathInput, a Sweep has no DB-history representation at all — it
     always fans out to ``EachOf``/``Sweep`` fresh at execution time, never
@@ -94,17 +104,15 @@ def _collect_sweep_params(
         src = edge.get("source", "")
         tgt = edge.get("target", "")
         th = edge.get("targetHandle", "")
-        if not (src.startswith("sweep__") and th.startswith("in__")):
+        from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX
+
+        if not (src.startswith(PARAM_ID_PREFIX) and th.startswith("in__")):
             continue
         tgt_parts = tgt.split("__")
         if len(tgt_parts) < 2 or tgt_parts[0] != "fn" or tgt_parts[1] != function_name:
             continue
         bare_src = strip_placement(src)
-        sw_name = (
-            bare_src.split("__")[1]
-            if len(bare_src.split("__")) >= 2
-            else bare_src[len("sweep__") :]
-        )
+        sw_name = bare_src[len(PARAM_ID_PREFIX) :]
         param_name = th[len("in__") :]
         if sw_name in saved_sweeps:
             sweep_params[param_name] = saved_sweeps[sw_name]
@@ -213,7 +221,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     # DB-history source, see _collect_sweep_params).
     saved_sweeps = {
         name: list(sw.alternatives)
-        for name, sw in registry.get_sweeps_registry().items()
+        for name, sw in registry.get_parameters_registry().items()
     }
     sweep_params = _collect_sweep_params(
         function_name, saved_sweeps, layout_store.read_manual_edges(), strip_placement
@@ -296,6 +304,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         sweeps=sweep_params if sweep_params else None,
         output_types=output_types if output_types else None,
         project_root=project_root,
+        entities_script=_entities_script(),
     )
     logger.info(
         "generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd)
@@ -383,7 +392,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         for name, obj in _reg.get_path_inputs_registry().items()
     }
     saved_sweeps = {
-        name: list(sw.alternatives) for name, sw in _reg.get_sweeps_registry().items()
+        name: list(sw.alternatives) for name, sw in _reg.get_parameters_registry().items()
     }
     manual_edges = layout_store.read_manual_edges()
 
@@ -508,6 +517,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         addpath_dirs=addpath_dirs if addpath_dirs else None,
         python_executable=sys.executable,
         project_root=project_root,
+        entities_script=_entities_script(),
     )
     logger.info(
         "generate_matlab_pipeline_command: pipeline=%s, command_length=%d",

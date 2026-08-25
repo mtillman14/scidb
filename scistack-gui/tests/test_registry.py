@@ -148,37 +148,37 @@ class TestRegisterModule:
 
 class TestScanModuleConstants:
     def test_registers_constant(self):
-        from scidb import constant
+        from scidb import Parameter
 
-        rate = constant(1000, description="Sample rate")
+        rate = Parameter(1000, description="Sample rate")
         mod = _make_module(RATE=rate)
         registry.register_module(mod)
-        assert "RATE" in registry._constants
-        assert registry._constants["RATE"] is rate
+        assert "RATE" in registry._parameters
+        assert registry._parameters["RATE"] is rate
 
-    def test_get_constants_registry_returns_copy(self):
-        from scidb import constant
+    def test_get_parameters_registry_returns_copy(self):
+        from scidb import Parameter
 
-        rate = constant(42)
+        rate = Parameter(42)
         mod = _make_module(MY_CONST=rate)
         registry.register_module(mod)
-        result = registry.get_constants_registry()
+        result = registry.get_parameters_registry()
         assert result["MY_CONST"] is rate
         result["MY_CONST"] = "mutated"
-        assert registry._constants["MY_CONST"] is rate
+        assert registry._parameters["MY_CONST"] is rate
 
     def test_skips_private_constants(self):
-        from scidb import constant
+        from scidb import Parameter
 
-        mod = _make_module(_HIDDEN=constant(1))
+        mod = _make_module(_HIDDEN=Parameter(1))
         registry.register_module(mod)
-        assert "_HIDDEN" not in registry._constants
+        assert "_HIDDEN" not in registry._parameters
 
     def test_skips_non_constant_values(self):
         mod = _make_module(PLAIN_NUMBER=42, PLAIN_STRING="hello")
         registry.register_module(mod)
-        assert "PLAIN_NUMBER" not in registry._constants
-        assert "PLAIN_STRING" not in registry._constants
+        assert "PLAIN_NUMBER" not in registry._parameters
+        assert "PLAIN_STRING" not in registry._parameters
 
     def test_constant_attributed_even_when_reexported(self):
         # Deliberately different from functions: a Constant doesn't
@@ -186,22 +186,22 @@ class TestScanModuleConstants:
         # the wrapped value via __getattr__), so it's attributed wherever
         # its name is exposed — mirrors scidb.discover.discover_module's
         # same documented choice, not the functions' stricter filter.
-        from scidb import constant
+        from scidb import Parameter
 
-        rate = constant(7, description="shared")
+        rate = Parameter(7, description="shared")
         mod = _make_module_with_reexport(SHARED_RATE=rate)
         registry.register_module(mod)
-        assert "SHARED_RATE" in registry._constants
-        assert registry._constants["SHARED_RATE"] is rate
+        assert "SHARED_RATE" in registry._parameters
+        assert registry._parameters["SHARED_RATE"] is rate
 
     def test_source_tracked(self):
         from pathlib import Path
 
-        from scidb import constant
+        from scidb import Parameter
 
-        mod = _make_module(RATE=constant(5))
+        mod = _make_module(RATE=Parameter(5))
         registry.register_module(mod, module_path=Path("/fake/pipeline.py"))
-        assert registry._constant_sources["RATE"] == "/fake/pipeline.py"
+        assert registry._parameter_sources["RATE"] == "/fake/pipeline.py"
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +253,9 @@ class TestScanModulePathInputs:
     def test_sweep_not_double_counted_as_path_input(self):
         """A Sweep is also an EachOf -- must not also register as a
         PathInput (disambiguated before the isinstance(EachOf) check)."""
-        from scidb import Sweep
+        from scidb import Parameter
 
-        mod = _make_module(WINDOW=Sweep(10, 20, 30))
+        mod = _make_module(WINDOW=Parameter(10, 20, 30))
         registry.register_module(mod)
         assert "WINDOW" not in registry._path_inputs
 
@@ -298,33 +298,33 @@ class TestScanModulePathInputs:
 
 class TestScanModuleSweeps:
     def test_registers_sweep(self):
-        from scidb import Sweep
+        from scidb import Parameter
 
-        window = Sweep(10, 20, 30)
+        window = Parameter(10, 20, 30)
         mod = _make_module(WINDOW_SECONDS=window)
         registry.register_module(mod)
-        assert "WINDOW_SECONDS" in registry._sweeps
-        assert registry._sweeps["WINDOW_SECONDS"] is window
+        assert "WINDOW_SECONDS" in registry._parameters
+        assert registry._parameters["WINDOW_SECONDS"] is window
 
-    def test_get_sweeps_registry_returns_copy(self):
-        from scidb import Sweep
+    def test_get_parameters_registry_returns_copy(self):
+        from scidb import Parameter
 
-        sw = Sweep(1, 2)
+        sw = Parameter(1, 2)
         mod = _make_module(MY_SWEEP=sw)
         registry.register_module(mod)
-        result = registry.get_sweeps_registry()
+        result = registry.get_parameters_registry()
         assert result["MY_SWEEP"] is sw
         result["MY_SWEEP"] = "mutated"
-        assert registry._sweeps["MY_SWEEP"] is sw
+        assert registry._parameters["MY_SWEEP"] is sw
 
-    def test_get_sweep_looks_up_by_name(self):
-        from scidb import Sweep
+    def test_registry_lookup_by_name(self):
+        from scidb import Parameter
 
-        sw = Sweep(1, 2)
+        sw = Parameter(1, 2)
         mod = _make_module(MY_SWEEP=sw)
         registry.register_module(mod)
-        assert registry.get_sweep("MY_SWEEP") is sw
-        assert registry.get_sweep("NO_SUCH_NAME") is None
+        assert registry.get_parameters_registry()["MY_SWEEP"] is sw
+        assert "NO_SUCH_NAME" not in registry.get_parameters_registry()
 
     def test_bare_eachof_is_not_discovered(self):
         """Only a NAMED Sweep is GUI-visible -- a bare EachOf(...) used
@@ -334,27 +334,27 @@ class TestScanModuleSweeps:
 
         mod = _make_module(NOT_A_SWEEP=EachOf(1, 2, 3))
         registry.register_module(mod)
-        assert "NOT_A_SWEEP" not in registry._sweeps
+        assert "NOT_A_SWEEP" not in registry._parameters
 
     def test_skips_private_and_non_sweep_values(self):
-        from scidb import Sweep
+        from scidb import Parameter
 
         mod = _make_module(
-            _HIDDEN=Sweep(1, 2), PLAIN_NUMBER=42, PLAIN_STRING="hello"
+            _HIDDEN=Parameter(1, 2), PLAIN_NUMBER=42, PLAIN_STRING="hello"
         )
         registry.register_module(mod)
-        assert "_HIDDEN" not in registry._sweeps
-        assert "PLAIN_NUMBER" not in registry._sweeps
-        assert "PLAIN_STRING" not in registry._sweeps
+        assert "_HIDDEN" not in registry._parameters
+        assert "PLAIN_NUMBER" not in registry._parameters
+        assert "PLAIN_STRING" not in registry._parameters
 
     def test_source_tracked(self):
         from pathlib import Path
 
-        from scidb import Sweep
+        from scidb import Parameter
 
-        mod = _make_module(WINDOW=Sweep(1, 2))
+        mod = _make_module(WINDOW=Parameter(1, 2))
         registry.register_module(mod, module_path=Path("/fake/pipeline.py"))
-        assert registry._sweep_sources["WINDOW"] == "/fake/pipeline.py"
+        assert registry._parameter_sources["WINDOW"] == "/fake/pipeline.py"
 
 
 # ---------------------------------------------------------------------------
@@ -519,30 +519,30 @@ class TestLoadPackagesExcludesTestSubmodules:
         pkg_dir.mkdir()
         (pkg_dir / "__init__.py").write_text("")
         (pkg_dir / "stuff.py").write_text(
-            "from scidb import constant, PathInput, Sweep\n"
+            "from scidb import Parameter, PathInput\n"
             "def real_fn(x):\n    return x\n"
-            "RATE = constant(1000)\n"
+            "RATE = Parameter(1000)\n"
             "RAW = PathInput('{subject}.mat')\n"
-            "WINDOW = Sweep(1, 2, 3)\n"
+            "WINDOW = Parameter(1, 2, 3)\n"
         )
 
         monkeypatch.syspath_prepend(str(tmp_path))
         registry._functions.clear()
         registry._function_sources.clear()
-        registry._constants.clear()
-        registry._constant_sources.clear()
+        registry._parameters.clear()
+        registry._parameter_sources.clear()
         registry._path_inputs.clear()
         registry._path_input_sources.clear()
-        registry._sweeps.clear()
-        registry._sweep_sources.clear()
+        registry._parameters.clear()
+        registry._parameter_sources.clear()
         registry._load_errors.clear()
         try:
             registry._load_packages([pkg_name])
 
             assert "real_fn" in registry._functions
-            assert "RATE" in registry._constants
+            assert "RATE" in registry._parameters
             assert "RAW" in registry._path_inputs
-            assert "WINDOW" in registry._sweeps
+            assert "WINDOW" in registry._parameters
         finally:
             for name in list(sys.modules):
                 if name == pkg_name or name.startswith(pkg_name + "."):

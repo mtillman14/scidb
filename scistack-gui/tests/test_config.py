@@ -817,6 +817,56 @@ def test_add_path_appends_to_existing_scistack_toml_preserving_other_keys(tmp_pa
     assert data["auto_discover"] is False
 
 
+def test_add_path_preserves_matlab_entities_file(tmp_path):
+    """Every _render_scistack_toml call site must pass entities_file through,
+    or the Paths popup silently drops it on save — the exact class of bug
+    this function has had before (see its docstring)."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text(
+        "modules = []\n"
+        "\n"
+        "[matlab]\n"
+        'variable_dir = "matlab/types"\n'
+        'entities_file = "matlab/scistack_entities.m"\n'
+    )
+
+    shared_repo = tmp_path / "shared_repo"
+    shared_repo.mkdir()
+    add_path(db_path, shared_repo)
+
+    data = _read_raw_section(toml_file)
+    assert data["matlab"]["entities_file"] == "matlab/scistack_entities.m"
+    assert data["matlab"]["variable_dir"] == "matlab/types"
+
+
+def test_matlab_entities_file_is_resolved_against_project_root(tmp_path):
+    from scistack_gui.config import load_config
+
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "matlab").mkdir()
+    (tmp_path / "scistack.toml").write_text(
+        "modules = []\n\n[matlab]\nentities_file = \"matlab/scistack_entities.m\"\n"
+    )
+
+    config = load_config(None, db_path)
+    assert config.matlab_entities_file == _normalize(
+        tmp_path / "matlab" / "scistack_entities.m"
+    )
+
+
+def test_matlab_entities_file_defaults_to_none(tmp_path):
+    from scistack_gui.config import load_config
+
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "scistack.toml").write_text("modules = []\n")
+
+    assert load_config(None, db_path).matlab_entities_file is None
+
+
 def test_add_path_is_idempotent_on_duplicate(tmp_path):
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")

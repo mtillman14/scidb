@@ -375,10 +375,10 @@ def _h_get_variable_plot_data(params):
     return get_variable_plot_data(params["name"], get_db())
 
 
-def _h_get_constants(params):
-    from scistack_gui.services.layout_service import get_constants
+def _h_get_parameters(params):
+    from scistack_gui.services.layout_service import get_parameters
 
-    return get_constants()
+    return get_parameters()
 
 
 def _h_get_path_inputs(params):
@@ -495,11 +495,11 @@ def _h_list_hidden_combos(params):
     return get_hidden_combos(get_db(), params["function_name"])
 
 
-def _h_hide_constant_value(params):
+def _h_hide_parameter_value(params):
     from scistack_gui.db import get_db
-    from scistack_gui.services.layout_service import hide_constant_value
+    from scistack_gui.services.layout_service import hide_parameter_value
 
-    return hide_constant_value(
+    return hide_parameter_value(
         get_db(),
         params["name"],
         params["value"],
@@ -507,11 +507,11 @@ def _h_hide_constant_value(params):
     )
 
 
-def _h_unhide_constant_value(params):
+def _h_unhide_parameter_value(params):
     from scistack_gui.db import get_db
-    from scistack_gui.services.layout_service import unhide_constant_value
+    from scistack_gui.services.layout_service import unhide_parameter_value
 
-    return unhide_constant_value(
+    return unhide_parameter_value(
         get_db(),
         params["name"],
         params["value"],
@@ -519,23 +519,31 @@ def _h_unhide_constant_value(params):
     )
 
 
-def _h_list_hidden_constant_values(params):
+def _h_list_hidden_parameter_values(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.layout_service import get_hidden_constant_values
 
     return get_hidden_constant_values(get_db(), params.get("pipeline_id", "main"))
 
 
-def _h_create_constant(params):
-    from scistack_gui.services.layout_service import create_constant
+def _h_create_parameter(params):
+    from scistack_gui.services.layout_service import create_parameter
 
-    return create_constant(params["name"])
+    return create_parameter(params["name"], params.get("values"))
 
 
-def _h_delete_constant(params):
-    from scistack_gui.services.layout_service import delete_constant
+def _h_update_parameter(params):
+    from scistack_gui.services.layout_service import update_parameter
 
-    return delete_constant(params["name"])
+    return update_parameter(
+        params["name"], params["values"], params.get("description", "")
+    )
+
+
+def _h_delete_parameter(params):
+    from scistack_gui.services.layout_service import delete_parameter
+
+    return delete_parameter(params["name"])
 
 
 def _h_create_path_input(params):
@@ -546,28 +554,21 @@ def _h_create_path_input(params):
     )
 
 
+def _h_update_path_input(params):
+    from scistack_gui.services.layout_service import update_path_input
+
+    return update_path_input(
+        params["name"],
+        params["template"],
+        params.get("root_folder"),
+        params.get("alternate_templates"),
+    )
+
+
 def _h_delete_path_input(params):
     from scistack_gui.services.layout_service import delete_path_input
 
     return delete_path_input(params["name"], params.get("pipeline_id", "main"))
-
-
-def _h_get_sweeps(params):
-    from scistack_gui.services.layout_service import get_sweeps
-
-    return get_sweeps()
-
-
-def _h_create_sweep(params):
-    from scistack_gui.services.layout_service import create_sweep
-
-    return create_sweep(params["name"], params["values"])
-
-
-def _h_delete_sweep(params):
-    from scistack_gui.services.layout_service import delete_sweep
-
-    return delete_sweep(params["name"], params.get("pipeline_id", "main"))
 
 
 def _h_put_node_config(params):
@@ -851,6 +852,18 @@ def _h_start_matlab_sidecar_run(params):
     )
 
 
+def _h_get_matlab_engine_status(params):
+    from scistack_gui.api.run import get_matlab_engine_status
+
+    return get_matlab_engine_status()
+
+
+def _h_restart_matlab_engine(params):
+    from scistack_gui.api.run import restart_matlab_engine
+
+    return restart_matlab_engine()
+
+
 # ---------------------------------------------------------------------------
 # Method dispatch table
 # ---------------------------------------------------------------------------
@@ -868,7 +881,7 @@ METHODS = {
     "set_note": _h_set_note,
     "get_variable_records": _h_get_variable_records,
     "get_variable_plot_data": _h_get_variable_plot_data,
-    "get_constants": _h_get_constants,
+    "get_parameters": _h_get_parameters,
     "get_variables_list": _h_get_variables_list,
     "get_path_inputs": _h_get_path_inputs,
     "put_layout": _h_put_layout,
@@ -883,17 +896,16 @@ METHODS = {
     "hide_combo": _h_hide_combo,
     "unhide_combo": _h_unhide_combo,
     "list_hidden_combos": _h_list_hidden_combos,
-    "hide_constant_value": _h_hide_constant_value,
-    "unhide_constant_value": _h_unhide_constant_value,
-    "list_hidden_constant_values": _h_list_hidden_constant_values,
-    "create_constant": _h_create_constant,
-    "delete_constant": _h_delete_constant,
+    "hide_parameter_value": _h_hide_parameter_value,
+    "unhide_parameter_value": _h_unhide_parameter_value,
+    "list_hidden_parameter_values": _h_list_hidden_parameter_values,
+    "create_parameter": _h_create_parameter,
+    "update_parameter": _h_update_parameter,
+    "delete_parameter": _h_delete_parameter,
     "create_path_input": _h_create_path_input,
+    "update_path_input": _h_update_path_input,
     "delete_path_input": _h_delete_path_input,
     "deep_copy_path_input": _h_deep_copy_path_input,
-    "get_sweeps": _h_get_sweeps,
-    "create_sweep": _h_create_sweep,
-    "delete_sweep": _h_delete_sweep,
     "start_run": _h_start_run,
     "cancel_run": _h_cancel_run,
     "force_cancel_run": _h_force_cancel_run,
@@ -938,6 +950,8 @@ METHODS = {
     "generate_matlab_command": _h_generate_matlab_command,
     "generate_matlab_pipeline_command": _h_generate_matlab_pipeline_command,
     "start_matlab_sidecar_run": _h_start_matlab_sidecar_run,
+    "get_matlab_engine_status": _h_get_matlab_engine_status,
+    "restart_matlab_engine": _h_restart_matlab_engine,
 }
 
 

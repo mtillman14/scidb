@@ -345,9 +345,9 @@ class TestResolveFunctionEdgesConstants:
     def test_db_constant_node_by_prefix(self):
         edges = [
             {
-                "source": "const__low_hz",
+                "source": "param__low_hz",
                 "target": "fn__fn",
-                "targetHandle": "const__low_hz",
+                "targetHandle": "param__low_hz",
                 "sourceHandle": "",
             }
         ]
@@ -364,7 +364,7 @@ class TestResolveFunctionEdgesConstants:
     def test_constant_via_in_handle(self):
         edges = [
             {
-                "source": "const__low_hz",
+                "source": "param__low_hz",
                 "target": "fn__fn",
                 "targetHandle": "in__low_hz",
                 "sourceHandle": "",
@@ -381,7 +381,7 @@ class TestResolveFunctionEdgesConstants:
 
     def test_manual_constant_node(self):
         manual_nodes = {
-            "uuid-const": {"type": "constantNode", "label": "threshold"},
+            "uuid-const": {"type": "parameterNode", "label": "threshold"},
         }
         edges = [
             {
@@ -403,9 +403,9 @@ class TestResolveFunctionEdgesConstants:
     def test_constant_not_added_to_input_types(self):
         edges = [
             {
-                "source": "const__low_hz",
+                "source": "param__low_hz",
                 "target": "fn__fn",
-                "targetHandle": "const__low_hz",
+                "targetHandle": "param__low_hz",
                 "sourceHandle": "",
             }
         ]

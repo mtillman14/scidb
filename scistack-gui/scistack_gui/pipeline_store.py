@@ -149,6 +149,38 @@ def _ensure_tables(db) -> None:
             PRIMARY KEY (pipeline_id, const_name, value)
         )
     """)
+    # Templates a PathInput has been declared with and the GUI has since
+    # overwritten. Append-only, never deleted.
+    #
+    # Run history is attributed to a canvas node by CONTENT-matching the
+    # recorded template against the registry (graph_builder.
+    # resolve_path_input_name), because PathInput.to_key() serialises only
+    # template/root_folder and never the bound name. That content-addressing
+    # is CORRECT for provenance and must not change -- it is what keeps two
+    # different templates from collapsing into one provenance node. But it
+    # means a GUI template edit would otherwise detach every run recorded
+    # against the old value. This table is the attribution index for exactly
+    # that, written from ONE place: target_file_service, just before a
+    # write-back overwrites a template. A template edited directly in source
+    # still detaches -- unchanged, pre-existing behaviour for a deliberate
+    # hand-edit, and not what this table set out to fix.
+    # See docs/claude/entity-editability-model.md Rule 2 (D7).
+    #
+    # Deliberately NOT scoped by pipeline_id: what a recorded template MEANT
+    # does not vary by scope.
+    #
+    # ``root_folder`` is stored as '' rather than NULL when unset: it is part
+    # of the primary key, and a NULL in a PK is both rejected by some engines
+    # and never equal to itself, which would silently defeat the ON CONFLICT
+    # dedup. Normalised in record_path_input_value/lookup_path_input_name.
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_path_input_history (
+            name        VARCHAR NOT NULL,
+            template    VARCHAR NOT NULL,
+            root_folder VARCHAR NOT NULL DEFAULT '',
+            PRIMARY KEY (name, template, root_folder)
+        )
+    """)
     _duck(db)._execute("""
         CREATE TABLE IF NOT EXISTS _pipeline_hidden_edges (
             pipeline_id   VARCHAR NOT NULL DEFAULT 'main',
@@ -1079,11 +1111,80 @@ def list_hidden_combos(db, function_name: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# PathInput name history — see _pipeline_path_input_history above (D7).
+# ---------------------------------------------------------------------------
+
+
+def record_path_input_value(
+    db, name: str, template: str, root_folder: "str | None" = None
+) -> None:
+    """Remember that *name* has been declared with this template.
+
+    Idempotent and append-only. Called from exactly one place —
+    ``target_file_service``, immediately before a GUI write-back overwrites
+    a template.
+    """
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_path_input_history "
+        "(name, template, root_folder) VALUES (?, ?, ?) "
+        "ON CONFLICT DO NOTHING",
+        [name, template, root_folder or ""],
+    )
+
+
+def lookup_path_input_name(
+    db, template: str, root_folder: "str | None" = None
+) -> "str | None":
+    """The PathInput name historically declared with this template, or
+    ``None`` — the fallback ``resolve_path_input_name`` consults when a
+    recorded template matches no CURRENT declaration."""
+    _ensure_tables(db)
+    rows = _duck(db)._execute(
+        "SELECT name FROM _pipeline_path_input_history "
+        "WHERE template = ? AND root_folder = ? LIMIT 1",
+        [template, root_folder or ""],
+    ).fetchall()
+    return rows[0][0] if rows else None
+
+
+def path_input_history_index(db) -> dict:
+    """``{(template, root_folder): name}`` — the lookup shape
+    ``graph_builder.resolve_path_input_name`` consults as its fallback.
+
+    ``root_folder`` comes back as ``None`` (not ``''``) so the key matches
+    what DB history records, which stores a genuine NULL when unset.
+    """
+    return {
+        (row["template"], row["root_folder"]): row["name"]
+        for row in list_path_input_history(db)
+    }
+
+
+def list_path_input_history(db, name: "str | None" = None) -> list[dict]:
+    """Every recorded (name, template, root_folder), optionally for one
+    name — the rows a PathInput node renders as its historical values."""
+    _ensure_tables(db)
+    sql = (
+        "SELECT name, template, root_folder FROM _pipeline_path_input_history"
+    )
+    params: list = []
+    if name is not None:
+        sql += " WHERE name = ?"
+        params.append(name)
+    sql += " ORDER BY name, template"
+    return [
+        {"name": r[0], "template": r[1], "root_folder": r[2] or None}
+        for r in _duck(db)._execute(sql, params).fetchall()
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Hidden constant values — see _pipeline_hidden_constant_values above.
 # ---------------------------------------------------------------------------
 
 
-def hide_constant_value(
+def hide_parameter_value(
     db, const_name: str, value: str, pipeline_id: str = ROOT_PIPELINE_ID
 ) -> None:
     """Mark one constant value as excluded from future runs, without
@@ -1097,7 +1198,7 @@ def hide_constant_value(
     )
 
 
-def unhide_constant_value(
+def unhide_parameter_value(
     db, const_name: str, value: str, pipeline_id: str = ROOT_PIPELINE_ID
 ) -> None:
     """Restore a previously hidden constant value."""
@@ -1109,7 +1210,7 @@ def unhide_constant_value(
     )
 
 
-def list_hidden_constant_values(
+def list_hidden_parameter_values(
     db, pipeline_id: "str | None" = ROOT_PIPELINE_ID
 ) -> list[dict]:
     """Return hidden constant values as [{"const_name", "value"}, ...].

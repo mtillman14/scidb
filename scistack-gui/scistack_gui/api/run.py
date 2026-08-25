@@ -735,6 +735,36 @@ def _summarize_schema_filter(schema_filter: dict[str, list] | None) -> str:
     return ", ".join(f"{k}={len(v)}v" for k, v in schema_filter.items())
 
 
+@router.get("/matlab-engine")
+def get_matlab_engine_status():
+    """Engine state for the GUI indicator: ``{state, pid, error}``.
+
+    ``state`` is ``unavailable`` / ``stopped`` / ``ready`` / ``busy``.
+    ``error`` carries a health-probe failure (e.g. no ``pyenv``), which is a
+    SETUP problem worth surfacing before a run turns it into a confusing
+    scidb traceback.
+    """
+    from scistack_gui import matlab_sidecar
+
+    return matlab_sidecar.get_sidecar().status()
+
+
+@router.post("/matlab-engine/restart")
+def restart_matlab_engine():
+    """Kill and relaunch the kept-warm engine — the manual recovery for a
+    wedged session. Also runs the health probe, so a restart reports a
+    misconfigured ``pyenv`` immediately rather than at the next run."""
+    from scistack_gui import matlab_sidecar
+
+    sidecar = matlab_sidecar.get_sidecar()
+    if not sidecar.restart():
+        return {"ok": False, "error": "'matlab' not found on PATH."}
+    health = sidecar.check_health()
+    if health:
+        return {"ok": False, "error": health, **sidecar.status()}
+    return {"ok": True, **sidecar.status()}
+
+
 @router.post("/run")
 def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     logger.info("[api/run] POST /api/run - Validating request")
@@ -1017,6 +1047,12 @@ def _run_matlab_pipeline_in_thread(
                 "installed.\n"
             )
         else:
+            health = sidecar.check_health()
+            if health:
+                # A setup problem, not a pipeline failure — say so before the
+                # first py.* call turns it into a confusing scidb traceback.
+                emit(f"Error: {health}\n")
+                raise RuntimeError(health)
             success = sidecar.run_command(command, emit)
             if not success:
                 emit("✗ MATLAB reported an error — see log above\n")
@@ -1102,6 +1138,12 @@ def _run_matlab_command_in_thread(
         if not sidecar.start():
             emit("Error: 'matlab' not found on PATH.\n")
         else:
+            health = sidecar.check_health()
+            if health:
+                # A setup problem, not a pipeline failure — say so before the
+                # first py.* call turns it into a confusing scidb traceback.
+                emit(f"Error: {health}\n")
+                raise RuntimeError(health)
             success = sidecar.run_command(command, emit)
             if not success:
                 emit("✗ MATLAB reported an error — see log above\n")

@@ -24,6 +24,8 @@ import ast
 import logging
 from itertools import product
 
+from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX as _PARAM_PREFIX
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,15 +89,18 @@ def _infer_wired_constants(
         if typed_vals:
             inferred[cname] = typed_vals
         elif cname in constants_registry:
-            default_value = constants_registry[cname].value
-            inferred[cname] = [default_value]
+            # EVERY declared value, not just the first: a Parameter with
+            # several values is a fan-out, and silently taking one would
+            # turn a multi-combo run into a single one.
+            declared = list(constants_registry[cname].values)
+            inferred[cname] = declared
             logger.info(
-                "[execution] %s: constant '%s' has %s; using source-declared "
-                "default %r",
+                "[execution] %s: parameter '%s' has %s; using source-declared "
+                "value(s) %r",
                 log_context,
                 cname,
                 no_values_phrase,
-                default_value,
+                declared,
             )
         else:
             logger.warning(
@@ -117,7 +122,7 @@ def _hidden_constant_values(db) -> dict[str, set[str]]:
     from scistack_gui import pipeline_store
 
     hidden: dict[str, set[str]] = {}
-    for row in pipeline_store.list_hidden_constant_values(db, None):
+    for row in pipeline_store.list_hidden_parameter_values(db, None):
         hidden.setdefault(row["const_name"], set()).add(row["value"])
     return hidden
 
@@ -246,7 +251,7 @@ def derive_fn_targets(db, function_name: str) -> list[dict]:
         inferred_constants = _infer_wired_constants(
             resolved.constant_names,
             pending,
-            registry.get_constants_registry(),
+            registry.get_parameters_registry(),
             log_context=f"'{function_name}'",
         )
 
@@ -385,7 +390,7 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
         inferred_constants = _infer_wired_constants(
             resolved.constant_names,
             pending,
-            registry.get_constants_registry(),
+            registry.get_parameters_registry(),
             fn_variants=fn_variants,
             log_context=f"'{function_name}' (node {node_id})",
         )
@@ -455,7 +460,7 @@ def disconnected_reason(db, function_name: str, node_id: "str | None" = None) ->
                 return f"input '{pname}' is disconnected — reconnect it before running"
         for cname in v.get("constants", {}).keys():
             candidate = f"e__{cname}__{function_name}__{wid}"
-            if candidate in hidden_edge_ids and (function_name, wid, f"const__{cname}") not in manual_index:
+            if candidate in hidden_edge_ids and (function_name, wid, f"{_PARAM_PREFIX}{cname}") not in manual_index:
                 return f"input '{cname}' is disconnected — reconnect it before running"
     return None
 
@@ -494,7 +499,9 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
     # build_edges actually keys its pathInput__ edges, or hidden-edge-id
     # lookups below silently never match (see convert_scidb_path_inputs).
     path_inputs = convert_scidb_path_inputs(
-        scidb_agg["path_inputs"], registry.get_path_inputs_registry()
+        scidb_agg["path_inputs"],
+        registry.get_path_inputs_registry(),
+        pipeline_store.path_input_history_index(db),
     )
 
     manual_edges = pipeline_store.get_manual_edges(db)
@@ -546,7 +553,7 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
             for cname in fn_constants.get(fkey, set()):
                 if (
                     f"e__{cname}__{fn}__{wid}" in hidden_edge_ids
-                    and (fn, wid, f"const__{cname}") not in manual_index
+                    and (fn, wid, f"{_PARAM_PREFIX}{cname}") not in manual_index
                 ):
                     reason = f"input '{cname}' disconnected"
                     break
@@ -645,10 +652,93 @@ def apply_pending_overrides(targets: list[dict], pending_constants: dict) -> lis
     return out
 
 
-def build_run_inputs(target: dict, function_name: str) -> dict:
+def _hidden_values_for_run(db) -> dict:
+    """Hidden Parameter values for execution, or {} when no database is
+    reachable. Best-effort by design: a missing db means "cannot know what
+    is unchecked", and running the full declared set is the safe reading --
+    never silently running FEWER combos than declared."""
+    if db is None:
+        try:
+            from scistack_gui.db import get_db
+
+            db = get_db()
+        except Exception as e:
+            logger.warning(
+                "[execution] no database while resolving hidden Parameter "
+                "values (%s) -- running every declared value",
+                e,
+            )
+            return {}
+    if db is None:
+        return {}
+    return _hidden_constant_values(db)
+
+
+def _is_hidden_value(value, hidden_for_name: set) -> bool:
+    """Whether *value* is one of the unchecked values for its parameter.
+
+    Compared as strings, because the hidden-value store keeps them that way
+    (it is fed by the node checkbox, whose rows are rendered strings) while a
+    Parameter holds real numbers. Numeric values are ALSO matched against
+    their int/float alternate spelling. A value declared 20 can reach here
+    as ``20.0`` (JSON has one number type, and DB history may round-trip
+    differently), and a plain ``str()`` comparison would then never match a
+    hidden ``'20'`` -- the checkbox would appear to do nothing.
+    """
+    candidates = {str(value)}
+    if isinstance(value, bool):
+        pass  # bool is an int subclass; its str() form is the only sane one
+    elif isinstance(value, float) and value.is_integer():
+        candidates.add(str(int(value)))
+    elif isinstance(value, int):
+        candidates.add(str(float(value)))
+    return bool(candidates & hidden_for_name)
+
+
+def _apply_hidden_values(param, name: str, function_name: str, hidden: dict):
+    """*param* with its unchecked values removed.
+
+    Values are compared as STRINGS: the hidden-value store keeps them that
+    way (it is fed by the node checkbox, whose rows are rendered strings),
+    while a Parameter holds real ints/floats/strs.
+
+    Every value unchecked is a contradiction -- the user has excluded the
+    whole fan-out yet left the parameter wired -- so it raises rather than
+    running the full set or an arbitrary one. Both silent alternatives
+    produce records the user explicitly asked not to produce.
+    """
+    from scidb import Parameter
+
+    hidden_for_name = hidden.get(name, set())
+    if not hidden_for_name:
+        return param
+
+    kept = [v for v in param.values if not _is_hidden_value(v, hidden_for_name)]
+    if not kept:
+        raise ValueError(
+            f"every value of parameter '{name}' is unchecked, so "
+            f"'{function_name}' has nothing to run -- re-check at least one "
+            f"value on its node."
+        )
+    if len(kept) == len(param.values):
+        return param
+
+    logger.info(
+        "[execution] '%s': parameter '%s' running %d of %d declared "
+        "value(s) -- %s excluded by unchecked boxes",
+        function_name,
+        name,
+        len(kept),
+        len(param.values),
+        sorted(hidden_for_name),
+    )
+    return Parameter(*kept, description=param.description)
+
+
+def build_run_inputs(target: dict, function_name: str, db=None) -> dict:
     """The for_each ``inputs=`` dict for a derived target: variable-class
     inputs, scalar constants, and any remaining signature params resolved
-    via a stored PathInput or Sweep.
+    via a stored PathInput or Parameter.
 
     Shared by the per-node Run path (``api/run.py``) and the compiled-
     pipeline path (``build_backend_pipeline`` below) — one place instead of
@@ -665,7 +755,7 @@ def build_run_inputs(target: dict, function_name: str) -> dict:
     Whatever signature params variable/constant resolution left unfilled
     are checked by name against the source-scanned PathInput/Sweep
     registries (``registry.get_path_inputs_registry``/
-    ``get_sweeps_registry`` — see
+    ``get_parameters_registry`` — see
     docs/claude/code-discovery-categories.md), so this is the single place
     a live ``scifor.PathInput`` object or a numeric ``EachOf`` ever gets
     constructed for execution.
@@ -680,6 +770,14 @@ def build_run_inputs(target: dict, function_name: str) -> dict:
     different param names), only the GUI's wiring-aware node/edge display
     (``graph_builder.resolve_path_input_name``) resolves that — this
     execution-time fallback does not.
+
+    Hidden (unchecked) Parameter values are filtered out here (D6). A
+    SCALAR constant is already excluded upstream --
+    ``filter_hidden_constant_value_targets`` drops the whole target -- but a
+    MULTI-VALUED Parameter is resolved by name below and handed to
+    ``for_each`` whole, which then fans it out INSIDE scidb, where the GUI's
+    hidden-value state is not visible. Without filtering here, unchecking one
+    value of a multi-value Parameter looked right in the UI and still ran.
     """
     from scidb import EachOf
     from scistack_gui import registry
@@ -705,7 +803,8 @@ def build_run_inputs(target: dict, function_name: str) -> dict:
         # dicts, which stored plain template/values data that had to be
         # rebuilt into a real object here).
         path_inputs_by_name = registry.get_path_inputs_registry()
-        sweeps_by_name = registry.get_sweeps_registry()
+        params_by_name = registry.get_parameters_registry()
+        hidden_values = _hidden_values_for_run(db)
         for param in missing:
             pi = path_inputs_by_name.get(param)
             if pi is not None:
@@ -718,14 +817,10 @@ def build_run_inputs(target: dict, function_name: str) -> dict:
                 )
                 continue
 
-            sw = sweeps_by_name.get(param)
+            sw = params_by_name.get(param)
             if sw is not None:
-                inputs[param] = sw
-                logger.info(
-                    "[execution] '%s': input '%s' resolved via Sweep(%d value(s))",
-                    function_name,
-                    param,
-                    len(sw.alternatives),
+                inputs[param] = _apply_hidden_values(
+                    sw, param, function_name, hidden_values
                 )
     return inputs
 
@@ -923,7 +1018,7 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
                 continue
             seen_target_keys.add(target_key)
             try:
-                inputs = build_run_inputs(target, fn_label)
+                inputs = build_run_inputs(target, fn_label, db)
                 output_cls = registry.get_variable_class(target["output_type"])
             except KeyError as exc:
                 logger.warning(

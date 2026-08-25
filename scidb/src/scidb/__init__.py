@@ -38,7 +38,6 @@ from scifor import (
     Fixed,
     PathInput,
     PathOutput,
-    Sweep,
     get_schema,
     set_schema,
 )
@@ -46,7 +45,7 @@ from scifor import (
 from .across_variants import AcrossVariants
 from .artifact_stamp import read_artifact_stamp, stamp_artifact
 from .column_selection import ColumnSelection
-from .constant import Constant, constant
+from .parameter import Parameter
 from .database import configure_database, get_database, get_user_id
 from .discover import (
     DiscoveryResult,
@@ -92,8 +91,7 @@ __version__ = "0.1.0"
 __all__ = [
     # Core classes
     "BaseVariable",
-    "Constant",
-    "constant",
+    "Parameter",
     # Discovery
     "scan_project",
     "scan_package",
@@ -132,7 +130,6 @@ __all__ = [
     "ColumnSelection",
     "ColName",
     "EachOf",
-    "Sweep",
     "ForEachConfig",
     "PathInput",
     "PathOutput",

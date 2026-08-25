@@ -288,267 +288,6 @@ class TestParseMatlabVariable:
         assert name is None
 
 
-class TestParseMatlabPathInput:
-    """A "PathInput getter": a zero-arg function whose body constructs a
-    scifor.PathInput — MATLAB's stand-in for Python's ``NAME =
-    PathInput(...)`` binding (see
-    docs/claude/code-discovery-categories.md)."""
-
-    def test_basic_getter(self, tmp_path):
-        from scistack_gui.matlab_parser import parse_matlab_path_input
-
-        f = tmp_path / "raw_emg_path.m"
-        f.write_text(
-            textwrap.dedent("""\
-            function p = raw_emg_path()
-                p = scifor.PathInput('{subject}/{trial}.mat');
-            end
-        """)
-        )
-        assert parse_matlab_path_input(f) == "raw_emg_path"
-
-    def test_scidb_namespaced_construction_also_matches(self, tmp_path):
-        from scistack_gui.matlab_parser import parse_matlab_path_input
-
-        f = tmp_path / "raw_emg_path2.m"
-        f.write_text(
-            "function p = raw_emg_path2()\n"
-            "    p = scidb.PathInput('{subject}.mat');\n"
-            "end\n"
-        )
-        assert parse_matlab_path_input(f) == "raw_emg_path2"
-
-    def test_bare_construction_also_matches(self, tmp_path):
-        """Same convention as a Python file that imports PathInput
-        directly and constructs it bare (no scifor./scidb. prefix)."""
-        from scistack_gui.matlab_parser import parse_matlab_path_input
-
-        f = tmp_path / "raw_emg_path3.m"
-        f.write_text(
-            "function p = raw_emg_path3()\n"
-            "    p = PathInput('{subject}.mat');\n"
-            "end\n"
-        )
-        assert parse_matlab_path_input(f) == "raw_emg_path3"
-
-    def test_function_with_params_is_not_a_getter(self, tmp_path):
-        from scistack_gui.matlab_parser import parse_matlab_path_input
-
-        f = tmp_path / "not_a_getter.m"
-        f.write_text(
-            "function p = not_a_getter(subject)\n"
-            "    p = scifor.PathInput([subject '.mat']);\n"
-            "end\n"
-        )
-        assert parse_matlab_path_input(f) is None
-
-    def test_plain_function_is_not_a_getter(self, tmp_path):
-        from scistack_gui.matlab_parser import parse_matlab_path_input
-
-        f = tmp_path / "plain_fn.m"
-        f.write_text("function out = plain_fn()\n    out = 42;\nend\n")
-        assert parse_matlab_path_input(f) is None
-
-    def test_classdef_file_is_not_a_getter(self, tmp_path):
-        """Same one-file-one-entity rule as parse_matlab_function: a
-        classdef's methods are never standalone getters."""
-        from scistack_gui.matlab_parser import parse_matlab_path_input
-
-        f = tmp_path / "SomeClass.m"
-        f.write_text(
-            "classdef SomeClass < handle\n"
-            "    methods\n"
-            "        function p = getPath(obj)\n"
-            "            p = scifor.PathInput('{subject}.mat');\n"
-            "        end\n"
-            "    end\n"
-            "end\n"
-        )
-        assert parse_matlab_path_input(f) is None
-
-
-class TestParseMatlabSweep:
-    """Same "value getter" convention as PathInput, for scifor.Sweep."""
-
-    def test_basic_getter(self, tmp_path):
-        from scistack_gui.matlab_parser import parse_matlab_sweep
-
-        f = tmp_path / "window_seconds.m"
-        f.write_text(
-            "function s = window_seconds()\n"
-            "    s = scifor.Sweep(10, 20, 30);\n"
-            "end\n"
-        )
-        assert parse_matlab_sweep(f) == "window_seconds"
-
-    def test_path_input_getter_is_not_a_sweep(self, tmp_path):
-        from scistack_gui.matlab_parser import parse_matlab_sweep
-
-        f = tmp_path / "raw_emg_path.m"
-        f.write_text(
-            "function p = raw_emg_path()\n"
-            "    p = scifor.PathInput('{subject}.mat');\n"
-            "end\n"
-        )
-        assert parse_matlab_sweep(f) is None
-
-
-class TestExtractPathInputLiteral:
-    """Best-effort static extraction of a PathInput getter's construction
-    call — never runs MATLAB; a non-literal argument means the whole
-    extraction fails (matlab_registry.py then falls back to name-only
-    tracking)."""
-
-    def test_template_only(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_path_input_literal
-
-        f = tmp_path / "g.m"
-        f.write_text(
-            "function p = g()\n"
-            "    p = scifor.PathInput('{subject}/{trial}.mat');\n"
-            "end\n"
-        )
-        assert extract_path_input_literal(f) == ("{subject}/{trial}.mat", None)
-
-    def test_template_and_root_folder(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_path_input_literal
-
-        f = tmp_path / "g.m"
-        f.write_text(
-            "function p = g()\n"
-            "    p = scifor.PathInput('{subject}.mat', 'root_folder', '/data');\n"
-            "end\n"
-        )
-        assert extract_path_input_literal(f) == ("{subject}.mat", "/data")
-
-    def test_double_quoted_template(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_path_input_literal
-
-        f = tmp_path / "g.m"
-        f.write_text(
-            'function p = g()\n    p = scifor.PathInput("{subject}.mat");\nend\n'
-        )
-        assert extract_path_input_literal(f) == ("{subject}.mat", None)
-
-    def test_bare_construction_no_namespace_prefix(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_path_input_literal
-
-        f = tmp_path / "g.m"
-        f.write_text("function p = g()\n    p = PathInput('{subject}.mat');\nend\n")
-        assert extract_path_input_literal(f) == ("{subject}.mat", None)
-
-    def test_variable_reference_is_unparseable(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_path_input_literal
-
-        f = tmp_path / "g.m"
-        f.write_text(
-            "function p = g()\n"
-            "    base = getenv('DATA_ROOT');\n"
-            "    p = scifor.PathInput(base);\n"
-            "end\n"
-        )
-        assert extract_path_input_literal(f) is None
-
-    def test_not_a_getter_at_all_is_unparseable(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_path_input_literal
-
-        f = tmp_path / "g.m"
-        f.write_text("function out = g()\n    out = 42;\nend\n")
-        assert extract_path_input_literal(f) is None
-
-    def test_escaped_quote_in_template(self, tmp_path):
-        """MATLAB single-quoted strings escape an embedded quote by
-        doubling it (''); this must not be mistaken for the string's end."""
-        from scistack_gui.matlab_parser import extract_path_input_literal
-
-        f = tmp_path / "g.m"
-        f.write_text(
-            "function p = g()\n"
-            "    p = scifor.PathInput('{subject}''s data.mat');\n"
-            "end\n"
-        )
-        assert extract_path_input_literal(f) == ("{subject}'s data.mat", None)
-
-
-class TestExtractSweepLiteral:
-    def test_numeric_values(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_sweep_literal
-
-        f = tmp_path / "g.m"
-        f.write_text("function s = g()\n    s = scifor.Sweep(10, 20, 30);\nend\n")
-        assert extract_sweep_literal(f) == [10, 20, 30]
-
-    def test_float_values(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_sweep_literal
-
-        f = tmp_path / "g.m"
-        f.write_text("function s = g()\n    s = scifor.Sweep(0.5, 1.5);\nend\n")
-        assert extract_sweep_literal(f) == [0.5, 1.5]
-
-    def test_string_values(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_sweep_literal
-
-        f = tmp_path / "g.m"
-        f.write_text("function s = g()\n    s = scifor.Sweep('low', 'high');\nend\n")
-        assert extract_sweep_literal(f) == ["low", "high"]
-
-    def test_single_value(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_sweep_literal
-
-        f = tmp_path / "g.m"
-        f.write_text("function s = g()\n    s = scifor.Sweep(42);\nend\n")
-        assert extract_sweep_literal(f) == [42]
-
-    def test_one_non_literal_value_invalidates_the_whole_list(self, tmp_path):
-        from scistack_gui.matlab_parser import extract_sweep_literal
-
-        f = tmp_path / "g.m"
-        f.write_text(
-            "function s = g()\n"
-            "    hi = getSomeValue();\n"
-            "    s = scifor.Sweep(10, hi, 30);\n"
-            "end\n"
-        )
-        assert extract_sweep_literal(f) is None
-
-
-class TestClassifyMatlabFileValueGetters:
-    """classify_matlab_file must try value-getter checks BEFORE the plain
-    function check — a getter also matches the function regex (zero args,
-    one output)."""
-
-    def test_path_input_getter_classified_correctly(self, tmp_path):
-        from scistack_gui.matlab_parser import classify_matlab_file
-
-        f = tmp_path / "raw_emg_path.m"
-        f.write_text(
-            "function p = raw_emg_path()\n"
-            "    p = scifor.PathInput('{subject}.mat');\n"
-            "end\n"
-        )
-        assert classify_matlab_file(f) == ("path_input", "raw_emg_path")
-
-    def test_sweep_getter_classified_correctly(self, tmp_path):
-        from scistack_gui.matlab_parser import classify_matlab_file
-
-        f = tmp_path / "window_seconds.m"
-        f.write_text(
-            "function s = window_seconds()\n"
-            "    s = scifor.Sweep(10, 20, 30);\n"
-            "end\n"
-        )
-        assert classify_matlab_file(f) == ("sweep", "window_seconds")
-
-    def test_plain_function_still_classified_as_function(self, tmp_path):
-        from scistack_gui.matlab_parser import classify_matlab_file
-
-        f = tmp_path / "plain_fn.m"
-        f.write_text("function out = plain_fn(x)\n    out = x * 2;\nend\n")
-        kind, payload = classify_matlab_file(f)
-        assert kind == "function"
-        assert payload.name == "plain_fn"
-
-
 class TestBlockCommentStripping:
     """A %{ %} block comment must not false-positive as a real
     function/classdef declaration — a common way scientists leave
@@ -666,6 +405,426 @@ class TestLineContinuation:
         assert info.source_hash == sha256(raw).hexdigest()
 
 
+class TestPreprocessingIsLengthPreserving:
+    """``_preprocess_for_parsing`` masks block comments and line
+    continuations with spaces rather than deleting them, so an offset into
+    the parsed text is also a valid offset into the original file. Without
+    this, a span computed during parsing would land at the wrong place on
+    write-back and corrupt the file (plan Stage 2)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "function y = f(a)\ny = a;\nend\n",
+            "%{\nblock comment\n%}\nfunction y = f(a)\ny = a;\nend\n",
+            "function y = f(a, ...\n    b)\ny = a;\nend\n",
+            "%{\nblock\n%}\nfunction y = f(a, ... note\n    b)\ny = a;\nend\n",
+            "%{\n%}\n",
+            "",
+        ],
+    )
+    def test_length_is_preserved(self, text):
+        from scistack_gui.matlab_parser import _preprocess_for_parsing
+
+        assert len(_preprocess_for_parsing(text)) == len(text)
+
+    def test_block_comment_keeps_line_count(self):
+        """Block comments become blank lines, so line numbers reported to
+        the user still match the real file."""
+        from scistack_gui.matlab_parser import _preprocess_for_parsing
+
+        text = "%{\na\nb\n%}\nfunction y = f()\n"
+        out = _preprocess_for_parsing(text)
+        assert out.count("\n") == text.count("\n")
+        assert "block" not in out
+        assert out.index("function") == text.index("function")
+
+    def test_masked_regions_carry_no_keywords(self):
+        from scistack_gui.matlab_parser import _preprocess_for_parsing
+
+        text = "%{\nfunction y = fake(x)\nclassdef Fake < scidb.BaseVariable\n%}\n"
+        out = _preprocess_for_parsing(text)
+        assert "function" not in out
+        assert "classdef" not in out
+
+
+class TestParseMatlabEntitiesScript:
+    """The MATLAB entities script — a plain .m of top-level bindings, the
+    analogue of src/scistack_entities.py (plan D1)."""
+
+    def _write(self, tmp_path, body):
+        f = tmp_path / "scistack_entities.m"
+        f.write_text(textwrap.dedent(body))
+        return f
+
+    def test_parses_each_kind(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_entities_script
+
+        f = self._write(
+            tmp_path,
+            """\
+            raw_emg = scidb.PathInput('{subject}/{trial}.mat');
+            window = scidb.Parameter(10, 20, 30);
+            thresh = scidb.Parameter(2);
+            """,
+        )
+
+        bindings = {b.name: b for b in parse_matlab_entities_script(f)}
+        assert set(bindings) == {"raw_emg", "window", "thresh"}
+        assert bindings["raw_emg"].kind == "path_input"
+        assert bindings["window"].kind == "parameter"
+        assert bindings["thresh"].kind == "parameter"
+
+    def test_spans_locate_expression_and_arguments(self, tmp_path):
+        from scistack_gui.matlab_parser import (
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(tmp_path, "window = scidb.Parameter(10, 20);\n")
+        text = read_source_text(f)
+        b = parse_matlab_entities_script(f)[0]
+
+        assert b.expr_span.extract(text) == "scidb.Parameter(10, 20)"
+        assert b.args_span.extract(text) == "10, 20"
+
+    def test_expression_span_enables_a_form_change(self, tmp_path):
+        """The RHS span covers the constructor too, so Constant -> Sweep is
+        the same splice as a value edit (D4)."""
+        from scidb.source_edit import splice
+
+        from scistack_gui.matlab_parser import (
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(tmp_path, "thresh = scidb.Parameter(2);\nx = 1;\n")
+        text = read_source_text(f)
+        b = parse_matlab_entities_script(f)[0]
+
+        assert (
+            splice(text, b.expr_span, "scidb.Parameter(2, 5)")
+            == "thresh = scidb.Parameter(2, 5);\nx = 1;\n"
+        )
+
+    def test_scifor_namespace_accepted(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_entities_script
+
+        f = self._write(tmp_path, "window = scidb.Parameter(1);\n")
+        assert parse_matlab_entities_script(f)[0].kind == "parameter"
+
+    def test_bare_constructor_accepted(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_entities_script
+
+        f = self._write(tmp_path, "window = Parameter(1);\n")
+        assert parse_matlab_entities_script(f)[0].kind == "parameter"
+
+    def test_non_entity_lines_are_skipped(self, tmp_path):
+        """An entities script may contain ordinary MATLAB."""
+        from scistack_gui.matlab_parser import parse_matlab_entities_script
+
+        f = self._write(
+            tmp_path,
+            """\
+            n = 5;
+            label = 'hello';
+            window = scidb.Parameter(1);
+            """,
+        )
+        assert [b.name for b in parse_matlab_entities_script(f)] == ["window"]
+
+    def test_comparison_is_not_a_binding(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_entities_script
+
+        f = self._write(tmp_path, "if a == scidb.Parameter(1)\nend\n")
+        assert parse_matlab_entities_script(f) == []
+
+    def test_paren_inside_a_template_does_not_break_the_span(self, tmp_path):
+        from scistack_gui.matlab_parser import (
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(tmp_path, "p = scidb.PathInput('{s}/a(1).mat');\n")
+        text = read_source_text(f)
+        b = parse_matlab_entities_script(f)[0]
+        assert b.args_span.extract(text) == "'{s}/a(1).mat'"
+
+    def test_semicolon_is_optional(self, tmp_path):
+        from scistack_gui.matlab_parser import (
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(tmp_path, "window = scidb.Parameter(1)\nother = 2\n")
+        text = read_source_text(f)
+        b = parse_matlab_entities_script(f)[0]
+        assert b.expr_span.extract(text) == "scidb.Parameter(1)"
+
+    def test_continued_argument_list(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_entities_script
+
+        f = self._write(tmp_path, "window = scidb.Parameter(1, ...\n    2);\n")
+        b = parse_matlab_entities_script(f)[0]
+        assert b.kind == "parameter"
+
+    def test_constant_literal_extracted(self, tmp_path):
+        from scistack_gui.matlab_parser import (
+            binding_parameter_literal,
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(
+            tmp_path, "w = scidb.Parameter(30, description='Analysis window');\n"
+        )
+        text = read_source_text(f)
+        b = parse_matlab_entities_script(f)[0]
+        assert binding_parameter_literal(b, text) == ([30], "Analysis window")
+
+    def test_literals_extracted(self, tmp_path):
+        from scistack_gui.matlab_parser import (
+            binding_path_input_literal,
+            binding_parameter_literal,
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(
+            tmp_path,
+            """\
+            raw = scidb.PathInput('{s}/a.mat', root_folder='/data');
+            window = scidb.Parameter(10, 20.5, 'x');
+            """,
+        )
+        text = read_source_text(f)
+        bindings = {b.name: b for b in parse_matlab_entities_script(f)}
+
+        assert binding_path_input_literal(bindings["raw"], text) == (
+            "{s}/a.mat",
+            "/data",
+        )
+        assert binding_parameter_literal(bindings["window"], text) == ([10, 20.5, "x"], "")
+
+    def test_root_folder_accepted_in_both_matlab_syntaxes(self, tmp_path):
+        """+scifor/PathInput.m's `arguments` block accepts name=value
+        (R2021b+) and name-value pairs alike, so extraction must too."""
+        from scistack_gui.matlab_parser import (
+            binding_path_input_literal,
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(
+            tmp_path,
+            """\
+            a = scidb.PathInput('x.mat', root_folder='/data');
+            b = scidb.PathInput('x.mat', 'root_folder', '/data');
+            """,
+        )
+        text = read_source_text(f)
+        bindings = {b.name: b for b in parse_matlab_entities_script(f)}
+
+        assert binding_path_input_literal(bindings["a"], text) == ("x.mat", "/data")
+        assert binding_path_input_literal(bindings["b"], text) == ("x.mat", "/data")
+
+    def test_equals_inside_a_template_is_not_a_named_argument(self, tmp_path):
+        from scistack_gui.matlab_parser import (
+            binding_path_input_literal,
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(tmp_path, "a = scidb.PathInput('{s}/a=b.mat');\n")
+        text = read_source_text(f)
+        b = parse_matlab_entities_script(f)[0]
+        assert binding_path_input_literal(b, text) == ("{s}/a=b.mat", None)
+
+    def test_non_literal_value_invalidates_extraction(self, tmp_path):
+        from scistack_gui.matlab_parser import (
+            binding_parameter_literal,
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(tmp_path, "window = scidb.Parameter(1, some_var);\n")
+        text = read_source_text(f)
+        b = parse_matlab_entities_script(f)[0]
+        assert binding_parameter_literal(b, text) is None
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        from scistack_gui.matlab_parser import parse_matlab_entities_script
+
+        assert parse_matlab_entities_script(tmp_path / "nope.m") == []
+
+    def test_is_entities_script_rejects_functions_and_classdefs(self, tmp_path):
+        from scistack_gui.matlab_parser import is_matlab_entities_script
+
+        script = self._write(tmp_path, "window = scidb.Parameter(1);\n")
+        assert is_matlab_entities_script(script)
+
+        fn = tmp_path / "window_fn.m"
+        fn.write_text("function s = window_fn()\ns = scidb.Parameter(1);\nend\n")
+        assert not is_matlab_entities_script(fn)
+
+        cls = tmp_path / "RawSignal.m"
+        cls.write_text("classdef RawSignal < scidb.BaseVariable\nend\n")
+        assert not is_matlab_entities_script(cls)
+
+        plain = tmp_path / "plain.m"
+        plain.write_text("x = 1;\n")
+        assert not is_matlab_entities_script(plain)
+
+    def test_classify_returns_entities_script(self, tmp_path):
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = self._write(tmp_path, "window = scidb.Parameter(1);\n")
+        kind, _ = classify_matlab_file(f)
+        assert kind == "entities_script"
+
+    def test_classify_still_prefers_function_over_entities_script(self, tmp_path):
+        """Regression guard: the entities check runs last, so it can never
+        steal a file from an existing category. A function that happens to
+        construct a Sweep is just a function — the value-getter convention
+        no longer exists."""
+        from scistack_gui.matlab_parser import classify_matlab_file
+
+        f = tmp_path / "window.m"
+        f.write_text("function s = window()\ns = scidb.Parameter(1);\nend\n")
+        kind, payload = classify_matlab_file(f)
+        assert kind == "function"
+        assert payload.name == "window"
+
+
+class TestLoadEntitiesScript:
+    """Entities declared in a script must register into the SAME shared
+    registry the getter path uses, so nothing downstream can tell which
+    form declared them."""
+
+    def test_registers_path_input_and_sweep(self, tmp_path):
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text(
+            "raw = scidb.PathInput('{s}/a.mat');\nwindow = scidb.Parameter(1, 2);\n"
+        )
+
+        matlab_registry.load_entities_script(f)
+
+        pi = registry.get_path_inputs_registry()["raw"]
+        assert pi.path_template == "{s}/a.mat"
+        sw = registry.get_parameters_registry()["window"]
+        assert list(sw.alternatives) == [1, 2]
+
+    def test_registered_sweep_is_a_real_eachof(self, tmp_path):
+        from scifor import EachOf
+
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text("window = scidb.Parameter(1, 2);\n")
+        matlab_registry.load_entities_script(f)
+
+        assert isinstance(registry.get_parameters_registry()["window"], EachOf)
+
+    def test_last_binding_of_a_name_wins(self, tmp_path):
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text("window = scidb.Parameter(1);\nwindow = scidb.Parameter(9);\n")
+        matlab_registry.load_entities_script(f)
+
+        assert list(registry.get_parameters_registry()["window"].alternatives) == [9]
+
+    def test_registers_constant_with_source_declared_identity(self, tmp_path):
+        """Before +scidb/Constant.m, a MATLAB constant was an anonymous value
+        in a for_each struct with no discoverable name (the old "MATLAB has
+        no equivalent" note in code-discovery-categories.md §3)."""
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text(
+            "window = scidb.Parameter(30, description='Analysis window');\n"
+        )
+
+        matlab_registry.load_entities_script(f)
+
+        const = registry.get_parameters_registry()["window"]
+        assert const.value == 30
+        assert const.description == "Analysis window"
+        assert "window" in matlab_registry.get_all_parameter_names()
+
+    def test_constant_registers_as_a_real_scidb_constant(self, tmp_path):
+        """It must be the same type Python discovery produces, so
+        build_parameter_nodes and every other consumer stay language-agnostic."""
+        from scidb import Parameter
+
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text("window = scidb.Parameter(30);\n")
+        matlab_registry.load_entities_script(f)
+
+        assert isinstance(registry.get_parameters_registry()["window"], Parameter)
+
+    def test_constant_description_optional_and_both_syntaxes(self, tmp_path):
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text(
+            "a = scidb.Parameter(1);\n"
+            "b = scidb.Parameter(2, description='named');\n"
+            "c = scidb.Parameter(3, 'description', 'paired');\n"
+        )
+        matlab_registry.load_entities_script(f)
+
+        consts = registry.get_parameters_registry()
+        assert consts["a"].value == 1 and consts["a"].description == ""
+        assert consts["b"].description == "named"
+        assert consts["c"].description == "paired"
+
+    def test_constant_string_value(self, tmp_path):
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text("label = scidb.Parameter('baseline');\n")
+        matlab_registry.load_entities_script(f)
+
+        assert registry.get_parameters_registry()["label"].value == "baseline"
+
+    def test_non_literal_constant_stays_unregistered(self, tmp_path):
+        from scistack_gui import matlab_registry, registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text("window = scidb.Parameter(some_var);\n")
+        registry._parameters.pop("window", None)
+        matlab_registry.load_entities_script(f)
+
+        assert "window" not in registry.get_parameters_registry()
+        assert any(
+            "window" in e.get("error", "") for e in matlab_registry.get_load_errors()
+        )
+
+    def test_missing_file_is_not_an_error(self, tmp_path):
+        from scistack_gui import matlab_registry
+
+        matlab_registry.load_entities_script(tmp_path / "nope.m")
+        assert not any(
+            "nope.m" in e.get("source", "") for e in matlab_registry.get_load_errors()
+        )
+
+    def test_non_literal_declaration_records_a_load_error(self, tmp_path):
+        from scistack_gui import matlab_registry
+
+        f = tmp_path / "scistack_entities.m"
+        f.write_text("window = scidb.Parameter(some_var);\n")
+        matlab_registry.load_entities_script(f)
+
+        assert any(
+            "window" in e.get("error", "") for e in matlab_registry.get_load_errors()
+        )
+
+
 class TestClassifyMatlabFile:
     def test_classifies_function(self, tmp_path):
         from scistack_gui.matlab_parser import classify_matlab_file
@@ -735,130 +894,29 @@ class TestMatlabRegistryLoadFromSources:
         assert matlab_registry.is_matlab_function("foo")
         assert "RawSignal" in matlab_registry.get_all_variable_names()
 
-    def test_path_input_and_sweep_getters_registered(self, tmp_path):
-        from scistack_gui import matlab_registry
-
-        pi_file = tmp_path / "raw_emg_path.m"
-        pi_file.write_text(
-            "function p = raw_emg_path()\n"
-            "    p = scifor.PathInput('{subject}.mat');\n"
-            "end\n"
-        )
-        sweep_file = tmp_path / "window_seconds.m"
-        sweep_file.write_text(
-            "function s = window_seconds()\n"
-            "    s = scifor.Sweep(10, 20, 30);\n"
-            "end\n"
-        )
-
-        matlab_registry._matlab_functions.clear()
-        matlab_registry._matlab_path_inputs.clear()
-        matlab_registry._matlab_sweeps.clear()
-        matlab_registry.load_from_sources([pi_file, sweep_file])
-
-        assert "raw_emg_path" in matlab_registry.get_all_path_input_names()
-        assert "window_seconds" in matlab_registry.get_all_sweep_names()
-        # Getters are never ALSO registered as plain functions.
-        assert not matlab_registry.is_matlab_function("raw_emg_path")
-        assert not matlab_registry.is_matlab_function("window_seconds")
-
-    def test_literal_getters_register_real_objects_into_shared_registry(
-        self, tmp_path
-    ):
-        """A literal-construction getter doesn't just get name-tracked --
-        it's registered as a REAL PathInput/Sweep into
-        scistack_gui.registry's SAME dict Python objects use, which is
-        what makes it show up as a pathInput__/sweep__ canvas node and
-        resolve in execution (every consumer of
-        registry.get_path_inputs_registry()/get_sweeps_registry() is
-        language-agnostic once an object lands there)."""
-        from scidb import PathInput, Sweep
-        from scistack_gui import matlab_registry, registry
-
-        pi_file = tmp_path / "raw_emg_path.m"
-        pi_file.write_text(
-            "function p = raw_emg_path()\n"
-            "    p = scifor.PathInput('{subject}/{trial}.mat', 'root_folder', '/data');\n"
-            "end\n"
-        )
-        sweep_file = tmp_path / "window_seconds.m"
-        sweep_file.write_text(
-            "function s = window_seconds()\n"
-            "    s = scifor.Sweep(10, 20, 30);\n"
-            "end\n"
-        )
-
-        matlab_registry._matlab_path_inputs.clear()
-        matlab_registry._matlab_sweeps.clear()
-        registry._path_inputs.clear()
-        registry._sweeps.clear()
-        matlab_registry.load_from_sources([pi_file, sweep_file])
-
-        pi = registry.get_path_input("raw_emg_path")
-        assert isinstance(pi, PathInput)
-        assert pi.path_template == "{subject}/{trial}.mat"
-        assert str(pi.root_folder) == "/data"
-        assert registry._path_input_sources["raw_emg_path"] == str(pi_file)
-
-        sw = registry.get_sweep("window_seconds")
-        assert isinstance(sw, Sweep)
-        assert sw.alternatives == [10, 20, 30]
-        assert registry._sweep_sources["window_seconds"] == str(sweep_file)
-
-    def test_non_literal_getter_stays_name_only(self, tmp_path):
-        """A getter whose construction references a MATLAB variable can't
-        be statically evaluated (no MATLAB run here) -- it stays
-        name-tracked in matlab_registry but is NOT registered into the
-        shared Python registry, and the gap is recorded as a load error
-        rather than silently dropped."""
-        from scistack_gui import matlab_registry, registry
-
-        pi_file = tmp_path / "dynamic_path.m"
-        pi_file.write_text(
-            "function p = dynamic_path()\n"
-            "    base = getenv('DATA_ROOT');\n"
-            "    p = scifor.PathInput(base);\n"
-            "end\n"
-        )
-
-        matlab_registry._matlab_path_inputs.clear()
-        registry._path_inputs.clear()
-        matlab_registry._load_errors.clear()
-        matlab_registry.load_from_sources([pi_file])
-
-        assert "dynamic_path" in matlab_registry.get_all_path_input_names()
-        assert registry.get_path_input("dynamic_path") is None
-        assert any(
-            e["source"] == str(pi_file) for e in matlab_registry.get_load_errors()
-        )
-
     def test_refresh_deregisters_stale_entry_from_shared_registry(self, tmp_path):
-        """Renaming/removing a PathInput getter and refreshing must not
-        leave its OLD registered object lingering forever in
+        """Removing a PathInput declaration and refreshing must not leave
+        its OLD registered object lingering forever in
         scistack_gui.registry -- matlab_registry.clear() only ever touched
         its own dicts before this fix."""
         from scistack_gui import config, matlab_registry, registry
 
-        pi_file = tmp_path / "raw_emg_path.m"
-        pi_file.write_text(
-            "function p = raw_emg_path()\n"
-            "    p = scifor.PathInput('{subject}.mat');\n"
-            "end\n"
-        )
+        entities = tmp_path / "scistack_entities.m"
+        entities.write_text("raw_emg = scidb.PathInput('{subject}.mat');\n")
         cfg = config.SciStackConfig(
-            project_root=tmp_path, matlab_path_inputs=[pi_file]
+            project_root=tmp_path, matlab_entities_file=entities
         )
 
         registry._path_inputs.clear()
         matlab_registry.load_from_config(cfg)
-        assert registry.get_path_input("raw_emg_path") is not None
+        assert registry.get_path_input("raw_emg") is not None
 
-        # The file is renamed away (or its content no longer defines this
-        # getter) -- simulate by loading an EMPTY config.
+        # The declaration is deleted from the entities script -- simulate by
+        # loading an EMPTY config.
         empty_cfg = config.SciStackConfig(project_root=tmp_path)
         matlab_registry.load_from_config(empty_cfg)
 
-        assert registry.get_path_input("raw_emg_path") is None
+        assert registry.get_path_input("raw_emg") is None
 
     def test_unclassifiable_file_skipped_without_warning(self, tmp_path, caplog):
         """A folder-scanned .m file that classifies as neither a function
@@ -1264,7 +1322,7 @@ class TestFormatPathInput:
             schema_keys=["subject"],
             sweeps={"low_hz": [10, 20, 30]},
         )
-        assert "scifor.Sweep(10, 20, 30)" in cmd
+        assert "scidb.Parameter(10, 20, 30)" in cmd
 
     def test_generate_matlab_command_sweep_and_path_input_together(self):
         from scistack_gui.api.matlab_command import generate_matlab_command
@@ -1279,7 +1337,7 @@ class TestFormatPathInput:
             sweeps={"low_hz": [10, 20]},
             project_root="/projects/myexp",
         )
-        assert "scifor.Sweep(10, 20)" in cmd
+        assert "scidb.Parameter(10, 20)" in cmd
         assert "scifor.PathInput" in cmd
 
 
@@ -1292,17 +1350,17 @@ class TestFormatSweep:
     def test_numeric_values(self):
         from scistack_gui.api.matlab_command import _format_sweep
 
-        assert _format_sweep([10, 20, 30]) == "scifor.Sweep(10, 20, 30)"
+        assert _format_sweep([10, 20, 30]) == "scidb.Parameter(10, 20, 30)"
 
     def test_string_values(self):
         from scistack_gui.api.matlab_command import _format_sweep
 
-        assert _format_sweep(["low", "high"]) == "scifor.Sweep('low', 'high')"
+        assert _format_sweep(["low", "high"]) == "scidb.Parameter('low', 'high')"
 
     def test_single_value(self):
         from scistack_gui.api.matlab_command import _format_sweep
 
-        assert _format_sweep([42]) == "scifor.Sweep(42)"
+        assert _format_sweep([42]) == "scidb.Parameter(42)"
 
 
 # ---------------------------------------------------------------------------
@@ -1392,12 +1450,11 @@ class TestConfigMatlabParsing:
         config = load_config(tmp_path, db_path)
         assert config.matlab_functions == []
         assert config.matlab_variables == []
-        assert config.matlab_path_inputs == []
-        assert config.matlab_sweeps == []
         assert config.matlab_addpath == []
         assert config.matlab_variable_dir is None
+        assert config.matlab_entities_file is None
 
-    def test_explicit_path_inputs_and_sweeps(self, tmp_path):
+    def test_explicit_entities_file(self, tmp_path):
         from scistack_gui.config import load_config
 
         (tmp_path / "pyproject.toml").write_text(
@@ -1407,20 +1464,12 @@ class TestConfigMatlabParsing:
 
             [tool.scistack.matlab]
             functions = ["process.m"]
-            path_inputs = ["raw_emg_path.m"]
-            sweeps = ["window_seconds.m"]
+            entities_file = "scistack_entities.m"
         """)
         )
         (tmp_path / "process.m").write_text("function y = process(x)\ny = x;\nend\n")
-        (tmp_path / "raw_emg_path.m").write_text(
-            "function p = raw_emg_path()\n"
-            "    p = scifor.PathInput('{subject}.mat');\n"
-            "end\n"
-        )
-        (tmp_path / "window_seconds.m").write_text(
-            "function s = window_seconds()\n"
-            "    s = scifor.Sweep(10, 20, 30);\n"
-            "end\n"
+        (tmp_path / "scistack_entities.m").write_text(
+            "raw_emg = scidb.PathInput('{subject}.mat');\n"
         )
 
         db_path = tmp_path / "test.duckdb"
@@ -1428,40 +1477,10 @@ class TestConfigMatlabParsing:
 
         config = load_config(tmp_path, db_path)
         assert len(config.matlab_functions) == 1
-        assert config.matlab_functions[0].name == "process.m"
-        assert len(config.matlab_path_inputs) == 1
-        assert config.matlab_path_inputs[0].name == "raw_emg_path.m"
-        assert len(config.matlab_sweeps) == 1
-        assert config.matlab_sweeps[0].name == "window_seconds.m"
-
-    def test_path_inputs_deduped_from_functions(self, tmp_path):
-        """A file declared in BOTH matlab.functions (e.g. via a parent-dir
-        glob) and matlab.path_inputs must not also be parsed as a plain
-        function — same dedup already applied to matlab.variables."""
-        from scistack_gui.config import load_config
-
-        (tmp_path / "pyproject.toml").write_text(
-            textwrap.dedent("""\
-            [tool.scistack]
-            modules = []
-
-            [tool.scistack.matlab]
-            functions = ["*.m"]
-            path_inputs = ["raw_emg_path.m"]
-        """)
-        )
-        (tmp_path / "raw_emg_path.m").write_text(
-            "function p = raw_emg_path()\n"
-            "    p = scifor.PathInput('{subject}.mat');\n"
-            "end\n"
-        )
-
-        db_path = tmp_path / "test.duckdb"
-        db_path.touch()
-
-        config = load_config(tmp_path, db_path)
-        assert config.matlab_functions == []
-        assert len(config.matlab_path_inputs) == 1
+        assert config.matlab_entities_file.name == "scistack_entities.m"
+        # The entities script's directory joins addpath, so a generated
+        # MATLAB command can `run` it.
+        assert config.matlab_entities_file.parent in config.matlab_addpath
 
 
 # ---------------------------------------------------------------------------
@@ -1649,7 +1668,7 @@ class TestCollectSweepParams:
             _collect_sweep_params,
         )
 
-        edges = [self._edge("sweep__low_hz", "fn__bandpass_filter", "in__low_hz")]
+        edges = [self._edge("param__low_hz", "fn__bandpass_filter", "in__low_hz")]
         result = _collect_sweep_params(
             "bandpass_filter",
             {"low_hz": [10, 20, 30]},
@@ -1664,7 +1683,7 @@ class TestCollectSweepParams:
             _collect_sweep_params,
         )
 
-        edges = [self._edge("sweep__low_hz", "fn__other_fn", "in__low_hz")]
+        edges = [self._edge("param__low_hz", "fn__other_fn", "in__low_hz")]
         result = _collect_sweep_params(
             "bandpass_filter",
             {"low_hz": [10, 20, 30]},
@@ -1694,7 +1713,7 @@ class TestCollectSweepParams:
             _collect_sweep_params,
         )
 
-        edges = [self._edge("sweep__unknown", "fn__bandpass_filter", "in__low_hz")]
+        edges = [self._edge("param__unknown", "fn__bandpass_filter", "in__low_hz")]
         result = _collect_sweep_params(
             "bandpass_filter",
             {"low_hz": [10, 20, 30]},
@@ -1914,7 +1933,7 @@ class TestGenerateMatlabPipelineCommand:
         cmd = generate_matlab_pipeline_command(
             pipeline_id="p", steps=steps, db_path="/db.duckdb", schema_keys=["s"]
         )
-        assert "scifor.Sweep(10, 20, 30)" in cmd
+        assert "scidb.Parameter(10, 20, 30)" in cmd
 
     def test_pyenv_preamble_present(self):
         from scistack_gui.api.matlab_command import generate_matlab_pipeline_command

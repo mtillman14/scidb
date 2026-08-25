@@ -12,6 +12,8 @@ own `shutil`/`subprocess` references).
 from __future__ import annotations
 
 import queue
+import threading
+import time
 
 import pytest
 from scistack_gui import matlab_sidecar as ms
@@ -236,3 +238,170 @@ class TestSingletonAndCapability:
         assert ms.sidecar_capable() is False
         monkeypatch.setattr(ms.shutil, "which", lambda name: "/usr/local/bin/matlab")
         assert ms.sidecar_capable() is True
+
+
+class TestBusyGuard:
+    """One command at a time. Two concurrent writers would interleave their
+    text into MATLAB's stdin and then race for each other's sentinels,
+    corrupting BOTH runs — so a second command is refused, not queued."""
+
+    def _started(self, monkeypatch):
+        monkeypatch.setattr(ms.shutil, "which", lambda name: "/usr/local/bin/matlab")
+        holder: list[FakeProcess] = []
+
+        def fake_popen(cmd, **kwargs):
+            proc = FakeProcess()
+            holder.append(proc)
+            return proc
+
+        monkeypatch.setattr(ms.subprocess, "Popen", fake_popen)
+        sidecar = ms.MatlabSidecar()
+        assert sidecar.start() is True
+        return sidecar, holder[0]
+
+    def test_second_concurrent_command_is_refused(self, monkeypatch):
+        sidecar, proc = self._started(monkeypatch)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_reader(line):
+            started.set()
+            release.wait(timeout=5)
+
+        def first():
+            sidecar.run_command("disp('a')", slow_reader)
+
+        t = threading.Thread(target=first, daemon=True)
+        t.start()
+        proc.stdout.push("working\n")
+        assert started.wait(timeout=5)
+
+        with pytest.raises(ms.SidecarBusyError, match="already running"):
+            sidecar.run_command("disp('b')", lambda line: None)
+
+        release.set()
+        proc.stdout.push(f"{ms.DONE_SENTINEL}\n")
+        t.join(timeout=5)
+
+    def test_busy_clears_after_a_command_finishes(self, monkeypatch):
+        sidecar, proc = self._started(monkeypatch)
+        proc.stdout.push(f"{ms.DONE_SENTINEL}\n")
+        assert sidecar.run_command("disp('a')", lambda line: None) is True
+        assert sidecar.is_busy is False
+
+        proc.stdout.push(f"{ms.DONE_SENTINEL}\n")
+        assert sidecar.run_command("disp('b')", lambda line: None) is True
+
+    def test_busy_clears_even_when_a_command_raises(self, monkeypatch):
+        sidecar, proc = self._started(monkeypatch)
+        proc.stdout.close()  # EOF -> run_command raises
+        with pytest.raises(RuntimeError):
+            sidecar.run_command("disp('a')", lambda line: None)
+        assert sidecar.is_busy is False
+
+    def test_stop_clears_busy(self, monkeypatch):
+        """stop() must clear it unconditionally: an in-flight command's own
+        `finally` only runs once its blocked stdout read unblocks, so a
+        restart could otherwise see a stale 'busy' and refuse the very
+        command it was recycled to accept."""
+        sidecar, _ = self._started(monkeypatch)
+        sidecar._busy = True
+        sidecar.stop()
+        assert sidecar.is_busy is False
+
+
+class TestRestartAndStatus:
+    def _started(self, monkeypatch):
+        monkeypatch.setattr(ms.shutil, "which", lambda name: "/usr/local/bin/matlab")
+        holder: list[FakeProcess] = []
+
+        def fake_popen(cmd, **kwargs):
+            proc = FakeProcess()
+            holder.append(proc)
+            return proc
+
+        monkeypatch.setattr(ms.subprocess, "Popen", fake_popen)
+        sidecar = ms.MatlabSidecar()
+        assert sidecar.start() is True
+        return sidecar, holder
+
+    def test_restart_replaces_the_process(self, monkeypatch):
+        sidecar, holder = self._started(monkeypatch)
+        assert sidecar.restart() is True
+        assert len(holder) == 2
+        assert holder[0].killed is True
+        assert sidecar.is_running is True
+
+    def test_start_after_a_crash_drains_the_stale_eof(self, monkeypatch):
+        """A dead process's reader thread queues an EOF `None`. Left there,
+        the NEXT run_command reads it and aborts a perfectly healthy engine
+        with 'process exited before completion'."""
+        sidecar, holder = self._started(monkeypatch)
+        holder[0].kill()  # closes stdout -> reader queues the EOF sentinel
+        time.sleep(0.05)
+
+        assert sidecar.start() is True
+        assert len(holder) == 2
+
+        holder[1].stdout.push(f"{ms.DONE_SENTINEL}\n")
+        assert sidecar.run_command("disp('after crash')", lambda line: None) is True
+
+    def test_status_reports_each_state(self, monkeypatch):
+        monkeypatch.setattr(ms.shutil, "which", lambda name: None)
+        sidecar = ms.MatlabSidecar()
+        assert sidecar.status()["state"] == "unavailable"
+
+        sidecar, holder = self._started(monkeypatch)
+        assert sidecar.status()["state"] == "ready"
+        assert sidecar.status()["pid"] == holder[0].pid
+
+        sidecar._busy = True
+        assert sidecar.status()["state"] == "busy"
+        sidecar._busy = False
+
+        sidecar.stop()
+        assert sidecar.status()["state"] == "stopped"
+
+
+class TestHealthProbe:
+    def _started(self, monkeypatch):
+        monkeypatch.setattr(ms.shutil, "which", lambda name: "/usr/local/bin/matlab")
+        holder: list[FakeProcess] = []
+
+        def fake_popen(cmd, **kwargs):
+            proc = FakeProcess()
+            holder.append(proc)
+            return proc
+
+        monkeypatch.setattr(ms.subprocess, "Popen", fake_popen)
+        sidecar = ms.MatlabSidecar()
+        assert sidecar.start() is True
+        return sidecar, holder[0]
+
+    def test_healthy_when_pyenv_reports_a_version(self, monkeypatch):
+        sidecar, proc = self._started(monkeypatch)
+        proc.stdout.push("SCISTACK_PYENV:3.11\n")
+        proc.stdout.push(f"{ms.DONE_SENTINEL}\n")
+        assert sidecar.check_health() is None
+        assert sidecar.status()["error"] is None
+
+    def test_missing_pyenv_reported_as_a_setup_problem(self, monkeypatch):
+        """MATLAB launches fine but can't reach Python. Without this probe
+        it fails on the first py.* call deep inside configure_database and
+        reads as a pipeline error rather than a setup one."""
+        sidecar, proc = self._started(monkeypatch)
+        proc.stdout.push(f"{ms.ERROR_SENTINEL}: Undefined function 'pyenv'\n")
+        err = sidecar.check_health()
+        assert err is not None
+        assert "pyenv" in err
+        assert sidecar.status()["error"] == err
+
+    def test_not_running_is_reported(self):
+        assert "not running" in ms.MatlabSidecar().check_health()
+
+    def test_probe_during_a_run_is_skipped_not_failed(self, monkeypatch):
+        """A health probe must never disturb an in-flight run, nor report
+        the refusal as ill health."""
+        sidecar, _ = self._started(monkeypatch)
+        sidecar._busy = True
+        assert sidecar.check_health() is None

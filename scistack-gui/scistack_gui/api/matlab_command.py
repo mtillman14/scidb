@@ -7,8 +7,34 @@ schema arguments — all formatted as MATLAB syntax.
 """
 
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _entities_script_lines(entities_script: "str | None") -> list[str]:
+    """Lines that run the MATLAB entities script, or ``[]``.
+
+    Must be emitted AFTER the addpath block (the script lives on one of
+    those directories) and before anything that references a declared entity
+    by name.
+
+    Re-run on every generated command rather than once per session: a MATLAB
+    script is re-read from disk each time, so this is also what makes a GUI
+    entity edit visible to a KEPT-WARM session (``matlab_sidecar``) with no
+    cache-clearing. That property is exactly why the entities file is a plain
+    script and not a classdef whose Constant properties would be cached for
+    the life of the session — see docs/claude/entity-editability-model.md.
+    """
+    if not entities_script:
+        return []
+    return [
+        "% Entity declarations (Sweeps/PathInputs/Constants)",
+        f"{Path(entities_script).stem};",
+        "",
+    ]
+
+
 
 
 def generate_matlab_command(
@@ -24,6 +50,7 @@ def generate_matlab_command(
     sweeps: dict[str, list] | None = None,
     output_types: list[str] | None = None,
     project_root: str | None = None,
+    entities_script: str | None = None,
 ) -> str:
     """Generate a complete MATLAB script to run a pipeline function.
 
@@ -79,6 +106,8 @@ def generate_matlab_command(
         for d in addpath_dirs:
             lines.append(f"addpath('{_escape_matlab_string(d)}');")
         lines.append("")
+
+    lines.extend(_entities_script_lines(entities_script))
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)
@@ -255,7 +284,7 @@ def _for_each_call_lines(
         if path_inputs:
             for param_name, pi in path_inputs.items():
                 inputs_dict[param_name] = _format_path_input(pi, project_root)
-        # Add sweeps as scifor.Sweep(...) expressions.
+        # Add Parameter values as scidb.Parameter(...) expressions.
         if sweeps:
             for param_name, values in sweeps.items():
                 inputs_dict[param_name] = _format_sweep(values)
@@ -300,6 +329,7 @@ def generate_matlab_pipeline_command(
     addpath_dirs: list[str] | None = None,
     python_executable: str | None = None,
     project_root: str | None = None,
+    entities_script: str | None = None,
 ) -> str:
     """Generate a complete MATLAB script that runs a whole GUI pipeline
     scope through ``scidb.Pipeline`` — deferred registration of every
@@ -369,6 +399,8 @@ def generate_matlab_pipeline_command(
         for d in addpath_dirs:
             lines.append(f"addpath('{_escape_matlab_string(d)}');")
         lines.append("")
+
+    lines.extend(_entities_script_lines(entities_script))
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)
@@ -504,12 +536,13 @@ def _format_path_input(pi: dict, project_root: str | None = None) -> str:
 
 
 def _format_sweep(values: list) -> str:
-    """Format a Sweep's value list as a MATLAB ``scifor.Sweep(...)``
-    expression (mirrors ``_format_path_input``'s role for PathInput —
-    ``isa(x, 'scifor.EachOf')`` covers ``Sweep`` for free, see
-    ``+scifor/Sweep.m``)."""
+    """Format a Parameter's value list as a MATLAB ``scidb.Parameter(...)``
+    expression (mirrors ``_format_path_input``'s role for PathInput).
+
+    ``isa(x, 'scifor.EachOf')`` covers a Parameter for free, so ``for_each``
+    fans it out with no special handling -- see ``+scidb/Parameter.m``."""
     items = ", ".join(_format_matlab_value(v) for v in values)
-    return f"scifor.Sweep({items})"
+    return f"scidb.Parameter({items})"
 
 
 def _escape_matlab_string(s: str) -> str:

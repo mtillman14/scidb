@@ -47,6 +47,8 @@ from __future__ import annotations
 import logging
 import uuid
 
+from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX as _PARAM_PREFIX
+
 logger = logging.getLogger(__name__)
 
 
@@ -206,7 +208,7 @@ def _get_or_create_node(
     pipeline's ``node_cache``, returning its id.
 
     Deliberately an ARBITRARY id (``discovered_{kind}_{uuid}``), never the
-    bare canonical form (``var__{label}``/``const__{label}``) — matching
+    bare canonical form (``var__{label}``/``param__{label}``) — matching
     the same convention function nodes already use here, and how a human
     manually placing a node from the GUI palette works: ``_pipeline_nodes``
     scopes a node to exactly ONE ``pipeline_id`` (last-write-wins on that
@@ -217,7 +219,7 @@ def _get_or_create_node(
     other's scope. An arbitrary id sidesteps that: ``merge_manual_nodes``
     already matches manual nodes to their real DB-derived counterpart by
     ``(type, label)`` alone, never by id, so this behaves identically once
-    the pipeline actually runs and ``var__{label}``/``const__{label}``
+    the pipeline actually runs and ``var__{label}``/``param__{label}``
     exists for real (graduation) — see
     ``.claude/plan-placement-qualified-node-ids.md``.
 
@@ -241,7 +243,7 @@ def _get_or_create_node(
 
 def _seed_step(db, pipeline_id: str, spec, node_cache: dict[str, str]) -> None:
     """One ``StepSpec`` -> one manual functionNode, plus a manual
-    variableNode/constantNode (with edge) for every referenced variable
+    variableNode/parameterNode (with edge) for every referenced variable
     class and constant. Manual nodes are required here, not just edges —
     ``build_variable_nodes``/``build_constant_nodes`` only render from DB
     run history, so a genuinely never-run type/constant would otherwise be
@@ -253,7 +255,7 @@ def _seed_step(db, pipeline_id: str, spec, node_cache: dict[str, str]) -> None:
     (see ``graph_builder.seed_undiscovered_path_inputs``), never manual.
     Positions are left at (0, 0) — the frontend dagre-lays-out new nodes on
     first render (see ``api/pipeline.py``'s module docstring)."""
-    from scidb import BaseVariable, EachOf, PathInput, Sweep
+    from scidb import BaseVariable, EachOf, Parameter, PathInput
     from scistack_gui import pipeline_store as ps
     from scistack_gui import registry
 
@@ -266,19 +268,19 @@ def _seed_step(db, pipeline_id: str, spec, node_cache: dict[str, str]) -> None:
             source_id = _get_or_create_node(
                 db, pipeline_id, node_cache, "variableNode", value.__name__
             )
-        elif isinstance(value, Sweep):
-            # sweep__/pathInput__ nodes are ALWAYS registry-derived (see
+        elif isinstance(value, Parameter):
+            # Parameter/pathInput__ nodes are ALWAYS registry-derived (see
             # graph_builder.seed_undiscovered_path_inputs) -- unlike
-            # variables/constants, they never need a manual node here,
-            # only the edge. An unregistered (inline, unnamed) Sweep/
-            # PathInput falls back to the param name but has no
+            # variables, they never need a manual node here, only the edge.
+            # An unregistered (inline, unnamed) Parameter/PathInput falls
+            # back to the param name but has no
             # discoverable node either way -- same limitation the DB-
             # history reconstruction path already has for an unnamed
             # PathInput (see graph_builder.resolve_path_input_name's
             # __unresolved__ fallback) -- the edge is still written for
             # when/if the object later gets a real top-level name.
-            name = _registered_name(value, registry.get_sweeps_registry()) or param
-            source_id = f"sweep__{name}"
+            name = _registered_name(value, registry.get_parameters_registry()) or param
+            source_id = f"{_PARAM_PREFIX}{name}"
         elif isinstance(value, PathInput) or (
             isinstance(value, EachOf)
             and all(isinstance(a, PathInput) for a in value.alternatives)
@@ -300,12 +302,12 @@ def _seed_step(db, pipeline_id: str, spec, node_cache: dict[str, str]) -> None:
                 )
         else:
             # A plain scalar constant. write_constant registers the name
-            # in the constant palette (idempotent), add_pending_constant
-            # stages this discovered value, and the manual constantNode
+            # in the parameter palette (idempotent), add_pending_constant
+            # stages this discovered value, and the manual parameterNode
             # makes it a real node even with zero DB history -- the same
             # three things a user adding a constant + pending value by
-            # hand would trigger. build_constant_nodes now also renders a
-            # source_values row for any name in registry.get_constants_registry(),
+            # hand would trigger. build_parameter_nodes now also renders a
+            # source_values row for any name in registry.get_parameters_registry(),
             # but a plain scalar StepSpec constant isn't necessarily a
             # registered scidb.constant() bound to a top-level name, so this
             # manual-node path still covers the case source_values can't.
@@ -314,7 +316,7 @@ def _seed_step(db, pipeline_id: str, spec, node_cache: dict[str, str]) -> None:
             layout_store.write_constant(param)
             ps.add_pending_constant(db, param, str(value))
             source_id = _get_or_create_node(
-                db, pipeline_id, node_cache, "constantNode", param
+                db, pipeline_id, node_cache, "parameterNode", param
             )
 
         if source_id is None:

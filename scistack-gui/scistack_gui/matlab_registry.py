@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING
 
 from scistack_gui.matlab_parser import (
     MatlabFunctionInfo,
+    binding_parameter_literal,
+    binding_path_input_literal,
     classify_matlab_file,
-    extract_path_input_literal,
-    extract_sweep_literal,
+    parse_matlab_entities_script,
     parse_matlab_function,
-    parse_matlab_path_input,
-    parse_matlab_sweep,
     parse_matlab_variable,
+    read_source_text,
 )
 
 if TYPE_CHECKING:
@@ -43,27 +43,25 @@ _matlab_variables: dict[str, Path] = {}
 """variable_class_name -> .m file path."""
 
 _matlab_path_inputs: dict[str, Path] = {}
-"""PathInput getter name -> .m file path (see matlab_parser.
-parse_matlab_path_input and docs/claude/code-discovery-categories.md).
+"""PathInput name -> the entities script declaring it (see
+docs/claude/entity-editability-model.md).
 
-Always tracked here by name (this dict), and — when the getter's
-construction call is a simple literal (see
-matlab_parser.extract_path_input_literal) — ALSO registered as a real
-``scifor.PathInput`` object into ``scistack_gui.registry``'s shared
-``_path_inputs`` dict (:func:`_register_matlab_path_input`), which is what
-makes it show up as a ``pathInput__`` canvas node and resolve in
-execution/generated MATLAB commands — every consumer of
-``registry.get_path_inputs_registry()`` is language-agnostic once an
-object lands there. A getter whose args reference a MATLAB
-variable/expression (not a literal) can't be statically evaluated (no
+Tracked here by name, and — when the declaration's construction call is a
+simple literal — ALSO registered as a real ``scifor.PathInput`` object into
+``scistack_gui.registry``'s shared ``_path_inputs`` dict
+(:func:`_register_matlab_path_input_object`), which is what makes it show
+up as a ``pathInput__`` canvas node and resolve in execution/generated
+MATLAB commands — every consumer of ``registry.get_path_inputs_registry()``
+is language-agnostic once an object lands there. A declaration whose args
+reference a MATLAB variable/expression can't be statically evaluated (no
 MATLAB run here) — it stays name-only in THIS dict, with a load error
 recorded so the gap is visible rather than silent.
 """
 
-_matlab_sweeps: dict[str, Path] = {}
-"""Sweep getter name -> .m file path — same name-only-vs-registered
-treatment as _matlab_path_inputs above, via
-:func:`_register_matlab_sweep`/matlab_parser.extract_sweep_literal."""
+_matlab_parameters: dict[str, Path] = {}
+"""Parameter name -> the entities script declaring it — same
+name-only-vs-registered treatment as _matlab_path_inputs above, via
+:func:`_register_matlab_parameter_object`."""
 
 _config: SciStackConfig | None = None
 """Stored config for refresh_all()."""
@@ -88,13 +86,13 @@ real MATLAB projects have plenty of non-function scripts) — see
 def _deregister_stale_matlab_path_inputs_and_sweeps() -> None:
     """Remove any PathInput/Sweep this module PREVIOUSLY registered into
     the shared ``scistack_gui.registry``, before a fresh scan replaces
-    ``_matlab_path_inputs``/``_matlab_sweeps``.
+    ``_matlab_path_inputs``/``_matlab_parameters``.
 
     Only removes an entry whose recorded SOURCE exactly matches the ``.m``
     file this module registered it from — never a same-named entry that
     "last write wins" collision handling has since attributed to a
     different (e.g. Python) source; see ``registry._register_path_input``/
-    ``_register_sweep``'s shadowing warning.
+    ``_register_parameter``'s shadowing warning.
     """
     from scistack_gui import registry
 
@@ -102,10 +100,10 @@ def _deregister_stale_matlab_path_inputs_and_sweeps() -> None:
         if registry._path_input_sources.get(name) == str(path):
             registry._path_inputs.pop(name, None)
             registry._path_input_sources.pop(name, None)
-    for name, path in _matlab_sweeps.items():
-        if registry._sweep_sources.get(name) == str(path):
-            registry._sweeps.pop(name, None)
-            registry._sweep_sources.pop(name, None)
+    for name, path in _matlab_parameters.items():
+        if registry._parameter_sources.get(name) == str(path):
+            registry._parameters.pop(name, None)
+            registry._parameter_sources.pop(name, None)
 
 
 def load_from_config(config: SciStackConfig) -> dict:
@@ -124,15 +122,15 @@ def load_from_config(config: SciStackConfig) -> dict:
     _matlab_functions.clear()
     _matlab_variables.clear()
     # Deregister from the SHARED scistack_gui.registry BEFORE clearing our
-    # own name-tracking dicts below — otherwise a renamed/deleted getter's
-    # old registered PathInput/Sweep object would linger there forever
+    # own name-tracking dicts below — otherwise a renamed or deleted
+    # declaration's registered PathInput/Sweep object would linger forever
     # (matlab_registry.clear() only ever touched its own dicts, not the
     # registry it registers INTO). Names that get re-registered further
     # down in this same call simply overwrite these removals; this only
     # matters for ones that DON'T come back.
     _deregister_stale_matlab_path_inputs_and_sweeps()
     _matlab_path_inputs.clear()
-    _matlab_sweeps.clear()
+    _matlab_parameters.clear()
     _load_errors.clear()
 
     # --- Function files (explicit matlab.functions config) ---
@@ -178,36 +176,9 @@ def load_from_config(config: SciStackConfig) -> dict:
             )
             _record_load_error(str(path), "No BaseVariable classdef found")
 
-    # --- PathInput getter files (explicit matlab.path_inputs config) ---
-    logger.info(
-        "[matlab_registry] Parsing %d MATLAB PathInput getter files",
-        len(config.matlab_path_inputs),
-    )
-    for idx, path in enumerate(config.matlab_path_inputs):
-        pi_name = parse_matlab_path_input(path)
-        if pi_name is not None:
-            _register_matlab_path_input(pi_name, path)
-        else:
-            logger.warning(
-                "[matlab_registry] Could not parse MATLAB PathInput getter from %s",
-                path,
-            )
-            _record_load_error(str(path), "No PathInput getter found")
-
-    # --- Sweep getter files (explicit matlab.sweeps config) ---
-    logger.info(
-        "[matlab_registry] Parsing %d MATLAB Sweep getter files",
-        len(config.matlab_sweeps),
-    )
-    for idx, path in enumerate(config.matlab_sweeps):
-        sw_name = parse_matlab_sweep(path)
-        if sw_name is not None:
-            _register_matlab_sweep(sw_name, path)
-        else:
-            logger.warning(
-                "[matlab_registry] Could not parse MATLAB Sweep getter from %s", path
-            )
-            _record_load_error(str(path), "No Sweep getter found")
+    # --- Entities script ([matlab] entities_file) ---
+    if config.matlab_entities_file is not None:
+        load_entities_script(config.matlab_entities_file)
 
     # --- Unified sources (folder-scan fallback: no functions/variables
     # split available, each file classified individually by content) ---
@@ -220,14 +191,108 @@ def load_from_config(config: SciStackConfig) -> dict:
         len(_matlab_functions),
         len(_matlab_variables),
         len(_matlab_path_inputs),
-        len(_matlab_sweeps),
+        len(_matlab_parameters),
     )
     return {
         "matlab_functions": sorted(_matlab_functions.keys()),
         "matlab_variables": sorted(_matlab_variables.keys()),
         "matlab_path_inputs": sorted(_matlab_path_inputs.keys()),
-        "matlab_sweeps": sorted(_matlab_sweeps.keys()),
+        "matlab_parameters": sorted(_matlab_parameters.keys()),
     }
+
+
+def load_entities_script(path: Path) -> None:
+    """Register every entity declared in a MATLAB entities script.
+
+    The MATLAB counterpart of Python's ``variable_file`` scan: a plain
+    script of ``NAME = scidb.Sweep(...)`` top-level bindings (see
+    docs/claude/entity-editability-model.md). Registers into the SAME
+    ``scistack_gui.registry`` the Python scanners use, so nothing downstream
+    — canvas nodes, ``build_run_inputs``, command generation — needs to know
+    which form a MATLAB entity was declared in.
+
+    A missing file is not an error: the GUI creates it on the first entity
+    it writes, so "configured but not yet created" is a normal state.
+    """
+    if not path.exists():
+        logger.info(
+            "[matlab_registry] entities_file %s does not exist yet; nothing to load",
+            path,
+        )
+        return
+
+    text = read_source_text(path)
+    if text is None:
+        _record_load_error(str(path), "Entities file could not be read")
+        return
+
+    bindings = parse_matlab_entities_script(path)
+    if not bindings:
+        logger.info(
+            "[matlab_registry] entities_file %s declares no entities", path
+        )
+        return
+
+    # Last binding of a name wins, matching how a MATLAB script actually
+    # executes (and scidb.source_edit.find_binding_span on the Python side).
+    latest = {b.name: b for b in bindings}
+
+    registered = 0
+    for name, binding in latest.items():
+        if binding.kind == "path_input":
+            literal = binding_path_input_literal(binding, text)
+            if literal is None:
+                _warn_non_literal(name, path, "PathInput")
+                continue
+            template, root_folder = literal
+            _register_matlab_path_input_object(name, path, template, root_folder)
+            registered += 1
+        elif binding.kind == "parameter":
+            literal = binding_parameter_literal(binding, text)
+            if literal is None:
+                _warn_non_literal(name, path, "Parameter")
+                continue
+            values, description = literal
+            _register_matlab_parameter_object(name, path, values, description)
+            registered += 1
+        else:
+            # "each_of" (alternate PathInput templates) parses but has no
+            # MATLAB registration path yet.
+            logger.info(
+                "[matlab_registry] entities_file %s: '%s' is a %s declaration, "
+                "which is parsed but not yet registered",
+                path,
+                name,
+                binding.kind,
+            )
+
+    # Baseline for the stale-write guard — see registry.load_from_config's
+    # matching call for the Python entities file.
+    from scistack_gui.services.target_file_service import record_source_hash
+
+    record_source_hash(path)
+
+    logger.info(
+        "[matlab_registry] Loaded %d entit%s from %s",
+        registered,
+        "y" if registered == 1 else "ies",
+        path,
+    )
+
+
+def _warn_non_literal(name: str, path: Path, kind: str) -> None:
+    logger.warning(
+        "[matlab_registry] %s '%s' in entities file %s is not a simple "
+        "literal construction (references a MATLAB variable/expression) -- "
+        "cannot statically extract its value, so it won't appear as a canvas "
+        "node or resolve in generated MATLAB commands.",
+        kind,
+        name,
+        path,
+    )
+    _record_load_error(
+        str(path), f"{kind} '{name}' is not a literal construction"
+    )
 
 
 def load_from_sources(paths: list[Path]) -> None:
@@ -257,10 +322,13 @@ def load_from_sources(paths: list[Path]) -> None:
         kind, payload = result
         if kind == "variable":
             _register_matlab_variable(payload, path)
-        elif kind == "path_input":
-            _register_matlab_path_input(payload, path)
-        elif kind == "sweep":
-            _register_matlab_sweep(payload, path)
+        elif kind == "entities_script":
+            # A folder scan can turn up an entities script that isn't the
+            # configured entities_file (e.g. a second project's, or one
+            # written before the setting existed). Its declarations are
+            # still real, so register them — read-only, since only the
+            # configured file is GUI-writable.
+            load_entities_script(path)
         else:
             _register_matlab_function(payload)
 
@@ -318,37 +386,22 @@ def _register_matlab_variable(var_name: str, path: Path) -> None:
         _record_load_error(str(path), str(e))
 
 
-def _register_matlab_path_input(name: str, path: Path) -> None:
-    """Register a single MATLAB PathInput getter: always name-tracked here,
-    and — when its construction call is a simple literal — ALSO registered
-    as a real ``scifor.PathInput`` into the shared Python registry (see
-    _matlab_path_inputs' docstring)."""
-    _matlab_path_inputs[name] = path
-    literal = extract_path_input_literal(path)
-    if literal is None:
-        logger.warning(
-            "[matlab_registry] PathInput getter '%s' (%s) does not construct "
-            "a simple literal (references a MATLAB variable/expression) -- "
-            "cannot statically extract its value, so it won't appear as a "
-            "pathInput__ canvas node or resolve in execution/generated "
-            "MATLAB commands. Name-tracked only.",
-            name,
-            path,
-        )
-        _record_load_error(
-            str(path), "PathInput getter is not a simple literal construction"
-        )
-        return
-
-    template, root_folder = literal
+def _register_matlab_path_input_object(
+    name: str, path: Path, template: str, root_folder: "str | None"
+) -> None:
+    """Construct a real ``scifor.PathInput`` and register it into the shared
+    Python registry. Used by the entities-script loader
+    so both produce an identical registration — nothing downstream can tell
+    which form declared it."""
     from scifor import PathInput
 
     from scistack_gui import registry
 
+    _matlab_path_inputs[name] = path
     pi = PathInput(template, root_folder=root_folder)
     registry._register_path_input(name, pi, source=str(path))
     logger.info(
-        "[matlab_registry] Registered MATLAB PathInput getter: %s (%s) "
+        "[matlab_registry] Registered MATLAB PathInput: %s (%s) "
         "template=%r root_folder=%r",
         name,
         path,
@@ -357,36 +410,24 @@ def _register_matlab_path_input(name: str, path: Path) -> None:
     )
 
 
-def _register_matlab_sweep(name: str, path: Path) -> None:
-    """Register a single MATLAB Sweep getter: always name-tracked here,
-    and — when its construction call is all simple literals — ALSO
-    registered as a real ``scifor.Sweep`` into the shared Python registry
-    (see _matlab_sweeps' docstring)."""
-    _matlab_sweeps[name] = path
-    values = extract_sweep_literal(path)
-    if values is None:
-        logger.warning(
-            "[matlab_registry] Sweep getter '%s' (%s) does not construct "
-            "all-literal values (references a MATLAB variable/expression) "
-            "-- cannot statically extract them, so it won't appear as a "
-            "sweep__ canvas node or resolve in execution/generated MATLAB "
-            "commands. Name-tracked only.",
-            name,
-            path,
-        )
-        _record_load_error(
-            str(path), "Sweep getter is not an all-literal construction"
-        )
-        return
-
-    from scidb import Sweep
+def _register_matlab_parameter_object(
+    name: str, path: Path, values: list, description: str = ""
+) -> None:
+    """Construct a real ``scidb.Parameter`` and register it into the shared
+    Python registry, so a MATLAB-declared Parameter is indistinguishable
+    from a Python-declared one downstream — ``build_parameter_nodes``
+    renders it, and it carries source-declared identity rather than being an
+    anonymous value in a for_each struct."""
+    from scidb import Parameter
 
     from scistack_gui import registry
 
-    sw = Sweep(*values)
-    registry._register_sweep(name, sw, source=str(path))
+    _matlab_parameters[name] = path
+    param = Parameter(*values, description=description)
+    param.source_file = str(path)
+    registry._register_parameter(name, param, source=str(path))
     logger.info(
-        "[matlab_registry] Registered MATLAB Sweep getter: %s (%s) %d value(s)",
+        "[matlab_registry] Registered MATLAB Parameter: %s (%s) %d value(s)",
         name,
         path,
         len(values),
@@ -402,7 +443,7 @@ def refresh_all() -> dict:
             "matlab_functions": [],
             "matlab_variables": [],
             "matlab_path_inputs": [],
-            "matlab_sweeps": [],
+            "matlab_parameters": [],
         }
     return load_from_config(_config)
 
@@ -436,13 +477,13 @@ def get_all_variable_names() -> list[str]:
 
 
 def get_all_path_input_names() -> list[str]:
-    """Return sorted list of all registered MATLAB PathInput getter names."""
+    """Return sorted list of all registered MATLAB PathInput names."""
     return sorted(_matlab_path_inputs.keys())
 
 
-def get_all_sweep_names() -> list[str]:
-    """Return sorted list of all registered MATLAB Sweep getter names."""
-    return sorted(_matlab_sweeps.keys())
+def get_all_parameter_names() -> list[str]:
+    """Return sorted list of all registered MATLAB Parameter names."""
+    return sorted(_matlab_parameters.keys())
 
 
 def get_mismatched_function_names() -> list[str]:
@@ -476,7 +517,6 @@ def has_matlab_config() -> bool:
     return _config is not None and bool(
         _config.matlab_functions
         or _config.matlab_variables
-        or _config.matlab_path_inputs
-        or _config.matlab_sweeps
         or _config.matlab_sources
+        or _config.matlab_entities_file
     )

@@ -14,7 +14,7 @@ from scidb.discover import (
     scan_project,
 )
 
-from scidb import Constant
+from scidb import Parameter
 
 
 # ---------------------------------------------------------------------------
@@ -88,23 +88,17 @@ def project_factory(tmp_path: Path):
 # discover_module: pure, per-module scanner
 # ---------------------------------------------------------------------------
 class TestSharedPredicates:
-    """is_constant/is_sweep/is_path_input -- shared with registry.py's
-    _scan_module_constants/_scan_module_path_inputs/_scan_module_sweeps to
-    eliminate duplicated isinstance checks between the two scanners."""
+    """is_parameter/is_path_input -- shared with registry.py's
+    _scan_module_parameters/_scan_module_path_inputs to eliminate
+    duplicated isinstance checks between the two scanners."""
 
-    def test_is_constant(self):
-        from scidb import constant
-        from scidb.discover import is_constant
+    def test_is_parameter(self):
+        from scidb import Parameter
+        from scidb.discover import is_parameter
 
-        assert is_constant(constant(1))
-        assert not is_constant(1)
-
-    def test_is_sweep(self):
-        from scidb import Sweep
-        from scidb.discover import is_sweep
-
-        assert is_sweep(Sweep(1, 2))
-        assert not is_sweep(1)
+        assert is_parameter(Parameter(1))
+        assert is_parameter(Parameter(1, 2))
+        assert not is_parameter(1)
 
     def test_is_path_input_direct(self):
         from scidb import PathInput
@@ -170,21 +164,21 @@ class TestDiscoverModule:
             package_name="fix_consts",
             files={
                 "constants.py": """
-                    from scidb import constant
+                    from scidb import Parameter
 
-                    SAMPLING_RATE_HZ = constant(1000, description="Hz")
-                    DEFAULT_BANDPASS = constant((1.0, 40.0), description="LFP band")
+                    SAMPLING_RATE_HZ = Parameter(1000, description="Hz")
+                    DEFAULT_BANDPASS = Parameter((1.0, 40.0), description="LFP band")
                 """,
             },
         )
         result = scan_project(root)
-        all_constants = [c for m in result.project_code.modules for c in m.constants]
+        all_constants = [c for m in result.project_code.modules for c in m.parameters]
         assert len(all_constants) == 2
         names = {name for name, _ in all_constants}
         assert names == {"SAMPLING_RATE_HZ", "DEFAULT_BANDPASS"}
 
         by_name = dict(all_constants)
-        assert isinstance(by_name["SAMPLING_RATE_HZ"], Constant)
+        assert isinstance(by_name["SAMPLING_RATE_HZ"], Parameter)
         assert by_name["SAMPLING_RATE_HZ"] == 1000
         assert by_name["DEFAULT_BANDPASS"].description == "LFP band"
 
@@ -231,28 +225,29 @@ class TestDiscoverModule:
         assert name == "GAIT_DATA"
         assert len(obj.alternatives) == 2
 
-    def test_finds_sweeps(self, project_factory):
+    def test_finds_multi_value_parameters(self, project_factory):
         root = project_factory(
             package_name="fix_sweeps",
             files={
                 "sweeps.py": """
-                    from scidb import Sweep
+                    from scidb import Parameter
 
-                    WINDOW_SECONDS = Sweep(10, 20, 30)
+                    WINDOW_SECONDS = Parameter(10, 20, 30)
                 """,
             },
         )
         result = scan_project(root)
-        all_sweeps = [sw for m in result.project_code.modules for sw in m.sweeps]
+        all_sweeps = [sw for m in result.project_code.modules for sw in m.parameters]
         assert len(all_sweeps) == 1
         name, obj = all_sweeps[0]
         assert name == "WINDOW_SECONDS"
         assert obj.alternatives == [10, 20, 30]
 
-    def test_bare_each_of_not_counted_as_sweep_or_path_input(self, project_factory):
-        """A bare EachOf of plain numbers is neither a Sweep (wrong type)
+    def test_bare_each_of_not_counted_as_parameter_or_path_input(self, project_factory):
+        """A bare EachOf of plain numbers is neither a Parameter (wrong type)
         nor a PathInput bundle (alternatives aren't PathInputs) -- it's
-        simply not discoverable, same as an unwrapped literal constant."""
+        simply not discoverable, same as an unwrapped literal value. Only a
+        named, top-level Parameter declaration is GUI-visible."""
         root = project_factory(
             package_name="fix_bare_each_of",
             files={
@@ -267,9 +262,9 @@ class TestDiscoverModule:
         all_path_inputs = [
             pi for m in result.project_code.modules for pi in m.path_inputs
         ]
-        all_sweeps = [sw for m in result.project_code.modules for sw in m.sweeps]
+        all_params = [p for m in result.project_code.modules for p in m.parameters]
         assert all_path_inputs == []
-        assert all_sweeps == []
+        assert all_params == []
 
     def test_ignores_reexports_of_variables(self, project_factory):
         """A BaseVariable re-imported into another module must not be double-counted."""
@@ -317,15 +312,15 @@ class TestDiscoverModule:
             package_name="fix_private",
             files={
                 "pipeline.py": """
-                    from scidb import constant
-                    _PRIVATE = constant(42)
-                    PUBLIC = constant(43)
+                    from scidb import Parameter
+                    _PRIVATE = Parameter(42)
+                    PUBLIC = Parameter(43)
                 """,
             },
         )
         result = scan_project(root)
         constants = [
-            (name, c) for m in result.project_code.modules for name, c in m.constants
+            (name, c) for m in result.project_code.modules for name, c in m.parameters
         ]
         names = {name for name, _ in constants}
         assert "PUBLIC" in names
@@ -359,8 +354,8 @@ class TestScanProject:
                         return x
                 """,
                 "constants.py": """
-                    from scidb import constant
-                    SAMPLING_RATE_HZ = constant(1000)
+                    from scidb import Parameter
+                    SAMPLING_RATE_HZ = Parameter(1000)
                 """,
             },
         )
@@ -369,7 +364,7 @@ class TestScanProject:
         assert result.project_code.name == "full_study"
         assert result.project_code.variable_count == 2
         assert result.project_code.function_count == 2
-        assert result.project_code.constant_count == 1
+        assert result.project_code.parameter_count == 1
         assert result.project_code.is_empty is False
         assert result.libraries == {}  # no uv.lock
 
@@ -378,8 +373,8 @@ class TestScanProject:
             package_name="fix_broken",
             files={
                 "good.py": """
-                    from scidb import constant
-                    GOOD = constant(1)
+                    from scidb import Parameter
+                    GOOD = Parameter(1)
                 """,
                 "broken.py": """
                     raise ImportError("intentional test failure")
@@ -388,7 +383,7 @@ class TestScanProject:
         )
         # scan_project should NOT raise — it should capture the error.
         result = scan_project(root)
-        assert result.project_code.constant_count == 1
+        assert result.project_code.parameter_count == 1
 
         # The broken module should show up as an error.
         broken_errors = [
@@ -402,8 +397,8 @@ class TestScanProject:
             package_name="fix_syntax",
             files={
                 "good.py": """
-                    from scidb import constant
-                    GOOD = constant(1)
+                    from scidb import Parameter
+                    GOOD = Parameter(1)
                 """,
                 "bad_syntax.py": """
                     def broken(:
@@ -411,7 +406,7 @@ class TestScanProject:
             },
         )
         result = scan_project(root)
-        assert result.project_code.constant_count == 1
+        assert result.project_code.parameter_count == 1
         syntax_errors = [
             e for e in result.project_code.errors if "bad_syntax" in e.module_name
         ]
@@ -441,12 +436,12 @@ class TestScanProject:
         root = project_factory(
             package_name="fix_no_lock",
             files={
-                "constants.py": "from scidb import constant\nX = constant(1)\n",
+                "constants.py": "from scidb import Parameter\nX = Parameter(1)\n",
             },
         )
         result = scan_project(root)
         assert result.libraries == {}
-        assert result.project_code.constant_count == 1
+        assert result.project_code.parameter_count == 1
 
     def test_unicode_in_source(self, project_factory):
         """Non-ASCII in source should not break the scanner."""
@@ -455,13 +450,13 @@ class TestScanProject:
             files={
                 "constants.py": """
                     # coding: utf-8
-                    from scidb import constant
-                    GREEK = constant("αβγ", description="Greek letters: αβγ")
+                    from scidb import Parameter
+                    GREEK = Parameter("αβγ", description="Greek letters: αβγ")
                 """,
             },
         )
         result = scan_project(root)
-        assert result.project_code.constant_count == 1
+        assert result.project_code.parameter_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -623,13 +618,13 @@ class TestModuleExportsProperties:
         exports = ModuleExports(module_name="test", functions=[object])
         assert not exports.is_empty
 
-    def test_is_empty_false_with_constant(self):
+    def test_is_empty_false_with_parameter(self):
         from scidb.discover import ModuleExports
 
-        from scidb import constant
+        from scidb import Parameter
 
-        c = constant(42)
-        exports = ModuleExports(module_name="test", constants=[("X", c)])
+        c = Parameter(42)
+        exports = ModuleExports(module_name="test", parameters=[("X", c)])
         assert not exports.is_empty
         assert exports.total_count == 1
 
@@ -642,28 +637,28 @@ class TestModuleExportsProperties:
         assert not exports.is_empty
         assert exports.total_count == 1
 
-    def test_is_empty_false_with_sweep(self):
-        from scidb import Sweep
+    def test_is_empty_false_with_multi_value_parameter(self):
+        from scidb import Parameter
         from scidb.discover import ModuleExports
 
-        sw = Sweep(1, 2)
-        exports = ModuleExports(module_name="test", sweeps=[("X", sw)])
+        exports = ModuleExports(
+            module_name="test", parameters=[("X", Parameter(1, 2))]
+        )
         assert not exports.is_empty
         assert exports.total_count == 1
 
     def test_total_count_mixed(self):
         from scidb.discover import ModuleExports
 
-        from scidb import PathInput, Sweep, constant
+        from scidb import Parameter, PathInput
 
-        c = constant(42)
+        c = Parameter(42)
         exports = ModuleExports(
             module_name="test",
             variables=[object, object],
             functions=[object],
-            constants=[("X", c), ("Y", c)],
+            parameters=[("X", c), ("Y", c), ("S", Parameter(1, 2))],
             path_inputs=[("P", PathInput("{s}.mat"))],
-            sweeps=[("S", Sweep(1, 2))],
         )
         assert exports.total_count == 7
 
@@ -675,23 +670,20 @@ class TestPackageResultProperties:
     def test_counts_across_modules(self):
         from scidb.discover import ModuleExports, PackageResult
 
-        from scidb import PathInput, Sweep, constant
+        from scidb import Parameter, PathInput
 
-        c = constant(1)
         m1 = ModuleExports(module_name="a", variables=[object, object])
         m2 = ModuleExports(
             module_name="b",
             functions=[object],
-            constants=[("X", c)],
+            parameters=[("X", Parameter(1)), ("S", Parameter(1, 2))],
             path_inputs=[("P", PathInput("{s}.mat"))],
-            sweeps=[("S", Sweep(1, 2))],
         )
         result = PackageResult(name="test", modules=[m1, m2])
         assert result.variable_count == 2
         assert result.function_count == 1
-        assert result.constant_count == 1
+        assert result.parameter_count == 2
         assert result.path_input_count == 1
-        assert result.sweep_count == 1
 
     def test_is_empty_all_empty_modules(self):
         from scidb.discover import ModuleExports, PackageResult
@@ -767,14 +759,14 @@ class TestDeepSubmodules:
                 "level1/__init__.py": "",
                 "level1/level2/__init__.py": "",
                 "level1/level2/constants.py": """
-                    from scidb import constant
-                    DEEP_CONST = constant(42, description="deeply nested")
+                    from scidb import Parameter
+                    DEEP_CONST = Parameter(42, description="deeply nested")
                 """,
             },
         )
         result = scan_project(root)
         all_constants = [
-            (name, c) for m in result.project_code.modules for name, c in m.constants
+            (name, c) for m in result.project_code.modules for name, c in m.parameters
         ]
         names = {name for name, _ in all_constants}
         assert "DEEP_CONST" in names
@@ -785,14 +777,14 @@ class TestDeepSubmodules:
             package_name="fix_init_exports",
             files={
                 "__init__.py": """
-                    from scidb import constant
-                    INIT_CONST = constant(99, description="from init")
+                    from scidb import Parameter
+                    INIT_CONST = Parameter(99, description="from init")
                 """,
             },
         )
         result = scan_project(root)
         all_constants = [
-            (name, c) for m in result.project_code.modules for name, c in m.constants
+            (name, c) for m in result.project_code.modules for name, c in m.parameters
         ]
         names = {name for name, _ in all_constants}
         assert "INIT_CONST" in names
@@ -817,7 +809,7 @@ class TestMixedModuleExports:
             package_name="fix_mixed",
             files={
                 "everything.py": """
-                    from scidb import BaseVariable, constant
+                    from scidb import BaseVariable, Parameter
                     from scidb import scistack
 
                     class MixedVar(BaseVariable):
@@ -827,7 +819,7 @@ class TestMixedModuleExports:
                     def mixed_fn(x):
                         return x
 
-                    MIXED_CONST = constant(42)
+                    MIXED_CONST = Parameter(42)
                 """,
             },
         )
@@ -840,8 +832,8 @@ class TestMixedModuleExports:
         assert mod.variables[0].__name__ == "MixedVar"
         assert len(mod.functions) == 1
         assert mod.functions[0].__name__ == "mixed_fn"
-        assert len(mod.constants) == 1
-        assert mod.constants[0][0] == "MIXED_CONST"
+        assert len(mod.parameters) == 1
+        assert mod.parameters[0][0] == "MIXED_CONST"
 
 
 # ---------------------------------------------------------------------------
@@ -878,19 +870,19 @@ class TestExcludesTestOnlyContent:
             package_name="fix_test_exclusion",
             files={
                 "prod.py": """
-                    from scidb import constant
-                    PROD_CONST = constant(1, description="production")
+                    from scidb import Parameter
+                    PROD_CONST = Parameter(1, description="production")
                 """,
                 "tests/__init__.py": "",
                 "tests/helpers.py": """
-                    from scidb import constant
-                    TEST_ONLY_CONST = constant(2, description="test-only")
+                    from scidb import Parameter
+                    TEST_ONLY_CONST = Parameter(2, description="test-only")
                 """,
             },
         )
         result = scan_project(root)
         all_constants = [
-            (name, c) for m in result.project_code.modules for name, c in m.constants
+            (name, c) for m in result.project_code.modules for name, c in m.parameters
         ]
         names = {name for name, _ in all_constants}
         assert "PROD_CONST" in names
@@ -901,18 +893,18 @@ class TestExcludesTestOnlyContent:
             package_name="fix_test_module_exclusion",
             files={
                 "prod.py": """
-                    from scidb import constant
-                    PROD_CONST = constant(1)
+                    from scidb import Parameter
+                    PROD_CONST = Parameter(1)
                 """,
                 "test_helpers.py": """
-                    from scidb import constant
-                    TEST_ONLY_CONST = constant(2)
+                    from scidb import Parameter
+                    TEST_ONLY_CONST = Parameter(2)
                 """,
             },
         )
         result = scan_project(root)
         all_constants = [
-            (name, c) for m in result.project_code.modules for name, c in m.constants
+            (name, c) for m in result.project_code.modules for name, c in m.parameters
         ]
         names = {name for name, _ in all_constants}
         assert "PROD_CONST" in names

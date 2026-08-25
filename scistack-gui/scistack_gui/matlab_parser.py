@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 
+from scidb.source_edit import Span
+
 logger = logging.getLogger(__name__)
 
 # Regex for MATLAB function declaration:
@@ -53,12 +55,40 @@ _BLOCK_COMMENT_RE = re.compile(
 _LINE_CONTINUATION_RE = re.compile(r"\.\.\.[^\n]*\n[ \t]*")
 
 
+def _blank_out(text: str, *, keep_newlines: bool) -> str:
+    """*text* with every character replaced by a space, optionally keeping
+    newlines so line structure and line numbering survive."""
+    if keep_newlines:
+        return "".join("\n" if c == "\n" else " " for c in text)
+    return " " * len(text)
+
+
 def _preprocess_for_parsing(text: str) -> str:
-    """Strip block comments and collapse line continuations before either
-    parser regex runs. Never applied to the bytes used for ``source_hash`` —
-    only to the text used to locate function/classdef declarations."""
-    text = _BLOCK_COMMENT_RE.sub("", text)
-    text = _LINE_CONTINUATION_RE.sub(" ", text)
+    """Neutralise block comments and line continuations before any parser
+    regex runs. Never applied to the bytes used for ``source_hash`` — only
+    to the text used to locate declarations.
+
+    **Length-preserving**: masked regions are overwritten with spaces rather
+    than deleted, so an offset into the returned text is also a valid offset
+    into the original. That is what makes span-based rewriting possible —
+    without it, a splice computed from parsed output would land at the wrong
+    place in the real file and corrupt it (see
+    ``.claude/plan-gui-entity-editing-26-08-24.md`` Stage 2). Every regex in
+    this module only ever searches for declarations and construction calls,
+    so a run of spaces is inert to all of them.
+
+    Block comments keep their newlines (the region becomes blank lines, so
+    line numbers still match the original file). Line continuations do not:
+    the newline is part of what gets collapsed, which is the whole point —
+    it joins a split signature back onto one logical line so ``...`` and the
+    next line's indentation never leak into a captured parameter name.
+    """
+    text = _BLOCK_COMMENT_RE.sub(
+        lambda m: _blank_out(m.group(0), keep_newlines=True), text
+    )
+    text = _LINE_CONTINUATION_RE.sub(
+        lambda m: _blank_out(m.group(0), keep_newlines=False), text
+    )
     return text
 
 
@@ -253,113 +283,41 @@ def parse_matlab_variable(path: Path) -> str | None:
     return None
 
 
-# MATLAB has no module-level globals, so a Python-style ``NAME =
-# PathInput(...)``/``NAME = Sweep(...)`` binding doesn't translate
-# directly. Convention: a "value getter" — a zero-argument function whose
-# body constructs and returns a scifor.PathInput/scifor.Sweep (or the
-# scidb re-export) — stands in for it, named after the object it exposes
-# (mirrors the existing one-function-per-file rule already enforced for
-# regular functions). See docs/claude/code-discovery-categories.md.
-_PATHINPUT_VALUE_RE = re.compile(r"=\s*(?:scifor\.|scidb\.)?PathInput\s*\(")
-_SWEEP_VALUE_RE = re.compile(r"=\s*(?:scifor\.|scidb\.)?Sweep\s*\(")
-
-
-def _getter_context(
-    path: Path, value_re: "re.Pattern[str]"
-) -> "tuple[str, str] | None":
-    """Shared location logic for classification (``_parse_value_getter``)
-    AND literal extraction (``extract_path_input_literal``/
-    ``extract_sweep_literal``): a zero-arg function whose body (up to the
-    next function declaration, or EOF) contains a construction matching
-    ``value_re``. Static regex only — never runs MATLAB, matching this
-    file's "extract without running MATLAB" principle. Returns
-    ``(fn_name, body_text)`` or ``None``.
-    """
-    try:
-        raw = path.read_bytes()
-    except OSError as e:
-        logger.warning("[matlab_parser] Cannot read MATLAB file %s: %s", path, e)
-        return None
-    text = _preprocess_for_parsing(raw.decode("utf-8", errors="replace"))
-
-    # Same one-file-one-entity rule as parse_matlab_function: a classdef
-    # file's "function" matches are always methods, never a getter.
-    if _CLASSDEF_RE.search(text):
-        return None
-
-    m = _FUNCTION_RE.search(text)
-    if m is None:
-        return None
-    fn_name = m.group(3)
-    raw_params = m.group(4).strip()
-    if raw_params:
-        return None  # a value getter takes no arguments
-
-    # Search only this function's own body — up to the next function
-    # declaration (if any) or end of file — so a getter sitting above an
-    # unrelated function in the same file doesn't false-positive on the
-    # unrelated function's own construction.
-    body = text[m.end() :]
-    next_fn = _FUNCTION_RE.search(body)
-    if next_fn is not None:
-        body = body[: next_fn.start()]
-    if value_re.search(body) is None:
-        return None
-    return fn_name, body
-
-
-def _parse_value_getter(path: Path, value_re: "re.Pattern[str]") -> str | None:
-    """Shared implementation for ``parse_matlab_path_input``/
-    ``parse_matlab_sweep``. Returns the function's name (the object's
-    exposed identity) or ``None``."""
-    ctx = _getter_context(path, value_re)
-    return ctx[0] if ctx is not None else None
-
-
-def parse_matlab_path_input(path: Path) -> str | None:
-    """Parse a MATLAB "PathInput getter" file. See ``_parse_value_getter``."""
-    return _parse_value_getter(path, _PATHINPUT_VALUE_RE)
-
-
-def parse_matlab_sweep(path: Path) -> str | None:
-    """Parse a MATLAB "Sweep getter" file. See ``_parse_value_getter``."""
-    return _parse_value_getter(path, _SWEEP_VALUE_RE)
-
-
 # ---------------------------------------------------------------------------
 # Best-effort literal extraction — construct a REAL PathInput/Sweep object
-# from a getter's construction call, when its arguments are simple literals
-# (quoted strings / numbers). Still purely static text (no MATLAB run): a
-# construction whose arguments reference a MATLAB variable/expression
-# rather than a literal returns None, and the caller falls back to
-# name-only tracking (see matlab_registry.py). See
+# from an entities-script declaration, when its arguments are simple
+# literals (quoted strings / numbers). Still purely static text (no MATLAB
+# run): a construction whose arguments reference a MATLAB variable or
+# expression returns None, and the caller falls back to name-only tracking
+# (see matlab_registry.py). See
 # docs/claude/code-discovery-categories.md.
 # ---------------------------------------------------------------------------
 
 _MATLAB_NUMBER_RE = re.compile(r"^[-+]?\d+\.?\d*(?:[eE][-+]?\d+)?$")
 
 
-def _extract_call_args(body: str, value_re: "re.Pattern[str]") -> str | None:
-    """The raw text between the matching parens of the FIRST construction
-    call in ``body`` matching ``value_re`` (``value_re`` must end its match
-    right after the opening ``(``, as ``_PATHINPUT_VALUE_RE``/
-    ``_SWEEP_VALUE_RE`` do). Returns ``None`` if no match, or the parens
-    are unbalanced (malformed/unparseable)."""
-    m = value_re.search(body)
-    if m is None:
-        return None
-    start = m.end()
+def _matching_paren(text: str, start: int) -> "int | None":
+    """Index of the ``)`` closing an opening ``(`` that has already been
+    consumed (i.e. *start* is the offset just after it), or ``None`` if the
+    parens never balance.
+
+    Quoted strings are skipped whole — both ``'...'`` and ``"..."``, with
+    MATLAB's doubled-quote escaping — so a paren inside a path template
+    never throws off the depth count. Takes an offset rather than a slice so
+    callers scanning many calls in one file don't copy the remainder of the
+    text per call.
+    """
     depth = 1
     i = start
-    n = len(body)
+    n = len(text)
     while i < n and depth > 0:
-        c = body[i]
+        c = text[i]
         if c in "'\"":
             quote = c
             i += 1
             while i < n:
-                if body[i] == quote:
-                    if i + 1 < n and body[i + 1] == quote:
+                if text[i] == quote:
+                    if i + 1 < n and text[i + 1] == quote:
                         i += 2
                         continue
                     i += 1
@@ -373,7 +331,7 @@ def _extract_call_args(body: str, value_re: "re.Pattern[str]") -> str | None:
         i += 1
     if depth != 0:
         return None
-    return body[start : i - 1]
+    return i - 1
 
 
 def _split_matlab_args(args_text: str) -> list[str]:
@@ -443,96 +401,387 @@ def _parse_matlab_literal_token(token: str) -> "tuple[bool, object]":
     return False, None
 
 
-def extract_path_input_literal(path: Path) -> "tuple[str, str | None] | None":
-    """Best-effort ``(template, root_folder)`` from a PathInput getter's
-    construction call. ``None`` if it isn't a simple literal call (e.g. the
-    template is a MATLAB variable) — the caller then falls back to
-    name-only tracking (matlab_registry.py)."""
-    ctx = _getter_context(path, _PATHINPUT_VALUE_RE)
-    if ctx is None:
+def read_source_text(path: Path) -> "str | None":
+    """The file's decoded text, decoded exactly as the parsers decode it —
+    so a caller can turn a ``Span`` into a substring or a line number
+    against the same string the span was computed for."""
+    try:
+        return path.read_bytes().decode("utf-8", errors="replace")
+    except OSError as e:
+        logger.warning("[matlab_parser] Cannot read MATLAB file %s: %s", path, e)
         return None
-    _, body = ctx
-    args_text = _extract_call_args(body, _PATHINPUT_VALUE_RE)
-    if args_text is None:
+
+
+# ---------------------------------------------------------------------------
+# Entities script — the MATLAB analogue of src/scistack_entities.py.
+#
+# A plain script (no `function`, no `classdef`) of top-level bindings:
+#
+#     test_sweep = scidb.Sweep(0, 1, 2);
+#
+# Parsed exactly like Python's `find_binding_span`: locate `NAME = <expr>`
+# at the start of a line and return the span of the whole RHS construction
+# call, so changing a value and changing the constructor are the same
+# splice (see docs/claude/entity-editability-model.md, D1/D4/D5).
+# ---------------------------------------------------------------------------
+
+# `NAME = ` at the start of a line. `=` must not be `==`/`<=`/`>=`/`~=`, or a
+# comparison inside a script would read as a binding.
+_BINDING_RE = re.compile(r"^[ \t]*([A-Za-z]\w*)[ \t]*=(?![=])", re.MULTILINE)
+
+# The constructors an entities script may declare, mapped to the entity kind
+# they produce. `Constant` is accepted here from the start even though
+# +scidb/Constant.m arrives in Stage 4 — parsing is harmless without it, and
+# it keeps the grammar in one place.
+# Deliberately unanchored: matched with ``.match(text, pos)``, which anchors
+# at *pos* — a ``^`` would additionally demand the start of the whole string.
+_ENTITY_CTOR_RE = re.compile(r"(?:scifor\.|scidb\.)?(PathInput|Parameter|EachOf)\s*\(")
+
+
+@dataclass(frozen=True)
+class MatlabBinding:
+    """One ``NAME = <ctor>(...)`` declaration in an entities script."""
+
+    name: str
+    kind: str
+    """``"path_input"``, ``"sweep"``, ``"constant"`` or ``"each_of"``."""
+    expr: str
+    """The full RHS construction call text, e.g. ``scidb.Sweep(0, 1)``."""
+    expr_span: Span
+    """Absolute offsets of ``expr`` in the file's decoded text."""
+    args_span: Span
+    """Absolute offsets of just the argument text inside the call."""
+
+
+_CTOR_KINDS = {
+    "PathInput": "path_input",
+    "Parameter": "parameter",
+    "EachOf": "each_of",
+}
+
+
+def _statement_end(text: str, start: int) -> int:
+    """Offset of the end of the statement beginning at *start* — the first
+    top-level ``;`` or newline outside quotes/brackets. MATLAB statements
+    have no reliable terminator (the ``;`` is optional and only suppresses
+    echo), so a continued or bracketed expression has to be scanned rather
+    than split on."""
+    depth = 0
+    i = start
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "'\"":
+            quote = c
+            i += 1
+            while i < n:
+                if text[i] == quote:
+                    if i + 1 < n and text[i + 1] == quote:
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0 and (c == ";" or c == "\n"):
+            return i
+        i += 1
+    return n
+
+
+def parse_matlab_entities_script(path: Path) -> "list[MatlabBinding]":
+    """Every entity declaration in a MATLAB entities script, in file order.
+
+    Returns ``[]`` for an unreadable file, or one that declares nothing
+    recognisable — never raises. A binding whose RHS is not one of the known
+    constructors (a plain ``x = 5;`` helper line) is skipped silently: an
+    entities script is allowed to contain ordinary MATLAB.
+
+    Later bindings of the same name are returned too; callers wanting
+    "what the script ends up holding" should take the last (matching
+    ``scidb.source_edit.find_binding_span``'s last-binding-wins rule).
+    """
+    text = read_source_text(path)
+    if text is None:
+        return []
+    parsed = _preprocess_for_parsing(text)
+
+    bindings: list[MatlabBinding] = []
+    for m in _BINDING_RE.finditer(parsed):
+        rhs_start = m.end()
+        while rhs_start < len(parsed) and parsed[rhs_start] in " \t":
+            rhs_start += 1
+        ctor = _ENTITY_CTOR_RE.match(parsed, rhs_start)
+        if ctor is None:
+            continue
+        args_end = _matching_paren(parsed, ctor.end())
+        if args_end is None:
+            logger.warning(
+                "[matlab_parser] Unbalanced parens in '%s' declaration in %s",
+                m.group(1),
+                path,
+            )
+            continue
+        end = _statement_end(parsed, rhs_start)
+        bindings.append(
+            MatlabBinding(
+                name=m.group(1),
+                kind=_CTOR_KINDS[ctor.group(1)],
+                expr=text[rhs_start:end].rstrip(),
+                expr_span=Span(rhs_start, end),
+                args_span=Span(ctor.end(), args_end),
+            )
+        )
+
+    logger.debug(
+        "[matlab_parser] Parsed %d entity declaration(s) from %s",
+        len(bindings),
+        path,
+    )
+    return bindings
+
+
+def binding_path_input_literal(
+    binding: MatlabBinding, text: str
+) -> "tuple[str, str | None] | None":
+    """``(template, root_folder)`` from a ``PathInput`` binding, or ``None``
+    if any needed argument isn't a simple literal — the same all-or-nothing
+    all-or-nothing rule as :func:`binding_parameter_literal`."""
+    args = _split_matlab_args(binding.args_span.extract(text))
+    return _path_input_args_to_literal(args)
+
+
+# `name=value` as a single argument token — MATLAB R2021b+ syntax, which is
+# what the GUI's own generator emits (api.matlab_command._format_path_input)
+# and what scimatlab's README requires R2021b for. Deliberately rejects `==`
+# so a comparison expression is never read as a named argument.
+_NAMED_ARG_RE = re.compile(r"^([A-Za-z]\w*)\s*=(?!=)\s*(.+)$", re.DOTALL)
+
+
+def _parse_named_arg(token: str) -> "tuple[str, str] | None":
+    """``(name, value_token)`` if *token* is a ``name=value`` argument, else
+    ``None``. A quoted literal containing ``=`` (``'a=b.mat'``) can't match:
+    the pattern requires a bare identifier before the ``=``."""
+    m = _NAMED_ARG_RE.match(token.strip())
+    return (m.group(1), m.group(2).strip()) if m else None
+
+
+# ---------------------------------------------------------------------------
+# Rendering MATLAB declarations — the counterpart of scidb.source_edit's
+# render_* for the entities script. Kept here, next to the parser that reads
+# them back, so the two can never disagree about the grammar.
+# ---------------------------------------------------------------------------
+
+
+def render_matlab_value(value) -> str:
+    """A Python value as a MATLAB literal.
+
+    Single-quoted strings (MATLAB's char-array form, with ``''`` escaping)
+    rather than double-quoted, so a declaration reads the way MATLAB users
+    write one and parses back through ``_parse_matlab_literal_token``.
+    ``bool`` is checked before ``int`` — in Python ``True`` IS an ``int``, so
+    the obvious ordering silently renders ``1`` instead of ``true``.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def render_matlab_parameter(values, description: str = "") -> str:
+    """``scidb.Parameter(30, description='...')`` or ``scidb.Parameter(0, 1, 2)``.
+
+    One constructor whatever the value count -- adding a value is adding an
+    argument, never a change of form (D6).
+    """
+    args = [render_matlab_value(v) for v in values]
+    if description:
+        args.append(f"description={render_matlab_value(description)}")
+    return f"scidb.Parameter({', '.join(args)})"
+
+
+def render_matlab_path_input(
+    template: str,
+    root_folder: "str | None" = None,
+    alternates: "list[dict] | None" = None,
+) -> str:
+    """``scidb.PathInput('{s}/x.csv', root_folder='/d')``, or an
+    ``scidb.EachOf(...)`` of them when *alternates* is given — the same
+    shape :func:`scidb.source_edit.render_path_input` produces for Python."""
+    calls = [_matlab_path_input_call(template, root_folder)]
+    calls.extend(
+        _matlab_path_input_call(alt.get("template", ""), alt.get("root_folder"))
+        for alt in (alternates or [])
+    )
+    if len(calls) == 1:
+        return calls[0]
+    return f"scidb.EachOf({', '.join(calls)})"
+
+
+def _matlab_path_input_call(template: str, root_folder: "str | None") -> str:
+    args = [render_matlab_value(template)]
+    if root_folder:
+        args.append(f"root_folder={render_matlab_value(root_folder)}")
+    return f"scidb.PathInput({', '.join(args)})"
+
+
+def find_entities_binding(path: Path, name: str) -> "MatlabBinding | None":
+    """The LAST top-level binding of *name* in an entities script, or
+    ``None``.
+
+    Last-wins matches how a MATLAB script actually executes, and mirrors
+    :func:`scidb.source_edit.find_binding_span`'s rule for Python.
+    """
+    found = None
+    for binding in parse_matlab_entities_script(path):
+        if binding.name == name:
+            found = binding
+    return found
+
+
+def binding_parameter_literal(
+    binding: MatlabBinding, text: str
+) -> "tuple[list, str] | None":
+    """``(values, description)`` from a ``Parameter`` binding, or ``None`` if
+    any positional value isn't a simple literal (all-or-nothing: one
+    non-literal invalidates the whole list, so a partially-read Parameter
+    can never silently run with fewer values than declared).
+
+    ``description`` is accepted in either MATLAB syntax
+    (``description='x'`` or ``'description', 'x'``), mirroring
+    :func:`_path_input_args_to_literal`'s handling of ``root_folder``.
+    """
+    args = _split_matlab_args(binding.args_span.extract(text))
+    if not args:
         return None
-    args = _split_matlab_args(args_text)
+
+    values: list = []
+    description = ""
+    i = 0
+    while i < len(args):
+        named = _parse_named_arg(args[i])
+        if named is not None:
+            key, value_token = named
+            if key == "description":
+                ok_val, val = _parse_matlab_literal_token(value_token)
+                if ok_val and isinstance(val, str):
+                    description = val
+            i += 1
+            continue
+        if i + 1 < len(args):
+            ok_key, key = _parse_matlab_literal_token(args[i])
+            if ok_key and key == "description":
+                ok_val, val = _parse_matlab_literal_token(args[i + 1])
+                if ok_val and isinstance(val, str):
+                    description = val
+                i += 2
+                continue
+        ok_val, val = _parse_matlab_literal_token(args[i])
+        if not ok_val:
+            return None
+        values.append(val)
+        i += 1
+    return (values, description) if values else None
+
+
+def _path_input_args_to_literal(args: list[str]) -> "tuple[str, str | None] | None":
+    """``(template, root_folder)`` from an already-split PathInput argument
+    list.
+
+    Accepts BOTH ways MATLAB can pass ``root_folder`` — ``root_folder='/d'``
+    (name=value, R2021b+) and ``'root_folder', '/d'`` (name-value pair) —
+    because ``+scifor/PathInput.m``'s ``arguments`` block accepts both, so a
+    user (or the GUI's own command generator) may legitimately have written
+    either.
+    """
     if not args:
         return None
     ok, template = _parse_matlab_literal_token(args[0])
     if not ok or not isinstance(template, str):
         return None
+
     root_folder: str | None = None
     i = 1
-    while i < len(args) - 1:
-        ok_key, key = _parse_matlab_literal_token(args[i])
-        if ok_key and key == "root_folder":
-            ok_val, val = _parse_matlab_literal_token(args[i + 1])
-            if ok_val and isinstance(val, str):
-                root_folder = val
-            i += 2
+    while i < len(args):
+        named = _parse_named_arg(args[i])
+        if named is not None:
+            key, value_token = named
+            if key == "root_folder":
+                ok_val, val = _parse_matlab_literal_token(value_token)
+                if ok_val and isinstance(val, str):
+                    root_folder = val
+            i += 1
             continue
+        if i + 1 < len(args):
+            ok_key, key = _parse_matlab_literal_token(args[i])
+            if ok_key and key == "root_folder":
+                ok_val, val = _parse_matlab_literal_token(args[i + 1])
+                if ok_val and isinstance(val, str):
+                    root_folder = val
+                i += 2
+                continue
         i += 1
     return template, root_folder
 
 
-def extract_sweep_literal(path: Path) -> "list | None":
-    """Best-effort value list from a Sweep getter's construction call.
-    ``None`` if it isn't ALL simple literals (any single non-literal value
-    — a MATLAB variable/expression — invalidates the whole list rather
-    than silently dropping just that one value)."""
-    ctx = _getter_context(path, _SWEEP_VALUE_RE)
-    if ctx is None:
-        return None
-    _, body = ctx
-    args_text = _extract_call_args(body, _SWEEP_VALUE_RE)
-    if args_text is None:
-        return None
-    args = _split_matlab_args(args_text)
-    if not args:
-        return None
-    values = []
-    for tok in args:
-        ok, val = _parse_matlab_literal_token(tok)
-        if not ok:
-            return None
-        values.append(val)
-    return values
+
+
+def is_matlab_entities_script(path: Path) -> bool:
+    """True if *path* is a plain script (no ``function``, no ``classdef``)
+    that declares at least one entity.
+
+    The no-function/no-classdef check is what keeps this from colliding
+    with the existing "any classdef file is never scanned for functions"
+    rule — an entities script is exactly the shape ``classify_matlab_file``
+    previously had no answer for.
+    """
+    text = read_source_text(path)
+    if text is None:
+        return False
+    parsed = _preprocess_for_parsing(text)
+    if _CLASSDEF_RE.search(parsed) or _FUNCTION_RE.search(parsed):
+        return False
+    return bool(parse_matlab_entities_script(path))
 
 
 def classify_matlab_file(
     path: Path,
 ) -> tuple[str, str] | tuple[str, MatlabFunctionInfo] | None:
-    """Classify a single .m file as a variable, PathInput getter, Sweep
-    getter, or a function by content, for folder-scan discovery (no
-    explicit ``matlab.functions``/``matlab.variables`` split available).
+    """Classify a single .m file as a variable, a function, or an entities
+    script, for folder-scan discovery (no explicit
+    ``matlab.functions``/``matlab.variables`` split available).
 
-    Mirrors how Python's ``_scan_module_functions``/``_scan_module_path_inputs``/
-    ``_scan_module_sweeps`` classify each imported object dynamically
-    rather than requiring the config to pre-sort files. Tries the classdef
-    parse first (cheaper, and a ``BaseVariable`` classdef with methods
-    would otherwise also match the function regex), then the value-getter
-    checks (a getter also matches the plain function regex — zero args,
-    one output — so it must be checked BEFORE ``parse_matlab_function``).
+    Mirrors how Python's ``_scan_module_functions``/``_scan_module_constants``
+    classify each imported object dynamically rather than requiring the
+    config to pre-sort files. Tries the classdef parse first (cheaper, and a
+    ``BaseVariable`` classdef with methods would otherwise also match the
+    function regex).
 
-    Returns ``("variable", class_name)``, ``("path_input", name)``,
-    ``("sweep", name)``, ``("function", MatlabFunctionInfo)``, or ``None``
-    if the file is none of those (e.g. a script with no function
-    declaration, or unreadable).
+    Returns ``("variable", class_name)``, ``("function", MatlabFunctionInfo)``,
+    ``("entities_script", str(path))``, or ``None`` if the file is none of
+    those (e.g. a script that declares nothing, or unreadable).
+
+    The entities-script check comes LAST: it is the only classification that
+    requires the file to have neither a ``function`` nor a ``classdef``, so
+    everything above has already been ruled out by the time it runs, and it
+    cannot steal a file from any existing category.
     """
     var_name = parse_matlab_variable(path)
     if var_name is not None:
         return ("variable", var_name)
 
-    pi_name = parse_matlab_path_input(path)
-    if pi_name is not None:
-        return ("path_input", pi_name)
-
-    sweep_name = parse_matlab_sweep(path)
-    if sweep_name is not None:
-        return ("sweep", sweep_name)
-
     fn_info = parse_matlab_function(path)
     if fn_info is not None:
         return ("function", fn_info)
+
+    if is_matlab_entities_script(path):
+        return ("entities_script", str(path))
 
     return None

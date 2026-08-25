@@ -1,22 +1,23 @@
-# Code Discovery: Functions, Submodules, Variables, Constants, PathInputs, Sweeps
+# Code Discovery: Functions, Submodules, Variables, Parameters, PathInputs
 
 ## Overview
 
-The GUI's pipeline graph is built from **six** kinds of "things": functions,
-variables, constants, PathInputs, sweeps, and submodules. As of the
-PathInput/Sweep/Submodule source-of-truth work (see
-`.claude/plan-pathinput-sweep-submodule-source-of-truth.md`), **all six** are
+The GUI's pipeline graph is built from **five** kinds of "things":
+functions, variables, parameters, PathInputs, and submodules. All five are
 either scanned from source directly, or have a working source-code
 translation. This doc is the map of which mechanism applies to which, in
 both Python and MATLAB.
+
+**Constants and Sweeps were merged into one Parameter on 2026-08-25** (§3):
+one class, one registry, one canvas node type, one sidebar tab. See
+`docs/claude/entity-editability-model.md` (D6).
 
 | Category | How it's found | Python source | MATLAB source |
 |---|---|---|---|
 | **Functions** | Scan source files/packages | `registry.py` / `scidb/discover.py` | `matlab_registry.py` + `matlab_parser.py` (regex) |
 | **Variables** | Scan source files/packages | `BaseVariable` subclass (metaclass auto-register) | `classdef ... < ...BaseVariable` (regex) |
-| **Constants** | Scan source files/packages | `scidb.Constant` instance (`scidb.constant(...)`) | **not supported** — no MATLAB equivalent |
-| **PathInputs** | Scan source files/packages | top-level `scidb.PathInput(...)` binding | zero-arg "value getter" function (regex) |
-| **Sweeps** | Scan source files/packages | top-level `scidb.Sweep(...)` binding (sugar for `EachOf`) | zero-arg "value getter" function (regex) |
+| **Parameters** | Scan source files/packages | top-level `scidb.Parameter(...)` binding (one or many values; IS an `EachOf`) | `scidb.Parameter(...)` in the entities script (regex) |
+| **PathInputs** | Scan source files/packages | top-level `scidb.PathInput(...)` binding | top-level binding in the entities script (regex) |
 | **Submodules** | GUI composition (`pipelineNode`) OR source (`scidb.Pipeline`) | `scidb.Pipeline`/`.use()`/`.bind()`, bidirectional (import + export) | export only (flattened into the script) |
 
 ---
@@ -57,10 +58,10 @@ Rules:
 - A file containing **any** `classdef` is never scanned for a function — a
   `function` match inside it is always a class method, not a pipeline step
   (prevents test-suite setup helpers from being mis-registered).
-- A zero-arg function whose body constructs a `PathInput`/`Sweep` is a
-  *value getter*, not a plain function — see §4/§5 below; `classify_matlab_file`
-  checks for these BEFORE the plain-function check, since a getter also
-  matches `_FUNCTION_RE`.
+- A function that happens to construct a `PathInput`/`Parameter` is just a
+  function. (Until 2026-08-25 such a zero-arg function was a *value getter*,
+  checked before the plain-function branch; that convention is gone — see
+  §4.)
 - The function name comes from the regex's name group; params/output names
   come from the bracket/parenthesis groups.
 - Files can be explicitly declared (`[tool.scistack.matlab] functions =
@@ -93,29 +94,86 @@ builder can treat it like a real Python `BaseVariable` subclass.
 
 ---
 
-## 3. Constants — scanned from source (Python only)
+## 3. Parameters — scanned from source
 
-A constant is created explicitly with `scidb.constant(value, description=...)`,
-which wraps `value` in a `Constant` object (`scidb/src/scidb/constant.py`)
-that proxies attribute/operator access so it behaves like the wrapped value
-everywhere except `isinstance(x, Constant)`.
+A **Parameter** is a named configuration value holding **one or more**
+values, declared with `scidb.Parameter(...)`. It replaced the former
+`scidb.constant()` (one value) and `scidb.Sweep()` (many) on 2026-08-25:
+two constructs for one idea, which forced an entity to change *kind* the
+moment a second value was added. See
+`docs/claude/entity-editability-model.md` (D6).
 
-Discovery (`_scan_module_constants` in `registry.py`, mirrored in
-`discover.py`) walks `vars(module).items()` and keeps any non-`_`-prefixed
-name bound to a `Constant` instance. Unlike functions/variables, this is
-**not** filtered by `__module__` — `Constant` doesn't reliably expose one
-(unknown attribute lookups proxy to the wrapped value), so a constant
-imported into two scanned modules can legitimately show up attributed to
-both.
+```python
+SAMPLING_RATE_HZ = scidb.Parameter(1000, description="Recording rate")
+WINDOW_SECONDS   = scidb.Parameter(10, 20, 30)
+THRESHOLDS       = scidb.Parameter(*range(10, 60, 10))   # plain varargs
+```
 
-**MATLAB has no equivalent.** There is no `scidb.constant()`-style wrapper
-in `scimatlab`, so `matlab_registry.py` only tracks functions and variables
-— constant values in a MATLAB pipeline are just plain values passed through
-`for_each`'s `constants` struct, with no discoverable/named identity.
-`pipeline_discovery.py`'s source→GUI import (§6) still surfaces these as
-GUI constant nodes with a staged pending value, same as the GUI's own
-"add a constant + pending value" action — it just has no *source-declared*
-identity the way a Python `Constant` does.
+`Parameter` **is** a `scifor.EachOf`, so `for_each` fans it out with no
+special handling — one call per value. Crucially, a one-value Parameter is
+**not** a special case: `EachOf` expansion has no branch for it, so
+`Parameter(30)` records byte-identical `version_keys`/`call_id` to a bare
+`30`. That is what makes "adding a value" purely additive — no change of
+form, id, node, or history.
+
+A single-valued Parameter keeps the transparent-proxy behaviour the old
+`Constant` had (`5 * SAMPLING_RATE_HZ` works). A multi-valued one
+deliberately does not: arithmetic on "10, 20 or 30" has no meaning, so it
+raises. Use `.values` for the list, `.value` for the single one.
+
+`__hash__` follows the same rule — a single-valued Parameter hashes AS its
+value, so it is interchangeable with the raw value as a dict key or set
+member. Hashing the 1-tuple instead would make `Parameter(42) == 42` true
+while their hashes differed, silently breaking every hash-based lookup.
+
+### Python
+
+Discovery (`_scan_module_parameters` in `registry.py`, mirrored by
+`discover.is_parameter`) walks `vars(module).items()` and keeps any
+non-`_`-prefixed name bound to a `Parameter`. Unlike functions/variables,
+this is **not** filtered by `__module__` — `Parameter` doesn't reliably
+expose one (unknown attribute lookups proxy to the wrapped value), so a
+Parameter imported into two scanned modules can legitimately show up
+attributed to both.
+
+A bare `EachOf` is deliberately NOT discovered — only a *named*, top-level
+`Parameter` binding is GUI-visible. `_scan_module_path_inputs` also skips
+Parameters explicitly: a Parameter is an `EachOf`, and `is_path_input`
+accepts an `EachOf` whose alternatives are all PathInputs, so without that
+guard a Parameter wrapping PathInputs would register as both.
+
+**`__getattr__` must raise `AttributeError`, never `TypeError`**, for a
+multi-valued Parameter: `hasattr()` only swallows `AttributeError`, and
+`foreach._is_loadable` probes with `hasattr(var_spec, "load")`. A
+`TypeError` there crashes every `for_each` carrying a multi-valued
+Parameter.
+
+### MATLAB
+
+`+scidb/Parameter.m` — `classdef Parameter < scifor.EachOf` — declared in
+the entities script (§4) exactly like PathInput:
+
+```matlab
+window_seconds = scidb.Parameter(10, 20, 30, description='Analysis window');
+```
+
+`matlab_registry._register_matlab_parameter_object` constructs a **real**
+Python `scidb.Parameter` and registers it through the same
+`registry._register_parameter` that Python discovery uses, so
+`build_parameter_nodes` and every other consumer stay language-agnostic.
+
+Because a Parameter IS an `EachOf`, `+scidb/for_each.m`'s existing Step 0
+expansion handles it with **no** unwrapping step — one reason the class
+beat the earlier `scidb.Constant` value holder, which needed an explicit
+unwrap at the top of `for_each`.
+
+The constructor peels a trailing `description=...` off its varargs before
+calling the superclass; `scifor.EachOf` treats every argument as an
+alternative, so the description would otherwise silently become a value.
+
+A MATLAB `for_each` call passing a **bare literal** in its inputs struct
+still has no named identity; `pipeline_discovery.py`'s source→GUI import
+(§6) surfaces those as GUI Parameter nodes with a staged pending value.
 
 ---
 
@@ -131,7 +189,7 @@ RAW_EMG = scidb.PathInput("{subject}/{trial}.mat", root_folder=DATA_DIR)
 
 ### Python
 
-`registry._scan_module_path_inputs` (mirrors `_scan_module_constants`
+`registry._scan_module_path_inputs` (mirrors `_scan_module_parameters`
 exactly) walks `vars(module).items()` for a `PathInput` instance, OR an
 `EachOf` whose every alternative is a `PathInput` (this is how "alternate
 templates" express themselves now — `EachOf(PathInput(t1), PathInput(t2))`
@@ -151,48 +209,58 @@ source declaration.
 
 ### MATLAB
 
-MATLAB has no module-level globals, so the Python binding doesn't translate
-directly. Convention: a **PathInput getter** — a zero-argument function
-whose body constructs `scifor.PathInput(...)` (or `scidb.PathInput(...)`,
-or bare `PathInput(...)`), named after the object it exposes:
+MATLAB declares entities in an **entities script** — a plain `.m` file (no
+`function`, no `classdef`) of top-level bindings, configured as
+`[matlab] entities_file` and structurally identical to Python's
+`variable_file`:
 
 ```matlab
-function p = raw_emg_path()
-    p = scifor.PathInput('{subject}/{trial}.mat');
-end
+% scistack_entities.m
+raw_emg = scidb.PathInput('{subject}/{trial}.mat');
+window  = scidb.Parameter(10, 20, 30);
 ```
 
-`matlab_parser._parse_value_getter` (shared with Sweep, see §5) regex-parses
-this: locate a zero-arg `_FUNCTION_RE` match, reject if the file has a
-`classdef` (same one-file-one-entity rule as `parse_matlab_function`),
-search the function's own body (up to the next `function`/EOF) for
-`= (scifor\.|scidb\.)?PathInput\(`. Static-only — never runs MATLAB.
-`matlab_registry` always tracks these **by name** (`_matlab_path_inputs:
-dict[str, Path]`), and ALSO attempts best-effort literal extraction
-(`matlab_parser.extract_path_input_literal`) — a char-by-char scan of the
-getter body that finds the matching close-paren for the `PathInput(...)`
-call (respecting quoted strings and doubled-quote escaping), splits the
-top-level comma-separated args, and parses each as a MATLAB string/number
-literal. When every needed argument (template, and `root_folder` if given)
-parses as a literal, `matlab_registry` constructs a **real**
-`scifor.PathInput` object and registers it into the same shared
-`scistack_gui.registry` that Python-discovered PathInputs use
+Pipeline code runs `scistack_entities;` and the names are in scope.
+`+scidb/PathInput.m` is a one-line subclass shim over the `+scifor/`
+original, and `+scidb/Parameter.m` subclasses `scifor.EachOf`, so both
+languages' entities files read the same.
+
+> **The `value getter` convention (a zero-arg function returning a
+> constructed PathInput/Sweep) was REMOVED on 2026-08-25**, along with the
+> `[matlab] path_inputs`/`sweeps` config lists. One declaration form per
+> language. A function that happens to construct a Parameter is now just a
+> function. See `docs/claude/entity-editability-model.md`.
+
+`matlab_parser.parse_matlab_entities_script` regex-parses each `NAME = ` at
+the start of a line (rejecting `==` so a comparison isn't read as a
+binding), matches the RHS against the known constructors, and returns a
+`MatlabBinding` carrying the span of the whole RHS **and** of just the
+argument text. Static-only — never runs MATLAB.
+
+`matlab_registry.load_entities_script` then attempts best-effort literal
+extraction: split the argument text on top-level commas (respecting quoted
+strings and doubled-quote escaping) and parse each as a MATLAB
+string/number literal. `root_folder` is accepted in **both** MATLAB
+syntaxes — `root_folder='/d'` (name=value, R2021b+) and `'root_folder', '/d'`
+(name-value pair). When every needed argument parses, a **real**
+`scifor.PathInput`/`scidb.Parameter` object is constructed and registered into
+the same shared `scistack_gui.registry` Python-discovered entities use
 (`registry._register_path_input(name, pi, source=path)`) — so the GUI
 canvas's `pathInput__` nodes, `execution_service.build_run_inputs`'s
-content-matching resolution, and `matlab_command_service`'s MATLAB command
-generation all pick it up automatically, with no MATLAB-specific branching
-downstream. If any argument is not a literal (a variable reference, a
-function call, string concatenation, etc.), extraction returns `None` and
-the getter falls back to name-only tracking — `registry.get_path_input(...)`
-returns `None` for it, and a load error is recorded
-(`_record_load_error`); a MATLAB pipeline using such a PathInput still
-resolves correctly at MATLAB run time (the bridge calls the getter
-natively), it just isn't visible/wireable in the GUI canvas. Refreshing the
-MATLAB config (`load_from_config`) deregisters any previously-registered
-entry whose recorded source no longer classifies as that getter
-(`_deregister_stale_matlab_path_inputs_and_sweeps`, exact-source-path
-match only, so it never touches a same-named Python-discovered
-definition).
+content-matching resolution, and `matlab_command_service`'s command
+generation all pick it up with no MATLAB-specific branching downstream.
+
+If any argument is not a literal (a variable reference, a function call,
+string concatenation), extraction returns `None` and the declaration falls
+back to name-only tracking — `registry.get_path_input(...)` returns `None`
+and a load error is recorded (`_record_load_error`). A MATLAB pipeline
+using it still resolves at MATLAB run time; it just isn't visible or
+wireable on the canvas.
+
+Refreshing (`load_from_config`) deregisters any previously-registered entry
+whose recorded source no longer declares it
+(`_deregister_stale_matlab_path_inputs_and_sweeps`, exact-source-path match
+only, so it never touches a same-named Python-discovered definition).
 
 ### Portability (cross-user export/import)
 
@@ -220,61 +288,7 @@ touched (never delete, mark hidden).
 
 ---
 
-## 5. Sweeps — scanned from source (2026-08-20), now real `EachOf` sugar
-
-`scifor.Sweep` (`scifor/src/scifor/each_of.py`) is a trivial
-`class Sweep(EachOf)` — `isinstance(x, EachOf)` is `True` for a `Sweep`, so
-every existing `EachOf` expansion path (Python and MATLAB) picks it up with
-zero changes. A Sweep only becomes GUI-visible bound to a top-level name,
-exactly like PathInput:
-
-```python
-WINDOW_SECONDS = scidb.Sweep(10, 20, 30)
-```
-
-### Python
-
-`registry._scan_module_sweeps` scans for `isinstance(obj, Sweep)` — note
-this is checked BEFORE the PathInput/EachOf checks in the same scan loop,
-since a `Sweep` IS an `EachOf`. A bare, unnamed `EachOf(...)` used inline at
-a call site is intentionally NOT discovered — only a *named* top-level
-binding is GUI-visible, same rule as an unwrapped literal constant.
-
-At execution time (`execution_service.build_run_inputs`), the registry
-already holds a live `Sweep`/`EachOf` object, so it's used directly as the
-resolved input — no reconstruction needed (this used to rebuild
-`EachOf(*values)` from a layout.json values list; now the object already
-*is* that).
-
-### MATLAB
-
-`+scifor/Sweep.m` — `classdef Sweep < scifor.EachOf`, mirroring the Python
-shape (MATLAB's `isa(x, 'scifor.EachOf')` respects inheritance the same way
-Python's `isinstance` does, so every `isa(..., 'scifor.EachOf')` check in
-`+scidb/for_each.m`/`+scifor/for_each.m` picks up a `Sweep` for free). Same
-"value getter" convention as PathInput (§4) — see
-`matlab_parser.parse_matlab_sweep` / `matlab_registry._matlab_sweeps` — and
-the same literal-extraction upgrade: `matlab_parser.extract_sweep_literal`
-extracts every positional arg from the `Sweep(...)` call and parses each as
-a literal (all-or-nothing — one non-literal value invalidates the whole
-list), and on success `matlab_registry` constructs a real `scifor.Sweep`
-and registers it into the shared `scistack_gui.registry`, same as
-PathInput. GUI canvas `sweep__` nodes and command generation
-(`matlab_command_service._collect_sweep_params` /
-`api.matlab_command._format_sweep`) now resolve MATLAB-declared Sweeps the
-same way as Python ones; a non-literal getter falls back to name-only
-tracking with the same MATLAB-run-time-only caveat as PathInput.
-
-### Portability & GUI creation
-
-Same treatment as PathInput (§4): `export_pipeline`/`import_pipeline_document`
-reuse-local-else-materialize via `path_input_service.create_sweep`;
-`layout_service.create_sweep`/`delete_sweep` append-only creation / hide-only
-delete, no update endpoint.
-
----
-
-## 6. Submodules — GUI composition, with a working source-code translation
+## 5. Submodules — GUI composition, with a working source-code translation
 
 What appears in the graph as `pipelineNode` is a **nested pipeline**
 (another whole pipeline placed as a node inside a parent one) — the
@@ -302,7 +316,7 @@ same property that lets functions/variables/constants be discovered by
 tells a genuine user-authored pipeline apart from
 `execution_service.build_backend_pipeline`'s own per-request COMPILED
 Pipelines, which always set `db=`), recursively seeds each into GUI state
-(one manual `functionNode` + manual `variableNode`/`constantNode`/edges per
+(one manual `functionNode` + manual `variableNode`/`parameterNode`/edges per
 `StepSpec`, one `_pipeline_uses` row per `PipelineBinding` in `.uses`), then
 discards them from scidb's own bookkeeping (avoids scidb's "pipeline
 registered but never run" atexit warning; also how the function knows
@@ -313,14 +327,14 @@ is skipped entirely, never overwritten — same precedent as
 `create_variable`/`create_path_input`. Re-editing the source file and
 hitting Refresh Code does not resync hand-edited GUI state.
 
-Manual `variableNode`/`constantNode` creation (not just edges) is required
-because `build_variable_nodes`/`build_constant_nodes` only render from DB
+Manual `variableNode`/`parameterNode` creation (not just edges) is required
+because `build_variable_nodes`/`build_parameter_nodes` only render from DB
 run history — a genuinely never-run type/constant needs a manual node to
 show up at all (`merge_manual_nodes` is what makes a manual node appear
-regardless of history). PathInput/Sweep nodes are the one exception —
-always registry-derived (§4/§5), never manual.
+regardless of history). PathInput/Parameter nodes are the one exception —
+always registry-derived (§3/§4), never manual.
 
-Each manual `variableNode`/`constantNode` created by discovery gets an
+Each manual `variableNode`/`parameterNode` created by discovery gets an
 **arbitrary** id (`discovered_{var,const}_{uuid}`), never the bare
 canonical form (`var__RawA`) — `_get_or_create_node` mints one fresh id per
 `(node_type, label)` the first time it's seen within one pipeline's seed
@@ -379,8 +393,9 @@ priority order:
    - `auto_discover = true` — scans installed packages' `scistack.plugins`
      entry points
    - `[tool.scistack.matlab]` — `functions = [...]`, `variables = [...]`,
-     `path_inputs = [...]`, `sweeps = [...]`, `sources = [...]`
-     (unclassified, auto-classified per-file), `src_dir`
+     `sources = [...]` (unclassified, auto-classified per-file),
+     `variable_dir`, `entities_file` (§4). The `path_inputs`/`sweeps` lists
+     were removed with the value-getter convention on 2026-08-25.
 2. **Folder-scan fallback** (no config file found at all): recursively walks
    the project root for `.py`/`.m` files, pruning noise dirs (`.git`,
    `__pycache__`, `.venv`, `node_modules`, `build`, `dist`) and, for MATLAB,
@@ -390,15 +405,16 @@ priority order:
    directories into `scistack.toml`'s `modules` + `[matlab] sources` lists;
    only available for loose-script projects (no `pyproject.toml`). Fully
    round-trips every `[tool.scistack]`/`[matlab]` field it knows about
-   (including `path_inputs`/`sweeps` as of this migration) via
-   `_render_scistack_toml` — earlier versions of this function silently
-   dropped any field it wasn't explicitly passed on every popup save; fixed
-   alongside adding the new MATLAB fields.
+   (including `variable_dir`/`entities_file`) via `_render_scistack_toml` —
+   earlier versions of this function silently dropped any field it wasn't
+   explicitly passed on every popup save. **`_render_scistack_toml` has four
+   call sites**; a new field must be threaded through all of them or it is
+   dropped on the next save.
 
 Later sources win on name collisions (functions/constants: last-loaded
 wins, with a warning logged; see `_register_function`/`_register_constant`).
 
-## 7. Test-file exclusion (2026-08-22)
+## 6. Test-file exclusion (2026-08-22)
 
 Anything found *exclusively* inside a MATLAB or Python test is excluded from
 final discovery results, for all six kinds above. This is enforced by
@@ -431,8 +447,8 @@ depends on), not duplicated per package:
   adds the MATLAB-only `_MATLAB_TEST_FILE_RE` check. Applied in
   `_walk_source_files` (prunes `test`/`tests` dirnames during any walk, and
   filters the final per-file result list), `_resolve_glob_paths` (MATLAB
-  `functions`/`variables`/`path_inputs`/`sweeps`/`sources` — covers glob
-  matches, directory-walk results, and explicit single-`.m`-file entries),
+  `functions`/`variables`/`sources` — covers glob matches, directory-walk
+  results, and explicit single-`.m`-file entries),
   and `load_config`'s Python `modules` handling (glob branch and explicit
   single-file branch; the directory branch already routes through the
   patched `_walk_source_files`).
@@ -470,3 +486,9 @@ config pointed at that directory; used as a regression-test fixture in
   built"; see §6 above for what's actually there.
 - `.claude/plan-pathinput-sweep-submodule-source-of-truth.md` — the plan
   this whole migration executed.
+- `docs/claude/entity-editability-model.md` — the **write** half: how the
+  GUI edits these declarations back into source, the Constant+Sweep →
+  "Parameters" presentation merge, and MATLAB's entities *script* (which
+  replaced the value-getter convention in §4/§5).
+  **Design only — not yet implemented**; check its status header and
+  `.claude/plan-gui-entity-editing-26-08-24.md` before relying on it.

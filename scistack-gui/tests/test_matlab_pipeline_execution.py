@@ -69,10 +69,10 @@ def _build_matlab_only_scope(client, pid: str, fn_name: str = "matlab_proc") -> 
     client.put("/api/edges/e_in", json={"source": "mv_in", "target": "mf_a"})
     client.put("/api/edges/e_out", json={"source": "mf_a", "target": "mv_out"})
     client.put("/api/layout/mc_gain", json={
-        "x": 5, "y": 5, "node_type": "constantNode", "label": "gain", "pipeline_id": pid,
+        "x": 5, "y": 5, "node_type": "parameterNode", "label": "gain", "pipeline_id": pid,
     })
     client.put("/api/edges/e_gain", json={"source": "mc_gain", "target": "mf_a"})
-    client.put("/api/constants/gain/pending/2.5")
+    client.put("/api/parameters/gain/pending/2.5")
 
 
 class TestPipelineHasMatlabSteps:
@@ -230,10 +230,10 @@ class TestGenerateMatlabPipelineCommandService:
             client.put("/api/edges/pe_in", json={"source": "pv_in", "target": "pf_a"})
             client.put("/api/edges/pe_out", json={"source": "pf_a", "target": "pv_out"})
             client.put("/api/layout/pc_low_hz", json={
-                "x": 5, "y": 45, "node_type": "constantNode", "label": "low_hz", "pipeline_id": pid,
+                "x": 5, "y": 45, "node_type": "parameterNode", "label": "low_hz", "pipeline_id": pid,
             })
             client.put("/api/edges/pe_low_hz", json={"source": "pc_low_hz", "target": "pf_a"})
-            client.put("/api/constants/low_hz/pending/20")
+            client.put("/api/parameters/low_hz/pending/20")
 
             result = generate_matlab_pipeline_command(pid, get_db(), {"mode": "all"})
             assert len(result["warnings"]) == 1
@@ -274,6 +274,9 @@ class TestStandaloneSidecarRouting:
                 def start(self):
                     self.started = True
                     return True
+
+                def check_health(self, timeout=None):
+                    return None  # a configured pyenv
 
                 def run_command(self, command, on_line, timeout=None):
                     self.commands.append(command)
@@ -381,6 +384,9 @@ class TestStartMatlabSidecarRun:
             def start(self):
                 return True
 
+            def check_health(self, timeout=None):
+                return None  # a configured pyenv
+
             def run_command(self, command, on_line, timeout=None):
                 self.commands.append(command)
                 on_line("MATLAB output\n")
@@ -396,3 +402,35 @@ class TestStartMatlabSidecarRun:
 
         _wait_for_threads("Thread-")
         assert fake.commands == ["disp('hi')"]
+
+    def test_unhealthy_engine_refuses_before_running_anything(self, monkeypatch):
+        """A MATLAB that launches but can't reach Python is a SETUP problem.
+        Without the probe it fails on the first py.* call, deep inside
+        configure_database, and reads as a pipeline error instead."""
+        from scistack_gui import matlab_sidecar
+        from scistack_gui.api.run import start_matlab_sidecar_run
+
+        monkeypatch.setattr(matlab_sidecar, "sidecar_capable", lambda: True)
+
+        class UnhealthySidecar:
+            def __init__(self):
+                self.commands: list[str] = []
+
+            def start(self):
+                return True
+
+            def check_health(self, timeout=None):
+                return "MATLAB started, but its Python bridge (pyenv) is not configured."
+
+            def run_command(self, command, on_line, timeout=None):
+                self.commands.append(command)
+                return True
+
+        fake = UnhealthySidecar()
+        monkeypatch.setattr(matlab_sidecar, "get_sidecar", lambda: fake)
+
+        start_matlab_sidecar_run("disp('hi')", "rid_3")
+        _wait_for_threads("Thread-")
+
+        # The run is abandoned before MATLAB is asked to do any work.
+        assert fake.commands == []

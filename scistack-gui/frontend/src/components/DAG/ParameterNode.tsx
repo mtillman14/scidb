@@ -1,42 +1,55 @@
 /**
- * ConstantNode — represents a named constant in the pipeline.
+ * ParameterNode — a named parameter in the pipeline: one or more values.
  *
- * Shows the constant name and a checkboxed list of the distinct values it has
- * taken across pipeline runs. Checked values are "selected" for downstream runs;
- * unchecking persists as a hide-constant-value (never deletes data — see
- * pipeline_store.hide_constant_value / execution_service's hidden-constant-value
- * filtering, .claude/plan-constant-source-of-truth-26-08-22.md).
+ * One `scidb.Parameter` class, one node type (D6, see
+ * docs/claude/entity-editability-model.md): adding a value is adding an
+ * argument, so a node never changes type or id under the user.
  *
- * State management: checked state lives inside each value object in the node's
- * `data`, seeded from the backend on every graph fetch (build_constant_nodes).
- * Toggling updates local state immediately (useReactFlow().setNodes — same
- * pattern as VariableNode) and fires the hide/unhide-constant-value call in the
- * background; a `dag_updated` broadcast from that call re-fetches the graph and
- * reconciles if the optimistic update and persisted state ever disagree.
+ * Replaces the former ConstantNode + SweepNode. The merge went in the
+ * constant node's direction because it was already the richer widget: the
+ * old sweep node had no per-value checkboxes, no `src` badge and no
+ * DB-history rows, and now inherits all three.
+ *
+ * Shows the name and a checkboxed list of the distinct values it has taken
+ * across pipeline runs, plus whatever source currently declares. Checked
+ * values are "selected" for downstream runs; unchecking persists as a
+ * hidden value and never deletes data (see
+ * pipeline_store.hide_constant_value, and execution_service's filtering,
+ * which excludes unchecked values from multi-value fan-outs too).
+ *
+ * State management: checked state lives inside each value object in the
+ * node's `data`, seeded from the backend on every graph fetch
+ * (build_parameter_nodes). Toggling updates local state immediately
+ * (useReactFlow().setNodes -- same pattern as VariableNode) and fires the
+ * hide/unhide call in the background; a `dag_updated` broadcast from that
+ * call re-fetches the graph and reconciles if the optimistic update and
+ * persisted state ever disagree.
+ *
+ * Always a source node (feeds into functions); no target handle.
  */
 
 import { useCallback } from 'react'
 import { Handle, Position, useReactFlow } from '@xyflow/react'
 import { callBackend } from '../../api'
 
-export interface ConstantValue {
+export interface ParameterValue {
   value: string
   record_count: number
   checked: boolean
   is_current_source_value?: boolean
 }
 
-export interface ConstantNodeData {
+export interface ParameterNodeData {
   label: string
-  values: ConstantValue[]
+  values: ParameterValue[]
 }
 
 interface Props {
   id: string
-  data: ConstantNodeData
+  data: ParameterNodeData
 }
 
-export default function ConstantNode({ id, data }: Props) {
+export default function ParameterNode({ id, data }: Props) {
   const { setNodes } = useReactFlow()
 
   const toggleValue = useCallback((index: number) => {
@@ -45,16 +58,20 @@ export default function ConstantNode({ id, data }: Props) {
     const nextChecked = !target.checked
     setNodes(nds => nds.map(node => {
       if (node.id !== id) return node
-      const values = (node.data.values as ConstantValue[]).map((v, i) =>
+      const values = (node.data.values as ParameterValue[]).map((v, i) =>
         i === index ? { ...v, checked: nextChecked } : v
       )
       return { ...node, data: { ...node.data, values } }
     }))
-    const method = nextChecked ? 'unhide_constant_value' : 'hide_constant_value'
+    const method = nextChecked ? 'unhide_parameter_value' : 'hide_parameter_value'
     callBackend(method, { name: data.label, value: target.value }).catch(console.error)
   }, [id, data.label, data.values, setNodes])
 
   const showCheckboxes = data.values.length > 1
+  // A Parameter whose source declares several values fans out at execution
+  // time -- one for_each call per value, via EachOf (see
+  // execution_service.build_run_inputs).
+  const sourceValueCount = data.values.filter(v => v.is_current_source_value).length
 
   return (
     <div style={styles.container}>
@@ -86,6 +103,12 @@ export default function ConstantNode({ id, data }: Props) {
               </label>
             )
           })}
+        </div>
+      )}
+
+      {sourceValueCount > 1 && (
+        <div style={styles.countBadge}>
+          {sourceValueCount} values — EachOf
         </div>
       )}
     </div>
@@ -155,5 +178,12 @@ const styles: Record<string, React.CSSProperties> = {
     marginLeft: 4,
     letterSpacing: 0.3,
     flexShrink: 0,
+  },
+  countBadge: {
+    marginTop: 3,
+    fontSize: 10,
+    fontFamily: 'monospace',
+    color: '#4ecdc4',
+    fontWeight: 600,
   },
 }

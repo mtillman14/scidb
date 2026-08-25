@@ -15,7 +15,7 @@ import { callBackend } from '../../api'
 // ---------------------------------------------------------------------------
 // Types matching the backend JSON shape
 // ---------------------------------------------------------------------------
-interface ConstantInfo {
+interface ParameterInfo {
   name: string
   value: string
   description: string
@@ -27,10 +27,10 @@ interface ModuleExports {
   module_name: string
   variables: string[]
   functions: string[]
-  constants: ConstantInfo[]
+  parameters: ParameterInfo[]
   variable_count: number
   function_count: number
-  constant_count: number
+  parameter_count: number
 }
 
 interface ModuleError {
@@ -44,7 +44,7 @@ interface PackageResult {
   errors: ModuleError[]
   variable_count: number
   function_count: number
-  constant_count: number
+  parameter_count: number
   is_empty: boolean
 }
 
@@ -70,7 +70,7 @@ function shortModuleName(moduleName: string): string {
 function ModuleRow({ mod }: { mod: ModuleExports }) {
   const [open, setOpen] = useState(false)
   const shortName = shortModuleName(mod.module_name)
-  const total = mod.variable_count + mod.function_count + mod.constant_count
+  const total = mod.variable_count + mod.function_count + mod.parameter_count
 
   if (total === 0) return null
 
@@ -101,10 +101,10 @@ function ModuleRow({ mod }: { mod: ModuleExports }) {
               {mod.functions.map(f => <div key={f} style={styles.item}>{f}</div>)}
             </div>
           )}
-          {mod.constants.length > 0 && (
+          {mod.parameters.length > 0 && (
             <div>
               <div style={styles.sectionLabel}>Constants</div>
-              {mod.constants.map(c => (
+              {mod.parameters.map(c => (
                 <div key={c.name} style={styles.item} title={c.description || c.value}>
                   {c.name} = {c.value}
                 </div>

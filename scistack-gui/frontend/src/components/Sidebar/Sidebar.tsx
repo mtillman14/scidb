@@ -19,16 +19,15 @@ import { useStore } from '@xyflow/react'
 import EditTab from './EditTab'
 import FunctionSettingsPanel from './FunctionSettingsPanel'
 import type { SchemaFilter, RunOptions, WhereFilter } from './FunctionSettingsPanel'
-import ConstantSettingsPanel from './ConstantSettingsPanel'
+import ParameterSettingsPanel from './ParameterSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
 import PathInputSettingsPanel from './PathInputSettingsPanel'
-import SweepSettingsPanel from './SweepSettingsPanel'
 import PipelineSettingsPanel from './PipelineSettingsPanel'
 import EndpointPanel from './EndpointPanel'
 import type { PipelineNodeData } from '../DAG/PipelineNode'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import type { Node } from '@xyflow/react'
-import type { ConstantValue } from '../DAG/ConstantNode'
+import type { ParameterValue } from '../DAG/ParameterNode'
 
 interface FnNodeData {
   label: string
@@ -39,17 +38,18 @@ interface FnNodeData {
   runOptions?: RunOptions
 }
 
-interface ConstantNodeData {
+interface ParameterNodeData {
   label: string
-  values: ConstantValue[]
+  values: ParameterValue[]
+  source_kind?: 'constant' | 'sweep'
 }
 
 function isFunctionNode(node: Node | null): node is Node & { data: FnNodeData } {
   return node?.type === 'functionNode'
 }
 
-function isConstantNode(node: Node | null): node is Node & { data: ConstantNodeData } {
-  return node?.type === 'constantNode'
+function isParameterNode(node: Node | null): node is Node & { data: ParameterNodeData } {
+  return node?.type === 'parameterNode'
 }
 
 function isVariableNode(node: Node | null): node is Node & { data: { label: string } } {
@@ -72,15 +72,6 @@ function isPathInputNode(node: Node | null): node is Node & { data: PathInputNod
   return node?.type === 'pathInputNode'
 }
 
-interface SweepNodeData {
-  label: string
-  values: number[]
-}
-
-function isSweepNode(node: Node | null): node is Node & { data: SweepNodeData } {
-  return node?.type === 'sweepNode'
-}
-
 function isPipelineNode(node: Node | null): node is Node & { data: PipelineNodeData } {
   return node?.type === 'pipelineNode'
 }
@@ -101,7 +92,7 @@ export default function Sidebar() {
   const nodes = useStore(s => s.nodes)
   const edges = useStore(s => s.edges)
 
-  const hasNodeSelection = isFunctionNode(selectedNode) || isConstantNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isSweepNode(selectedNode) || isPipelineNode(selectedNode)
+  const hasNodeSelection = isFunctionNode(selectedNode) || isParameterNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)
 
   // Compute variant combinations from constant nodes and multi-wired variable inputs
   // connected to the selected function node.
@@ -125,12 +116,12 @@ export default function Sidebar() {
 
     // Constant variant axes
     const constantNodes = nodes.filter(
-      n => n.type === 'constantNode' && visited.has(n.id)
-    ) as Array<Node & { data: ConstantNodeData }>
+      n => n.type === 'parameterNode' && visited.has(n.id)
+    ) as Array<Node & { data: ParameterNodeData }>
 
     const cNames = constantNodes.map(n => n.data.label)
     const cValueLists = constantNodes.map(n =>
-      (n.data.values ?? []).map((v: ConstantValue) => v.value)
+      (n.data.values ?? []).map((v: ParameterValue) => v.value)
     )
 
     // Multi-variable input axes: find in__ handles with >1 variable source
@@ -199,11 +190,15 @@ export default function Sidebar() {
             runOptions={(selectedNode.data as FnNodeData).runOptions ?? { dry_run: false, save: true, distribute: false, as_table: false }}
           />
         )}
-        {isConstantNode(selectedNode) && (
-          <ConstantSettingsPanel
+        {isParameterNode(selectedNode) && (
+          <ParameterSettingsPanel
+            // Remount per node: the panel seeds local draft state from props,
+            // so reusing the instance across a selection change would carry
+            // one node's half-typed edit onto another.
+            key={selectedNode.id}
             id={selectedNode.id}
-            label={(selectedNode.data as ConstantNodeData).label}
-            values={(selectedNode.data as ConstantNodeData).values}
+            label={(selectedNode.data as ParameterNodeData).label}
+            values={(selectedNode.data as ParameterNodeData).values}
           />
         )}
         {isVariableNode(selectedNode) && (
@@ -213,17 +208,12 @@ export default function Sidebar() {
         )}
         {isPathInputNode(selectedNode) && (
           <PathInputSettingsPanel
+            key={selectedNode.id}
             id={selectedNode.id}
             label={(selectedNode.data as PathInputNodeData).label}
             template={(selectedNode.data as PathInputNodeData).template}
             root_folder={(selectedNode.data as PathInputNodeData).root_folder}
             alternate_templates={(selectedNode.data as PathInputNodeData).alternate_templates ?? []}
-          />
-        )}
-        {isSweepNode(selectedNode) && (
-          <SweepSettingsPanel
-            label={(selectedNode.data as SweepNodeData).label}
-            values={(selectedNode.data as SweepNodeData).values ?? []}
           />
         )}
         {isPipelineNode(selectedNode) && (

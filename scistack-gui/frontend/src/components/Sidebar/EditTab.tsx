@@ -1,14 +1,16 @@
 /**
- * EditTab — palette of draggable function, variable, constant, path-input,
- * and sweep nodes.
+ * EditTab — palette of draggable function, variable, parameter and
+ * path-input nodes.
  *
  * Drag an item onto the canvas to place a new node.
  * The drag payload is JSON in the 'application/scistack-node' dataTransfer key:
- *   { nodeType: 'functionNode' | 'variableNode' | 'constantNode' | 'pathInputNode' | 'sweepNode', label: string }
+ *   { nodeType: 'functionNode' | 'variableNode' | 'parameterNode' | 'pathInputNode', label: string }
  *
- * The six categories (Submodules, Functions, Variables, Constants, Path
- * Inputs, Sweeps) are shown one at a time behind an icon tab strip rather
- * than stacked — there's a lot of ground to cover in a narrow sidebar.
+ * The five categories (Submodules, Functions, Variables, Parameters, Path
+ * Inputs) are shown one at a time behind an icon tab strip rather than
+ * stacked. Constants and Sweeps are ONE category — a Parameter is a named
+ * thing with one or more values, and which source form declares it is not a
+ * distinction the user makes (D6, docs/claude/entity-editability-model.md).
  * Clicking (not dragging) a list item selects it and opens the info panel
  * docked to the bottom of the sidebar: a read-only signature+docstring for
  * functions, or a free-text notes textarea (persisted server-side, see
@@ -58,9 +60,8 @@ const TABS: TabDef[] = [
   { id: 'submodule', icon: '⧉', label: 'Submodules' },
   { id: 'function', icon: 'f(x)', label: 'Functions' },
   { id: 'variable', icon: 'x', label: 'Variables' },
-  { id: 'constant', icon: 'C', label: 'Constants' },
+  { id: 'parameter', icon: 'P', label: 'Parameters' },
   { id: 'pathInput', icon: '📁', label: 'Path Inputs' },
-  { id: 'sweep', icon: '🧹', label: 'Sweeps' },
 ]
 
 export default function EditTab() {
@@ -82,7 +83,7 @@ export default function EditTab() {
   // It's still fully visible, per-module, in 📁 Paths → Discovered Code
   // (components/Sidebar/ProjectConfigPanel.tsx) for when it's worth digging into.
   const [discoveryError, setDiscoveryError] = useState('')
-  const [constants, setConstants] = useState<string[]>([])
+  const [parameters, setParameters] = useState<string[]>([])
   const [addingConst, setAddingConst] = useState(false)
   const [constDraft, setConstDraft] = useState('')
   const constInputRef = useRef<HTMLInputElement>(null)
@@ -94,12 +95,6 @@ export default function EditTab() {
   const [piSubmitting, setPiSubmitting] = useState(false)
   const piInputRef = useRef<HTMLInputElement>(null)
 
-  const [sweeps, setSweeps] = useState<string[]>([])
-  const [addingSweep, setAddingSweep] = useState(false)
-  const [sweepDraft, setSweepDraft] = useState('')
-  const [sweepError, setSweepError] = useState('')
-  const [sweepSubmitting, setSweepSubmitting] = useState(false)
-  const sweepInputRef = useRef<HTMLInputElement>(null)
 
   const [addingVar, setAddingVar] = useState(false)
   const [varDraft, setVarDraft] = useState('')
@@ -176,9 +171,8 @@ export default function EditTab() {
 
   useEffect(() => {
     fetchRegistry()
-    fetchConstants()
-    fetchPathInputs()
-    fetchSweeps()
+    fetchParameters()
+    fetchParameters()
     fetchNotes()
   }, [fetchNotes])
 
@@ -194,21 +188,21 @@ export default function EditTab() {
     if (msg.type === 'dag_updated' || msg.method === 'dag_updated') {
       fetchRegistry()
       fetchPathInputs()
-      fetchSweeps()
+      fetchParameters()
       fetchPipelines()
       fetchHiddenPipelines()
     }
   }, []))
 
-  function fetchConstants() {
-    callBackend('get_constants')
+  function fetchParameters() {
+    callBackend('get_parameters')
       .then((items) => {
         const arr = items as Array<{ name: string }>
-        setConstants(arr.map(i => i.name))
+        setParameters(arr.map(i => i.name))
       })
       .catch(err => {
         console.error(err)
-        setDiscoveryError(`Failed to load constants: ${(err as Error).message}`)
+        setDiscoveryError(`Failed to load parameters: ${(err as Error).message}`)
       })
   }
 
@@ -224,18 +218,6 @@ export default function EditTab() {
       })
   }
 
-  function fetchSweeps() {
-    callBackend('get_sweeps')
-      .then((items) => {
-        const arr = items as Array<{ name: string }>
-        setSweeps(arr.map(i => i.name))
-      })
-      .catch(err => {
-        console.error('[Sweeps] fetch error:', err)
-        setDiscoveryError(`Failed to load sweeps: ${(err as Error).message}`)
-      })
-  }
-
   useEffect(() => {
     if (addingConst) constInputRef.current?.focus()
   }, [addingConst])
@@ -243,10 +225,6 @@ export default function EditTab() {
   useEffect(() => {
     if (addingPI) piInputRef.current?.focus()
   }, [addingPI])
-
-  useEffect(() => {
-    if (addingSweep) sweepInputRef.current?.focus()
-  }, [addingSweep])
 
   useEffect(() => {
     if (addingVar) varInputRef.current?.focus()
@@ -267,7 +245,7 @@ export default function EditTab() {
   const commitConstDraft = () => {
     const name = constDraft.trim()
     if (name) {
-      callBackend('create_constant', { name }).then(fetchConstants)
+      callBackend('create_parameter', { name }).then(fetchParameters)
     }
     setConstDraft('')
     setAddingConst(false)
@@ -362,35 +340,6 @@ export default function EditTab() {
       .finally(() => setPiSubmitting(false))
   }
 
-  const commitSweepDraft = () => {
-    if (sweepSubmitting) return
-    const name = sweepDraft.trim()
-    if (!name) {
-      setSweepDraft('')
-      setAddingSweep(false)
-      setSweepError('')
-      return
-    }
-    setSweepSubmitting(true)
-    callBackend('create_sweep', { name })
-      .then(data => {
-        const d = data as { ok?: boolean; error?: string }
-        if (d.ok !== false) {
-          setSweepDraft('')
-          setAddingSweep(false)
-          setSweepError('')
-          fetchSweeps()
-        } else {
-          setSweepError(d.error || 'Failed')
-          sweepInputRef.current?.focus()
-        }
-      })
-      .catch(err => {
-        setSweepError((err as Error).message || 'Request failed')
-        sweepInputRef.current?.focus()
-      })
-      .finally(() => setSweepSubmitting(false))
-  }
 
   // Backend 400s (duplicate names, still-used or last-remaining hides)
   // carry a clear message — surface it verbatim under the section.
@@ -446,7 +395,7 @@ export default function EditTab() {
 
   const onDragStart = (
     e: React.DragEvent,
-    nodeType: 'functionNode' | 'variableNode' | 'constantNode' | 'pathInputNode' | 'sweepNode',
+    nodeType: 'functionNode' | 'variableNode' | 'parameterNode' | 'pathInputNode',
     label: string,
   ) => {
     e.dataTransfer.setData(
@@ -708,22 +657,26 @@ export default function EditTab() {
             )}
           </Section>
         )}
-        {activeTab === 'constant' && (
+        {activeTab === 'parameter' && (
           <Section
             action={
-              <button style={styles.addBtn} onClick={() => setAddingConst(true)} title="New constant">
+              <button style={styles.addBtn} onClick={() => setAddingConst(true)} title="New parameter">
                 +
               </button>
             }
           >
-            {constants.map(c => (
+            {/* Constants and Sweeps are one concept here (D6): a Parameter
+                is a named thing with one or more values, and which of the
+                two source forms declares it is not a distinction the user
+                makes. Both lists are unioned and de-duplicated by name. */}
+            {parameters.map(c => (
               <DragItem
                 key={c}
                 label={c}
                 color="#2a9d8f"
-                selected={selectedItem?.kind === 'constant' && selectedItem.name === c}
-                onDragStart={e => onDragStart(e, 'constantNode', c)}
-                onClick={() => selectListItem('constant', c)}
+                selected={selectedItem?.kind === 'parameter' && selectedItem.name === c}
+                onDragStart={e => onDragStart(e, 'parameterNode', c)}
+                onClick={() => selectListItem('parameter', c)}
               />
             ))}
             {addingConst && (
@@ -776,45 +729,6 @@ export default function EditTab() {
                 />
                 {piError && (
                   <div style={styles.errorText}>{piError}</div>
-                )}
-              </>
-            )}
-          </Section>
-        )}
-        {activeTab === 'sweep' && (
-          <Section
-            action={
-              <button style={styles.addBtn} onClick={() => setAddingSweep(true)} title="New parameter sweep">
-                +
-              </button>
-            }
-          >
-            {sweeps.map(s => (
-              <DragItem
-                key={s}
-                label={s}
-                color="#65a30d"
-                selected={selectedItem?.kind === 'sweep' && selectedItem.name === s}
-                onDragStart={e => onDragStart(e, 'sweepNode', s)}
-                onClick={() => selectListItem('sweep', s)}
-              />
-            ))}
-            {addingSweep && (
-              <>
-                <input
-                  ref={sweepInputRef}
-                  style={styles.draftInput}
-                  value={sweepDraft}
-                  placeholder="param name…"
-                  onChange={e => { setSweepDraft(e.target.value); setSweepError('') }}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') commitSweepDraft()
-                    if (e.key === 'Escape') { setSweepDraft(''); setAddingSweep(false); setSweepError('') }
-                  }}
-                  onBlur={commitSweepDraft}
-                />
-                {sweepError && (
-                  <div style={styles.errorText}>{sweepError}</div>
                 )}
               </>
             )}

@@ -90,7 +90,7 @@ def fn_node_id(fn_name: str, call_id: str) -> str:
 # Placement IDs — per-scope independent copies of a DB-derived canonical node
 # ---------------------------------------------------------------------------
 #
-# A canonical id (var__{Type}, fn__{fn}__{wiring_id}, const__{name},
+# A canonical id (var__{Type}, fn__{fn}__{wiring_id}, param__{name},
 # pathInput__{name}) names a piece of real, shared DB data — but the SAME
 # wiring can be independently PLACED (graduated) on more than one pipeline
 # scope at once (e.g. a duplicated hypothesis re-running identical, unedited
@@ -101,10 +101,26 @@ def fn_node_id(fn_name: str, call_id: str) -> str:
 
 PLACEMENT_SEP = "::"
 
+PARAM_ID_PREFIX = "param__"
+"""Node-id prefix for every **Parameter** — Constants and Sweeps alike.
+
+Replaces the old ``const__`` and ``sweep__`` prefixes outright (clean break,
+beta — no migration). One prefix is what lets a Parameter keep its identity
+when a second value turns its declaration from a Constant into a Sweep: the
+id no longer encodes which form the source currently uses.
+
+The prefix is load-bearing beyond display — it appears in ``*.layout.json``
+positions, ``_pipeline_hidden_nodes`` rows, synthesised edge ids and
+``targetHandle``s, and ``edge_resolver``'s manual-edge resolution — so it is
+defined once here and referenced everywhere rather than spelled inline.
+
+See docs/claude/entity-editability-model.md (D6).
+"""
+
 # Every prefix a DB-derived (non-manual) canonical id can start with —
 # shared by the layout.json migration and anything else that needs to
 # distinguish "this id names real DB data" from a manual/opaque id.
-_DB_DERIVED_PREFIXES = ("var__", "fn__", "const__", "pathInput__", "sweep__")
+_DB_DERIVED_PREFIXES = ("var__", "fn__", PARAM_ID_PREFIX, "pathInput__")
 
 # Matches domain.scope_filter.ROOT / pipeline_store.ROOT_PIPELINE_ID — kept
 # as a local literal since this module is pure (no DB/store imports).
@@ -129,7 +145,7 @@ def parse_placement_id(node_id: str) -> tuple[str, str] | None:
 
 def strip_placement(node_id: str) -> str:
     """The bare canonical id, with any placement suffix removed (a no-op
-    if there wasn't one). For every ad-hoc ``var__``/``const__``/
+    if there wasn't one). For every ad-hoc ``var__``/``param__``/
     ``pathInput__``/``fn__`` prefix-parser that only ever wants the bare
     id (never the scope), call this FIRST.
     """
@@ -471,7 +487,9 @@ def path_input_display(obj) -> dict:
 
 
 def resolve_path_input_name(
-    observed: dict, registry: "dict[str, object]"
+    observed: dict,
+    registry: "dict[str, object]",
+    history: "dict[tuple, str] | None" = None,
 ) -> tuple[str, dict]:
     """Match a DB-history-observed ``{"template", "root_folder"}`` against
     the source-scanned PathInput registry by CONTENT (there's no name in
@@ -479,17 +497,38 @@ def resolve_path_input_name(
     root_folder, never the module-level name it's bound to). Returns
     ``(registry_name, display_dict)``.
 
-    Falls back to a synthetic ``__unresolved__:{template}`` key with a WARN
-    log when nothing in the current registry matches — e.g. historical data
-    predating this migration, or the PathInput was renamed/removed from
-    source since it last ran. The node still renders (best-effort, from the
-    historical value) but won't line up with any current source object
-    until the pipeline is re-run against a matching declaration.
+    Three strategies, in order:
+
+    1. **Live registry content-match** — the template a declaration
+       currently holds.
+    2. **Recorded history** (D7) — ``{(template, root_folder): name}`` from
+       ``pipeline_store.list_path_input_history``, covering templates a GUI
+       edit has since overwritten. Without this, editing a template detaches
+       every run recorded against the old one, because content-matching is
+       the ONLY link between a run and a node. The display still comes from
+       the CURRENT declaration, so the node shows what source says now while
+       keeping its history attached.
+    3. **Unresolved** — a synthetic ``__unresolved__:{template}`` key with a
+       WARN. Now genuinely rare, and meaning what it was designed to mean:
+       the declaration was removed, or renamed *and* re-templated, so there
+       is nothing left to attribute it to. The node still renders
+       best-effort from the historical value.
     """
     key = (observed["template"], observed.get("root_folder"))
     for name, obj in registry.items():
         if key in _path_input_content_variants(obj):
             return name, path_input_display(obj)
+
+    historical_name = (history or {}).get(key)
+    if historical_name is not None and historical_name in registry:
+        logger.info(
+            "[graph_builder] PathInput usage matched a PREVIOUS template of "
+            "%r (template=%r) — attributing history to the current node",
+            historical_name,
+            observed["template"],
+        )
+        return historical_name, path_input_display(registry[historical_name])
+
     logger.warning(
         "[graph_builder] PathInput usage with no matching source "
         "declaration: template=%r root_folder=%r — renamed or removed?",
@@ -504,7 +543,9 @@ def resolve_path_input_name(
 
 
 def convert_scidb_path_inputs(
-    scidb_path_inputs: dict, path_input_registry: "dict[str, object]"
+    scidb_path_inputs: dict,
+    path_input_registry: "dict[str, object]",
+    path_input_history: "dict[tuple, str] | None" = None,
 ) -> dict[str, dict]:
     """``db.get_aggregated_variants()["path_inputs"]`` (keyed by PARAM NAME
     — raw DB-history extraction, no knowledge of source code) ->
@@ -522,6 +563,7 @@ def convert_scidb_path_inputs(
         pi_name, display = resolve_path_input_name(
             {"template": pi_data["template"], "root_folder": pi_data["root_folder"]},
             path_input_registry,
+            path_input_history,
         )
         entry_functions = {(tuple(f), param_name) for f in pi_data["functions"]}
         existing = result.get(pi_name)
@@ -549,6 +591,7 @@ def aggregate_variants(
     variants: list[dict],
     listed_var_names: set[str],
     path_input_registry: "dict[str, object] | None" = None,
+    path_input_history: "dict[tuple, str] | None" = None,
 ) -> AggregatedData:
     """Parse DB variants into aggregated data structures.
 
@@ -598,7 +641,9 @@ def aggregate_variants(
         for param_name, type_val in inputs.items():
             pi = parse_path_input(type_val)
             if pi is not None:
-                pi_name, display = resolve_path_input_name(pi, path_input_registry)
+                pi_name, display = resolve_path_input_name(
+                    pi, path_input_registry, path_input_history
+                )
                 existing = agg.path_inputs.get(pi_name)
                 if existing is None:
                     agg.path_inputs[pi_name] = {
@@ -697,7 +742,9 @@ def filter_hidden(
         if parsed is not None:
             hidden_fkeys.add(parsed)
     hidden_const_names = {
-        nid.replace("const__", "", 1) for nid in hidden_ids if nid.startswith("const__")
+        nid.replace(PARAM_ID_PREFIX, "", 1)
+        for nid in hidden_ids
+        if nid.startswith(PARAM_ID_PREFIX)
     }
     hidden_path_names = {
         nid.replace("pathInput__", "", 1)
@@ -865,38 +912,45 @@ def build_variable_nodes(
     return nodes
 
 
-def build_constant_nodes(
+def build_parameter_nodes(
     const_counts: dict[str, dict],
     pending_constants: dict[str, set[str]],
-    source_values: dict[str, str] | None = None,
+    source_parameters: "dict[str, object] | None" = None,
     hidden_values: "dict[str, set[str]] | None" = None,
 ) -> list[dict]:
-    """Build React Flow constant nodes.
+    """Build React Flow **Parameter** nodes.
 
-    source_values: current registry value for each constant name (from
-    ``registry.get_constants_registry()``, stringified), so a source-code
-    edit surfaces in the GUI immediately — mirrors the PathInput/Sweep
-    "source is truth" behavior (see
-    docs/claude/... plan-constant-source-of-truth). A constant with no DB
-    history and no pending value still gets a node (parallels
-    ``seed_undiscovered_path_inputs``). Whichever row's value equals the
-    current source value is tagged ``is_current_source_value: True`` — even
-    if that row already existed as DB history or a pending value — so the
-    frontend can badge it distinctly from stale historical rows (decision
-    #2: source edits never remove DB-history rows, they're only tagged or
-    added alongside).
+    A Parameter is a named thing with one or more values -- one class,
+    ``scidb.Parameter``, whatever the count. Adding a value is adding an
+    argument, so a node never changes type or id under the user (D6).
+
+    source_parameters: ``{name: Parameter}`` from
+    ``registry.get_parameters_registry()``. Every declared value is merged
+    in, so a source edit surfaces in the GUI immediately. A Parameter with
+    no DB history and no pending value still gets a node (parallels
+    ``seed_undiscovered_path_inputs``). Rows whose value matches a currently
+    declared one are tagged ``is_current_source_value: True`` -- even if the
+    row already existed as DB history or a pending value -- so the frontend
+    can badge them apart from stale historical rows. Values that have LEFT
+    source but have run history stay visible and simply lose the badge: the
+    DB is the record of what actually ran.
 
     hidden_values: {const_name: {hidden value strings}} from
-    ``pipeline_store.list_hidden_constant_values`` — every value row gets a
+    ``pipeline_store.list_hidden_parameter_values`` — every value row gets a
     ``"checked"`` bool (``value not in hidden_values.get(const_name, ...)``)
-    so ``ConstantNode.tsx``'s checkbox reflects PERSISTED state instead of
-    the previous hardcoded-true (see plan item 4).
+    so ``ParameterNode.tsx``'s checkbox reflects PERSISTED state instead of
+    a hardcoded true. Applies to every value, whether the Parameter holds
+    one or many.
     """
-    source_values = source_values or {}
+    source_parameters = source_parameters or {}
     hidden_values = hidden_values or {}
+    # One shape for every Parameter: its declared values, stringified.
+    source_values: dict[str, list] = {
+        name: [str(v) for v in p.values] for name, p in source_parameters.items()
+    }
     all_names = sorted(set(const_counts) | set(source_values))
     logger.info(
-        "[graph_builder] build_constant_nodes: building %d constant node(s)",
+        "[graph_builder] build_parameter_nodes: building %d parameter node(s)",
         len(all_names),
     )
     nodes = []
@@ -917,11 +971,16 @@ def build_constant_nodes(
                     }
                 )
                 existing_values.add(pval)
-        src_val = source_values.get(const_name)
-        if src_val is not None:
+        # Values source currently declares. Ones that have LEFT source but
+        # have DB history stay visible — the DB is the record of what
+        # actually ran (decision #2 of plan-constant-source-of-truth); they
+        # simply lose the badge.
+        current_source = source_values.get(const_name, [])
+
+        for src_val in current_source:
             if src_val not in existing_values:
                 logger.info(
-                    "[graph_builder] merged new source value for constant "
+                    "[graph_builder] merged new source value for parameter "
                     "%r: %r",
                     const_name,
                     src_val,
@@ -934,18 +993,23 @@ def build_constant_nodes(
                     }
                 )
                 existing_values.add(src_val)
-            for v in values:
-                if v["value"] == src_val:
-                    v["is_current_source_value"] = True
+        source_set = set(current_source)
+        for v in values:
+            if v["value"] in source_set:
+                v["is_current_source_value"] = True
+
         nodes.append(
             {
-                "id": f"const__{const_name}",
-                "type": "constantNode",
+                "id": f"{PARAM_ID_PREFIX}{const_name}",
+                "type": "parameterNode",
                 "position": {"x": 0, "y": 0},
-                "data": {"label": const_name, "values": values},
+                "data": {
+                    "label": const_name,
+                    "values": values,
+                },
             }
         )
-    logger.debug("[graph_builder] built %d constant node(s)", len(nodes))
+    logger.debug("[graph_builder] built %d parameter node(s)", len(nodes))
     return nodes
 
 
@@ -982,30 +1046,6 @@ def build_path_input_nodes(path_inputs: dict[str, dict]) -> list[dict]:
     return nodes
 
 
-def build_sweep_nodes(sweeps: list[dict]) -> list[dict]:
-    """Build React Flow sweep nodes.
-
-    Like path inputs, a Sweep is source-scanned (``registry.
-    get_sweeps_registry()``), not layout.json-authored — see
-    ``docs/claude/code-discovery-categories.md``. Callers convert the
-    registry dict to this ``[{"name", "values"}, ...]`` shape.
-    """
-    logger.info(
-        "[graph_builder] build_sweep_nodes: building %d sweep node(s)",
-        len(sweeps),
-    )
-    nodes = []
-    for sw in sorted(sweeps, key=lambda s: s["name"]):
-        nodes.append(
-            {
-                "id": f"sweep__{sw['name']}",
-                "type": "sweepNode",
-                "position": {"x": 0, "y": 0},
-                "data": {"label": sw["name"], "values": sw.get("values", [])},
-            }
-        )
-    logger.debug("[graph_builder] built %d sweep node(s)", len(nodes))
-    return nodes
 
 
 def build_function_nodes(
@@ -1264,7 +1304,7 @@ def build_edges(
         for fkey in fkeys:
             fn, cid = fkey
             target_id = fn_node_id(fn, cid)
-            key = (f"const__{const_name}", target_id)
+            key = (f"{PARAM_ID_PREFIX}{const_name}", target_id)
             if key not in seen_edges:
                 seen_edges.add(key)
                 edge_id = f"e__{const_name}__{fn}__{cid}"
@@ -1274,9 +1314,9 @@ def build_edges(
                 edges.append(
                     {
                         "id": edge_id,
-                        "source": f"const__{const_name}",
+                        "source": f"{PARAM_ID_PREFIX}{const_name}",
                         "target": target_id,
-                        "targetHandle": f"const__{const_name}",
+                        "targetHandle": f"{PARAM_ID_PREFIX}{const_name}",
                     }
                 )
     const_to_fn_count = len(edges) - var_to_fn_count - fn_to_var_count
@@ -1390,7 +1430,7 @@ def inbound_edge_candidates_by_handle(
 ) -> dict[str, str]:
     """Same candidate inbound edge ids as ``inbound_edge_candidates``, but
     mapped to the ``target_handle`` each one feeds (``in__{param}`` /
-    ``const__{name}``) — the id shape alone doesn't say WHICH input a hidden
+    ``param__{name}``) — the id shape alone doesn't say WHICH input a hidden
     edge blocks, and callers reconciling hidden edges against manual
     reconnects need that to check per-handle coverage rather than a flat
     yes/no (see hidden_wirings, variant_resolver.filter_disconnected_targets).
@@ -1407,7 +1447,7 @@ def inbound_edge_candidates_by_handle(
         for vt in types:
             result[f"e__{vt}__{fn}__{wid}"] = handle
     for cname in const_names:
-        result[f"e__{cname}__{fn}__{wid}"] = f"const__{cname}"
+        result[f"e__{cname}__{fn}__{wid}"] = f"{PARAM_ID_PREFIX}{cname}"
     for pname in path_names:
         result[f"e__{pname}__{fn}__{wid}"] = f"in__{pname}"
     return result
@@ -1601,7 +1641,7 @@ def candidate_edge_id(
         pi_name = src.split("__", 1)[1]
         param_name = target_handle[len("in__") :]
         return f"e__{pi_name}__{param_name}__{fn}__{wid}"
-    if src.startswith(("var__", "const__")):
+    if src.startswith(("var__", PARAM_ID_PREFIX)):
         parsed = parse_fn_node_id(tgt)
         if parsed is None:
             return None
@@ -1703,7 +1743,7 @@ def build_manual_node(
 
     if meta["type"] == "variableNode":
         extra = {"total_records": 0, "run_state": "red"}
-    elif meta["type"] == "constantNode":
+    elif meta["type"] == "parameterNode":
         pending_vals = [
             {"value": pval, "record_count": 0}
             for pval in sorted(pending_constants.get(fn_label, set()))
@@ -1711,8 +1751,6 @@ def build_manual_node(
         extra = {"values": pending_vals}
     elif meta["type"] == "pathInputNode":
         extra = {"template": "", "root_folder": None, "alternate_templates": []}
-    elif meta["type"] == "sweepNode":
-        extra = {"values": []}
     elif meta["type"] == "functionNode":
         extra = {
             "input_params": resolved_input_params or {},

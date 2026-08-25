@@ -4,9 +4,8 @@ export type SidebarItemKind =
   | 'submodule'
   | 'function'
   | 'variable'
-  | 'constant'
+  | 'parameter'
   | 'pathInput'
-  | 'sweep'
 
 export interface SidebarSelectedItem {
   kind: SidebarItemKind

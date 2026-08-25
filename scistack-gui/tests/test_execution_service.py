@@ -3,7 +3,7 @@ Tests for execution_service's hidden-constant-value filtering (see
 .claude/plan-constant-source-of-truth-26-08-22.md item 3).
 
 The ConstantNode.tsx checkbox persists a hidden (const_name, value) pair
-via pipeline_store.hide_constant_value. This must actually stop the
+via pipeline_store.hide_parameter_value. This must actually stop the
 combo(s) it implies from running, not just hide it from display -- both
 derive_fn_targets (name-scoped, used for pipeline Run and the node_id-less
 per-node Run) and derive_target_for_node (node-scoped, used for the
@@ -31,17 +31,17 @@ class TestDeriveFnTargetsHiddenConstantValues:
         assert targets[0]["constants"] == {"low_hz": 20}
 
     def test_hidden_value_excludes_matching_target(self, populated_db):
-        pipeline_store.hide_constant_value(populated_db, "low_hz", "20")
+        pipeline_store.hide_parameter_value(populated_db, "low_hz", "20")
         assert derive_fn_targets(populated_db, "bandpass_filter") == []
 
     def test_hidden_unrelated_value_keeps_target(self, populated_db):
-        pipeline_store.hide_constant_value(populated_db, "low_hz", "99")
+        pipeline_store.hide_parameter_value(populated_db, "low_hz", "99")
         targets = derive_fn_targets(populated_db, "bandpass_filter")
         assert len(targets) == 1
 
     def test_unhide_restores_target(self, populated_db):
-        pipeline_store.hide_constant_value(populated_db, "low_hz", "20")
-        pipeline_store.unhide_constant_value(populated_db, "low_hz", "20")
+        pipeline_store.hide_parameter_value(populated_db, "low_hz", "20")
+        pipeline_store.unhide_parameter_value(populated_db, "low_hz", "20")
         assert len(derive_fn_targets(populated_db, "bandpass_filter")) == 1
 
 
@@ -52,7 +52,7 @@ class TestDeriveTargetForNodeHiddenConstantValues:
         assert targets[0]["constants"] == {"low_hz": 20}
 
     def test_hidden_value_excludes_matching_target(self, populated_db, bp_node_id):
-        pipeline_store.hide_constant_value(populated_db, "low_hz", "20")
+        pipeline_store.hide_parameter_value(populated_db, "low_hz", "20")
         assert derive_target_for_node(populated_db, bp_node_id) == []
 
 
@@ -92,7 +92,7 @@ class TestNeverRunComboHiddenConstantValue:
         )
         client.put(
             "/api/layout/mc_low_hz",
-            json={"x": 5, "y": 5, "node_type": "constantNode", "label": "low_hz"},
+            json={"x": 5, "y": 5, "node_type": "parameterNode", "label": "low_hz"},
         )
         client.put("/api/edges/e_in2", json={"source": "mv_other_in", "target": "mf_bp2"})
         client.put("/api/edges/e_out2", json={"source": "mf_bp2", "target": "mv_other_out"})
@@ -102,5 +102,5 @@ class TestNeverRunComboHiddenConstantValue:
         targets = derive_target_for_node(db, "mf_bp2")
         assert targets and targets[0]["constants"] == {"low_hz": 20}
 
-        pipeline_store.hide_constant_value(db, "low_hz", "20")
+        pipeline_store.hide_parameter_value(db, "low_hz", "20")
         assert derive_target_for_node(db, "mf_bp2") == []

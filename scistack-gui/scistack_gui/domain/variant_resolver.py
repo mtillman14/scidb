@@ -494,7 +494,7 @@ def filter_disconnected_targets(
         new_input_types = dict(input_types)
         for h in hidden_handles:
             if not h.startswith("in__"):
-                continue  # const__ handles: same-source-only reconnect, no value to swap.
+                continue  # param__ handles: same-source-only reconnect, no value to swap.
             source = manual_index[(function_name, wid, h)].get("source", "")
             var_label = node_id_to_var_label(source, {}, manual_nodes)
             if var_label:

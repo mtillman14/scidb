@@ -5,6 +5,7 @@ All functions are pure — no DB or fixtures required.
 """
 
 import json
+from scidb import Parameter
 
 from scifor import PathInput
 
@@ -12,7 +13,7 @@ from scistack_gui.domain.graph_builder import (
     AggregatedData,
     aggregate_variants,
     auto_clean_pending_constants,
-    build_constant_nodes,
+    build_parameter_nodes,
     build_edges,
     build_function_nodes,
     build_manual_node,
@@ -316,7 +317,7 @@ class TestFilterHidden:
 
     def test_hide_const_removes_from_const_counts(self):
         agg = self._agg()
-        filter_hidden(agg, {"const__hz"})
+        filter_hidden(agg, {"param__hz"})
         assert "hz" not in agg.const_counts
         assert "hz" not in agg.const_fns
 
@@ -563,37 +564,37 @@ class TestBuildVariableNodes:
 
 
 # ---------------------------------------------------------------------------
-# build_constant_nodes
+# build_parameter_nodes
 # ---------------------------------------------------------------------------
 
 
-class TestBuildConstantNodes:
+class TestBuildParameterNodes:
     def test_node_structure(self):
         const_counts = {"hz": {"10": 3, "20": 5}}
-        nodes = build_constant_nodes(const_counts, pending_constants={})
+        nodes = build_parameter_nodes(const_counts, pending_constants={})
         assert len(nodes) == 1
         n = nodes[0]
-        assert n["id"] == "const__hz"
-        assert n["type"] == "constantNode"
+        assert n["id"] == "param__hz"
+        assert n["type"] == "parameterNode"
         assert n["data"]["label"] == "hz"
         values = {v["value"] for v in n["data"]["values"]}
         assert values == {"10", "20"}
 
     def test_pending_value_appended(self):
         const_counts = {"hz": {"10": 3}}
-        nodes = build_constant_nodes(const_counts, pending_constants={"hz": {"99"}})
+        nodes = build_parameter_nodes(const_counts, pending_constants={"hz": {"99"}})
         values = {v["value"] for v in nodes[0]["data"]["values"]}
         assert "99" in values
 
     def test_pending_not_duplicated_if_already_in_counts(self):
         const_counts = {"hz": {"10": 3}}
-        nodes = build_constant_nodes(const_counts, pending_constants={"hz": {"10"}})
+        nodes = build_parameter_nodes(const_counts, pending_constants={"hz": {"10"}})
         values = [v["value"] for v in nodes[0]["data"]["values"]]
         assert values.count("10") == 1
 
     def test_pending_record_count_is_zero(self):
         const_counts = {"hz": {"10": 3}}
-        nodes = build_constant_nodes(const_counts, pending_constants={"hz": {"99"}})
+        nodes = build_parameter_nodes(const_counts, pending_constants={"hz": {"99"}})
         pending_entry = next(
             v for v in nodes[0]["data"]["values"] if v["value"] == "99"
         )
@@ -601,8 +602,8 @@ class TestBuildConstantNodes:
 
     def test_new_source_value_appended_and_tagged(self):
         const_counts = {"hz": {"10": 3}}
-        nodes = build_constant_nodes(
-            const_counts, pending_constants={}, source_values={"hz": "20"}
+        nodes = build_parameter_nodes(
+            const_counts, pending_constants={}, source_parameters={"hz": Parameter(20)}
         )
         values = nodes[0]["data"]["values"]
         assert {v["value"] for v in values} == {"10", "20"}
@@ -614,8 +615,8 @@ class TestBuildConstantNodes:
 
     def test_source_value_matching_existing_db_history_is_tagged_in_place(self):
         const_counts = {"hz": {"10": 3}}
-        nodes = build_constant_nodes(
-            const_counts, pending_constants={}, source_values={"hz": "10"}
+        nodes = build_parameter_nodes(
+            const_counts, pending_constants={}, source_parameters={"hz": Parameter(10)}
         )
         values = nodes[0]["data"]["values"]
         assert len(values) == 1
@@ -627,8 +628,8 @@ class TestBuildConstantNodes:
         }
 
     def test_source_value_matching_pending_is_tagged_in_place(self):
-        nodes = build_constant_nodes(
-            {}, pending_constants={"hz": {"99"}}, source_values={"hz": "99"}
+        nodes = build_parameter_nodes(
+            {}, pending_constants={"hz": {"99"}}, source_parameters={"hz": Parameter(99)}
         )
         values = nodes[0]["data"]["values"]
         assert len(values) == 1
@@ -639,8 +640,8 @@ class TestBuildConstantNodes:
         # "30", but "10" still has DB run history and must stay visible
         # (decision #2 -- DB history never vanishes because of a source edit).
         const_counts = {"hz": {"10": 3}}
-        nodes = build_constant_nodes(
-            const_counts, pending_constants={}, source_values={"hz": "30"}
+        nodes = build_parameter_nodes(
+            const_counts, pending_constants={}, source_parameters={"hz": Parameter(30)}
         )
         values = nodes[0]["data"]["values"]
         assert {v["value"] for v in values} == {"10", "30"}
@@ -649,11 +650,11 @@ class TestBuildConstantNodes:
         assert "is_current_source_value" not in old_entry
 
     def test_registry_only_constant_with_no_history_still_gets_a_node(self):
-        nodes = build_constant_nodes(
-            {}, pending_constants={}, source_values={"hz": "5"}
+        nodes = build_parameter_nodes(
+            {}, pending_constants={}, source_parameters={"hz": Parameter(5)}
         )
         assert len(nodes) == 1
-        assert nodes[0]["id"] == "const__hz"
+        assert nodes[0]["id"] == "param__hz"
         assert nodes[0]["data"]["values"] == [
             {
                 "value": "5",
@@ -665,13 +666,13 @@ class TestBuildConstantNodes:
 
     def test_no_source_or_hidden_values_defaults_checked_true(self):
         const_counts = {"hz": {"10": 3}}
-        nodes = build_constant_nodes(const_counts, pending_constants={})
+        nodes = build_parameter_nodes(const_counts, pending_constants={})
         values = nodes[0]["data"]["values"]
         assert values == [{"value": "10", "record_count": 3, "checked": True}]
 
     def test_hidden_value_reported_unchecked(self):
         const_counts = {"hz": {"10": 3, "20": 1}}
-        nodes = build_constant_nodes(
+        nodes = build_parameter_nodes(
             const_counts, pending_constants={}, hidden_values={"hz": {"10"}}
         )
         values = {v["value"]: v["checked"] for v in nodes[0]["data"]["values"]}
@@ -679,12 +680,12 @@ class TestBuildConstantNodes:
 
     def test_hidden_pending_value_reported_unchecked(self):
         # A pending value is only ever staged for a constant that already
-        # has DB history or a source declaration (build_constant_nodes'
+        # has DB history or a source declaration (build_parameter_nodes'
         # all_names union doesn't itself cover a pending-only name -- that
         # case is a genuinely-new never-run constant, which the GUI shows
         # via a manual node instead, see pipeline_discovery._seed_step) --
         # const_counts here keeps this scenario realistic.
-        nodes = build_constant_nodes(
+        nodes = build_parameter_nodes(
             {"hz": {"5": 1}},
             pending_constants={"hz": {"99"}},
             hidden_values={"hz": {"99"}},
@@ -693,15 +694,75 @@ class TestBuildConstantNodes:
         assert values == {"5": True, "99": False}
 
     def test_hidden_new_source_value_reported_unchecked(self):
-        nodes = build_constant_nodes(
+        nodes = build_parameter_nodes(
             {},
             pending_constants={},
-            source_values={"hz": "5"},
+            source_parameters={"hz": Parameter(5)},
             hidden_values={"hz": {"5"}},
         )
         values = nodes[0]["data"]["values"]
         assert values[0]["checked"] is False
         assert values[0]["is_current_source_value"] is True
+
+
+class TestParameterMerge:
+    """One Parameter class, one node kind (D6). A Parameter keeps its id,
+    type and position whatever its value count -- adding a value is adding
+    an argument, never a change of form."""
+
+    def test_multi_value_parameter_renders_as_a_parameter_node(self):
+        nodes = build_parameter_nodes(
+            {}, pending_constants={}, source_parameters={"hz": Parameter(1, 2)}
+        )
+        assert len(nodes) == 1
+        assert nodes[0]["type"] == "parameterNode"
+        assert nodes[0]["id"] == "param__hz"
+
+    def test_one_and_many_values_share_one_id(self):
+        """The id must not encode the value count, or adding a second value
+        would move the node."""
+        one = build_parameter_nodes({}, {}, source_parameters={"hz": Parameter(1)})
+        many = build_parameter_nodes(
+            {}, {}, source_parameters={"hz": Parameter(1, 2)}
+        )
+        assert one[0]["id"] == many[0]["id"] == "param__hz"
+        assert one[0]["type"] == many[0]["type"] == "parameterNode"
+
+    def test_all_declared_values_badged_as_current_source(self):
+        nodes = build_parameter_nodes(
+            {}, pending_constants={}, source_parameters={"hz": Parameter(10, 20)}
+        )
+        values = nodes[0]["data"]["values"]
+        assert [v["value"] for v in values] == ["10", "20"]
+        assert all(v["is_current_source_value"] for v in values)
+
+    def test_multi_value_parameter_has_per_value_checkboxes(self):
+        """The old build_sweep_nodes emitted no `checked` at all, so sweeps
+        had no persisted include/exclude. Every Parameter value has one now,
+        whatever the count."""
+        nodes = build_parameter_nodes(
+            {},
+            pending_constants={},
+            source_parameters={"hz": Parameter(10, 20)},
+            hidden_values={"hz": {"20"}},
+        )
+        values = {v["value"]: v["checked"] for v in nodes[0]["data"]["values"]}
+        assert values == {"10": True, "20": False}
+
+    def test_keeps_db_history_values(self):
+        """A value that has left source but has run history stays visible --
+        the DB is the record of what actually ran (decision #2), which the
+        old sweep node could not express."""
+        nodes = build_parameter_nodes(
+            {"hz": {"5": 3}},
+            pending_constants={},
+            source_parameters={"hz": Parameter(10)},
+        )
+        values = {v["value"]: v for v in nodes[0]["data"]["values"]}
+        assert set(values) == {"5", "10"}
+        assert values["5"]["record_count"] == 3
+        assert "is_current_source_value" not in values["5"]
+        assert values["10"]["is_current_source_value"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +805,54 @@ class TestResolvePathInputName:
         )
         assert name == "__unresolved__:{s}/f.csv"
         assert display["template"] == "{s}/f.csv"
+
+    def test_recorded_history_reattaches_an_overwritten_template(self):
+        """D7: after a GUI template edit, a run recorded against the OLD
+        template must still resolve to the node instead of detaching into
+        __unresolved__."""
+        registry = {"RAW": PathInput("new.csv")}
+        history = {("old.csv", None): "RAW"}
+
+        name, display = resolve_path_input_name(
+            {"template": "old.csv", "root_folder": None}, registry, history
+        )
+
+        assert name == "RAW"
+        # Display comes from the CURRENT declaration — the node shows what
+        # source says now, while keeping its history attached.
+        assert display["template"] == "new.csv"
+
+    def test_live_registry_wins_over_history(self):
+        registry = {"RAW": PathInput("old.csv")}
+        history = {("old.csv", None): "SOMETHING_ELSE"}
+
+        name, _ = resolve_path_input_name(
+            {"template": "old.csv", "root_folder": None}, registry, history
+        )
+
+        assert name == "RAW"
+
+    def test_history_for_a_removed_declaration_still_unresolved(self):
+        """History only re-attributes to a name that still EXISTS — a deleted
+        declaration has no node to attach to."""
+        history = {("old.csv", None): "GONE"}
+
+        name, _ = resolve_path_input_name(
+            {"template": "old.csv", "root_folder": None}, {}, history
+        )
+
+        assert name == "__unresolved__:old.csv"
+
+    def test_root_folder_distinguishes_history_entries(self):
+        registry = {"RAW": PathInput("new.csv")}
+        history = {("old.csv", "/data"): "RAW"}
+
+        assert resolve_path_input_name(
+            {"template": "old.csv", "root_folder": "/data"}, registry, history
+        )[0] == "RAW"
+        assert resolve_path_input_name(
+            {"template": "old.csv", "root_folder": None}, registry, history
+        )[0].startswith("__unresolved__")
 
 
 class TestSeedUndiscoveredPathInputs:
@@ -942,7 +1051,7 @@ class TestBuildEdges:
             hidden_ids=set(),
         )
         assert any(
-            e["source"] == "const__hz" and e["target"] == self.F_NODE for e in edges
+            e["source"] == "param__hz" and e["target"] == self.F_NODE for e in edges
         )
 
     def test_path_input_to_fn_edge(self):
@@ -1079,7 +1188,7 @@ class TestBuildEdges:
             hidden_ids=set(),
             hidden_edge_ids={f"e__hz__f__{self.F_CID}"},
         )
-        assert not any(e["source"] == "const__hz" for e in edges)
+        assert not any(e["source"] == "param__hz" for e in edges)
 
     def test_hidden_path_input_to_fn_edge_excluded(self):
         edges = build_edges(
@@ -1112,7 +1221,7 @@ class TestBuildEdges:
             hidden_edge_ids={f"e__Raw__f__{self.F_CID}"},
         )
         assert not any(e["source"] == "var__Raw" for e in edges)
-        assert any(e["source"] == "const__hz" for e in edges)
+        assert any(e["source"] == "param__hz" for e in edges)
 
     def test_hidden_edge_ids_none_defaults_to_no_filtering(self):
         edges = build_edges(
@@ -1388,7 +1497,7 @@ class TestCandidateEdgeId:
         assert candidate_edge_id("var__Raw", self.F_NODE) == f"e__Raw__f__{self.F_CID}"
 
     def test_const_to_fn(self):
-        assert candidate_edge_id("const__hz", self.F_NODE) == f"e__hz__f__{self.F_CID}"
+        assert candidate_edge_id("param__hz", self.F_NODE) == f"e__hz__f__{self.F_CID}"
 
     def test_path_input_to_fn(self):
         assert (
@@ -1454,7 +1563,7 @@ class TestCandidateEdgeId:
         assert candidate_edge_id("uuid-a", "uuid-b") is None
 
     def test_var_to_non_fn_target_returns_none(self):
-        assert candidate_edge_id("var__Raw", "const__hz") is None
+        assert candidate_edge_id("var__Raw", "param__hz") is None
 
     def test_two_fn_nodes_returns_none(self):
         assert candidate_edge_id(self.F_NODE, f"fn__g__{_cid('g')}") is None
@@ -1484,14 +1593,14 @@ class TestBuildManualNode:
     def test_constant_node_with_pending(self):
         n = build_manual_node(
             "uuid-2",
-            {"type": "constantNode", "label": "hz", "config": None},
+            {"type": "parameterNode", "label": "hz", "config": None},
             pending_constants={"hz": {"42"}},
             manual_fn_state=None,
             resolved_input_params=None,
             resolved_output_types=None,
             matlab_functions=set(),
         )
-        assert n["type"] == "constantNode"
+        assert n["type"] == "parameterNode"
         vals = {v["value"] for v in n["data"]["values"]}
         assert "42" in vals
 

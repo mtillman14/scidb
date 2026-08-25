@@ -81,7 +81,7 @@ def _load() -> dict:
             else {}
         )
         raw["positions_scoped"] = True
-    # One-time migration: DB-derived position keys (var__/fn__/const__/
+    # One-time migration: DB-derived position keys (var__/fn__/param__/
     # pathInput__) become placement-qualified (canonical_id::scope) so the
     # SAME wiring can be independently placed in more than one scope
     # (see domain.graph_builder.placement_id). A bare id's current scope
@@ -287,10 +287,12 @@ def write_manual_node(
         pipeline_id,
     )
     pipeline_store.unhide_node(db, node_id, pipeline_id)
+    from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX
+
     prefix_map = {
         "variableNode": "var__",
         "functionNode": "fn__",
-        "constantNode": "const__",
+        "parameterNode": PARAM_ID_PREFIX,
         "pathInputNode": "pathInput__",
     }
     prefix = prefix_map.get(node_type)
@@ -322,7 +324,7 @@ def get_manual_nodes() -> dict[str, dict]:
 def delete_node(node_id: str) -> None:
     """Remove a node's position (JSON) and manual-node entry (DB).
 
-    For DB-derived nodes (var__, fn__, const__, pathInput__), also mark them
+    For DB-derived nodes (var__, fn__, param__, pathInput__), also mark them
     as hidden so _build_graph won't recreate them from pipeline history.
     Hiding is scoped to the SCOPE ``node_id`` currently belongs to (resolved
     via domain.scope_filter.node_scope, the same "what scope is this node
@@ -365,28 +367,28 @@ def read_constants() -> list[str]:
 
 
 def read_all_constant_names() -> list[str]:
-    """All constant names visible in the palette or already on the canvas.
+    """All Parameter names visible in the palette or already on the canvas.
 
     Sources (unioned):
     - ``constants[]``: palette items created via the "+" button.
-    - manual constant nodes in DB (type ``constantNode``).
-    - Canonical DB-derived constant IDs in positions (``const__name``,
-      possibly placement-qualified as ``const__name::{pipeline_id}``).
+    - manual Parameter nodes in DB (type ``parameterNode``).
+    - Canonical DB-derived Parameter IDs in positions (``param__name``,
+      possibly placement-qualified as ``param__name::{pipeline_id}``).
     """
-    from scistack_gui.domain.graph_builder import strip_placement
+    from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX, strip_placement
 
     data = _load()
     names: set[str] = set(data["constants"])
     manual_nodes = pipeline_store.get_manual_nodes(get_db())
-    # Manually dragged constant nodes — label is the true constant name.
+    # Manually dragged Parameter nodes — label is the true parameter name.
     for meta in manual_nodes.values():
-        if meta.get("type") == "constantNode":
+        if meta.get("type") == "parameterNode":
             names.add(meta["label"])
-    # Canonical DB-derived constant nodes not already covered by manual_nodes.
+    # Canonical DB-derived Parameter nodes not already covered by manual_nodes.
     for node_id in _positions_all(data):
         bare_id = strip_placement(node_id)
-        if bare_id.startswith("const__") and node_id not in manual_nodes:
-            names.add(bare_id[len("const__") :])
+        if bare_id.startswith(PARAM_ID_PREFIX) and node_id not in manual_nodes:
+            names.add(bare_id[len(PARAM_ID_PREFIX) :])
     return sorted(names)
 
 
@@ -397,7 +399,9 @@ def write_constant(name: str) -> None:
     _save(data)
 
 
-def delete_constant(name: str) -> None:
+def delete_parameter_from_palette(name: str) -> None:
+    """Remove a name from the layout.json palette list. Distinct from
+    layout_service.delete_parameter, which hides the NODE."""
     data = _load()
     data["constants"] = [c for c in data["constants"] if c != name]
     _save(data)

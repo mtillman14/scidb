@@ -1,0 +1,302 @@
+"""
+Parameter — a named pipeline configuration value, with one or more values.
+
+Replaces the former ``scidb.constant()`` (one value) and ``scidb.Sweep()``
+(many). They were two constructs for one idea, which forced an entity to
+change *kind* the moment a second value was added — see
+docs/claude/entity-editability-model.md (D6). One class, one node type in
+the GUI, one thing to write::
+
+    from scidb import Parameter
+
+    SAMPLING_RATE_HZ = Parameter(1000, description="Recording rate")
+    WINDOW_SECONDS   = Parameter(10, 20, 30)
+
+    # Values can be built programmatically -- it is plain varargs:
+    THRESHOLDS = Parameter(*range(10, 60, 10))
+    SCALES     = Parameter(*[2**k for k in range(5)])
+
+``Parameter`` IS an :class:`~scifor.each_of.EachOf`, so ``for_each`` fans it
+out with no special handling: each value becomes an independent call with
+that concrete value. **A one-value Parameter is not a special case** --
+``EachOf`` expansion has no branch for it, so ``Parameter(30)`` produces
+byte-identical ``version_keys``/``call_id`` to passing a bare ``30``. That
+property is what lets adding a second value be *only* adding an argument,
+with no change of form, id, node or history.
+
+Single-valued Parameters keep the transparent-proxy behaviour the old
+``Constant`` had, so they read naturally at a call site::
+
+    duration = 5 * SAMPLING_RATE_HZ     # 5000
+
+Multi-valued ones deliberately do not: arithmetic on "10, 20 or 30" has no
+meaning, so it raises rather than guessing. Use :attr:`values` to get the
+list.
+"""
+
+from __future__ import annotations
+
+import inspect
+from typing import Any
+
+from scifor.each_of import EachOf
+
+
+class Parameter(EachOf):
+    """A named configuration value with one or more alternatives.
+
+    Prefer letting the discovery scanner find these as top-level bindings
+    (``WINDOW = Parameter(10, 20)``) rather than constructing one inline at
+    a call site -- an unnamed one has no identity for the GUI to show, the
+    same rule that applied to ``Sweep`` before it.
+    """
+
+    def __init__(self, *values: Any, description: str = "") -> None:
+        super().__init__(*values)
+        self.description = description
+        # Where it was declared, for the GUI sidebar. Best-effort: a caller
+        # constructed from C or exec'd code has no frame to inspect.
+        frame = inspect.currentframe()
+        caller = frame.f_back if frame is not None else None
+        self.source_file = caller.f_code.co_filename if caller is not None else ""
+        self.source_line = caller.f_lineno if caller is not None else 0
+
+    # ------------------------------------------------------------------
+    # Values
+    # ------------------------------------------------------------------
+    @property
+    def values(self) -> list:
+        """Every alternative, in declaration order."""
+        return list(self.alternatives)
+
+    @property
+    def value(self) -> Any:
+        """The single wrapped value.
+
+        Raises for a multi-valued Parameter rather than silently returning
+        the first -- picking one arbitrarily is how a fan-out quietly
+        becomes a single run.
+        """
+        return self._single("value")
+
+    def _single(self, op: str) -> Any:
+        if len(self.alternatives) != 1:
+            raise TypeError(
+                f"{op} is only defined for a single-valued Parameter; this one "
+                f"has {len(self.alternatives)} values {self.alternatives!r}. "
+                f"Use .values for the full list."
+            )
+        return self.alternatives[0]
+
+    def __repr__(self) -> str:
+        items = ", ".join(repr(a) for a in self.alternatives)
+        return f"Parameter({items}, description={self.description!r})"
+
+    # ------------------------------------------------------------------
+    # Transparent proxy — single-valued only (see module docstring)
+    # ------------------------------------------------------------------
+    def __getattr__(self, name: str) -> Any:
+        # Only reached when normal lookup fails, so real attributes
+        # (alternatives, description, source_file, ...) take precedence.
+        # Guard against recursion during __init__ before alternatives exists.
+        if name in ("alternatives", "description", "source_file", "source_line"):
+            raise AttributeError(name)
+        # MUST raise AttributeError, never TypeError, for a multi-valued
+        # Parameter: hasattr() only swallows AttributeError, so anything
+        # else escapes as a crash. scidb probes exactly this way --
+        # foreach._is_loadable ends in hasattr(var_spec, "load") -- so a
+        # TypeError here takes down every for_each carrying a multi-valued
+        # Parameter.
+        if len(self.alternatives) != 1:
+            raise AttributeError(
+                f"{name!r} is not available on a {len(self.alternatives)}-value "
+                f"Parameter; use .values"
+            )
+        return getattr(self.alternatives[0], name)
+
+    def __bool__(self) -> bool:
+        return bool(self._single("bool()"))
+
+    def __int__(self) -> int:
+        return int(self._single("int()"))
+
+    def __float__(self) -> float:
+        return float(self._single("float()"))
+
+    def __complex__(self) -> complex:
+        return complex(self._single("complex()"))
+
+    def __str__(self) -> str:
+        if len(self.alternatives) == 1:
+            return str(self.alternatives[0])
+        return repr(self)
+
+    def __format__(self, spec: str) -> str:
+        return format(self._single("format()"), spec)
+
+    def __bytes__(self) -> bytes:
+        return bytes(self._single("bytes()"))
+
+    def __index__(self) -> int:
+        return self._single("index()").__index__()
+
+    def __hash__(self) -> int:
+        # A single-valued Parameter hashes AS its value, so it can be used
+        # interchangeably with the raw value as a dict key or set member --
+        # the same transparency __eq__ provides. Hashing the 1-tuple instead
+        # would make ``{Parameter(42): x}[42]`` a KeyError while
+        # ``Parameter(42) == 42`` stayed True: equal objects with unequal
+        # hashes, which silently breaks every hash-based lookup.
+        if len(self.alternatives) == 1:
+            return hash(self.alternatives[0])
+        return hash(tuple(self.alternatives))
+
+    # --- Comparison -----------------------------------------------------
+    @staticmethod
+    def _unwrap(other: Any) -> Any:
+        if isinstance(other, Parameter) and len(other.alternatives) == 1:
+            return other.alternatives[0]
+        return other
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, Parameter):
+            return self.alternatives == other.alternatives
+        if len(self.alternatives) == 1:
+            return self.alternatives[0] == other
+        return NotImplemented
+
+    def __ne__(self, other: Any) -> bool:
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __lt__(self, other: Any) -> bool:
+        return self._single("<") < self._unwrap(other)
+
+    def __le__(self, other: Any) -> bool:
+        return self._single("<=") <= self._unwrap(other)
+
+    def __gt__(self, other: Any) -> bool:
+        return self._single(">") > self._unwrap(other)
+
+    def __ge__(self, other: Any) -> bool:
+        return self._single(">=") >= self._unwrap(other)
+
+    # --- Arithmetic -----------------------------------------------------
+    def __add__(self, other: Any) -> Any:
+        return self._single("+") + self._unwrap(other)
+
+    def __sub__(self, other: Any) -> Any:
+        return self._single("-") - self._unwrap(other)
+
+    def __mul__(self, other: Any) -> Any:
+        return self._single("*") * self._unwrap(other)
+
+    def __truediv__(self, other: Any) -> Any:
+        return self._single("/") / self._unwrap(other)
+
+    def __floordiv__(self, other: Any) -> Any:
+        return self._single("//") // self._unwrap(other)
+
+    def __mod__(self, other: Any) -> Any:
+        return self._single("%") % self._unwrap(other)
+
+    def __pow__(self, other: Any) -> Any:
+        return self._single("**") ** self._unwrap(other)
+
+    def __matmul__(self, other: Any) -> Any:
+        return self._single("@") @ self._unwrap(other)
+
+    def __lshift__(self, other: Any) -> Any:
+        return self._single("<<") << self._unwrap(other)
+
+    def __rshift__(self, other: Any) -> Any:
+        return self._single(">>") >> self._unwrap(other)
+
+    def __and__(self, other: Any) -> Any:
+        return self._single("&") & self._unwrap(other)
+
+    def __xor__(self, other: Any) -> Any:
+        return self._single("^") ^ self._unwrap(other)
+
+    def __or__(self, other: Any) -> Any:
+        return self._single("|") | self._unwrap(other)
+
+    # --- Reflected arithmetic -------------------------------------------
+    def __radd__(self, other: Any) -> Any:
+        return self._unwrap(other) + self._single("+")
+
+    def __rsub__(self, other: Any) -> Any:
+        return self._unwrap(other) - self._single("-")
+
+    def __rmul__(self, other: Any) -> Any:
+        return self._unwrap(other) * self._single("*")
+
+    def __rtruediv__(self, other: Any) -> Any:
+        return self._unwrap(other) / self._single("/")
+
+    def __rfloordiv__(self, other: Any) -> Any:
+        return self._unwrap(other) // self._single("//")
+
+    def __rmod__(self, other: Any) -> Any:
+        return self._unwrap(other) % self._single("%")
+
+    def __rpow__(self, other: Any) -> Any:
+        return self._unwrap(other) ** self._single("**")
+
+    def __rmatmul__(self, other: Any) -> Any:
+        return self._unwrap(other) @ self._single("@")
+
+    def __rlshift__(self, other: Any) -> Any:
+        return self._unwrap(other) << self._single("<<")
+
+    def __rrshift__(self, other: Any) -> Any:
+        return self._unwrap(other) >> self._single(">>")
+
+    def __rand__(self, other: Any) -> Any:
+        return self._unwrap(other) & self._single("&")
+
+    def __rxor__(self, other: Any) -> Any:
+        return self._unwrap(other) ^ self._single("^")
+
+    def __ror__(self, other: Any) -> Any:
+        return self._unwrap(other) | self._single("|")
+
+    # --- Unary ----------------------------------------------------------
+    def __neg__(self) -> Any:
+        return -self._single("unary -")
+
+    def __pos__(self) -> Any:
+        return +self._single("unary +")
+
+    def __abs__(self) -> Any:
+        return abs(self._single("abs()"))
+
+    def __invert__(self) -> Any:
+        return ~self._single("~")
+
+    def __round__(self, ndigits: int | None = None) -> Any:
+        single = self._single("round()")
+        return round(single) if ndigits is None else round(single, ndigits)
+
+    # --- Container ------------------------------------------------------
+    #
+    # These proxy to the single wrapped value (a Parameter wrapping a tuple
+    # or string is indexable) rather than to the ALTERNATIVES list -- see
+    # .values for that. Iterating a multi-valued Parameter is deliberately
+    # an error: it would otherwise silently read as "iterate the values",
+    # which is what .values is for, and the two meanings differ for a
+    # single-valued Parameter wrapping a sequence.
+    def __len__(self) -> int:
+        return len(self._single("len()"))
+
+    def __iter__(self):
+        return iter(self._single("iteration"))
+
+    def __contains__(self, item: Any) -> bool:
+        return item in self._single("'in'")
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._single("indexing")[key]
+
+    def __reversed__(self):
+        return reversed(self._single("reversed()"))

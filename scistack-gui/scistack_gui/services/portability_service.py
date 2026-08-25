@@ -68,14 +68,17 @@ FORMAT_VERSION = 1
 _PREFIX_BY_TYPE = {
     "functionNode": "fn",
     "variableNode": "var",
-    "constantNode": "const",
+    "parameterNode": "param",
     "pathInputNode": "pathInput",
-    "sweepNode": "sweep",
 }
 
 # Node types whose label names a global (name-shared, not scope-scoped)
 # definition that needs bundling alongside the wiring that references it.
-_GLOBAL_NODE_TYPES = ("constantNode", "pathInputNode", "sweepNode")
+#
+# Constants and Sweeps are one node type (Parameters, D6), so one referenced
+# name can bundle as either — whichever the exporter's source declares. The
+# import side materialises whichever it finds.
+_GLOBAL_NODE_TYPES = ("parameterNode", "pathInputNode")
 
 
 def _closure_pipeline_ids(db, root_pipeline_id: str) -> list[str]:
@@ -184,18 +187,12 @@ def export_pipeline(db, pipeline_id: str) -> dict:
                     "pipeline_id": pid, "direction": direction, "var_type": var_type,
                 })
 
-    all_pending = ps.get_pending_constants(db)
-    constants = {
-        name: sorted(all_pending.get(name, set()))
-        for name in sorted(referenced_names["constantNode"])
-    }
-
     # PathInput/Sweep are source-scanned now (see
     # docs/claude/code-discovery-categories.md) — bundling their resolved
     # value here is no longer "the only copy" but an IMPORT-TIME FALLBACK:
     # if the importing user's project doesn't locally define a same-named
     # PathInput/Sweep, import_pipeline_document materializes one from this
-    # value via path_input_service.create_path_input/create_sweep. Every
+    # value via create_path_input/create_parameter. Every
     # referenced name is bundled even if the exporting user's own copy is
     # also source-backed — the resolved value is always available and
     # cheap, so there's no reason to omit it.
@@ -209,12 +206,27 @@ def export_pipeline(db, pipeline_id: str) -> dict:
         if name in path_input_registry
     ]
 
-    sweep_registry = registry.get_sweeps_registry()
+    # Constants and Sweeps are ONE node type on the canvas (Parameters, D6),
+    # so one referenced-name set feeds both bundles — but they must be
+    # PARTITIONED, not duplicated into each. A Parameter the registry knows
+    # as a Sweep bundles its value list here; everything else bundles as a
+    # constant below. Without the partition, every sweep also landed in
+    # ``constants`` with an empty pending list, polluting the document with
+    # entries import would then try to materialise as constants.
+    sweep_registry = registry.get_parameters_registry()
+    referenced_params = sorted(referenced_names["parameterNode"])
+    sweep_names = [name for name in referenced_params if name in sweep_registry]
     sweeps = [
         {"name": name, "values": list(sweep_registry[name].alternatives)}
-        for name in sorted(referenced_names["sweepNode"])
-        if name in sweep_registry
+        for name in sweep_names
     ]
+
+    all_pending = ps.get_pending_constants(db)
+    constants = {
+        name: sorted(all_pending.get(name, set()))
+        for name in referenced_params
+        if name not in sweep_registry
+    }
 
     hypothesis = None
     hyp_by_id = {h["pipeline_id"]: h for h in ps.list_hypotheses(db)}
@@ -511,7 +523,7 @@ def import_pipeline_document(db, document: dict) -> dict:
     root_old_id = document["root_pipeline_id"]
 
     # Captured BEFORE any node/position writes below. read_all_constant_
-    # names still scans saved positions for canonical const__-prefixed ids
+    # names still scans saved positions for canonical param__-prefixed ids
     # as a fallback discovery mechanism, so capturing it AFTER creating
     # nodes would make every freshly-imported constant name look like it
     # "already existed locally" — it would just be finding the node this
@@ -521,7 +533,7 @@ def import_pipeline_document(db, document: dict) -> dict:
 
     local_constant_names = set(layout_store.read_all_constant_names())
     local_path_input_names = set(registry.get_path_inputs_registry())
-    local_sweep_names = set(registry.get_sweeps_registry())
+    local_sweep_names = set(registry.get_parameters_registry())
 
     # ALL pipelines, hidden included — matches create_pipeline's own
     # uniqueness check (pipeline_store.py), so a name suffix decided here
@@ -642,7 +654,8 @@ def import_pipeline_document(db, document: dict) -> dict:
     # failure (e.g. no variable_file configured) is surfaced, not silently
     # dropped — the node still imports but stays unresolved until the user
     # configures a target and re-imports or creates it by hand.
-    from scistack_gui.services.path_input_service import create_path_input, create_sweep
+    from scistack_gui.services.parameter_service import create_parameter
+    from scistack_gui.services.path_input_service import create_path_input
 
     materialization_errors: list[dict] = []
 
@@ -667,10 +680,10 @@ def import_pipeline_document(db, document: dict) -> dict:
         if sw["name"] in local_sweep_names:
             reused_sweeps.append(sw["name"])
             continue
-        result = create_sweep(sw["name"], sw.get("values", []))
+        result = create_parameter(sw["name"], sw.get("values", []))
         if not result.get("ok"):
             materialization_errors.append(
-                {"kind": "sweep", "name": sw["name"], "error": result.get("error")}
+                {"kind": "parameter", "name": sw["name"], "error": result.get("error")}
             )
 
     unresolved = _unresolved_labels(document["nodes"])

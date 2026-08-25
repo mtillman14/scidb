@@ -333,7 +333,7 @@ class TestHiddenCallIdsForFn:
         assert hidden_call_ids_for_fn(hidden, "bandpass_filter") == set()
 
     def test_ignores_non_fn_ids(self):
-        hidden = {"var__Filtered", "const__hz", "fn__bandpass_filter"}
+        hidden = {"var__Filtered", "param__hz", "fn__bandpass_filter"}
         assert hidden_call_ids_for_fn(hidden, "bandpass_filter") == set()
 
     def test_ignores_non_hex_short_suffix(self):
