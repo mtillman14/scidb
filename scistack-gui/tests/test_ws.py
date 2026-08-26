@@ -28,9 +28,23 @@ def clean_ws_state():
     """Isolate the module-global loop/clients between tests."""
     ws_mod._loop = None
     ws_mod._clients.clear()
+    ws_mod._reaper = None
     yield
     ws_mod._loop = None
     ws_mod._clients.clear()
+    ws_mod._reaper = None
+
+
+def _stub_state(**kw) -> ws_mod.ClientState:
+    """A ClientState for tests that register clients directly."""
+    defaults = dict(
+        outbox=asyncio.Queue(),
+        cid="cstub",
+        peer="127.0.0.1:0",
+        user_agent="test",
+        last_seen=0.0,
+    )
+    return ws_mod.ClientState(**{**defaults, **kw})
 
 
 def _ws_app() -> FastAPI:
@@ -108,6 +122,111 @@ class TestPushMessageThreadPath:
             assert msg == done
 
 
+class TestConnectionIdentity:
+    """``client connected (2 total)`` was unattributable: nothing in the log
+    could distinguish two browser tabs from one page holding two sockets.
+    Each connection now carries an id, a peer address, and the page_id the
+    frontend reports in its hello frame.
+    """
+
+    def test_each_connection_gets_a_distinct_id(self, clean_ws_state):
+        client = TestClient(_ws_app())
+        with (
+            client.websocket_connect("/ws"),
+            client.websocket_connect("/ws"),
+        ):
+            cids = [s.cid for s in ws_mod._clients.values()]
+            assert len(cids) == 2
+            assert len(set(cids)) == 2, f"ids must be unique, got {cids}"
+
+    def test_hello_frame_records_page_id(self, clean_ws_state):
+        client = TestClient(_ws_app())
+        with client.websocket_connect("/ws") as sock:
+            sock.send_json({"type": "hello", "page_id": "abc123", "url": "http://x/"})
+            # Round-trip a pushed message to be sure the server consumed the
+            # hello frame before asserting on it.
+            ws_mod.push_message({"type": "dag_updated"})
+            sock.receive_json()
+            state = next(iter(ws_mod._clients.values()))
+            assert state.page_id == "abc123"
+            assert state.url == "http://x/"
+
+    def test_two_sockets_from_one_page_are_detectable(self, clean_ws_state):
+        """The discriminator: same page_id from two connections means one
+        page is holding two sockets, which useWebSocket.ts's singleton is
+        supposed to make impossible."""
+        client = TestClient(_ws_app())
+        with (
+            client.websocket_connect("/ws") as s1,
+            client.websocket_connect("/ws") as s2,
+        ):
+            for sock in (s1, s2):
+                sock.send_json({"type": "hello", "page_id": "samepage"})
+            ws_mod.push_message({"type": "dag_updated"})
+            s1.receive_json()
+            s2.receive_json()
+            page_ids = [s.page_id for s in ws_mod._clients.values()]
+            assert page_ids == ["samepage", "samepage"]
+
+    def test_unparseable_frame_is_ignored_not_fatal(self, clean_ws_state):
+        """A frontend build predating the hello protocol sends nothing at
+        all, and anything it does send must never kill the connection."""
+        client = TestClient(_ws_app())
+        with client.websocket_connect("/ws") as sock:
+            sock.send_text("not json")
+            sock.send_json({"type": "ping"})
+            ws_mod.push_message({"type": "dag_updated"})
+            assert sock.receive_json() == {"type": "dag_updated"}
+            state = next(iter(ws_mod._clients.values()))
+            assert state.page_id is None
+
+
+class TestLiveness:
+    """A client used to leave ``_clients`` ONLY via a close frame, so a tab
+    that died uncleanly stayed registered forever while fan-out kept filling
+    an outbox nobody would drain."""
+
+    def test_inbound_frame_refreshes_last_seen(self, clean_ws_state):
+        client = TestClient(_ws_app())
+        with client.websocket_connect("/ws") as sock:
+            state = next(iter(ws_mod._clients.values()))
+            state.last_seen = 0.0
+            sock.send_json({"type": "ping"})
+            ws_mod.push_message({"type": "dag_updated"})
+            sock.receive_json()
+            assert state.last_seen > 0.0
+
+    def test_drop_client_is_idempotent(self, clean_ws_state):
+        """Both the handler's finally and the reaper can reach the same
+        connection; the second call must be a no-op, not a KeyError."""
+
+        class StubClient:
+            pass
+
+        stub = StubClient()
+        ws_mod._clients[stub] = _stub_state()
+        ws_mod._drop_client(stub, reason="first")
+        ws_mod._drop_client(stub, reason="second")
+        assert stub not in ws_mod._clients
+
+    def test_reaper_stops_when_last_client_leaves(self, clean_ws_state):
+        """An idle server must leave no task pending on a loop about to
+        close (otherwise every websocket test trails a destroyed-task
+        warning)."""
+        client = TestClient(_ws_app())
+        with client.websocket_connect("/ws"):
+            assert ws_mod._reaper is not None
+        assert ws_mod._clients == {}
+        assert ws_mod._reaper is None
+
+    def test_ping_interval_is_under_the_silence_timeout(self):
+        """The frontend's PING_INTERVAL_MS is pinned to this constant; if
+        the timeout ever drops below the ping period, every healthy client
+        gets reaped and reconnects on a loop."""
+        assert ws_mod.PING_INTERVAL_S * 2 <= ws_mod.CLIENT_SILENT_TIMEOUT_S
+        assert ws_mod.REAP_INTERVAL_S < ws_mod.CLIENT_SILENT_TIMEOUT_S
+
+
 class TestBroadcastDirectPath:
     # _clients maps websocket -> outbox queue; broadcast iterates the KEYS
     # and sends directly, so stubs stand in for websockets here.
@@ -119,7 +238,7 @@ class TestBroadcastDirectPath:
             async def send_json(self, msg):
                 sent.append(msg)
 
-        ws_mod._clients[StubClient()] = asyncio.Queue()
+        ws_mod._clients[StubClient()] = _stub_state()
         asyncio.run(ws_mod.broadcast({"type": "dag_updated"}))
         assert sent == [{"type": "dag_updated"}]
 
@@ -134,7 +253,7 @@ class TestBroadcastDirectPath:
             async def send_json(self, msg):
                 sent.append(msg)
 
-        ws_mod._clients[DeadClient()] = asyncio.Queue()
-        ws_mod._clients[LiveClient()] = asyncio.Queue()
+        ws_mod._clients[DeadClient()] = _stub_state(cid="cdead")
+        ws_mod._clients[LiveClient()] = _stub_state(cid="clive")
         asyncio.run(ws_mod.broadcast({"type": "dag_updated"}))
         assert sent == [{"type": "dag_updated"}]

@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from scidb.database import _local
 from scistack_gui import registry as _registry
 from scistack_gui.app import create_app
-from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+from scistack_gui.domain.graph_builder import edge_dedup_key, fn_node_id, wiring_id
 
 from scidb import BaseVariable, configure_database, for_each
 
@@ -375,6 +375,79 @@ def test_manual_node_graduates_after_running_despite_shared_label_ambiguity(clie
         n for n in bp_nodes if n["data"].get("input_params", {}).get("signal") == "OtherSignal4"
     )
     assert graduated["data"]["run_state"] == "green"
+
+
+def test_first_build_after_run_has_no_duplicate_edges(client):
+    """Regression test: the FIRST graph build after a manual node graduates
+    must not return two edges for the same wire.
+
+    build_edges dedups manual edges against DB-derived ones, but it runs
+    BEFORE graduation — while the manual edge still names the manual node id,
+    so it doesn't compare equal to the DB-derived edge. Graduation then
+    rewrites its endpoints onto the DB-derived ids, which is exactly what
+    makes it a duplicate, and nothing re-checked afterwards. Found in a real
+    GUI session (examples/vo2max/scidb.log): the post-run build reported
+    "4 total edges (2 DB-derived, 2 manual)" and the very next rebuild
+    reported "2 total edges (... 2 manual superseded by DB-derived)". The
+    doubled edges stay on the canvas until some unrelated refresh, and
+    deleting one leaves its twin.
+
+    Asserting on the first build is the whole point — a second GET would
+    mask the bug.
+    """
+
+    class OtherSignal5(BaseVariable):
+        pass
+
+    class OtherFiltered5(BaseVariable):
+        pass
+
+    OtherSignal5.save(np.zeros(5), subject=1, session="pre")
+
+    client.put("/api/layout/mv_o5_in", json={
+        "x": 0, "y": 0, "node_type": "variableNode", "label": "OtherSignal5",
+    })
+    client.put("/api/layout/mf_bp_other5", json={
+        "x": 10, "y": 0, "node_type": "functionNode", "label": "bandpass_filter",
+    })
+    client.put("/api/layout/mv_o5_out", json={
+        "x": 20, "y": 0, "node_type": "variableNode", "label": "OtherFiltered5",
+    })
+    client.put("/api/edges/e_o5_in", json={
+        "source": "mv_o5_in", "target": "mf_bp_other5", "target_handle": "in__signal",
+    })
+    client.put("/api/edges/e_o5_out", json={"source": "mf_bp_other5", "target": "mv_o5_out"})
+
+    for_each(
+        bandpass_filter,
+        inputs={"signal": OtherSignal5, "low_hz": 20},
+        outputs=[OtherFiltered5],
+        subject=[1],
+        session=["pre"],
+    )
+
+    graph = client.get("/api/pipeline").json()
+    edges = graph["edges"]
+
+    keys = [
+        edge_dedup_key(e["source"], e["target"], e.get("targetHandle")) for e in edges
+    ]
+    duplicated = {k for k in keys if keys.count(k) > 1}
+    assert not duplicated, (
+        "the first build after graduation returned duplicate edges for "
+        f"{sorted(duplicated)}: {[(e['id'], e['source'], e['target']) for e in edges]}"
+    )
+
+    # The wires must still be THERE — dropping the duplicate must not drop
+    # the connection itself.
+    graduated = next(
+        n
+        for n in graph["nodes"]
+        if n["type"] == "functionNode"
+        and n["data"].get("input_params", {}).get("signal") == "OtherSignal5"
+    )
+    assert edge_dedup_key("var__OtherSignal5", graduated["id"]) in keys
+    assert edge_dedup_key(graduated["id"], "var__OtherFiltered5") in keys
 
 
 def test_disconnected_duplicate_survives_wired_siblings_graduation(client):

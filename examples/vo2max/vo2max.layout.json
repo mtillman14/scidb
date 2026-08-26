@@ -1,22 +1,23 @@
 {
   "positions": {
     "main": {
-      "pathInput__test_pi": {
-        "x": -166.20253164556962,
-        "y": 113.60759493670886
-      },
       "fn__pandas.read_csv__b564604e801cc0de::main": {
-        "x": 171.4556962025316,
-        "y": 117.58227848101265
+        "x": 299.30379746835445,
+        "y": 99.68354430379748
       },
       "var__cpet_data_raw::main": {
-        "x": 397.5189873417721,
-        "y": 100.56962025316456
+        "x": 507.4683544303798,
+        "y": 94.17721518987341
+      },
+      "param__test": {
+        "x": -0.9850868062281961,
+        "y": -42.35873266781232
       }
     }
   },
   "constants": [],
   "notes": {},
   "positions_scoped": true,
-  "placements_migrated": true
+  "placements_migrated": true,
+  "pipeline_db_migrated": true
 }

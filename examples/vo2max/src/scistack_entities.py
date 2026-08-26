@@ -2,7 +2,7 @@
 Constant declarations created from the GUI are appended here."""
 import scidb
 
-test = scidb.Parameter(0, 1, 2, description='')
+test = scidb.Parameter(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, description='')
 
 test_pi = scidb.PathInput('{subject}/{subject}_{session}_CPET.csv', root_folder='examples/vo2max/data')
 

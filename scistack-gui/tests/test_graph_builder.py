@@ -20,17 +20,21 @@ from scistack_gui.domain.graph_builder import (
     build_path_input_nodes,
     build_variable_nodes,
     candidate_edge_id,
+    drop_superseded_manual_edges,
+    edge_dedup_key,
     filter_hidden,
     find_cycle,
     fn_node_id,
     hidden_wirings,
     inbound_edge_candidates,
+    is_manual_edge,
     merge_manual_nodes,
     parse_path_input,
     path_input_display,
     pending_value_group_coverage,
     resolve_path_input_name,
     seed_undiscovered_path_inputs,
+    strip_path_input_params,
     wiring_disconnected_fkeys,
     wiring_id,
     wirings_downstream_of,
@@ -1369,6 +1373,129 @@ class TestBuildEdges:
         assert any(e["source"] == "var__Raw" for e in edges)
 
 
+class TestDropSupersededManualEdges:
+    """build_edges' endpoint dedup runs BEFORE manual nodes graduate, so a
+    manual edge still naming the manual node ids doesn't compare equal to the
+    DB-derived edge for the same wire. Graduation then rewrites its endpoints
+    onto the DB-derived ids — creating the duplicate. This pass re-checks the
+    invariant after any mid-build endpoint rewrite.
+    """
+
+    F_CID = _cid("f-call")
+    F_NODE = f"fn__f__{F_CID}"
+
+    def _db(self, source, target, **kw):
+        return {"id": f"e__{source}__{target}", "source": source, "target": target, **kw}
+
+    def _manual(self, source, target, **kw):
+        return {
+            "id": f"manual__{source}{target}",
+            "source": source,
+            "target": target,
+            "data": {"manual": True},
+            **kw,
+        }
+
+    def test_graduated_manual_edge_dropped(self):
+        """The examples/vo2max/scidb.log case: the first build after a run
+        emitted 4 edges for 2 connections; the next rebuild emitted 2."""
+        edges = [
+            self._db("pathInput__test_pi", self.F_NODE, targetHandle="in__filepath"),
+            self._db(self.F_NODE, "var__cpet_data_raw"),
+            # Endpoints just rewritten by graduation onto the DB-derived ids.
+            self._manual(
+                "pathInput__test_pi", self.F_NODE, targetHandle="in__filepath"
+            ),
+            self._manual(self.F_NODE, "var__cpet_data_raw"),
+        ]
+        kept, dropped = drop_superseded_manual_edges(edges)
+        assert len(kept) == 2, [(e["id"], e["source"], e["target"]) for e in kept]
+        assert not any(is_manual_edge(e) for e in kept)
+        assert len(dropped) == 2
+
+    def test_placement_suffix_still_matches(self):
+        """graduate_manual_node targets a placement-qualified id; the
+        DB-derived key is always bare."""
+        edges = [
+            self._db(self.F_NODE, "var__Out"),
+            self._manual(f"{self.F_NODE}::main", "var__Out::main"),
+        ]
+        kept, dropped = drop_superseded_manual_edges(edges)
+        assert len(kept) == 1
+        assert len(dropped) == 1
+
+    def test_path_input_to_different_param_is_kept(self):
+        """Same PathInput feeding a DIFFERENT parameter is a real second
+        connection, not a duplicate."""
+        edges = [
+            self._db("pathInput__p", self.F_NODE, targetHandle="in__first"),
+            self._manual("pathInput__p", self.F_NODE, targetHandle="in__second"),
+        ]
+        kept, dropped = drop_superseded_manual_edges(edges)
+        assert len(kept) == 2
+        assert dropped == []
+
+    def test_ungraduated_manual_edge_is_kept(self):
+        """A manual edge to a node that has NOT graduated names a different
+        connection and must survive."""
+        edges = [
+            self._db(self.F_NODE, "var__Out"),
+            self._manual("fn__f__2qxdue", "var__Out"),
+        ]
+        kept, dropped = drop_superseded_manual_edges(edges)
+        assert len(kept) == 2
+        assert dropped == []
+
+    def test_idempotent_on_an_already_clean_build(self):
+        """Unconditional in the pipeline, so a build with no rewrites must
+        come through untouched."""
+        edges = [
+            self._db("var__Raw", self.F_NODE, targetHandle="in__signal"),
+            self._manual("var__Other", self.F_NODE, targetHandle="in__extra"),
+        ]
+        kept, dropped = drop_superseded_manual_edges(edges)
+        assert kept == edges
+        assert dropped == []
+        assert drop_superseded_manual_edges(kept)[0] == edges
+
+    def test_two_manual_edges_for_the_same_wire_both_dropped(self):
+        edges = [
+            self._db(self.F_NODE, "var__Out"),
+            dict(self._manual(self.F_NODE, "var__Out"), id="manual__a"),
+            dict(self._manual(self.F_NODE, "var__Out"), id="manual__b"),
+        ]
+        kept, dropped = drop_superseded_manual_edges(edges)
+        assert [e["id"] for e in kept] == [f"e__{self.F_NODE}__var__Out"]
+        assert {e["id"] for e in dropped} == {"manual__a", "manual__b"}
+
+    def test_manual_only_wire_survives_with_no_db_edge(self):
+        edges = [self._manual(self.F_NODE, "var__Out")]
+        kept, dropped = drop_superseded_manual_edges(edges)
+        assert len(kept) == 1
+        assert dropped == []
+
+
+class TestEdgeDedupKey:
+    def test_path_input_keys_on_param(self):
+        a = edge_dedup_key("pathInput__p", "fn__f", "in__one")
+        b = edge_dedup_key("pathInput__p", "fn__f", "in__two")
+        assert a != b
+        assert len(a) == 3
+
+    def test_non_path_input_ignores_handle(self):
+        a = edge_dedup_key("var__Raw", "fn__f", "in__one")
+        b = edge_dedup_key("var__Raw", "fn__f", "in__two")
+        assert a == b == ("var__Raw", "fn__f")
+
+    def test_placement_suffix_stripped_from_both_endpoints(self):
+        assert edge_dedup_key("fn__f::main", "var__Out::main") == edge_dedup_key(
+            "fn__f", "var__Out"
+        )
+
+    def test_missing_handle_is_not_an_error(self):
+        assert edge_dedup_key("pathInput__p", "fn__f") == ("pathInput__p", "fn__f")
+
+
 # ---------------------------------------------------------------------------
 # Disconnected wirings — hidden_wirings, wiring_disconnected_fkeys,
 # wirings_downstream_of, candidate_edge_id, inbound_edge_candidates
@@ -2036,6 +2163,67 @@ class TestWiringId:
         assert wiring_id("bp", {"signal": "Other"}, {"Filtered"}, {}) != base
         assert wiring_id("bp", {"signal": "Raw"}, {"Smoothed"}, {}) != base
         assert wiring_id("other", {"signal": "Raw"}, {"Filtered"}, {}) != base
+
+
+class TestWiringIdPathInputNormalisation:
+    """The canvas hashes ``AggregatedData.fn_input_params`` (PathInputs already
+    partitioned out); the run path hashes a raw variant's ``input_types``
+    (PathInput spec still in it). When those disagreed, a graduated
+    PathInput-fed node hashed one way on the canvas and another in
+    derive_target_for_node, matched no history, and reported "No pipeline
+    history or output connections found" for a green, fully wired, already-run
+    node. Both views must hash identically.
+    """
+
+    PI_JSON = json.dumps(
+        {
+            "__type": "PathInput",
+            "template": "{subject}/{subject}_{session}_CPET.csv",
+            "root_folder": "examples/vo2max/data",
+        }
+    )
+    PI_LEGACY = "PathInput('{subject}/raw.csv', root_folder=PosixPath('/data'))"
+
+    def test_raw_and_partitioned_views_agree(self):
+        canvas = wiring_id("read_csv", {}, {"cpet_data_raw"}, {"fp": "test_pi"})
+        run_path = wiring_id(
+            "read_csv", {"fp": self.PI_JSON}, {"cpet_data_raw"}, {"fp": "test_pi"}
+        )
+        assert canvas == run_path
+
+    def test_agreement_holds_with_variable_inputs_alongside(self):
+        canvas = wiring_id("process", {"signal": "Raw"}, {"Out"}, {"fp": "p"})
+        run_path = wiring_id(
+            "process", {"signal": "Raw", "fp": self.PI_JSON}, {"Out"}, {"fp": "p"}
+        )
+        assert canvas == run_path
+
+    def test_legacy_repr_spec_also_stripped(self):
+        canvas = wiring_id("load", {}, {"Out"}, {"fp": "p"})
+        assert wiring_id("load", {"fp": self.PI_LEGACY}, {"Out"}, {"fp": "p"}) == canvas
+
+    def test_path_input_term_still_discriminates(self):
+        """Stripping the spec must not collapse two call sites fed by
+        DIFFERENT PathInputs — that's what the path_inputs term is for."""
+        a = wiring_id("load", {"fp": self.PI_JSON}, {"Out"}, {"fp": "pi_a"})
+        b = wiring_id("load", {"fp": self.PI_JSON}, {"Out"}, {"fp": "pi_b"})
+        assert a != b
+
+    def test_variable_inputs_are_never_stripped(self):
+        assert strip_path_input_params({"signal": "Raw", "fp": self.PI_JSON}) == {
+            "signal": "Raw"
+        }
+
+    def test_non_string_values_survive(self):
+        """Multi-type inputs arrive as lists; they must not trip the parser."""
+        params = {"signal": ["Raw", "Filtered"], "n": 5, "missing": None}
+        assert strip_path_input_params(params) == params
+
+    def test_canvas_ids_are_unchanged_by_the_normalisation(self):
+        """The canvas side never had a spec to strip, so no stored node id,
+        saved position or scope membership may shift."""
+        params = {"signal": "Raw"}
+        assert strip_path_input_params(params) == params
 
 
 class TestGroupCallSitesByWiring:

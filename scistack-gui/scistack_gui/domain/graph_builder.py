@@ -161,6 +161,84 @@ def strip_placement(node_id: str) -> str:
     return bare
 
 
+def edge_dedup_key(
+    source: str, target: str, target_handle: str | None = None
+) -> tuple:
+    """The identity of a *connection*, independent of the edge's id.
+
+    Two edges with this same key describe the same wire and must never both
+    be rendered. Compare on BARE ids: DB-derived keys are always canonical,
+    while a graduated manual edge can carry a ``::scope`` placement suffix
+    (graduate_manual_node -> placement_id). resolve_scope_view resolves each
+    endpoint into the viewing scope afterwards, so two edges over the same
+    canonical pair are the same connection.
+
+    PathInput sources also key on the parameter the edge fills: ``pi_name``
+    and ``param_name`` can differ, so unlike var/const edges the source id
+    does not encode the parameter by itself.
+
+    This is the single definition used both to dedup manual edges against
+    DB-derived ones inside build_edges AND to re-check that invariant after
+    something rewrites edge endpoints mid-build (graduation, the legacy
+    wiring migration) — see drop_superseded_manual_edges.
+    """
+    src = strip_placement(source)
+    tgt = strip_placement(target)
+    handle = target_handle or ""
+    if src.startswith(PATH_INPUT_ID_PREFIX) and handle.startswith("in__"):
+        return (src, tgt, handle[len("in__") :])
+    return (src, tgt)
+
+
+def is_manual_edge(edge: dict) -> bool:
+    """Whether a built edge came from a manual (user-drawn) row.
+
+    build_edges tags manual edges with ``data.manual``; DB-derived edges
+    carry no ``data`` at all.
+    """
+    return bool((edge.get("data") or {}).get("manual"))
+
+
+def drop_superseded_manual_edges(edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Remove manual edges that now duplicate a DB-derived edge.
+
+    build_edges already applies this rule, but it runs BEFORE the graduation
+    of manual nodes — at which point a manual edge still names the manual
+    node ids (``fn__read_csv__2qxdue``) while the DB-derived edge names the
+    call-site ids, so the two don't compare equal and BOTH are emitted.
+    Graduation then rewrites the manual edge's endpoints onto the DB-derived
+    ids (in the DB via pipeline_store.rename_edge_endpoints, and in-memory so
+    the response isn't missing edges), which is exactly what turns it into a
+    duplicate. The legacy wiring migration's edge rewrites do the same thing.
+
+    So: whenever endpoints are rewritten mid-build, re-run this. The
+    invariant it protects is that a build's response equals what an
+    immediate rebuild would produce — without it the canvas draws two
+    identical wires until the next unrelated refresh, and deleting one
+    leaves its twin (the permanent-duplicate failure that endpoint dedup
+    was introduced to fix in the first place).
+
+    The manual row itself is untouched in the DB (hide, never delete): if
+    the DB-derived edge later disappears, the manual edge renders again.
+
+    Returns (kept_edges, dropped_edges).
+    """
+    db_keys = {
+        edge_dedup_key(e["source"], e["target"], e.get("targetHandle"))
+        for e in edges
+        if not is_manual_edge(e)
+    }
+    kept, dropped = [], []
+    for e in edges:
+        if is_manual_edge(e) and (
+            edge_dedup_key(e["source"], e["target"], e.get("targetHandle")) in db_keys
+        ):
+            dropped.append(e)
+        else:
+            kept.append(e)
+    return kept, dropped
+
+
 def parse_fn_node_id(node_id: str) -> tuple[str, str] | None:
     """Parse a composite fn node ID into (fn_name, call_id).
 
@@ -201,6 +279,23 @@ class GraduationAction:
 _STATE_WORST_ORDER = {"red": 0, "pending": 1, "green": 2}
 
 
+def strip_path_input_params(input_params: dict) -> dict:
+    """*input_params* without the entries that are really PathInput specs.
+
+    A raw ``list_pipeline_variants()`` row records a PathInput-fed parameter
+    inside ``input_types``, right alongside genuine variable inputs.
+    ``aggregate_variants`` partitions it out into ``AggregatedData.path_inputs``
+    instead, so the canvas never sees it as an input type. Anything that hashes
+    an input shape has to agree on which view it is using, or one call site
+    hashes two different ways depending on who asked — see ``wiring_id``.
+    """
+    return {
+        k: v
+        for k, v in input_params.items()
+        if not (isinstance(v, str) and parse_path_input(v) is not None)
+    }
+
+
 def wiring_id(fn_name: str, input_params: dict, out_types, path_inputs: dict) -> str:
     """16-hex id for a function's WIRING: name + loadable-input shape +
     output types — the call_id recipe minus constants, so constant-value
@@ -214,7 +309,22 @@ def wiring_id(fn_name: str, input_params: dict, out_types, path_inputs: dict) ->
     empty — mirroring scidb's ``to_version_keys``, which drops ``__inputs``
     entirely rather than emitting ``{}`` — so only PathInput-fed nodes have
     their ids affected by this term.
+
+    A PathInput is represented by that term and ONLY that term, so any spec
+    left in ``input_params`` is stripped here rather than counted twice. This
+    normalisation is the function's own job because its callers legitimately
+    hold both views: the canvas passes ``AggregatedData.fn_input_params``
+    (already partitioned), while the run path passes a raw variant's
+    ``input_types`` (not partitioned — ``_attach_db_path_inputs`` adds
+    bindings but never removes the spec). When those disagreed, a graduated
+    PathInput-fed node hashed one way on the canvas and another in
+    ``derive_target_for_node``, which then matched no history and reported
+    "No pipeline history or output connections found" for a green, fully
+    wired, already-run node. Stripping here cannot move a canvas id — that
+    side never had a spec to strip — so no stored position or scope
+    membership is disturbed.
     """
+    input_params = strip_path_input_params(input_params)
     payload_obj: dict = {
         "fn": fn_name,
         "inputs": {
@@ -1019,14 +1129,15 @@ def build_parameter_nodes(
         # simply lose the badge.
         current_source = source_values.get(const_name, [])
 
+        # "New" here means "declared in source, no DB records yet" — which
+        # stays true on EVERY rebuild for any Parameter that hasn't been run,
+        # so this is steady-state bookkeeping, not an event. Logged once per
+        # parameter at debug; at INFO it was three lines per build forever
+        # (5% of a real session's log, examples/vo2max/scidb.log).
+        merged_source_values = []
         for src_val in current_source:
             if src_val not in existing_values:
-                logger.info(
-                    "[graph_builder] merged new source value for parameter "
-                    "%r: %r",
-                    const_name,
-                    src_val,
-                )
+                merged_source_values.append(src_val)
                 values.append(
                     {
                         "value": src_val,
@@ -1035,6 +1146,14 @@ def build_parameter_nodes(
                     }
                 )
                 existing_values.add(src_val)
+        if merged_source_values:
+            logger.debug(
+                "[graph_builder] parameter %r: merged %d source-declared "
+                "value(s) with no DB records yet: %s",
+                const_name,
+                len(merged_source_values),
+                merged_source_values,
+            )
         source_set = set(current_source)
         for v in values:
             if v["value"] in source_set:
@@ -1421,18 +1540,15 @@ def build_edges(
         # canvas then drew both, permanently, and deleting one left its twin.
         # The row stays in _pipeline_edges (hide, never delete): if the
         # DB-derived edge later disappears, this renders again.
-        # Compare on BARE ids: the DB-derived keys are always canonical,
-        # while a graduated manual edge can carry a ``::scope`` placement
-        # suffix (graduate_manual_node -> placement_id). resolve_scope_view
-        # resolves each endpoint into the viewing scope afterwards, so two
-        # edges over the same canonical pair are the same connection.
-        me_source = strip_placement(me["source"])
-        me_target = strip_placement(me["target"])
-        me_handle = me.get("targetHandle") or me.get("target_handle") or ""
-        if me_source.startswith(PATH_INPUT_ID_PREFIX) and me_handle.startswith("in__"):
-            dedup_key = (me_source, me_target, me_handle[len("in__") :])
-        else:
-            dedup_key = (me_source, me_target)
+        #
+        # NOTE: this pass only catches manual edges that ALREADY name the
+        # DB-derived ids. Ones graduated later in this same build are caught
+        # by drop_superseded_manual_edges, which keys on the same function.
+        dedup_key = edge_dedup_key(
+            me["source"],
+            me["target"],
+            me.get("targetHandle") or me.get("target_handle"),
+        )
         if dedup_key in seen_edges:
             superseded += 1
             logger.debug(

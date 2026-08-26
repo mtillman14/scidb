@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CONSTANT_TYPE",
     "PATHINPUT_TYPE",
+    "PATHINPUT_VALUE_TYPE",
     "SAVE_FUNCTION_NAME",
     "compute_constant_record_id",
     "constant_record_id_from_hash",
@@ -64,6 +65,12 @@ CONSTANT_TYPE = "__constant__"
 # are bucketed into variables/constants, and EXCLUDED from ``invocation_id`` (so it
 # does not perturb computation identity).
 PATHINPUT_TYPE = "__pathinput__"
+
+# The ``value_type`` a PathInput spec row carries in ``_constant`` — the
+# constant *value* type column, NOT the ``_record.type`` sentinel above (the
+# two live in different tables and must not be swapped). Defined once so the
+# writer and anything that counts/filters those rows can't drift apart.
+PATHINPUT_VALUE_TYPE = "PathInput"
 
 # Sentinel ``function_name`` for a *synthetic save invocation* — the activity row
 # that anchors a direct ``.save(..., kw=v)`` call's non-schema kwargs as constant

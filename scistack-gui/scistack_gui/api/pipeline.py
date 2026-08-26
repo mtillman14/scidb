@@ -1072,6 +1072,27 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     if adoptions or drop_ids:
         positions_by_scope = layout_store.read_positions_by_scope()
 
+    # --- Re-dedup after endpoint rewrites ---
+    # build_edges deduped manual edges against DB-derived ones, but that ran
+    # BEFORE graduation and before the wiring migration above — both of which
+    # rewrite manual-edge endpoints onto DB-derived node ids, which is exactly
+    # what turns a manual edge into a duplicate of a DB-derived one. Without
+    # this pass the FIRST build after a run returns both copies of every
+    # just-graduated wire (the next, unrelated rebuild returns the correct
+    # set), so the canvas draws doubled edges until something else refreshes
+    # it. Unconditional and idempotent: with no rewrites it drops nothing.
+    edges, superseded_edges = gb.drop_superseded_manual_edges(edges)
+    if superseded_edges:
+        logger.info(
+            "[pipeline] dropped %d manual edge(s) superseded by DB-derived "
+            "edges after endpoint rewriting: %s",
+            len(superseded_edges),
+            ", ".join(
+                f"{e['id']} ({e['source']} -> {e['target']})"
+                for e in superseded_edges
+            ),
+        )
+
     logger.info("[pipeline] Filtering graph to scope %s", pipeline_id)
     from scistack_gui.domain.scope_filter import resolve_scope_view
     from scistack_gui.services.scope_service import build_pipeline_nodes

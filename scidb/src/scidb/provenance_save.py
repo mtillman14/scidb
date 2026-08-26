@@ -33,6 +33,7 @@ from scicanonicalhash import canonical_hash
 from .provenance import (
     CONSTANT_TYPE,
     PATHINPUT_TYPE,
+    PATHINPUT_VALUE_TYPE,
     compute_constant_record_id,
     compute_invocation_id,
     compute_pathinput_record_id,
@@ -249,6 +250,20 @@ def _pathinput_specs(meta: dict) -> dict[str, str]:
     return out
 
 
+def variable_input_params(meta: dict) -> list[str]:
+    """Params in ``__inputs`` bound to a **scidb variable**, not a PathInput.
+
+    ``__inputs`` carries every loadable input's ``to_key()`` plus PathInput's
+    (whose per-combo resolution lives in scifor, not scidb's variable loader).
+    Only the non-PathInput ones consume stored records, so only they are
+    expected to produce ``_invocation_input`` edges. Lets the save path tell
+    "no input edges because the inputs were files/constants" (normal) from
+    "no input edges although a stored record was consumed" (severed lineage).
+    """
+    pathinputs = _pathinput_specs(meta)
+    return [p for p in _parse_json_dict(meta.get("__inputs")) if p not in pathinputs]
+
+
 def _normalize_as_table(meta: dict, loadable_params: list[str]) -> list[str]:
     """Resolve the ``__as_table`` flag to a sorted list of aggregated params.
 
@@ -461,7 +476,7 @@ def record_run(
             for param, spec in _pathinput_specs(meta).items():
                 prid = compute_pathinput_record_id(spec)
                 ch = canonical_hash(spec)
-                constant_rows[prid] = (prid, spec, "PathInput", ch)
+                constant_rows[prid] = (prid, spec, PATHINPUT_VALUE_TYPE, ch)
                 entity_rows.setdefault(
                     prid, (prid, created_at, PATHINPUT_TYPE, None, ch, None, False)
                 )
@@ -539,13 +554,24 @@ def record_run(
     timings["2_assemble_loop"] = time.perf_counter() - _t_assemble
 
     run_id = generate_run_id()
+    # constant_rows holds two kinds of input record: real constants and
+    # PathInput specs (both are non-variable inputs, stored the same way and
+    # distinguished by their value type). Count them apart — reporting a
+    # PathInput-only run as "1 constant(s)" reads as a constant having leaked
+    # into a run whose ``__constants`` was empty.
+    pathinput_row_count = sum(
+        1 for row in constant_rows.values() if row[2] == PATHINPUT_VALUE_TYPE
+    )
+    constant_row_count = len(constant_rows) - pathinput_row_count
     logger.debug(
-        "record_run: run_id=%s fn=%s records=%d invocations=%d constants=%d edges_in=%d",
+        "record_run: run_id=%s fn=%s records=%d invocations=%d constants=%d "
+        "pathinput_specs=%d edges_in=%d",
         run_id,
         function_name,
         len(graph_records),
         len(invocation_rows),
-        len(constant_rows),
+        constant_row_count,
+        pathinput_row_count,
         len(input_edges),
     )
     _t_commit = time.perf_counter()
@@ -569,7 +595,8 @@ def record_run(
 
     Log.info(
         f"[timing] record_run(fn={function_name}): {len(graph_records)} record(s), "
-        f"{len(invocation_rows)} invocation(s), {len(constant_rows)} constant(s), "
+        f"{len(invocation_rows)} invocation(s), {constant_row_count} constant(s), "
+        f"{pathinput_row_count} PathInput spec(s), "
         f"{len(input_edges)} input edge(s), {timings['total']:.3f}s"
     )
     for phase, elapsed in timings.items():

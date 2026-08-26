@@ -4503,16 +4503,31 @@ def _save_results(
         f"fixed_rids={list((lineage_fixed_rids or {}).keys())}"
     )
     if not _rid_cols_present and not _combo_has_rids and not lineage_fixed_rids:
-        Log.warn(
-            f"[batch_save] {fn_name!r}: NO variable input-binding source (no __rid_* "
-            f"columns in the result table, no upstream rids in combo_to_rids, no "
-            f"fixed rids) — saved records will have NO _invocation_input edges. "
-            f"EXPECTED when the only inputs are files (PathInput) or constants; a "
-            f"BUG if a scidb-variable input was consumed (severs lineage and is the "
-            f"precondition for the re-run orphan/duplicate cascade — the __rid_* "
-            f"discriminators were likely dropped before save, e.g. distribute "
-            f"fan-out or the result round-trip)."
-        )
+        # Only WARN for the case that is actually a bug. With no scidb-variable
+        # input there is nothing to bind, so having no input edges is the
+        # correct outcome, not a symptom — warning on it every PathInput- or
+        # constant-only run (the common case) trains the reader to scroll past
+        # the one message that flags a genuinely severed lineage.
+        from .provenance_save import variable_input_params
+
+        _var_params = variable_input_params(config_keys)
+        if _var_params:
+            Log.warn(
+                f"[batch_save] {fn_name!r}: NO variable input-binding source (no "
+                f"__rid_* columns in the result table, no upstream rids in "
+                f"combo_to_rids, no fixed rids) — saved records will have NO "
+                f"_invocation_input edges, yet scidb-variable input(s) "
+                f"{_var_params} WERE consumed. This severs lineage and is the "
+                f"precondition for the re-run orphan/duplicate cascade — the "
+                f"__rid_* discriminators were likely dropped before save, e.g. "
+                f"distribute fan-out or the result round-trip."
+            )
+        else:
+            Log.info(
+                f"[batch_save] {fn_name!r}: no _invocation_input edges — expected, "
+                f"the inputs are files (PathInput) and/or constants, so there are "
+                f"no consumed records to bind."
+            )
 
     # ===========================================================================
     # PHASE 1: Collect all (data, metadata) items for batch saving

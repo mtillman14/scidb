@@ -171,11 +171,19 @@ def _attach_db_path_inputs(db, function_name: str, targets: list[dict]) -> list[
     reaching ``build_run_inputs`` has the same shape regardless of whether it
     came from history or from inference.
 
-    A history target arrives with ``input_types`` (its recorded variable
-    inputs) and no trace of the PathInput that fed it — that mapping lives in
-    the aggregated variants instead, which ``_db_path_input_params`` inverts.
-    Both become bindings here, and this is the ONLY place a target's bindings
-    are assembled from history.
+    A history target arrives with ``input_types`` holding its recorded inputs
+    — INCLUDING a PathInput-fed parameter, whose raw spec sits there next to
+    the real variable inputs. The declared-name mapping it needs lives in the
+    aggregated variants instead, which ``_db_path_input_params`` inverts. Both
+    become bindings here (the PathInput loop runs second and overwrites the
+    variable binding this made for that param), and this is the ONLY place a
+    target's bindings are assembled from history.
+
+    Note what this does NOT do: it leaves ``input_types`` alone. Callers that
+    hash an input shape must therefore not treat it as the partitioned view
+    the canvas uses — ``graph_builder.wiring_id`` normalises this itself, and
+    that discrepancy is exactly what once made a graduated PathInput-fed node
+    unrunnable.
 
     No Parameter bindings: a history target's ``constants`` already hold
     concrete recorded values, so nothing needs looking up in the Parameter
@@ -458,17 +466,45 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
     # PathInputs are part of the wiring shape, so both sides of this
     # comparison must carry them or a PathInput-fed node matches nothing.
     pi_by_call = _db_path_input_params(db, function_name)
-    matching = [
-        v
-        for v in fn_variants
-        if wiring_id(
-            function_name,
-            v["input_types"],
-            {v["output_type"]},
-            pi_by_call.get(v.get("call_id"), {}),
+    candidate_wirings = [
+        (
+            v,
+            wiring_id(
+                function_name,
+                v["input_types"],
+                {v["output_type"]},
+                pi_by_call.get(v.get("call_id"), {}),
+            ),
         )
-        == node_wiring
+        for v in fn_variants
     ]
+    matching = [v for v, wid in candidate_wirings if wid == node_wiring]
+    if not matching and candidate_wirings:
+        # "This node matches no history" is indistinguishable, from the
+        # outside, from "this node has no history" — both surface as the
+        # same empty list and the same generic error at api/run.py. Show the
+        # comparison that failed, since a node visibly green on the canvas
+        # reaching here means the two sides hashed the SAME call site
+        # differently (see wiring_id's note on the PathInput term).
+        logger.warning(
+            "[execution] node %s ('%s'): wiring %s matches none of the %d "
+            "candidate variant(s) — computed %s. This node cannot run even "
+            "though history exists for its function.",
+            node_id,
+            function_name,
+            node_wiring,
+            len(candidate_wirings),
+            [
+                {
+                    "wiring_id": wid,
+                    "call_id": v.get("call_id"),
+                    "input_types": v.get("input_types"),
+                    "output_type": v.get("output_type"),
+                    "path_inputs": pi_by_call.get(v.get("call_id"), {}),
+                }
+                for v, wid in candidate_wirings
+            ],
+        )
     hidden_edge_ids = pipeline_store.get_hidden_edge_ids(db)
     if hidden_edge_ids and matching:
         from scistack_gui.domain.variant_resolver import filter_disconnected_targets
@@ -489,6 +525,13 @@ def derive_target_for_node(db, node_id: str) -> list[dict]:
     if resolved is None:
         # An already-graduated node whose embedded wiring matches nothing
         # in current history (stale) — nothing safe to run as this node.
+        # The warning above has already spelled out the failed comparison.
+        logger.info(
+            "[execution] node %s ('%s'): no targets — graduated node with no "
+            "matching history and no manual edges to infer from",
+            node_id,
+            function_name,
+        )
         return []
 
     # Never run with this wiring before — infer constant values from (in

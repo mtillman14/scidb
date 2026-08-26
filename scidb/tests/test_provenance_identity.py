@@ -220,3 +220,43 @@ def test_record_table_columns(tmp_path):
         }
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# variable_input_params — tells "no input edges because the inputs were
+# files/constants" (normal) from "no input edges although a stored record was
+# consumed" (severed lineage). Drives the batch_save log level, so a wrong
+# answer either hides a real lineage break or cries wolf on every PathInput run.
+# ---------------------------------------------------------------------------
+_PI_SPEC = '{"__type": "PathInput", "template": "{subject}/x.csv", "root_folder": "data"}'
+
+
+def test_variable_input_params_excludes_path_inputs():
+    from scidb.provenance_save import variable_input_params
+
+    assert variable_input_params({"__inputs": {"filepath_or_buffer": _PI_SPEC}}) == []
+
+
+def test_variable_input_params_finds_variable_inputs():
+    from scidb.provenance_save import variable_input_params
+
+    meta = {"__inputs": {"signal": "RawSignal", "filepath_or_buffer": _PI_SPEC}}
+    assert variable_input_params(meta) == ["signal"]
+
+
+def test_variable_input_params_handles_json_string_inputs():
+    """``__inputs`` arrives as a dict in-memory but as a JSON string off a
+    stored record."""
+    import json
+
+    from scidb.provenance_save import variable_input_params
+
+    meta = {"__inputs": json.dumps({"signal": "RawSignal", "fp": _PI_SPEC})}
+    assert variable_input_params(meta) == ["signal"]
+
+
+def test_variable_input_params_empty_when_no_inputs():
+    from scidb.provenance_save import variable_input_params
+
+    assert variable_input_params({}) == []
+    assert variable_input_params({"__inputs": {}, "__constants": {"hz": 30}}) == []

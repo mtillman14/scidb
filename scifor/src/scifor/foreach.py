@@ -2123,24 +2123,31 @@ def _results_to_output_dataframe(
                 collisions,
                 layer="scifor",
             )
+        # max_rows is the LARGEST row count across the combinations, which each
+        # returned their own DataFrame — quoting it bare read as though every
+        # combination returned that many rows (examples/vo2max/scidb.log
+        # reported "372-row DataFrame" for combinations of 322/372/304/366).
         if spread and disc_keys:
             Log.info(
-                "output %s: %d-row DataFrame(s) discriminated by unpinned schema "
-                "key(s) %s — spreading rows into separate records",
+                "output %s: %d DataFrame(s), up to %d row(s) each, discriminated "
+                "by unpinned schema key(s) %s — spreading rows into separate "
+                "records",
                 _out,
+                len(collected_rows),
                 max_rows,
                 disc_keys,
                 layer="scifor",
             )
         elif not spread:
             Log.info(
-                "output %s: %d-row DataFrame carries no unpinned schema-key "
-                "column, so every row shares one address — saving the whole "
-                "table as ONE record per combination. To file rows separately "
-                "they need a finer address: return a schema-key column, or "
-                "pass distribute=True to spread them one level below the "
-                "deepest iterated key.",
+                "output %s: %d DataFrame(s), up to %d row(s) each, carry no "
+                "unpinned schema-key column, so every row shares one address — "
+                "saving each whole table as ONE record per combination. To file "
+                "rows separately they need a finer address: return a schema-key "
+                "column, or pass distribute=True to spread them one level below "
+                "the deepest iterated key.",
                 _out,
+                len(collected_rows),
                 max_rows,
                 layer="scifor",
             )

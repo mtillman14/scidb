@@ -13,6 +13,8 @@ for both a combo with real DB history and one that's never been run.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 from scidb import BaseVariable
 
@@ -236,3 +238,115 @@ class TestDbHistoryPathInputBinding:
         assert all(
             bindings_of_kind(t["bindings"], BINDING_PARAMETER) == {} for t in result
         )
+
+
+class TestGraduatedPathInputNodeIsRunnable:
+    """Regression test: a PathInput-fed node that has run and GRADUATED must
+    still resolve to its own history when Run is clicked.
+
+    The canvas hashes ``AggregatedData.fn_input_params``, where
+    ``aggregate_variants`` has already partitioned the PathInput out into
+    ``path_inputs``. derive_target_for_node hashed the RAW variant's
+    ``input_types``, which still carries the PathInput spec — so the same
+    call site hashed two different ways, the graduated node's embedded wiring
+    matched nothing, and the GUI reported "No pipeline history or output
+    connections found for 'pandas.read_csv'. Connect it to an output variable
+    node first." for a green, fully wired, already-run node
+    (examples/vo2max/scidb.log, run_id=sx6lpngy).
+
+    Only PathInput-fed pipelines were affected: with variable-only inputs
+    both views already agreed, which is why nothing caught it.
+    """
+
+    PI_SPEC = json.dumps(
+        {"__type": "PathInput", "template": "{subject}/data.csv", "root_folder": None}
+    )
+
+    def _db_with_history(self, db, monkeypatch):
+        from scidb import PathInput
+
+        from scistack_gui import registry
+
+        monkeypatch.setattr(
+            registry,
+            "get_path_inputs_registry",
+            lambda: {"test_pi": PathInput("{subject}/data.csv")},
+        )
+        monkeypatch.setattr(
+            db,
+            "get_aggregated_variants",
+            lambda *a, **k: {
+                "path_inputs": {
+                    "filepath_or_buffer": {
+                        "template": "{subject}/data.csv",
+                        "root_folder": None,
+                        "functions": [("read_csv_like", "call1")],
+                    }
+                }
+            },
+        )
+        # As recorded: the PathInput spec sits in input_types next to any
+        # real variable inputs.
+        monkeypatch.setattr(
+            db,
+            "list_pipeline_variants",
+            lambda *a, **k: [
+                {
+                    "function_name": "read_csv_like",
+                    "output_type": "Out",
+                    "call_id": "call1",
+                    "input_types": {"filepath_or_buffer": self.PI_SPEC},
+                    "constants": {},
+                    "record_count": 4,
+                }
+            ],
+        )
+        return db
+
+    def _canvas_node_id(self, placement: str | None = None) -> str:
+        """The id the canvas gives this call site — hashed from the
+        PARTITIONED view, exactly as group_call_sites_by_wiring does."""
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+
+        node_id = fn_node_id(
+            "read_csv_like",
+            wiring_id(
+                "read_csv_like", {}, {"Out"}, {"filepath_or_buffer": "test_pi"}
+            ),
+        )
+        return f"{node_id}::{placement}" if placement else node_id
+
+    def test_graduated_node_resolves_to_its_history(self, populated_db, monkeypatch):
+        db = self._db_with_history(populated_db, monkeypatch)
+        targets = derive_target_for_node(db, self._canvas_node_id())
+        assert len(targets) == 1, (
+            "the graduated node's embedded wiring must match its own recorded "
+            "history — an empty list is the 'connect it to an output variable "
+            "node first' error on a node that has already run"
+        )
+        assert targets[0]["output_type"] == "Out"
+
+    def test_graduated_node_resolves_with_a_placement_suffix(
+        self, populated_db, monkeypatch
+    ):
+        """graduate_manual_node targets a placement-qualified id, which is
+        what /api/run actually sends."""
+        db = self._db_with_history(populated_db, monkeypatch)
+        targets = derive_target_for_node(db, self._canvas_node_id("main"))
+        assert len(targets) == 1
+
+    def test_a_genuinely_different_wiring_still_matches_nothing(
+        self, populated_db, monkeypatch
+    ):
+        """The fix must not make the comparison match everything — a node
+        whose wiring really isn't in history still resolves to no targets."""
+        from scistack_gui.domain.graph_builder import fn_node_id, wiring_id
+
+        db = self._db_with_history(populated_db, monkeypatch)
+        other = fn_node_id(
+            "read_csv_like",
+            wiring_id(
+                "read_csv_like", {}, {"Different"}, {"filepath_or_buffer": "test_pi"}
+            ),
+        )
+        assert derive_target_for_node(db, other) == []
