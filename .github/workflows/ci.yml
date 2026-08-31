@@ -39,8 +39,56 @@ jobs:
           bash dev-install.sh
           pip install pytest pytest-cov matplotlib
       - name: Run tests
-        # scimatlab is skipped automatically by run_tests.sh when MATLAB is absent.
-        run: bash run_tests.sh
+        # Inlined from the former run_tests.sh: pytest per package, collecting
+        # pass/fail so every package runs even after one fails.
+        # scimatlab needs a MATLAB licence, so it is skipped unless MATLAB exists.
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          PACKAGES=(
+              scistacklog
+              scicanonicalhash
+              path-gen
+              scifor
+              sciduckdb
+              scilineage
+              scidb
+              scihist
+          )
+
+          if command -v matlab &>/dev/null; then
+              PACKAGES+=(scimatlab)
+          fi
+
+          PASS=()
+          FAIL=()
+
+          for pkg in "${PACKAGES[@]}"; do
+              test_dir="$GITHUB_WORKSPACE/$pkg/tests"
+
+              if [[ ! -d "$test_dir" ]]; then
+                  echo "::warning::Skipping $pkg — no tests/ directory found"
+                  continue
+              fi
+
+              echo "::group::$pkg"
+              if pytest "$test_dir"; then
+                  PASS+=("$pkg")
+              else
+                  FAIL+=("$pkg")
+              fi
+              echo "::endgroup::"
+          done
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Summary"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  PASSED (${#PASS[@]}): ${PASS[*]:-—}"
+          echo "  FAILED (${#FAIL[@]}): ${FAIL[*]:-—}"
+
+          [[ ${#FAIL[@]} -eq 0 ]]
 
   typecheck:
     runs-on: ubuntu-latest
