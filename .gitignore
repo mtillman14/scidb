@@ -25,3 +25,4 @@ scistack-gui/frontend/node_modules/
 # Runtime output of code_export_service (pipeline-to-code export) — timestamped
 # per-run files, not source.
 /exports/
+*.log

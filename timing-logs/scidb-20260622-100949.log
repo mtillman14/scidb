@@ -1,2 +1,0 @@
-[10:09:43.044] [INFO] configure_database: path=/private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tp4ae31439_889e_49e1_ab0f_96517b3d3471/test.duckdb, schema_keys=['subject', 'session', 'speed', 'trial']
-[10:09:43.046] [INFO] MATLAB: configure_database — DuckDB lock ACQUIRED: /private/var/folders/hx/ql6ztbg12wg_5d8k27g3wxq40000gn/T/tp4ae31439_889e_49e1_ab0f_96517b3d3471/test.duckdb
