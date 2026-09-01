@@ -102,7 +102,17 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.DEBUG
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute. Callers that
+                % pre-build the message (scidb.Log.info(sprintf(...))) would
+                % otherwise be sprintf'd twice, and the second pass eats
+                % Windows path separators: '...in y:\LabMembers\...' warns
+                % "Escaped character '\L' is not valid" and truncates to
+                % '...in y:'. Observed 2026-09-01 from +scidb/entities.m.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.debug(msg, pyargs('layer', 'matlab'));
             end
         end
@@ -112,7 +122,17 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.INFO
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute. Callers that
+                % pre-build the message (scidb.Log.info(sprintf(...))) would
+                % otherwise be sprintf'd twice, and the second pass eats
+                % Windows path separators: '...in y:\LabMembers\...' warns
+                % "Escaped character '\L' is not valid" and truncates to
+                % '...in y:'. Observed 2026-09-01 from +scidb/entities.m.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.info(msg, pyargs('layer', 'matlab'));
             end
         end
@@ -122,7 +142,17 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.WARN
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute. Callers that
+                % pre-build the message (scidb.Log.info(sprintf(...))) would
+                % otherwise be sprintf'd twice, and the second pass eats
+                % Windows path separators: '...in y:\LabMembers\...' warns
+                % "Escaped character '\L' is not valid" and truncates to
+                % '...in y:'. Observed 2026-09-01 from +scidb/entities.m.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.warn(msg, pyargs('layer', 'matlab'));
             end
         end
@@ -133,7 +163,17 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scidb.Log.get_level() <= scidb.Log.ERROR
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute. Callers that
+                % pre-build the message (scidb.Log.info(sprintf(...))) would
+                % otherwise be sprintf'd twice, and the second pass eats
+                % Windows path separators: '...in y:\LabMembers\...' warns
+                % "Escaped character '\L' is not valid" and truncates to
+                % '...in y:'. Observed 2026-09-01 from +scidb/entities.m.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.error(msg, pyargs('layer', 'matlab'));
             end
         end

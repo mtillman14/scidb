@@ -169,9 +169,16 @@ export default function EditTab() {
       .catch(err => setPipeError((err as Error).message))
   }
 
+  // Every list this panel owns must be fetched here, not only on the
+  // 'dag_updated' broadcast below: on reopening a project nothing has changed
+  // yet, so no broadcast arrives and an omitted list stays empty until the user
+  // clicks "Refresh code". That is exactly how PathInputs went missing from the
+  // sidebar while still rendering on the canvas (which is fed by get_pipeline,
+  // an independent path).
   useEffect(() => {
     fetchRegistry()
     fetchParameters()
+    fetchPathInputs()
     fetchNotes()
   }, [fetchNotes])
 

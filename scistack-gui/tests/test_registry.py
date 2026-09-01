@@ -873,3 +873,124 @@ class TestTopLevelSideEffectRefusal:
             for r in caplog.records
         )
         assert "Refusing to import" in caplog.text
+
+
+class TestMatlabClassificationCache:
+    """``classify_matlab_file`` must reuse unchanged files and re-read changed ones.
+
+    Classification is the hot path of every ``refresh_all()``: once per
+    configured .m file, and the uncached body opens each file up to three
+    times (variable parse, function parse, entities-script check). On a
+    project whose libraries sit on an SMB share that measured ~90 ms/file —
+    12-16 s for 141 files, re-paid in full on every refresh even when nothing
+    had changed (three such rescans inside 90 s in a real 2026-09-01 log).
+
+    Accuracy is the constraint, not just speed: a stale hit would silently
+    serve the wrong signature, so the key must track content changes.
+    """
+
+    @staticmethod
+    def _write(path, body):
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def _fn_file(self, tmp_path, name="myFn", params="a, b"):
+        return self._write(
+            tmp_path / f"{name}.m",
+            f"function out = {name}({params})\nout = 1;\nend\n",
+        )
+
+    def test_unchanged_file_is_not_reparsed(self, tmp_path):
+        from scistack_gui import matlab_parser as mp
+
+        mp.invalidate_classify_cache()
+        path = self._fn_file(tmp_path)
+
+        first = mp.classify_matlab_file(path)
+        stats_after_first = mp.classify_cache_stats()
+        second = mp.classify_matlab_file(path)
+        stats_after_second = mp.classify_cache_stats()
+
+        assert first is not None and first[0] == "function"
+        assert second is first, "a cache hit should return the same object"
+        assert stats_after_first["misses"] == 1
+        assert stats_after_second["misses"] == 1, "unchanged file was re-parsed"
+        assert stats_after_second["hits"] == 1
+
+    def test_changed_content_is_reparsed(self, tmp_path):
+        """Same path, different bytes — the result must follow the file."""
+        import os
+
+        from scistack_gui import matlab_parser as mp
+
+        mp.invalidate_classify_cache()
+        path = self._fn_file(tmp_path, params="a, b")
+        first = mp.classify_matlab_file(path)
+        assert first[1].params == ["a", "b"]
+
+        self._write(path, "function out = myFn(a, b, c)\nout = 1;\nend\n")
+        # Defeat coarse filesystem timestamp granularity: the point under test
+        # is that a *different* stamp re-parses, not how fine the clock is.
+        st = path.stat()
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+        second = mp.classify_matlab_file(path)
+        assert second[1].params == ["a", "b", "c"], "stale classification served"
+
+    def test_explicit_invalidation_forces_a_reparse(self, tmp_path):
+        """Covers the same-tick, same-size edit the stamp key cannot see —
+        which is why ``reload_source`` invalidates before re-reading."""
+        from scistack_gui import matlab_parser as mp
+
+        mp.invalidate_classify_cache()
+        path = self._fn_file(tmp_path, params="aa")
+        assert mp.classify_matlab_file(path)[1].params == ["aa"]
+
+        # Same length, so size is unchanged; force the timestamp back to hide
+        # the edit from the stamp entirely.
+        st = path.stat()
+        self._write(path, "function out = myFn(bb)\nout = 1;\nend\n")
+        import os
+
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+        assert mp.classify_matlab_file(path)[1].params == ["aa"], (
+            "precondition: the stamp cannot see a same-tick same-size edit"
+        )
+        mp.invalidate_classify_cache(path)
+        assert mp.classify_matlab_file(path)[1].params == ["bb"]
+
+    def test_missing_file_is_never_cached(self, tmp_path):
+        from scistack_gui import matlab_parser as mp
+
+        mp.invalidate_classify_cache()
+        missing = tmp_path / "nope.m"
+
+        assert mp.classify_matlab_file(missing) is None
+        assert mp.classify_cache_stats()["entries"] == 0
+
+        self._fn_file(tmp_path, name="nope")
+        assert mp.classify_matlab_file(missing)[0] == "function", (
+            "a file that appeared after a failed stat must not stay cached as None"
+        )
+
+    def test_reload_source_invalidates_the_cache(self, tmp_path, monkeypatch):
+        """The narrow-reload path runs right after a GUI write."""
+        from scistack_gui import matlab_parser as mp
+        from scistack_gui import matlab_registry
+
+        mp.invalidate_classify_cache()
+        path = self._fn_file(tmp_path, name="editedFn", params="x")
+        matlab_registry.load_from_sources([path])
+        assert matlab_registry.get_matlab_function("editedFn").params == ["x"]
+
+        st = path.stat()
+        self._write(path, "function out = editedFn(y)\nout = 1;\nend\n")
+        import os
+
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+        assert matlab_registry.reload_source(path) is None
+        assert matlab_registry.get_matlab_function("editedFn").params == ["y"], (
+            "reload_source served a cached classification of the pre-edit file"
+        )

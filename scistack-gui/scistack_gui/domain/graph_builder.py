@@ -1359,13 +1359,24 @@ def build_function_nodes(
             covered = {p2c.get(p) for p in out_types if p in p2c}
             orphan = actual_outputs - covered - {None}
             if orphan:
+                # Not cosmetic: build_edges falls back to sourceHandle
+                # 'out__{class}' when p2c has no entry, while this node
+                # renders handles named 'out__{param}'. React Flow drops an
+                # edge whose sourceHandle does not exist on its source node,
+                # so the canvas shows the function disconnected from an
+                # output variable that run_state still marks green (states
+                # propagate over node ids, not handles).
                 logger.warning(
                     "[graph_builder] matlab fn=%s call_id=%s: DB variants %s "
-                    "have no declared param mapping (matlab_param_to_class=%s)",
+                    "have no declared param mapping (matlab_param_to_class=%s) "
+                    "— its output edge(s) will target handle(s) %s while this "
+                    "node renders %s, and will not render",
                     fn,
                     cid,
                     sorted(orphan),
                     p2c,
+                    sorted(f"out__{o}" for o in orphan),
+                    sorted(f"out__{p}" for p in out_types),
                 )
             logger.debug(
                 "[graph_builder] matlab fn=%s call_id=%s handles=%s param→class=%s",

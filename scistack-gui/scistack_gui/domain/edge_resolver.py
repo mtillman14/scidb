@@ -149,6 +149,31 @@ def node_id_to_var_label(
     return None
 
 
+def bare_fn_node_ids(fn_node_ids) -> set[str]:
+    """A function's node-id set reduced to bare canonical ids.
+
+    Every ``fn_node_ids`` membership test in this module goes through this.
+    Callers assemble that set from mixed sources — ``graph_builder.fn_node_id``
+    returns the BARE id (``fn__f__<call_id>``), while manual-node keys and edge
+    endpoints may carry a ``::{scope}`` placement suffix — and an edge endpoint
+    is rewritten from one form to the other by graduation
+    (``pipeline_store.rename_edge_endpoints``).
+
+    Comparing those forms with ``==`` is therefore a bug that only appears
+    AFTER a function's first successful run. It cost us exactly one: the
+    param→class map for a MATLAB fn came back empty once graduation had
+    rewritten its output edge to the placement-qualified id, so the fn node
+    rendered handle ``out__{param}`` while the edge pointed at
+    ``out__{Class}`` — React Flow silently drops an edge whose sourceHandle
+    does not exist, and the canvas showed the function disconnected from an
+    output variable that was nonetheless green.
+
+    See ``graph_builder.strip_placement``: "For every ad-hoc prefix-parser
+    that only ever wants the bare id (never the scope), call this FIRST."
+    """
+    return {strip_placement(i) for i in fn_node_ids}
+
+
 def resolve_function_edges(
     fn_node_ids: set[str],
     manual_edges: list[dict],
@@ -216,20 +241,22 @@ def resolve_function_edges(
             why,
         )
 
+    fn_ids = bare_fn_node_ids(fn_node_ids)
+
     for edge in manual_edges:
         source = edge.get("source", "")
         target = edge.get("target", "")
+        bare_source = strip_placement(source)
 
-        if source in fn_node_ids:
+        if bare_source in fn_ids:
             # Edge from this function → a variable node (output).
             var_label = node_id_to_var_label(target, existing_node_labels, manual_nodes)
             if var_label and var_label not in output_types:
                 output_types.append(var_label)
 
-        elif target in fn_node_ids:
+        elif strip_placement(target) in fn_ids:
             # Edge into this function (variable input, PathInput, Parameter).
             th = edge.get("targetHandle") or ""
-            bare_source = strip_placement(source)
 
             # PathInput → fn. The declared name and the parameter it fills
             # routinely differ, so ONLY the handle can say which param this
@@ -315,9 +342,10 @@ def infer_manual_fn_output_types(
 
     Used by the run path when DB variants exist but the user has rewired outputs.
     """
+    fn_ids = bare_fn_node_ids(fn_node_ids)
     output_types: list[str] = []
     for edge in manual_edges:
-        if edge.get("source", "") in fn_node_ids:
+        if strip_placement(edge.get("source", "")) in fn_ids:
             var_label = node_id_to_var_label(
                 edge.get("target", ""), existing_node_labels, manual_nodes
             )
@@ -341,10 +369,14 @@ def infer_manual_fn_param_to_class(
 
     Edges without an ``out__`` prefix or without a resolvable target class
     are skipped. On duplicate param names the first wins.
+
+    Endpoint matching is placement-insensitive — see :func:`bare_fn_node_ids`,
+    which documents the canvas bug an exact match caused here.
     """
+    fn_ids = bare_fn_node_ids(fn_node_ids)
     mapping: dict[str, str] = {}
     for edge in manual_edges:
-        if edge.get("source", "") not in fn_node_ids:
+        if strip_placement(edge.get("source", "")) not in fn_ids:
             continue
         sh = edge.get("sourceHandle") or ""
         if not sh.startswith("out__"):

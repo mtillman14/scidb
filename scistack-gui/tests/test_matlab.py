@@ -2687,3 +2687,88 @@ class TestSingleNodeMatlabRunRouting:
         done = [m for m in messages if m["type"] == "run_done"]
         assert len(done) == 1
         assert done[0]["success"] is False
+
+
+class TestPathInputNeverRegisteredAsVariable:
+    """A PathInput param must never reach ``scidb.register_variable(...)``.
+
+    Regression for the "second run of the same node fails to parse" bug:
+    ``input_types`` records a PathInput as its ``PathInput.to_key()`` JSON
+    blob, and emitting that as a MATLAB expression produced
+
+        scidb.register_variable({"__type": "PathInput", ...}());
+
+    which MATLAB rejects with "Invalid expression. When calling a function or
+    indexing a variable, use parentheses."
+    """
+
+    @staticmethod
+    def _path_input_variant():
+        from scifor import PathInput
+
+        return {
+            "input_types": {
+                "emgFilePath": PathInput("data/{pass}/emg.mat").to_key(),
+                "reference": "RefSignal",
+            },
+            "output_type": "RawEMG",
+            "constants": {},
+            "record_count": 3,
+        }
+
+    def test_collect_var_types_excludes_path_inputs(self):
+        from scistack_gui.api.matlab_command import _collect_var_types
+
+        types = _collect_var_types([self._path_input_variant()])
+
+        assert types == {"RefSignal", "RawEMG"}, (
+            "a PathInput's to_key() JSON leaked into the variable-type set"
+        )
+
+    def test_generated_command_never_registers_a_path_input(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="loadDelsysEMGOneFile",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[self._path_input_variant()],
+        )
+
+        registered = [
+            ln for ln in cmd.splitlines() if "scidb.register_variable(" in ln
+        ]
+        assert registered, "expected the variants branch to register its types"
+        for line in registered:
+            assert "__type" not in line and "{" not in line, (
+                f"PathInput JSON emitted as a MATLAB expression: {line}"
+            )
+
+    def test_both_first_and_second_run_scripts_are_clean(self):
+        """The bug was a branch flip, so neither branch alone catches it.
+
+        Run 1 has no DB variants and takes the template branch; run 1's saves
+        then give run 2 the variants that took the register branch. Assert the
+        same invariant across both.
+        """
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        first = generate_matlab_command(
+            function_name="loadDelsysEMGOneFile",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[],
+            path_inputs={"emgFilePath": {"template": "data/{pass}/emg.mat"}},
+            output_types=["RawEMG"],
+        )
+        second = generate_matlab_command(
+            function_name="loadDelsysEMGOneFile",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[self._path_input_variant()],
+        )
+
+        for label, cmd in (("first run", first), ("second run", second)):
+            for line in cmd.splitlines():
+                if "scidb.register_variable(" in line:
+                    assert "__type" not in line, f"{label}: {line}"

@@ -46,13 +46,38 @@ _external_holder: "str | None" = None
 ACQUIRE_RETRY_TIMEOUT = 5.0
 ACQUIRE_RETRY_INTERVAL = 0.25
 
-# DuckDB's conflict message names the process holding the lock, e.g.
+# DuckDB's conflict message names the process holding the lock, but the
+# wording is PLATFORM-SPECIFIC and both forms must be recognized.
+#
+# POSIX:
 #   "Could not set lock on file ...: Conflicting lock is held in
-#    C:\\Program Files\\MATLAB\\R2024a\\bin\\win64\\MATLAB.exe (PID 12345)"
+#    /path/to/python (PID 12345)"
+#
+# Windows (this is the one that bit us — it shares no phrase with the POSIX
+# form, so a POSIX-only matcher classifies it as a generic I/O error, skips
+# the retry loop entirely, and surfaces a raw duckdb.IOException):
+#   'Cannot open file "...": The process cannot access the file because it
+#    is being used by another process.
+#
+#    File is already open in
+#    C:\\Program Files\\MATLAB\\R2023b\\bin\\win64\\MATLAB.exe (PID 53772)'
+#
 # The PID is the single most useful thing we can tell the user, so pull it
 # out rather than dumping the whole multi-line IOException at them.
 _LOCK_PID_RE = re.compile(r"\(PID (\d+)\)")
-_LOCK_HOLDER_RE = re.compile(r"Conflicting lock is held in (.*?)(?: \(PID \d+\))?[.\n]")
+_LOCK_HOLDER_RE = re.compile(
+    r"(?:Conflicting lock is held in|File is already open in)\s*"
+    r"(.*?)(?: \(PID \d+\))?[.\n]",
+    re.DOTALL,
+)
+# Any one of these marks a message as a lock conflict rather than a genuine
+# I/O error. Kept as a tuple so adding a platform means adding a phrase.
+_LOCK_CONFLICT_MARKERS = (
+    "Conflicting lock",  # POSIX
+    "set lock on file",  # POSIX
+    "File is already open in",  # Windows
+    "being used by another process",  # Windows
+)
 
 
 class DatabaseLockedError(RuntimeError):
@@ -107,9 +132,13 @@ def _as_locked_error(exc: Exception) -> "DatabaseLockedError | None":
     Matches on the message rather than the exception type: DuckDB reports
     this as a plain ``IOException`` shared with unrelated I/O problems, and
     a genuine I/O error must NOT be retried or reported as "MATLAB has it".
+
+    Both the POSIX and Windows wordings count — see
+    ``_LOCK_CONFLICT_MARKERS``. They share no common phrase, so a matcher
+    written against one platform silently fails open on the other.
     """
     text = str(exc)
-    if "Conflicting lock" not in text and "set lock on file" not in text:
+    if not any(marker in text for marker in _LOCK_CONFLICT_MARKERS):
         return None
     pid_match = _LOCK_PID_RE.search(text)
     holder_match = _LOCK_HOLDER_RE.search(text)

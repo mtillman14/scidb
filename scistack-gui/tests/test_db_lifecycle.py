@@ -440,3 +440,76 @@ class TestRequestAlwaysGetsAResponse:
         assert len(frames) == 1
         assert frames[0]["id"] == 11
         assert frames[0]["error"]["code"] == -32000
+
+
+class TestWindowsLockMessageIsRecognized:
+    """DuckDB's lock-conflict wording is platform-specific.
+
+    The POSIX form ("Could not set lock on file ...: Conflicting lock is held
+    in ...") and the Windows form share no common phrase, so a matcher written
+    against one fails open on the other — it classifies a lock conflict as a
+    generic I/O error, skips the retry loop entirely, and surfaces a raw
+    ``duckdb.IOException`` to the frontend.
+
+    That happened on 2026-09-01: three RPCs (``list_hypotheses``,
+    ``get_hidden_pipelines``, ``get_pipeline``) failed with tracebacks in a
+    ~2.1 s window while MATLAB finished writing — comfortably inside the 5 s
+    retry budget that never ran. It cannot reproduce on Linux CI in any other
+    way, which is why the message text is pinned here directly.
+    """
+
+    WINDOWS_MESSAGE = (
+        'IO Error: Cannot open file "\\\\fs2.smpp.local\\RTO\\LabMembers\\'
+        'MTillman\\GitRepos\\aging-well-abilitylab\\test_afl.duckdb": The '
+        "process cannot access the file because it is being used by another "
+        "process.\n\nFile is already open in \n"
+        "C:\\Program Files\\MATLAB\\R2023b\\bin\\win64\\MATLAB.exe (PID 53772)"
+    )
+
+    def test_windows_message_classifies_as_a_lock_conflict(self, db_path):
+        import scistack_gui.db as db_mod
+        from scistack_gui.db import DatabaseLockedError, acquire_db_connection, init_db
+
+        init_db(db_path)
+        db_mod._db._duck.close()
+        db_mod._db_open = False
+
+        def _locked_reopen():
+            raise OSError(self.WINDOWS_MESSAGE)
+
+        db_mod._db.reopen = _locked_reopen
+        with pytest.raises(DatabaseLockedError) as excinfo:
+            acquire_db_connection(timeout=0)
+
+        err = excinfo.value
+        assert err.pid == "53772"
+        assert "MATLAB" in (err.holder or ""), (
+            f"holder not extracted from the Windows form: {err.holder!r}"
+        )
+        assert err.retryable is True
+        assert db_mod._db_refcount == 0
+
+    def test_windows_lock_is_retried_not_raised_immediately(self, db_path):
+        """The 2.1 s real-world window must be absorbed, not reported."""
+        import scistack_gui.db as db_mod
+        from scistack_gui.db import acquire_db_connection, init_db
+
+        init_db(db_path)
+        real_reopen = db_mod._db.reopen
+        db_mod._db._duck.close()
+        db_mod._db_open = False
+
+        calls = {"n": 0}
+
+        def _locked_then_free():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OSError(self.WINDOWS_MESSAGE)
+            real_reopen()
+
+        db_mod._db.reopen = _locked_then_free
+        acquire_db_connection(timeout=5)
+
+        assert calls["n"] == 3, "the Windows lock message did not trigger a retry"
+        assert db_mod._db_open is True
+        assert db_mod._db_refcount == 1

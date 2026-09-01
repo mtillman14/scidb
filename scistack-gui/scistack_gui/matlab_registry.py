@@ -448,7 +448,13 @@ def load_from_sources(paths: list[Path]) -> None:
     Used for folder-scan discovery, where files haven't been pre-sorted
     into ``matlab.functions``/``matlab.variables`` by an explicit config.
     """
+    import time
+
+    from scistack_gui.matlab_parser import classify_cache_stats
+
     logger.info("[matlab_registry] Classifying %d unified MATLAB source file(s)", len(paths))
+    _t0 = time.perf_counter()
+    _stats0 = classify_cache_stats()
     for idx, path in enumerate(paths):
         logger.debug(
             "[matlab_registry] Classifying source file %d/%d: %s",
@@ -479,6 +485,16 @@ def load_from_sources(paths: list[Path]) -> None:
         else:
             _register_matlab_function(payload)
 
+    _stats = classify_cache_stats()
+    logger.info(
+        "[matlab_registry] Classified %d MATLAB source file(s) in %.2fs "
+        "(cache: %d hit(s), %d miss(es) this scan)",
+        len(paths),
+        time.perf_counter() - _t0,
+        _stats["hits"] - _stats0["hits"],
+        _stats["misses"] - _stats0["misses"],
+    )
+
 
 def reload_source(path: Path) -> "str | None":
     """Re-parse one ``.m`` file. Returns an error string, or ``None``.
@@ -494,9 +510,14 @@ def reload_source(path: Path) -> "str | None":
     from the last scan.
     """
     from scistack_gui import registry
+    from scistack_gui.matlab_parser import invalidate_classify_cache
 
     path = Path(path)
     logger.info("[matlab_registry] Narrow reload of single source: %s", path)
+    # This path exists because the file was just edited, and a GUI write can
+    # land in the same filesystem timestamp tick at the same size — the one
+    # case the classification cache's (mtime_ns, size) key cannot see.
+    invalidate_classify_cache(path)
 
     for name, src in [(n, p) for n, p in _matlab_variables.items() if p == path]:
         _matlab_variables.pop(name, None)
@@ -644,8 +665,21 @@ def _register_matlab_parameter_object(
 
 
 def refresh_all() -> dict:
-    """Re-scan all configured MATLAB paths."""
-    logger.info("[matlab_registry] Starting refresh_all")
+    """Re-scan all configured MATLAB paths.
+
+    Cheap when nothing changed — see ``matlab_parser.classify_matlab_file``,
+    which reuses each file's last classification while its ``(mtime_ns,
+    size)`` is unchanged. The call sites are left as full refreshes on
+    purpose: making the scan cheap preserves their semantics exactly, where
+    narrowing what they refresh would not.
+    """
+    import traceback
+
+    # Which caller asked, and why there were N of these in one session. Three
+    # full 141-file rescans inside 90 s showed up in a real log with no way to
+    # attribute them; one frame of context is enough to tell them apart.
+    _caller = "".join(traceback.format_stack(limit=3)[:-1]).strip().replace("\n", " | ")
+    logger.info("[matlab_registry] Starting refresh_all — requested by: %s", _caller)
     if _config is None:
         logger.warning("[matlab_registry] No MATLAB config loaded; nothing to refresh.")
         return {

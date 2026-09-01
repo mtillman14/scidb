@@ -422,15 +422,46 @@ def generate_matlab_command(
 def _collect_var_types(variants: list[dict]) -> set[str]:
     """All BaseVariable class names referenced (as an input or output)
     across a function's variant rows — the set that needs a
-    ``scidb.register_variable(...)`` call."""
+    ``scidb.register_variable(...)`` call.
+
+    PathInput params are **excluded**. A PathInput is recorded in
+    ``input_types`` as its ``PathInput.to_key()`` JSON blob, not as a class
+    name, so emitting it here produced
+    ``scidb.register_variable({"__type": "PathInput", ...}());`` — which MATLAB
+    rejects at parse time with "Invalid expression. When calling a function or
+    indexing a variable, use parentheses."
+
+    That only bit on the SECOND run of a function: the first run has no DB
+    variants and takes ``generate_matlab_command``'s template branch, which
+    never reaches this collector. The first run then records the variant that
+    breaks the second one.
+
+    Every other consumer of ``input_types`` already applies this rule —
+    ``_for_each_call_lines`` skips PathInputs when building the inputs struct,
+    and ``scidb``'s ``get_aggregated_variants`` routes them into a separate
+    ``path_inputs`` bucket. This was the one place that did not.
+    """
+    from scistack_gui.api.pipeline import _parse_path_input
+
     all_var_types: set[str] = set()
+    excluded_path_inputs = 0
     for v in variants:
         input_types = v.get("input_types", {})
         if isinstance(input_types, dict):
-            all_var_types.update(input_types.values())
+            for type_val in input_types.values():
+                if _parse_path_input(str(type_val)) is not None:
+                    excluded_path_inputs += 1
+                    continue
+                all_var_types.add(type_val)
         output_type = v.get("output_type", "")
         if output_type:
             all_var_types.add(output_type)
+    logger.info(
+        "_collect_var_types: %d variable type(s) %s (excluded %d PathInput param(s))",
+        len(all_var_types),
+        sorted(all_var_types),
+        excluded_path_inputs,
+    )
     return all_var_types
 
 

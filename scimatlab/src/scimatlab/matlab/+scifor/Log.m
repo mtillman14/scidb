@@ -98,7 +98,15 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scifor.Log.get_level() <= scifor.Log.DEBUG
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute — see the
+                % matching guard in +scidb/Log.m: a pre-formatted message
+                % containing a Windows path is otherwise sprintf'd twice and
+                % silently truncated at the first backslash escape.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.debug(msg, pyargs('layer', 'matlab'));
             end
         end
@@ -108,7 +116,15 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scifor.Log.get_level() <= scifor.Log.INFO
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute — see the
+                % matching guard in +scidb/Log.m: a pre-formatted message
+                % containing a Windows path is otherwise sprintf'd twice and
+                % silently truncated at the first backslash escape.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.info(msg, pyargs('layer', 'matlab'));
             end
         end
@@ -118,7 +134,15 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scifor.Log.get_level() <= scifor.Log.WARN
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute — see the
+                % matching guard in +scidb/Log.m: a pre-formatted message
+                % containing a Windows path is otherwise sprintf'd twice and
+                % silently truncated at the first backslash escape.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.warn(msg, pyargs('layer', 'matlab'));
             end
         end
@@ -129,7 +153,15 @@ classdef Log
         %   Delegates to Python logging for unified output; MATLAB-originated
         %   lines carry the [matlab] layer tag.
             if scifor.Log.get_level() <= scifor.Log.ERROR
-                msg = sprintf(fmt, varargin{:});
+                % Only format when there are args to substitute — see the
+                % matching guard in +scidb/Log.m: a pre-formatted message
+                % containing a Windows path is otherwise sprintf'd twice and
+                % silently truncated at the first backslash escape.
+                if nargin == 1
+                    msg = fmt;
+                else
+                    msg = sprintf(fmt, varargin{:});
+                end
                 py.scistacklog.Log.error(msg, pyargs('layer', 'matlab'));
             end
         end

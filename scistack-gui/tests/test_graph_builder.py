@@ -2543,3 +2543,86 @@ class TestFindCycle:
         ]
         path = find_cycle(edges, "var__Out", "var__In")
         assert path == ["var__Out", "var__In", "fn__f__abc123", "var__Out"]
+
+
+class TestMatlabOutputHandleInvariant:
+    """A fn→var edge's ``sourceHandle`` must exist on its source node.
+
+    This is the invariant that actually protects the canvas. React Flow
+    silently drops an edge whose ``sourceHandle`` names no handle on the
+    source node — no error, no warning, the wire just isn't drawn — while
+    ``propagate_run_states`` still marks the target variable green because
+    states propagate over node ids, not handles. The result is a function
+    that looks disconnected from an output it demonstrably produced.
+
+    ``build_function_nodes`` names a MATLAB fn's output handles after its
+    SIGNATURE params (``out__loaded_data``), while ``build_edges`` falls back
+    to the CLASS name (``out__RawEMG``) whenever ``matlab_param_to_class``
+    has no entry. Assert the two agree rather than testing either alone.
+    """
+
+    CID = "076c46199b238a69"
+    KEY = ("loadDelsysEMGOneFile", CID)
+    P2C = {"loadDelsysEMGOneFile": {"loaded_data": "RawEMG"}}
+
+    def _nodes_and_edges(self, p2c):
+        from scistack_gui.domain.graph_builder import (
+            build_edges,
+            build_function_nodes,
+        )
+
+        common = dict(
+            fn_input_params={self.KEY: {}},
+            fn_outputs={self.KEY: {"RawEMG"}},
+        )
+        nodes = build_function_nodes(
+            fn_constants={self.KEY: set()},
+            fn_variants_map={self.KEY: []},
+            fn_params_map={"loadDelsysEMGOneFile": ["emgFilePath"]},
+            run_states={f"fn__loadDelsysEMGOneFile__{self.CID}": "green"},
+            matlab_functions={"loadDelsysEMGOneFile"},
+            saved_configs={"loadDelsysEMGOneFile": None},
+            matlab_output_order={"loadDelsysEMGOneFile": ["loaded_data"]},
+            matlab_param_to_class=p2c,
+            **common,
+        )
+        edges = build_edges(
+            const_fns={},
+            path_inputs={},
+            manual_edges=[],
+            hidden_ids=set(),
+            matlab_param_to_class=p2c,
+            **common,
+        )
+        return nodes, edges
+
+    def test_edge_source_handles_exist_on_their_source_node(self):
+        nodes, edges = self._nodes_and_edges(self.P2C)
+
+        handles = {
+            n["id"]: {f"out__{t}" for t in n["data"]["output_types"]} for n in nodes
+        }
+        for e in edges:
+            sh = e.get("sourceHandle")
+            if sh is None or not sh.startswith("out__") or e["source"] not in handles:
+                continue
+            assert sh in handles[e["source"]], (
+                f"edge {e['id']} points at {sh!r}, but node {e['source']} renders "
+                f"{sorted(handles[e['source']])} — React Flow will drop this edge "
+                f"silently and the canvas will show the function disconnected"
+            )
+
+    def test_param_to_class_is_what_makes_them_agree(self):
+        """Pin the mechanism, so a regression says *why* it broke.
+
+        With the mapping the node and edge both speak ``out__loaded_data``.
+        Without it they diverge — which is the state a placement-id mismatch
+        in ``infer_manual_fn_param_to_class`` used to produce.
+        """
+        nodes, edges = self._nodes_and_edges(self.P2C)
+        assert nodes[0]["data"]["output_types"] == ["loaded_data"]
+        assert edges[0]["sourceHandle"] == "out__loaded_data"
+
+        nodes, edges = self._nodes_and_edges({})
+        assert nodes[0]["data"]["output_types"] == ["loaded_data"]
+        assert edges[0]["sourceHandle"] == "out__RawEMG"

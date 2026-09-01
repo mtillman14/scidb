@@ -905,7 +905,94 @@ def is_matlab_entities_script(path: Path) -> bool:
     return bool(parse_matlab_entities_script(path))
 
 
+# {str(path): ((mtime_ns, size), result)} — see classify_matlab_file.
+_CLASSIFY_CACHE: dict[str, tuple[tuple[int, int], object]] = {}
+_classify_hits = 0
+_classify_misses = 0
+
+
+def _file_stamp(path: Path) -> "tuple[int, int] | None":
+    """``(mtime_ns, size)`` for *path*, or ``None`` if it cannot be stat'd.
+
+    Deliberately NOT a content hash: hashing means reading, and reading is
+    the cost this key exists to avoid.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def invalidate_classify_cache(path: "Path | str | None" = None) -> None:
+    """Drop *path* from the classification cache, or all of it when ``None``.
+
+    Call this whenever a file is written by code that may then re-read it in
+    the same filesystem timestamp tick — a same-size edit within one tick is
+    the only way the ``(mtime_ns, size)`` key can go stale, and an editor
+    that writes and immediately reloads is exactly that case.
+    """
+    global _classify_hits, _classify_misses
+    if path is None:
+        _CLASSIFY_CACHE.clear()
+        _classify_hits = 0
+        _classify_misses = 0
+        logger.info("[matlab_parser] classification cache cleared")
+        return
+    if _CLASSIFY_CACHE.pop(str(path), None) is not None:
+        logger.debug("[matlab_parser] classification cache invalidated for %s", path)
+
+
+def classify_cache_stats() -> dict:
+    """``{"hits", "misses", "entries"}`` since the last full clear."""
+    return {
+        "hits": _classify_hits,
+        "misses": _classify_misses,
+        "entries": len(_CLASSIFY_CACHE),
+    }
+
+
 def classify_matlab_file(
+    path: Path,
+) -> "tuple[str, str] | tuple[str, MatlabFunctionInfo] | None":
+    """Classify a single .m file, reusing the last result while the file is
+    unchanged.
+
+    Classification is the hot path of every ``refresh_all()``: it runs once
+    per configured .m file, and the uncached body below opens the file up to
+    three times (``parse_matlab_variable``, ``parse_matlab_function``, then
+    ``is_matlab_entities_script``). On a project whose libraries live on an
+    SMB share that measured ~90 ms/file — 12-16 s for 141 files, repeated in
+    full on every refresh even when nothing had changed.
+
+    The cache is keyed on ``(mtime_ns, size)`` so a hit costs one ``stat``
+    instead of three reads plus three parses, and a changed file still
+    re-parses. That preserves semantics exactly: every caller still gets the
+    classification the file's current bytes imply. ``MatlabFunctionInfo``
+    carries a ``source_hash`` of those bytes, and it stays correct for the
+    same reason — a hit means the bytes did not change.
+
+    An unstattable path is never cached (it re-parses and reports its error
+    each time, as before).
+    """
+    global _classify_hits, _classify_misses
+    stamp = _file_stamp(path)
+    key = str(path)
+    if stamp is not None:
+        cached = _CLASSIFY_CACHE.get(key)
+        if cached is not None and cached[0] == stamp:
+            _classify_hits += 1
+            logger.debug("[matlab_parser] classification cache hit: %s", path)
+            return cached[1]  # type: ignore[return-value]
+
+    _classify_misses += 1
+    result = _classify_matlab_file_uncached(path)
+    if stamp is not None:
+        _CLASSIFY_CACHE[key] = (stamp, result)
+    return result
+
+
+def _classify_matlab_file_uncached(
     path: Path,
 ) -> tuple[str, str] | tuple[str, MatlabFunctionInfo] | None:
     """Classify a single .m file as a variable, a function, or an entities

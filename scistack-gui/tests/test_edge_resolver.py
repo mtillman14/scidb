@@ -852,3 +852,100 @@ class TestHandleIdsMatchTheFrontend:
 
         node = Path(__file__).parent.parent / "frontend/src/components/DAG/FunctionNode.tsx"
         assert "id: `in__${param}`" in node.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Placement-qualified endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestPlacementQualifiedEndpoints:
+    """Endpoint matching must ignore a ``::{scope}`` placement suffix.
+
+    Callers assemble ``fn_node_ids`` from mixed sources: ``fn_node_id()``
+    returns the bare ``fn__f__{call_id}``, while manual-node keys and edge
+    endpoints may carry ``::{scope}``. Graduation rewrites a manual edge's
+    endpoints from the first form to the second, so an exact-match comparison
+    starts failing only AFTER a function's first successful run.
+
+    Concretely, that emptied ``matlab_param_to_class`` for a MATLAB fn: the
+    fn node then rendered handle ``out__{param}`` while build_edges pointed
+    its edge at ``out__{Class}``, and React Flow silently drops an edge whose
+    sourceHandle does not exist — the function appeared disconnected from an
+    output variable that run_state still marked green.
+    """
+
+    FN_BARE = "fn__loadDelsysEMGOneFile__076c46199b238a69"
+    FN_PLACED = "fn__loadDelsysEMGOneFile__076c46199b238a69::main"
+
+    def _edge(self, source):
+        return {
+            "id": "manual__ivyg79",
+            "source": source,
+            "target": "var__RawEMG::main",
+            "sourceHandle": "out__loaded_data",
+        }
+
+    def test_param_to_class_matches_placement_qualified_source(self):
+        labels = {"var__RawEMG": "RawEMG"}
+        expected = {"loaded_data": "RawEMG"}
+
+        for source in (self.FN_BARE, self.FN_PLACED):
+            mapping = infer_manual_fn_param_to_class(
+                fn_node_ids={self.FN_BARE},
+                manual_edges=[self._edge(source)],
+                manual_nodes={},
+                existing_node_labels=labels,
+            )
+            assert mapping == expected, (
+                f"edge source {source!r} against bare fn id did not resolve"
+            )
+
+    def test_param_to_class_matches_when_the_id_set_is_placed(self):
+        """The mismatch is symmetric — normalize both sides, not just one."""
+        mapping = infer_manual_fn_param_to_class(
+            fn_node_ids={self.FN_PLACED},
+            manual_edges=[self._edge(self.FN_BARE)],
+            manual_nodes={},
+            existing_node_labels={"var__RawEMG": "RawEMG"},
+        )
+        assert mapping == {"loaded_data": "RawEMG"}
+
+    def test_output_types_match_placement_qualified_source(self):
+        for source in (self.FN_BARE, self.FN_PLACED):
+            out = infer_manual_fn_output_types(
+                fn_node_ids={self.FN_BARE},
+                manual_edges=[self._edge(source)],
+                manual_nodes={},
+                existing_node_labels={"var__RawEMG": "RawEMG"},
+            )
+            assert out == ["RawEMG"], f"edge source {source!r} did not resolve"
+
+    def test_resolve_function_edges_matches_placement_qualified_endpoints(self):
+        resolved = resolve_function_edges(
+            fn_node_ids={self.FN_BARE},
+            manual_edges=[
+                {
+                    "id": "manual__689jp0",
+                    "source": "pathInput__delsysPathTemplate::main",
+                    "target": self.FN_PLACED,
+                    "targetHandle": "in__emgFilePath",
+                },
+                self._edge(self.FN_PLACED),
+            ],
+            manual_nodes={},
+            existing_node_labels={"var__RawEMG": "RawEMG"},
+        )
+
+        assert resolved.output_types == ["RawEMG"]
+        assert resolved.path_input_params == {"emgFilePath": "delsysPathTemplate"}
+
+    def test_unrelated_function_still_does_not_match(self):
+        """Normalizing must not widen matching across different call sites."""
+        mapping = infer_manual_fn_param_to_class(
+            fn_node_ids={"fn__otherFn__aaaaaaaaaaaaaaaa"},
+            manual_edges=[self._edge(self.FN_PLACED)],
+            manual_nodes={},
+            existing_node_labels={"var__RawEMG": "RawEMG"},
+        )
+        assert mapping == {}

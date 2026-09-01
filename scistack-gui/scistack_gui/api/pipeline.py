@@ -577,6 +577,8 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
             variant = {"function_name": fn_name, **v}
             all_variants.append(variant)
 
+    # Source 1: DB variants' output_num → the fn's signature output name.
+    from_db: dict[str, dict[str, str]] = {}
     for v in all_variants:
         fn = v.get("function_name")
         if fn not in matlab_functions:
@@ -584,10 +586,31 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         onum = v.get("output_num")
         out_type = v.get("output_type")
         if onum is None or out_type is None:
+            # A variant with no output_num contributes nothing here, so the
+            # manual-edge fallback below becomes load-bearing. Say so: when
+            # BOTH sources come up empty the fn node and its output edge
+            # disagree on the handle name and the edge silently vanishes.
+            logger.info(
+                "[pipeline] matlab_param_to_class: fn=%s output_type=%r has "
+                "output_num=%r — DB source contributes nothing for this variant",
+                fn,
+                out_type,
+                onum,
+            )
             continue
         names = matlab_output_order.get(fn) or []
         if 0 <= int(onum) < len(names):
             matlab_param_to_class.setdefault(fn, {})[names[int(onum)]] = out_type
+            from_db.setdefault(fn, {})[names[int(onum)]] = out_type
+        else:
+            logger.info(
+                "[pipeline] matlab_param_to_class: fn=%s output_num=%s is out of "
+                "range for its %d declared output name(s) %s — DB source skipped",
+                fn,
+                onum,
+                len(names),
+                names,
+            )
     from scistack_gui.domain.edge_resolver import infer_manual_fn_param_to_class
     from scistack_gui.domain.graph_builder import fn_node_id
 
@@ -615,10 +638,19 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
             existing = matlab_param_to_class.setdefault(fn, {})
             for p, c in edge_map.items():
                 existing.setdefault(p, c)
-    logger.debug(
-        "[pipeline] matlab_param_to_class=%s",
-        {k: dict(v) for k, v in matlab_param_to_class.items()},
-    )
+        # INFO, not DEBUG, and attributed per source. An empty merged map is
+        # the precondition for the fn↔output-variable edge disappearing from
+        # the canvas, and at DEBUG the log showed only the empty result with
+        # no way to tell which of the two sources failed.
+        if fn in matlab_param_to_class or edge_map or fn in from_db:
+            logger.info(
+                "[pipeline] matlab_param_to_class: fn=%s from_db_output_num=%s "
+                "from_manual_edges=%s merged=%s",
+                fn,
+                from_db.get(fn, {}),
+                edge_map,
+                matlab_param_to_class.get(fn, {}),
+            )
 
     # --- Load sweeps (source-scanned — see docs/claude/code-discovery-categories.md).
     # "Delete" only hides the node (layout_service.delete_parameter) — the source

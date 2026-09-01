@@ -55,3 +55,15 @@ The handle names (`peak`, `trough`) must match the MATLAB signature so the GUI c
 **State computation** uses edge-resolved variable types (must match `BaseVariable` subclass names in the database).
 
 These two name spaces must never be conflated.
+
+## See Also
+
+[matlab-output-handle-contract.md](matlab-output-handle-contract.md) — the third
+consumer of this distinction: **edges**. An edge's `sourceHandle` must speak the
+output-parameter name space (so it matches the node's rendered handle), but
+`build_edges` only knows the variable type, so it needs `matlab_param_to_class`
+to translate. When that map is empty the edge falls back to the variable type,
+disagrees with the node, and React Flow silently drops the wire — while state
+computation still marks the output green, because it walks node ids rather than
+handles. That note also documents the placement-id (`::{scope}`) normalization
+rule that emptied the map in the first place.

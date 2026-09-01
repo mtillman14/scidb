@@ -138,3 +138,38 @@ def test_generated_matlab_error_handlers_use_err():
         "generated MATLAB calls scidb.Log.error, which does not exist — the catch "
         "block throws and swallows the original error before rethrow()"
     )
+
+
+@pytest.mark.parametrize("package", ["+scidb", "+scifor"])
+def test_level_methods_guard_against_double_sprintf(package):
+    """``Log.<level>`` must not re-format an already-formatted message.
+
+    Callers legitimately pre-build a message —
+    ``scidb.Log.info(sprintf('... %s', p))`` in ``+scidb/entities.m`` — and a
+    second ``sprintf`` pass then interprets the result's backslashes as
+    escapes. A Windows path did exactly that on 2026-09-01:
+
+        Warning: Escaped character '\\L' is not valid.
+        [matlab] [entities] Materialized 1 MATLAB classdef(s) in y:
+
+    — the message was truncated at ``y:``, losing ``\\LabMembers\\...``.
+
+    Verified structurally: exercising it needs MATLAB, which is not available
+    in this test environment.
+    """
+    src = (_MATLAB_SRC / package / "Log.m").read_text(encoding="utf-8")
+    code = _strip_matlab_comments(src)
+
+    for level in ("debug", "info", "warn", "err"):
+        m = re.search(
+            rf"function {level}\(fmt, varargin\)(.*?)^        end",
+            code,
+            re.DOTALL | re.MULTILINE,
+        )
+        assert m, f"{package}/Log.m: could not locate the {level}() body"
+        body = m.group(1)
+        assert "nargin == 1" in body, (
+            f"{package}/Log.m: {level}() calls sprintf unconditionally — a "
+            "pre-formatted message containing a Windows path will be "
+            "silently truncated at the first backslash escape"
+        )

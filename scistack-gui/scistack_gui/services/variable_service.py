@@ -216,6 +216,14 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
     except OSError as e:
         return {"ok": False, "error": f"Failed to write .m file: {e}"}
 
+    # Overwriting an existing .m could reuse the (mtime_ns, size) a previous
+    # scan cached this path under, which would make a LATER refresh_all()
+    # serve the pre-write classification. Registration below is direct, so
+    # this only guards that future scan -- see matlab_parser's cache.
+    from scistack_gui.matlab_parser import invalidate_classify_cache
+
+    invalidate_classify_cache(target_file)
+
     # Register just this one file. The full matlab_registry.refresh_all()
     # this used to call re-classified every configured .m source (14.9 s for
     # 303 files on a real project) to learn about a file whose path we are
