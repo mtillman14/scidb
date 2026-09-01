@@ -66,23 +66,51 @@ def create_parameter(
             values,
         )
 
-    from scistack_gui.services.target_file_service import get_or_create_target_file
+    from scistack_gui.services.target_file_service import (
+        get_or_create_target_file,
+        is_toml_target,
+        write_entity,
+    )
 
     target_file, target_err = get_or_create_target_file()
     if target_file is None:
         return {"ok": False, "error": target_err}
 
-    from scidb.source_edit import render_parameter
-
-    line = f"\n{name} = {render_parameter(values, description)}\n"
-
     logger.info(
-        "[parameter_service] create_parameter: name=%r %d value(s) description=%r",
+        "[parameter_service] create_parameter: name=%r %d value(s) description=%r "
+        "target=%s",
         name,
         len(values),
         description,
+        target_file,
     )
-    err = append_and_refresh(line, target_file)
+
+    if is_toml_target(target_file):
+        from scidb.entities import render_parameter_value
+
+        if description:
+            # The TOML format has no home for it (plan D4). Say so rather
+            # than dropping it silently -- a description that vanishes with
+            # no trace is worse than one that never appeared.
+            logger.warning(
+                "[parameter_service] Dropping description %r for %r: the TOML "
+                "entities file has no description field; declare the Parameter "
+                "in Python if you need one",
+                description,
+                name,
+            )
+        err = write_entity(
+            target_file,
+            section="parameters",
+            name=name,
+            rendered=render_parameter_value(values),
+        )
+    else:
+        from scidb.source_edit import render_parameter
+
+        line = f"\n{name} = {render_parameter(values, description)}\n"
+        err = append_and_refresh(line, target_file)
+
     if err:
         return err
     return {"ok": True, "name": name}
@@ -105,6 +133,7 @@ def update_parameter(name: str, values: list, description: str = "") -> dict:
             ),
         }
 
+    from scidb.entities import render_parameter_value
     from scidb.source_edit import render_parameter
 
     from scistack_gui.matlab_parser import render_matlab_parameter
@@ -115,4 +144,5 @@ def update_parameter(name: str, values: list, description: str = "") -> dict:
         name,
         python_expr=render_parameter(values, description),
         matlab_expr=render_matlab_parameter(values, description),
+        toml_expr=render_parameter_value(values),
     )

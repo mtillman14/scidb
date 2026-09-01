@@ -139,12 +139,12 @@ this section.
    - **"Select a project (pyproject.toml)"** -- if the folder has no
      `pyproject.toml`/`scistack.toml`, you're offered to auto-generate a
      minimal `scistack.toml` (commented-out `modules`/`packages`/
-     `variable_file`/MATLAB options) which opens in the editor for you to
+     `entities_file`/MATLAB options) which opens in the editor for you to
      fill in.
    - **"Select a single pipeline module (.py)"** -- single-file mode.
    - **"No module"** -- create the database and schema now, wire up code
      later. The server starts with an empty registry; you can still browse
-     the (empty) DAG and, in project mode with `variable_file` configured,
+     the (empty) DAG and, in project mode with an `entities_file` configured,
      create Variables from the GUI itself.
 
 ### What happens under the hood
@@ -182,7 +182,7 @@ run (`extension/src/extension.ts`, `lastStartArgs`) and does **not** re-pass
 - It does not let you define Variable *classes* (i.e. table schemas beyond
   the top-level `subject`/`session`/`trial` schema keys) -- that still
   requires either writing Python or using the GUI's "Create Variable" action
-  once a project with `variable_file` is loaded (see
+  once a project with an `entities_file` is loaded (see
   [Defining Variables](#8-defining-variables)).
 
 ---
@@ -340,8 +340,8 @@ modules = [
     "src/my_study/analysis.py",
 ]
 
-# Where the GUI writes new Variable classes created via the UI
-variable_file = "src/my_study/variables.py"
+# Where the GUI writes new Variable/Parameter/PathInput declarations
+entities_file = "src/scistack_entities.toml"
 
 # Pip-installed packages to scan for Variables/Functions/Constants
 packages = ["lab_shared_utils", "eeg_preprocessing"]
@@ -355,7 +355,8 @@ auto_discover = true
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | `modules` | list of paths | `[]` | Local `.py` files to import for discovery |
-| `variable_file` | path | `None` | Where the "Create Variable" UI action writes new classes |
+| `entities_file` | path | `src/scistack_entities.toml` | TOML file the GUI writes new Variable/Parameter/PathInput declarations to — the only file it writes (`entities-toml-format.md`) |
+| `variable_file` | path | `None` | Legacy `.py` entities file: still discovered, never written |
 | `packages` | list of strings | `[]` | Installed packages to scan for scistack exports |
 | `auto_discover` | bool | `true` | Scan `scistack.plugins` entry points automatically |
 
@@ -412,7 +413,7 @@ class TrialOnsets(BaseVariable):
 - Class names must be valid Python identifiers and must **not** start with `_`.
 - The class name becomes the database table name exactly as written (no snake_case conversion).
 - Variables are discovered by the GUI if they are **defined** in a loaded module (`__module__` must match).
-- You can also create variables from the GUI itself -- they get appended to the file specified in `variable_file`.
+- You can also create variables from the GUI itself -- they get added to the `variables` list in the TOML file specified by `entities_file` (see `entities-toml-format.md`).
 
 ---
 

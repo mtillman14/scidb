@@ -87,6 +87,62 @@ def read_project_name(project_root: Path) -> str | None:
     return name if isinstance(name, str) else None
 
 
+CONFIG_FILENAMES = ("pyproject.toml", "scistack.toml")
+"""Project config files, in precedence order: ``pyproject.toml`` always
+wins over ``scistack.toml`` in the same directory."""
+
+
+def extract_scistack_section(data: dict, filename: str) -> dict | None:
+    """The scistack config section of already-parsed TOML *data*.
+
+    ``[tool.scistack]`` for pyproject.toml; the whole file for
+    scistack.toml (an empty one parses to ``{}``, which is a valid
+    all-defaults config, and is deliberately distinct from the ``None``
+    returned when there is no section at all).
+    """
+    if filename == "scistack.toml":
+        return data
+    section = data.get("tool", {}).get("scistack")
+    return section if isinstance(section, dict) else None
+
+
+def read_scistack_section(toml_path: Path) -> dict | None:
+    """Parse *toml_path* and return its scistack section, or ``None`` if it
+    is unparseable or has none."""
+    try:
+        with open(toml_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        logger.debug("Failed to parse %s while reading scistack config", toml_path)
+        return None
+    return extract_scistack_section(data, toml_path.name)
+
+
+def find_project_config(start: Path) -> Path | None:
+    """Walk up from *start* for the nearest config file that actually
+    carries a scistack section, or ``None``.
+
+    *start* may be a file or a directory. This is the upward-search half of
+    ``scistack_gui.config._locate_pyproject`` and the lookup behind
+    ``scidb.entities``' project resolution -- one implementation, so the
+    GUI and a plain script can never disagree about which project a path
+    belongs to (CLAUDE.md NOTE 3; ``feedback_avoid_scifor_scidb_duplication``).
+    """
+    start = Path(os.path.abspath(str(start)))
+    search_dir = start if start.is_dir() else start.parent
+    while True:
+        for name in CONFIG_FILENAMES:
+            candidate = search_dir / name
+            if candidate.exists() and read_scistack_section(candidate) is not None:
+                logger.debug("Found project config %s", candidate)
+                return candidate
+        parent = search_dir.parent
+        if parent == search_dir:
+            logger.debug("No project config found in any ancestor of %s", start)
+            return None
+        search_dir = parent
+
+
 @dataclass
 class PathInsert:
     """Context manager that inserts a directory onto sys.path.

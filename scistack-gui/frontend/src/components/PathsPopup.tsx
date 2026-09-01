@@ -17,7 +17,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { callBackend } from '../api'
 import ProjectConfigPanel from './Sidebar/ProjectConfigPanel'
 import ManagedPathsList from './ManagedPathsList'
-import VariableFileEditor from './VariableFileEditor'
+import EntitiesFileEditor from './EntitiesFileEditor'
 
 interface PathsInfo {
   configured: boolean
@@ -25,7 +25,10 @@ interface PathsInfo {
   managed_paths: string[]
   project_root: string
   modules?: string[]
+  entities_file?: string | null
+  /** Legacy .py / .m declaration files: discovered, but never written to. */
   variable_file?: string | null
+  matlab_entities_file?: string | null
   packages?: string[]
   auto_discover?: boolean
   matlab_functions?: string[]
@@ -65,11 +68,13 @@ export default function PathsPopup({ onClose }: { onClose: () => void }) {
                   <PathRow label="Project root" values={[paths.project_root]} />
                   <PathRow label="Python modules" values={paths.modules ?? []} />
                   <PathRow label="Python packages" values={paths.packages ?? []} />
-                  <PathRow label="Variable file" values={paths.variable_file ? [paths.variable_file] : []} />
+                  <PathRow label="Entities file" values={paths.entities_file ? [paths.entities_file] : []} />
+                  <PathRow label="Variable file (read-only)" values={paths.variable_file ? [paths.variable_file] : []} />
                   <PathRow label="MATLAB functions" values={paths.matlab_functions ?? []} />
                   <PathRow label="MATLAB variables" values={paths.matlab_variables ?? []} />
                   <PathRow label="MATLAB addpath" values={paths.matlab_addpath ?? []} />
                   <PathRow label="MATLAB variable dir" values={paths.matlab_variable_dir ? [paths.matlab_variable_dir] : []} />
+                  <PathRow label="MATLAB entities script (read-only)" values={paths.matlab_entities_file ? [paths.matlab_entities_file] : []} />
                 </div>
                 <div style={styles.hint}>
                   Packaged project (pyproject.toml found) — edit these under <span style={styles.mono}>[tool.scistack]</span> / <span style={styles.mono}>[tool.scistack.matlab]</span> by hand, then hit Refresh below.
@@ -81,7 +86,16 @@ export default function PathsPopup({ onClose }: { onClose: () => void }) {
                 <div style={styles.hint}>
                   Each path is recursively scanned for Python (.py) and MATLAB (.m) code — typically a shared, reusable code repository, not necessarily anything inside this project's own folder.
                 </div>
-                <VariableFileEditor variableFile={paths.variable_file ?? null} onChange={fetchPaths} />
+                <EntitiesFileEditor entitiesFile={paths.entities_file ?? null} onChange={fetchPaths} />
+                {(paths.variable_file || paths.matlab_entities_file) && (
+                  <div style={styles.hint}>
+                    Declarations in{' '}
+                    <span style={styles.mono}>
+                      {[paths.variable_file, paths.matlab_entities_file].filter(Boolean).join(', ')}
+                    </span>{' '}
+                    are still discovered, but read-only — edit them in source and hit Refresh.
+                  </div>
+                )}
               </>
             )}
           </section>

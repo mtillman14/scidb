@@ -54,6 +54,15 @@ export class PythonProcess {
       args.push('--schema-keys', schemaKeys.join(','));
     }
 
+    // The workspace folder is what the user thinks of as "the project", and
+    // it is the server's only way to know: a .duckdb usually lives in a
+    // datasets folder, so without this a new scistack.toml + entities file
+    // would be written next to the data instead of in the project.
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder) {
+      args.push('--project-root', workspaceFolder.uri.fsPath);
+    }
+
     this.outputChannel.appendLine(`Spawning: ${pythonPath} ${args.join(' ')}`);
 
     // If the user enabled scistack.debug, pass env vars so server.py starts a

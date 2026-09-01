@@ -86,12 +86,20 @@ from .state import (
 from .variable import BaseVariable
 from .variant import Variant, branch_param
 
+# Imported last, and as a module rather than its contents: `entities` builds
+# BaseVariable subclasses and Parameters, so it must come after both exist,
+# and `from scidb import entities; entities.WINDOW` needs the module object
+# itself -- attribute access on it is what resolves a declared name.
+from . import entities  # noqa: E402
+
 __version__ = "0.1.0"
 
 __all__ = [
     # Core classes
     "BaseVariable",
     "Parameter",
+    # Entities file (TOML) -- the writable declaration surface
+    "entities",
     # Discovery
     "scan_project",
     "scan_package",

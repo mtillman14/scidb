@@ -29,9 +29,9 @@
  * up front; "Refresh Code" in the header re-scans later once files exist.
  *
  * The "Entities file" field (create mode only) is the one exception: it's
- * passed as `variable_file` to POST /api/bootstrap/create, which eagerly
- * writes a scistack.toml + that file at project-creation time (see
- * api/bootstrap.py, config.set_variable_file) — so a freshly-created
+ * passed as `entities_file` to POST /api/bootstrap/create, which eagerly
+ * writes a scistack.toml + that TOML file at project-creation time (see
+ * api/bootstrap.py, config.set_entities_file) — so a freshly-created
  * project immediately has a real config file instead of only getting one
  * lazily, the first time an entity is created from the GUI.
  */
@@ -52,8 +52,8 @@ export default function ProjectBootstrapWizard({ onReady }: Props) {
   const [createFolder, setCreateFolder] = useState("");
   const [createFilename, setCreateFilename] = useState("");
   const [createSchemaKeys, setCreateSchemaKeys] = useState("");
-  const [createVariableFile, setCreateVariableFile] = useState(
-    "src/scistack_entities.py",
+  const [createEntitiesFile, setCreateEntitiesFile] = useState(
+    "src/scistack_entities.toml",
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +82,7 @@ export default function ProjectBootstrapWizard({ onReady }: Props) {
           folder: createFolder.trim(),
           filename: createFilename.trim(),
           schema_keys: schemaKeysList,
-          variable_file: createVariableFile.trim() || null,
+          entities_file: createEntitiesFile.trim() || null,
         });
       } else {
         await callBackend("open_project", {
@@ -157,12 +157,12 @@ export default function ProjectBootstrapWizard({ onReady }: Props) {
                   placeholder="subject, session, trial"
                 />
               </Field>
-              <Field label="Entities file (Sweeps/PathInputs/Variables/Constants created from the GUI, relative to the project root)">
+              <Field label="Entities file (Variables/Parameters/PathInputs created from the GUI, relative to the project root — not to the database folder)">
                 <input
                   style={styles.input}
-                  value={createVariableFile}
-                  onChange={(e) => setCreateVariableFile(e.target.value)}
-                  placeholder="src/scistack_entities.py"
+                  value={createEntitiesFile}
+                  onChange={(e) => setCreateEntitiesFile(e.target.value)}
+                  placeholder="src/scistack_entities.toml"
                 />
               </Field>
             </>

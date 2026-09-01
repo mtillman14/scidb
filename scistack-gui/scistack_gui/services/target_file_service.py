@@ -55,6 +55,82 @@ def validate_entity_name(name: str) -> "str | None":
     return None
 
 
+def is_toml_target(path: "Path | None") -> bool:
+    """Whether *path* is a TOML entities file, and so uses
+    ``scidb.entities``' grammar rather than Python's.
+
+    Dispatch is by suffix because two target shapes genuinely coexist: a
+    config-mode project writes ``entities_file`` (``.toml``), while legacy
+    single-file mode (``--module pipeline.py``) still appends declarations
+    to the module itself -- there is no config file there to record an
+    entities file in, and writing one would flip the project into
+    config-driven discovery as a side effect of creating a Parameter.
+    """
+    return path is not None and Path(path).suffix == ".toml"
+
+
+TOML_SECTIONS = {"parameter": "parameters", "path_input": "path_inputs"}
+"""Entity kind -> the ``[section]`` it lives in. Variables are not here:
+they are a value-less top-level array, written by
+:func:`scidb.entities.add_variable`."""
+
+
+def write_entity(
+    target_file: Path,
+    *,
+    section: str,
+    name: str,
+    rendered: str,
+) -> "dict | None":
+    """Set ``name`` in *section* of the TOML entities file, and refresh.
+
+    The creation counterpart of :func:`update_declaration`: same file, same
+    grammar, different entry point (there is nothing to locate first, and
+    no rollback -- a failed create leaves an unusable declaration the user
+    can see, not a corrupted one).
+
+    Returns an error dict, or ``None`` on success.
+    """
+    from scidb.entities import initial_text, upsert_entry
+
+    try:
+        text = target_file.read_text(encoding="utf-8") if target_file.exists() else initial_text()
+        updated = upsert_entry(text, section, name, rendered)
+        _atomic_write(target_file, updated)
+    except OSError as e:
+        return {"ok": False, "error": f"Failed to write to entities file: {e}"}
+    except ValueError as e:
+        # render_value refusing a value TOML cannot hold (None, NaN, ...).
+        return {"ok": False, "error": str(e)}
+
+    logger.info(
+        "[target_file_service] Wrote %s.%s to %s", section, name, target_file
+    )
+    error = _refresh_registries()
+    if error is not None:
+        return {"ok": False, "error": error}
+    record_source_hash(target_file)
+    return None
+
+
+def write_variable(target_file: Path, name: str) -> "dict | None":
+    """Add *name* to the TOML entities file's ``variables`` array."""
+    from scidb.entities import add_variable, initial_text
+
+    try:
+        text = target_file.read_text(encoding="utf-8") if target_file.exists() else initial_text()
+        _atomic_write(target_file, add_variable(text, name))
+    except OSError as e:
+        return {"ok": False, "error": f"Failed to write to entities file: {e}"}
+
+    logger.info("[target_file_service] Wrote variable %s to %s", name, target_file)
+    error = _refresh_registries()
+    if error is not None:
+        return {"ok": False, "error": error}
+    record_source_hash(target_file)
+    return None
+
+
 def ensure_scidb_import(target_file: Path) -> None:
     """Idempotently make sure *target_file* has a bare ``import scidb`` line.
 
@@ -107,20 +183,24 @@ def get_or_create_target_file() -> "tuple[Path | None, str | None]":
     """Return ``(target_file, error)`` -- exactly one is non-``None``.
 
     Resolution order:
-      1. Legacy single-file mode (``--module``) or an already-configured
-         project-mode ``variable_file`` -- both already worked before this
-         module existed.
-      2. Project-mode config with no ``variable_file`` set: auto-create a
-         default file for loose-script projects and persist it into
+      1. An already-configured ``entities_file`` (the TOML), or legacy
+         single-file mode (``--module``).
+      2. Project-mode config with no ``entities_file`` set: auto-create a
+         default one for loose-script projects and persist it into
          scistack.toml. Packaged (``pyproject.toml``) projects get a clear
          hand-edit error instead -- the Paths popup never auto-writes to
          pyproject.toml (see ``config._reject_packaged_project``).
       3. No config and no module loaded at all: the original error.
+
+    Note what is *not* here any more: ``variable_file``. A ``.py`` entities
+    file is still discovered and shown, but it is no longer a write target
+    -- new declarations go to the TOML even in a project that has one (see
+    ``config.SciStackConfig.variable_file``).
     """
     from scistack_gui import registry
 
-    if registry._config is not None and registry._config.variable_file is not None:
-        return registry._config.variable_file, None
+    if registry._config is not None and registry._config.entities_file is not None:
+        return registry._config.entities_file, None
     if registry._module_path is not None:
         return registry._module_path, None
 
@@ -133,26 +213,26 @@ def get_or_create_target_file() -> "tuple[Path | None, str | None]":
 
         db_path = get_db_path()
         logger.info(
-            "[target_file_service] No variable_file configured; attempting "
+            "[target_file_service] No entities_file configured; attempting "
             "auto-create for project at %s",
             db_path,
         )
         try:
-            config_mod.set_variable_file(db_path, None)
+            config_mod.set_entities_file(db_path, None)
         except ValueError as e:
             logger.info("[target_file_service] Auto-create refused: %s", e)
             return None, (
-                "No variable_file configured for this packaged project. Add "
-                'variable_file = "path/to/file.py" under [tool.scistack] in '
-                "pyproject.toml, then hit Refresh."
+                "No entities_file configured for this packaged project. Add "
+                'entities_file = "path/to/scistack_entities.toml" under '
+                "[tool.scistack] in pyproject.toml, then hit Refresh."
             )
 
         new_config = reload_registries_from_disk(db_path)
         logger.info(
-            "[target_file_service] Auto-created variable_file=%s",
-            new_config.variable_file,
+            "[target_file_service] Auto-created entities_file=%s",
+            new_config.entities_file,
         )
-        return new_config.variable_file, None
+        return new_config.entities_file, None
 
     return None, "No module file was loaded at startup (--module not passed)."
 
@@ -218,14 +298,27 @@ def _resolves_as_any_kind(name: str) -> bool:
 
 
 def _editable_targets() -> "tuple[Path | None, Path | None]":
-    """``(python_entities_file, matlab_entities_file)`` -- the only two files
-    the GUI may rewrite."""
+    """``(entities_file, matlab_entities_file)`` -- the only files the GUI
+    may rewrite.
+
+    The first slot is ``entities_file``, **not** ``variable_file``: a
+    legacy ``.py`` entities file is read-only now (see
+    ``config.SciStackConfig.variable_file``), so returning it here would let
+    an edit write to a file the model says is read-only -- and returning
+    ``None`` for it, as this did before the fix, made *every* edit fail as
+    ``read_only`` regardless of where the declaration lived.
+
+    ``matlab_entities_file`` stays writable until Stage 5 gives MATLAB a
+    TOML path (``+scidb/entities.m``). Demoting it before then would leave
+    MATLAB projects with no editable surface at all, which is a worse
+    outcome than the inconsistency.
+    """
     from scistack_gui import registry
 
     config = registry._config
     if config is None:
         return (registry._module_path, None)
-    return (config.variable_file, config.matlab_entities_file)
+    return (config.entities_file, config.matlab_entities_file)
 
 
 def _location_of(kind: str, name: str, source: str) -> dict:
@@ -238,6 +331,19 @@ def _location_of(kind: str, name: str, source: str) -> dict:
     try:
         text = path.read_text()
     except OSError:
+        return payload
+
+    if path.suffix == ".toml":
+        from scidb.entities import find_entry_span
+
+        section = TOML_SECTIONS.get(kind)
+        span = find_entry_span(text, section, name) if section else None
+        if span is None:
+            # Variables have no [section] entry -- they are elements of the
+            # top-level array, so point at the array itself.
+            span = find_entry_span(text, None, "variables")
+        if span is not None:
+            payload["line"] = line_number(text, span.start)
         return payload
 
     if path.suffix == ".m":
@@ -255,13 +361,13 @@ def _location_of(kind: str, name: str, source: str) -> dict:
 
 
 def update_declaration(
-    kind: str, name: str, *, python_expr: str, matlab_expr: str
+    kind: str, name: str, *, python_expr: str, matlab_expr: str, toml_expr: str
 ) -> dict:
     """Replace the right-hand side of an existing declaration in place.
 
-    *python_expr* / *matlab_expr* are the rendered replacements; which one is
-    used follows the owning file's language, so callers render both and stay
-    language-agnostic.
+    *toml_expr* / *python_expr* / *matlab_expr* are the rendered
+    replacements; which one is used follows the owning file's format, so
+    callers render all three and stay format-agnostic.
 
     Returns ``{"ok": True, "name", "file", "old", "new"}`` on success, or
     ``{"ok": False, "error", ...}``. Failure modes, all non-destructive:
@@ -282,6 +388,7 @@ def update_declaration(
     path = Path(source)
     py_target, m_target = _editable_targets()
     is_matlab = path.suffix == ".m"
+    is_toml = path.suffix == ".toml"
     target = m_target if is_matlab else py_target
 
     if target is None or Path(target) != path:
@@ -330,7 +437,13 @@ def update_declaration(
             "reason": "stale",
         }
 
-    if is_matlab:
+    if is_toml:
+        from scidb.entities import find_entry_span
+
+        section = TOML_SECTIONS.get(kind)
+        span = find_entry_span(original, section, name) if section else None
+        replacement = toml_expr
+    elif is_matlab:
         from scistack_gui.matlab_parser import find_entities_binding
 
         binding = find_entities_binding(path, name)
@@ -517,6 +630,10 @@ def _invalidate_bytecode(path: Path) -> None:
     """Drop any cached bytecode for *path*, so the re-scan actually re-reads
     it.
 
+    A no-op for the TOML entities file: it is parsed, never imported, so it
+    has no bytecode -- and asking ``cache_from_source`` for a ``.toml``
+    path invents a ``__pycache__`` entry that never existed.
+
     ``registry`` loads entities files with ``spec_from_file_location`` +
     ``exec_module``, whose ``SourceFileLoader`` validates cached ``.pyc``
     against the source's **mtime (whole seconds) and size**. An entity edit
@@ -530,6 +647,8 @@ def _invalidate_bytecode(path: Path) -> None:
     """
     import importlib.util
 
+    if path.suffix != ".py":
+        return
     try:
         cached = importlib.util.cache_from_source(str(path))
     except (NotImplementedError, ValueError):

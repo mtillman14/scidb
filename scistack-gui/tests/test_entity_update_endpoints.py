@@ -26,7 +26,7 @@ def _project(tmp_path, body):
 
     entities = tmp_path / "entities.py"
     entities.write_text(body)
-    config_mod.set_variable_file(get_db_path(), entities)
+    config_mod.set_entities_file(get_db_path(), entities)
     _registry._module_path = None
     _registry.load_from_config(config_mod.load_config(None, get_db_path()))
     return entities
@@ -96,7 +96,7 @@ class TestRestEndpoints:
         )
         entities = tmp_path / "entities.py"
         entities.write_text("import scidb\n")
-        config_mod.set_variable_file(get_db_path(), entities)
+        config_mod.set_entities_file(get_db_path(), entities)
         config_mod.add_path(get_db_path(), tmp_path)
         _registry._module_path = None
         _registry.load_from_config(config_mod.load_config(None, get_db_path()))
@@ -258,3 +258,72 @@ class TestMatlabEntitiesPreamble:
         assert "scistack_entities;" in cmd
         assert cmd.index("addpath('/proj/src');") < cmd.index("scistack_entities;")
         assert cmd.index("scistack_entities;") < cmd.index("scidb.Pipeline")
+
+
+class TestMatlabTomlEntitiesPreamble:
+    """The TOML entities file reaches MATLAB through ``scidb.entities()``
+    (plan Stage 5). Same placement rules as the legacy script."""
+
+    def test_entities_call_runs_after_addpath(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            "process",
+            "/tmp/x.duckdb",
+            ["subject"],
+            addpath_dirs=["/proj/src"],
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+
+        assert "scidb.entities();" in cmd
+        assert cmd.index("addpath('/proj/src');") < cmd.index("scidb.entities();")
+        assert cmd.index("scidb.entities();") < cmd.index("configure_database")
+
+    def test_both_sources_are_emitted_when_both_configured(self):
+        """They declare different names; dropping either would leave a name
+        undefined at the point the command uses it."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            "process",
+            "/tmp/x.duckdb",
+            ["subject"],
+            entities_script="/proj/src/scistack_entities.m",
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+
+        assert "scidb.entities();" in cmd
+        assert "scistack_entities;" in cmd
+
+    def test_omitted_when_no_entities_file_configured(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command("process", "/tmp/x.duckdb", ["subject"])
+
+        assert "scidb.entities()" not in cmd
+
+    def test_pipeline_command_also_loads_it(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="main",
+            steps=[
+                {
+                    "function_name": "load_csv",
+                    "variants": [
+                        {
+                            "input_types": {},
+                            "output_type": "RawSignal",
+                            "constants": {},
+                        }
+                    ],
+                }
+            ],
+            db_path="/tmp/x.duckdb",
+            schema_keys=["subject"],
+            addpath_dirs=["/proj/src"],
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+
+        assert cmd.index("addpath('/proj/src');") < cmd.index("scidb.entities();")
+        assert cmd.index("scidb.entities();") < cmd.index("scidb.Pipeline")

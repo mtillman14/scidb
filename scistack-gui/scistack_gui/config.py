@@ -14,7 +14,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scifor.discovery import is_test_path, read_project_name
+from scifor.discovery import (
+    extract_scistack_section,
+    find_project_config,
+    is_test_path,
+    read_project_name,
+)
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -60,10 +65,27 @@ class SciStackConfig:
     modules: list[Path] = field(default_factory=list)
     """Resolved absolute paths to user .py files."""
 
+    entities_file: Path | None = None
+    """The TOML file GUI-created Variables/Parameters/PathInputs are written
+    to (default ``src/scistack_entities.toml``, see
+    :func:`set_entities_file`).
+
+    **The only file the GUI writes entity declarations into.** Declarations
+    in ``.py`` modules and MATLAB entities scripts are still discovered --
+    see ``variable_file`` and ``matlab_entities_file`` below -- but are
+    read-only, the same contract that has always applied to a declaration
+    outside the designated entities file
+    (docs/claude/entity-editability-model.md). Its format is owned by
+    ``scidb.entities``."""
+
     variable_file: Path | None = None
-    """The .py file where GUI-created Sweeps/PathInputs/Variables/Constants
-    are appended (default ``src/scistack_entities.py``, see
-    :func:`set_variable_file`)."""
+    """A ``.py`` file of entity declarations, **read-only**.
+
+    This was the write target before the entities file became TOML. It is
+    kept as a discovery input so an existing project's declarations keep
+    appearing in the GUI: :func:`load_config` folds it into ``modules``, so
+    it is scanned like any other module even when the config lists it
+    nowhere else. Nothing writes to it any more."""
 
     packages: list[str] = field(default_factory=list)
     """Explicit pip-installed package names to scan."""
@@ -90,12 +112,14 @@ class SciStackConfig:
     shared entities script."""
 
     matlab_entities_file: Path | None = None
-    """The MATLAB analogue of ``variable_file``: a plain script of
-    ``NAME = scidb.Sweep(...)`` top-level bindings, and the only MATLAB file
-    the GUI ever writes entity declarations into (see
-    docs/claude/entity-editability-model.md). Value getters remain fully
-    supported for discovery, but — like a Python declaration outside
-    ``variable_file`` — are read-only."""
+    """A MATLAB script of ``NAME = scidb.Parameter(...)`` top-level
+    bindings, **read-only**.
+
+    The MATLAB counterpart of ``variable_file``, and demoted for the same
+    reason: ``entities_file`` (TOML) is language-neutral, so both languages
+    now write to one file and read it through ``scidb.entities``. Existing
+    scripts keep being parsed and shown (``matlab_registry.load_entities_script``);
+    the GUI just never writes one."""
 
     matlab_sources: list[Path] = field(default_factory=list)
     """Unclassified .m files, from folder-scan fallback OR an explicit
@@ -230,13 +254,39 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         )
     logger.info("[config] Resolved %d module files total", len(modules))
 
-    # --- variable_file ---
+    # --- entities_file (TOML, the write target) ---
+    logger.info("[config] Processing entities_file")
+    entities_file: Path | None = None
+    raw_ef = section.get("entities_file")
+    if raw_ef is not None:
+        entities_file = _normalize(project_root / raw_ef)
+        logger.info("[config] entities_file set to: %s", entities_file)
+    else:
+        logger.debug("[config] No entities_file configured")
+
+    # --- variable_file (legacy .py declarations, read-only) ---
     logger.info("[config] Processing variable_file")
     variable_file: Path | None = None
     raw_vf = section.get("variable_file")
     if raw_vf is not None:
         variable_file = _normalize(project_root / raw_vf)
-        logger.debug("[config] variable_file set to: %s", variable_file)
+        # Folded into modules so its declarations are still discovered even
+        # if nothing else in the config covers it. Before the entities file
+        # became TOML this was guaranteed by set_variable_file, which always
+        # added it -- a hand-written config never had that guarantee, and
+        # now that nothing writes the key, nothing maintains it either.
+        if not _covered_by_modules(variable_file, raw_modules, project_root):
+            modules.append(variable_file)
+            logger.info(
+                "[config] Added read-only variable_file %s to modules for "
+                "discovery (no other config entry covers it)",
+                variable_file,
+            )
+        else:
+            logger.debug(
+                "[config] variable_file %s is already covered by modules",
+                variable_file,
+            )
     else:
         logger.debug("[config] No variable_file configured")
 
@@ -354,6 +404,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     config = SciStackConfig(
         project_root=project_root,
         modules=modules,
+        entities_file=entities_file,
         variable_file=variable_file,
         packages=packages,
         auto_discover=auto_discover,
@@ -366,8 +417,9 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     )
     logger.info(
         "[config] Configuration loaded from %s: %d modules, %d packages, auto_discover=%s, "
-        "%d MATLAB functions, %d MATLAB variables, %d MATLAB sources, "
-        "entities_file=%s",
+        "%d MATLAB functions, %d MATLAB variables, %d MATLAB sources; "
+        "entities_file=%s (writable), variable_file=%s (read-only), "
+        "matlab entities_file=%s (read-only)",
         toml_path,
         len(modules),
         len(packages),
@@ -375,6 +427,8 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         len(matlab_functions),
         len(matlab_variables),
         len(matlab_sources),
+        entities_file,
+        variable_file,
         matlab_entities_file,
     )
     return config
@@ -486,50 +540,23 @@ def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path | None:
             return None
         raise FileNotFoundError(f"Path does not exist: {p}")
 
-    # Search upward from the database file's directory.
+    # Search upward from the database file's directory. The walk itself
+    # lives in scifor.discovery so scidb.entities (which has to answer the
+    # same "which project is this?" question for scidb.entities.X) and the
+    # GUI can never disagree about the answer.
     logger.debug(
         "[config] No explicit project_path, searching upward from db_path: %s", db_path
     )
-    search_dir = _normalize(db_path).parent
-    search_count = 0
-    while True:
-        search_count += 1
-        logger.debug("[config] Searching directory %d: %s", search_count, search_dir)
-        for name in ("pyproject.toml", "scistack.toml"):
-            candidate = search_dir / name
-            if candidate.exists():
-                logger.debug(
-                    "[config] Found %s, checking for [tool.scistack] section", name
-                )
-                try:
-                    with open(candidate, "rb") as f:
-                        data = tomllib.load(f)
-                    section = _extract_scistack_section(data, name)
-                    if section is not None:
-                        logger.debug(
-                            "[config] %s contains [tool.scistack] section", name
-                        )
-                        return candidate
-                    else:
-                        logger.debug(
-                            "[config] %s has no [tool.scistack] section, continuing search",
-                            name,
-                        )
-                except Exception:
-                    logger.debug("[config] Failed to parse %s, continuing search", name)
-                    pass  # skip unparseable files
-        parent = search_dir.parent
-        if parent == search_dir:
-            logger.debug("[config] Reached filesystem root, search failed")
-            break
-        search_dir = parent
-
-    logger.info(
-        "[config] No pyproject.toml/scistack.toml with [tool.scistack] found "
-        "in ancestors of %s",
-        db_path,
-    )
-    return None
+    found = find_project_config(_normalize(db_path).parent)
+    if found is None:
+        logger.info(
+            "[config] No pyproject.toml/scistack.toml with [tool.scistack] found "
+            "in ancestors of %s",
+            db_path,
+        )
+    else:
+        logger.debug("[config] Found config by upward search: %s", found)
+    return found
 
 
 def _extract_scistack_section(data: dict, filename: str) -> dict | None:
@@ -539,17 +566,68 @@ def _extract_scistack_section(data: dict, filename: str) -> dict | None:
     For scistack.toml the section is at the top level (the whole file).
     """
     logger.debug("[config] Extracting scistack section from %s", filename)
-    if filename == "scistack.toml":
-        # The entire file IS the scistack config.
-        logger.debug("[config] scistack.toml: entire file is config")
-        return data  # empty file → {} → valid all-defaults config
-    # pyproject.toml
-    section = data.get("tool", {}).get("scistack")
-    if section is None:
-        logger.debug("[config] pyproject.toml: no [tool.scistack] section found")
-    else:
-        logger.debug("[config] pyproject.toml: found [tool.scistack] section")
-    return section
+    return extract_scistack_section(data, filename)
+
+
+# ---------------------------------------------------------------------------
+# Which directory is "the project"?
+# ---------------------------------------------------------------------------
+
+_project_root_hint: Path | None = None
+"""Set once at startup from ``--project-root`` (the VS Code workspace
+folder). Consulted only when there is no config file to locate the project
+by -- see :func:`infer_project_root`."""
+
+
+def set_project_root_hint(path: "Path | str | None") -> None:
+    """Record the launching context's idea of the project root."""
+    global _project_root_hint
+    _project_root_hint = _normalize(path) if path is not None else None
+    logger.info("[config] Project root hint set to %s", _project_root_hint)
+
+
+def infer_project_root(db_path: Path) -> Path:
+    """Where this project's config and entities file belong.
+
+    The database is routinely NOT in the project: a ``.duckdb`` usually
+    lives in a datasets folder, and writing ``scistack.toml`` +
+    ``src/scistack_entities.toml`` next to it (the old behaviour) scattered
+    project files across data directories. Resolution order, most to least
+    authoritative:
+
+    1. An existing ``pyproject.toml``/``scistack.toml`` above the database
+       -- an established project always wins, so this never moves an
+       existing one.
+    2. ``--project-root``, i.e. the VS Code workspace folder.
+    3. The server's working directory.
+    4. The database's own directory, as a last resort.
+
+    Always logged, because which rule fired determines where files land.
+    """
+    existing = find_project_config(_normalize(db_path).parent)
+    if existing is not None:
+        logger.info(
+            "[config] Project root %s (from existing config %s)",
+            existing.parent,
+            existing,
+        )
+        return existing.parent
+    if _project_root_hint is not None:
+        logger.info(
+            "[config] Project root %s (from --project-root)", _project_root_hint
+        )
+        return _project_root_hint
+    cwd = _normalize(Path.cwd())
+    if cwd.is_dir():
+        logger.info("[config] Project root %s (server working directory)", cwd)
+        return cwd
+    fallback = _normalize(db_path).parent
+    logger.warning(
+        "[config] Falling back to the database's own directory as the project "
+        "root: %s -- pass --project-root to put project files elsewhere",
+        fallback,
+    )
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -703,7 +781,8 @@ def _toml_array(items: list) -> str:
 def _render_scistack_toml(
     *,
     modules: list,
-    variable_file,
+    entities_file=None,
+    variable_file=None,
     packages: list,
     auto_discover: bool,
     matlab_functions: list,
@@ -716,7 +795,10 @@ def _render_scistack_toml(
 
     Round-trips every field this module understands (not just modules/
     matlab.sources) so that add_path/remove_path never silently drop
-    hand-authored packages/auto_discover/variable_file/etc.
+    hand-authored packages/auto_discover/entities_file/etc. That includes
+    the read-only ``variable_file``/``[matlab] entities_file`` keys: this
+    function no longer writes them from scratch, but must not delete one a
+    user still has.
     """
     lines = [
         "# Written by the SciStack GUI's Paths popup.",
@@ -724,6 +806,8 @@ def _render_scistack_toml(
         "",
         f"modules = {_toml_array(modules)}",
     ]
+    if entities_file is not None:
+        lines.append(f"entities_file = {_toml_str(str(entities_file))}")
     if variable_file is not None:
         lines.append(f"variable_file = {_toml_str(str(variable_file))}")
     if packages:
@@ -820,9 +904,9 @@ def add_path(db_path: Path, new_path: Path) -> Path:
 
     is_first_write = toml_path is None
     if is_first_write:
-        target_path = _normalize(db_path).parent / "scistack.toml"
+        project_root = infer_project_root(db_path)
+        target_path = project_root / "scistack.toml"
         section: dict = {}
-        project_root = target_path.parent
         logger.info(
             "[config] add_path: no config found, will create %s", target_path
         )
@@ -836,13 +920,12 @@ def add_path(db_path: Path, new_path: Path) -> Path:
     raw_sources = list(matlab_section.get("sources", []))
 
     if is_first_write:
-        root_str = str(project_root)
-        raw_modules.append(root_str)
-        raw_sources.append(root_str)
-        logger.info(
-            "[config] add_path: seeding new scistack.toml with project root %s",
-            root_str,
-        )
+        for seed in _first_write_seed_roots(db_path, project_root):
+            raw_modules.append(seed)
+            raw_sources.append(seed)
+            logger.info(
+                "[config] add_path: seeding new scistack.toml with %s", seed
+            )
 
     normalized_new = _normalize(new_path)
     new_str = str(normalized_new)
@@ -857,6 +940,7 @@ def add_path(db_path: Path, new_path: Path) -> Path:
 
     content = _render_scistack_toml(
         modules=raw_modules,
+        entities_file=section.get("entities_file"),
         variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
@@ -904,6 +988,7 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
 
     content = _render_scistack_toml(
         modules=raw_modules,
+        entities_file=section.get("entities_file"),
         variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
@@ -916,6 +1001,27 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
     toml_path.write_text(content)
     logger.info("[config] remove_path: wrote %s (removed %s)", toml_path, target)
     return toml_path
+
+
+def _first_write_seed_roots(db_path: Path, project_root: Path) -> list[str]:
+    """Directories to seed a brand-new scistack.toml's ``modules`` with.
+
+    Creating the first config file switches discovery from folder-scan mode
+    (which walks the database's own directory) to config-driven, so the
+    database's directory is seeded to keep whatever was implicitly
+    discovered. The project root is seeded too, and is usually a *different*
+    directory now that it is inferred rather than assumed to be the
+    database's -- that is the point of the fix, but it must add a root, not
+    silently swap one.
+    """
+    roots = [_normalize(db_path).parent, _normalize(project_root)]
+    seen: set[Path] = set()
+    ordered: list[str] = []
+    for root in roots:
+        if root not in seen:
+            seen.add(root)
+            ordered.append(str(root))
+    return ordered
 
 
 def _covered_by_modules(target: Path, raw_modules: list, project_root: Path) -> bool:
@@ -934,42 +1040,44 @@ def _covered_by_modules(target: Path, raw_modules: list, project_root: Path) -> 
     return False
 
 
-def set_variable_file(
+def set_entities_file(
     db_path: Path, file_path: "Path | str | None" = None
 ) -> Path:
-    """Set (or auto-create) the ``variable_file`` new Sweep/PathInput/
-    Variable/Constant declarations get appended to, and write it into
+    """Set (or auto-create) the TOML entities file, and write the key into
     scistack.toml.
 
     Only valid for loose-script projects (no pyproject.toml at the resolved
     project root) -- see :func:`_reject_packaged_project`. Packaged
-    projects must add ``variable_file`` under ``[tool.scistack]`` in
+    projects must add ``entities_file`` under ``[tool.scistack]`` in
     pyproject.toml by hand, same as every other path in that mode.
 
     If *file_path* is ``None``, defaults to
-    ``<project_root>/src/scistack_entities.py``. *file_path* may also be a
-    relative path (string or ``Path``), resolved against whatever
-    ``project_root`` this function determines below -- this is what lets
-    the project-creation wizard pass a bare ``"src/scistack_entities.py"``
-    without first having to know where the project root will end up. An
-    absolute *file_path* is used as-is (unchanged behavior for existing
-    callers like the Paths popup's "Change" action). The file is created on
-    disk (with a short header comment and ``import scidb``, so it's
-    immediately valid Python) if it doesn't already exist -- an existing
-    file's contents are never touched. Mirrors :func:`add_path`'s
-    first-write seeding behavior when no scistack.toml exists yet.
+    ``<project_root>/src/scistack_entities.toml``, where *project root* is
+    :func:`infer_project_root`'s answer -- **not** the database's own
+    directory, which is usually a datasets folder that project files have
+    no business being written into. A relative *file_path* resolves against
+    that same root, which is what lets the creation wizard pass a bare
+    ``"src/scistack_entities.toml"`` without knowing where the root will
+    land; an absolute one is used as-is.
+
+    The file is created with :func:`scidb.entities.initial_text` if it does
+    not exist -- including its empty ``variables = []`` key, which has to be
+    above the first section header and is fiddly to add correctly later. An
+    existing file's contents are never touched. Unlike the ``.py`` entities
+    file this replaces, it is **not** added to ``modules``: it is not
+    Python, and executing it as a module would fail.
     """
-    logger.info("[config] set_variable_file: db_path=%s, file_path=%s", db_path, file_path)
+    logger.info("[config] set_entities_file: db_path=%s, file_path=%s", db_path, file_path)
     toml_path = _locate_pyproject(None, db_path)
     _reject_packaged_project(toml_path)
 
     is_first_write = toml_path is None
     if is_first_write:
-        target_path = _normalize(db_path).parent / "scistack.toml"
+        project_root = infer_project_root(db_path)
+        target_path = project_root / "scistack.toml"
         section: dict = {}
-        project_root = target_path.parent
         logger.info(
-            "[config] set_variable_file: no config found, will create %s", target_path
+            "[config] set_entities_file: no config found, will create %s", target_path
         )
     else:
         target_path = toml_path
@@ -981,48 +1089,48 @@ def set_variable_file(
     raw_sources = list(matlab_section.get("sources", []))
 
     if is_first_write:
-        root_str = str(project_root)
-        raw_modules.append(root_str)
-        raw_sources.append(root_str)
-        logger.info(
-            "[config] set_variable_file: seeding new scistack.toml with project root %s",
-            root_str,
-        )
+        for seed in _first_write_seed_roots(db_path, project_root):
+            raw_modules.append(seed)
+            raw_sources.append(seed)
+            logger.info(
+                "[config] set_entities_file: seeding new scistack.toml with %s", seed
+            )
+
+    # scidb owns both the default location and the file's initial contents
+    # -- it owns the format (CLAUDE.md NOTE 3), so the GUI never hard-codes
+    # either.
+    from scidb.entities import DEFAULT_ENTITIES_RELPATH, initial_text
 
     if file_path is not None:
         raw_target = Path(file_path)
-        if raw_target.is_absolute():
-            variable_file = _normalize(raw_target)
-        else:
-            variable_file = _normalize(project_root / raw_target)
-    else:
-        variable_file = _normalize(project_root / "src" / "scistack_entities.py")
-
-    if not variable_file.exists():
-        variable_file.parent.mkdir(parents=True, exist_ok=True)
-        variable_file.write_text(
-            '"""Auto-created by the SciStack GUI -- new Sweep/PathInput/Variable/\n'
-            'Constant declarations created from the GUI are appended here."""\n'
-            "import scidb\n"
+        entities_file = (
+            _normalize(raw_target)
+            if raw_target.is_absolute()
+            else _normalize(project_root / raw_target)
         )
-        logger.info("[config] set_variable_file: created new file %s", variable_file)
+    else:
+        entities_file = _normalize(project_root / DEFAULT_ENTITIES_RELPATH)
 
-    if not _covered_by_modules(variable_file, raw_modules, project_root):
-        raw_modules.append(str(variable_file))
+    if not entities_file.exists():
+        entities_file.parent.mkdir(parents=True, exist_ok=True)
+        entities_file.write_text(initial_text(), encoding="utf-8")
+        logger.info("[config] set_entities_file: created new file %s", entities_file)
+    else:
         logger.info(
-            "[config] set_variable_file: added %s to modules (not covered by an "
-            "existing entry)",
-            variable_file,
+            "[config] set_entities_file: %s already exists; leaving its contents "
+            "untouched",
+            entities_file,
         )
 
     try:
-        variable_file_for_toml: "Path | str" = variable_file.relative_to(project_root)
+        entities_file_for_toml: "Path | str" = entities_file.relative_to(project_root)
     except ValueError:
-        variable_file_for_toml = variable_file
+        entities_file_for_toml = entities_file
 
     content = _render_scistack_toml(
         modules=raw_modules,
-        variable_file=variable_file_for_toml,
+        entities_file=entities_file_for_toml,
+        variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
@@ -1033,21 +1141,27 @@ def set_variable_file(
     )
     target_path.write_text(content)
     logger.info(
-        "[config] set_variable_file: wrote %s (variable_file=%s, toml value=%s)",
+        "[config] set_entities_file: wrote %s (entities_file=%s, toml value=%s)",
         target_path,
-        variable_file,
-        variable_file_for_toml,
+        entities_file,
+        entities_file_for_toml,
     )
-    return variable_file
+    return entities_file
 
 
-def clear_variable_file(db_path: Path) -> Path:
-    """Remove the ``variable_file`` key from scistack.toml (loose-script
-    projects only). Never deletes the file on disk or its entry in
-    ``modules`` -- this only stops new GUI-created declarations from
-    targeting it automatically; discovery of its existing contents is
-    unaffected."""
-    logger.info("[config] clear_variable_file: db_path=%s", db_path)
+def clear_entities_file(db_path: Path) -> Path:
+    """Remove the ``entities_file`` key from scistack.toml (loose-script
+    projects only).
+
+    Never deletes the file on disk -- this only stops new GUI-created
+    declarations from targeting it automatically, and its existing
+    declarations keep being discovered (``registry`` scans it whenever the
+    key is set; with the key gone, ``scidb.entities`` still finds it at the
+    conventional path). Consistent with the project's
+    ``feedback_never_delete_mark_hidden`` ethos: "remove" means stop
+    pointing at it, never destroy it.
+    """
+    logger.info("[config] clear_entities_file: db_path=%s", db_path)
     toml_path = _locate_pyproject(None, db_path)
     if toml_path is None:
         raise FileNotFoundError(
@@ -1059,7 +1173,8 @@ def clear_variable_file(db_path: Path) -> Path:
     matlab_section = dict(section.get("matlab", {}))
     content = _render_scistack_toml(
         modules=list(section.get("modules", [])),
-        variable_file=None,
+        entities_file=None,
+        variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
         matlab_functions=list(matlab_section.get("functions", [])),
@@ -1069,5 +1184,5 @@ def clear_variable_file(db_path: Path) -> Path:
         matlab_entities_file=matlab_section.get("entities_file"),
     )
     toml_path.write_text(content)
-    logger.info("[config] clear_variable_file: wrote %s (cleared variable_file)", toml_path)
+    logger.info("[config] clear_entities_file: wrote %s (cleared entities_file)", toml_path)
     return toml_path

@@ -209,6 +209,11 @@ source declaration.
 
 ### MATLAB
 
+> **Superseded 2026-09-01**: both languages now declare GUI-written
+> entities in one TOML `entities_file` (`entities-toml-format.md`). The
+> `.m` script below and Python's `variable_file` remain **discovered and
+> read-only**, so everything about how they are *found* still applies.
+
 MATLAB declares entities in an **entities script** — a plain `.m` file (no
 `function`, no `classdef`) of top-level bindings, configured as
 `[matlab] entities_file` and structurally identical to Python's
@@ -272,14 +277,18 @@ value into the export document (`export_pipeline`, reading
 name already exists there; only on a miss does it call
 `path_input_service.create_path_input` to *materialize* the bundled value
 into the importer's own configured source file (never a phantom GUI-only
-value). A materialization failure (no `variable_file` configured) surfaces
+value). A materialization failure (no entities file configured) surfaces
 in the import result's `materialization_errors`, not a silent drop.
 
 ### GUI-side creation
 
-`create_path_input`/`layout_service.py` append `NAME = PathInput(...)` to
-`config.variable_file` and refresh the registry (`path_input_service.py`,
-mirrors `variable_service.create_variable`'s append-only pattern exactly).
+`create_path_input`/`layout_service.py` write the declaration into
+`config.entities_file` (TOML — `NAME = "template"`, or a
+`{template, root_folder}` table) and refresh the registry
+(`path_input_service.py`, mirrors `variable_service.create_variable`
+exactly). In legacy single-file mode (`--module`) the same call still
+appends `NAME = PathInput(...)` to the module, dispatched by suffix — see
+`entities-toml-format.md`.
 **No update/alternates endpoints anymore** — editing an existing
 PathInput's template means editing the source file directly and hitting
 Refresh Code. "Delete" (`delete_path_input`) hides the `pathInput__{name}`

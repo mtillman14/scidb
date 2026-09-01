@@ -53,8 +53,8 @@ export function createScistackToml(dirPath: string): string {
 # Auto-discover scistack.plugins entry points (default: true)
 # auto_discover = true
 
-# File where 'create_variable' writes new variable classes
-# variable_file = "src/vars.py"
+# TOML file the GUI writes new Variable/Parameter/PathInput declarations to
+# entities_file = "src/scistack_entities.toml"
 
 # [matlab]
 # functions = ["src/"]

@@ -192,8 +192,8 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     get_project_paths:      { path: '/api/project/paths' },
     add_project_path:       { path: '/api/project/paths', method: 'POST', body: true },
     remove_project_path:    { path: (p) => `/api/project/paths?path=${encodeURIComponent(p.path as string)}`, method: 'DELETE' },
-    set_variable_file:      { path: '/api/project/variable-file', method: 'POST', body: true },
-    clear_variable_file:    { path: '/api/project/variable-file', method: 'DELETE' },
+    set_entities_file:      { path: '/api/project/entities-file', method: 'POST', body: true },
+    clear_entities_file:    { path: '/api/project/entities-file', method: 'DELETE' },
     // Nested-pipeline scopes (method names match the JSON-RPC handlers in server.py)
     list_pipelines:         { path: '/api/pipelines' },
     create_pipeline:        { path: '/api/pipelines', method: 'POST', body: true },

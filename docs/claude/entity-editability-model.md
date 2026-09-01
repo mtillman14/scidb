@@ -5,6 +5,18 @@ Plan of record: `.claude/plan-gui-entity-editing-26-08-24.md` (decisions
 D1–D7, per-stage status). Rejected alternatives are preserved in
 `.claude/plan-gui-source-cohesion-26-08-24.md`.
 
+> **Superseded in part, 2026-09-01: the entities file is now TOML.**
+> Everything below about *policy* — what may be edited, confinement,
+> staleness, rollback, the additive rules, PathInput history — still holds
+> exactly. What changed is the *format* the declarations are written in, and
+> that there is now **one** writable file for both languages rather than one
+> per language. Where this document says the entities file is
+> `src/scistack_entities.py` or a MATLAB script, read
+> `src/scistack_entities.toml`; see **`entities-toml-format.md`** and
+> `.claude/plan-entities-toml-26-08-31.md`. The MATLAB-script and
+> Python-module sections below now describe **read-only** surfaces that are
+> still fully discovered.
+
 **Two things still need the user, not the test suite:**
 
 1. **A MATLAB run.** There is no MATLAB in the dev environment, so
@@ -62,8 +74,14 @@ Consequences of that framing:
 GUI writes are confined to the entities file so the GUI never surprises a
 user by editing their hand-written modules. This is a contract, not a gap:
 
-- Python: `config.variable_file`, default `src/scistack_entities.py`.
-- MATLAB: `[matlab] entities_file` (new), a plain script — see below.
+- **Both languages: `config.entities_file`, default
+  `src/scistack_entities.toml`** (since 2026-09-01). One
+  language-neutral file, read by Python directly and by MATLAB through
+  `scidb.entities()`.
+- `config.variable_file` (`.py`) and `[matlab] entities_file` (`.m`) are
+  **read-only legacy surfaces**: still discovered and displayed, never
+  written. They are the same read-only case as any other module, and need
+  no new concept to describe.
 
 A read-only entity shows its exact declaration site
 (`src/analysis/params.py:42`) rather than a generic "edit it in source"
@@ -125,6 +143,19 @@ One axis governs everything: a declaration holds one value or several, and
 A Parameter needs no wrapping at all — it IS an `EachOf`, so more values is
 just more arguments. PathInput has no such class, so it wraps explicitly in
 `EachOf`. Both are additive; only PathInput changes its expression shape.
+
+In the TOML entities file the same axis reads as scalar-vs-array, and the
+wrapping disappears entirely — an array *is* the alternative list:
+
+| GUI concept | Single form | Multi form |
+|---|---|---|
+| **Parameter** | `W = 2` | `W = [2, 5]` |
+| **Path Input** | `P = "a.csv"` | `P = ["a.csv", "b.csv"]` |
+| Variable | `variables = ["StepLength"]` | — |
+
+The scalar→array transition is a change of *form* in the file, but not of
+kind, id, node, tab or history — and it is the same single-span splice a
+value edit performs.
 
 ### Rule 1 — adding a value is always additive
 
@@ -218,6 +249,13 @@ on). Variables stay create-only.
 
 ## MATLAB
 
+> **Superseded 2026-09-01.** The writable entities file is the TOML one,
+> read from MATLAB via `scidb.entities()` (`entities-toml-format.md`). The
+> `.m` entities script described below is still parsed and discovered, and
+> the reasoning that follows — why a *script* rather than a classdef, and
+> why value getters went — is preserved because it is exactly why the TOML
+> file is re-read on every access instead of cached per session.
+
 ### The entities file is a plain script
 
 ```matlab
@@ -260,6 +298,12 @@ Two alternatives were rejected:
 — MATLAB requires one public classdef per file named after the file, so
 they cannot live in the entities script. Both settings exist and mean
 different things.
+
+That constraint outlived the format change, and is why a Variable is the
+one kind the TOML file cannot fully own: MATLAB has no runtime class
+creation, so `matlab_registry.materialize_variable_stubs` generates a
+classdef stub per TOML-declared variable into `variable_dir`. The TOML entry
+is the declaration; the stub is generated output.
 
 ### `scidb.Parameter` in MATLAB
 
@@ -317,6 +361,8 @@ channel.
 
 ## See also
 
+- `entities-toml-format.md` — the format declarations are written in now,
+  and the coexistence rules for the two read-only legacy surfaces.
 - `code-discovery-categories.md` — how all six kinds are *discovered*
   (the read half; this doc is the write half).
 - `each-of-variant-expansion.md` — why `Sweep` history and `Constant`

@@ -35,13 +35,13 @@ def remove_project_path(path: str) -> dict:
     return remove_project_path(path)
 
 
-def set_variable_file(path: "str | None") -> dict:
-    from scistack_gui.api.project import set_project_variable_file
+def set_entities_file(path: "str | None") -> dict:
+    from scistack_gui.api.project import set_project_entities_file
 
-    return set_project_variable_file({"path": path})
+    return set_project_entities_file({"path": path})
 
 
-def clear_variable_file() -> dict:
-    from scistack_gui.api.project import clear_project_variable_file
+def clear_entities_file() -> dict:
+    from scistack_gui.api.project import clear_project_entities_file
 
-    return clear_project_variable_file()
+    return clear_project_entities_file()

@@ -1,17 +1,19 @@
 /**
- * VariableFileEditor — the file new Sweep/PathInput/Variable/Constant
- * declarations created from the sidebar's "+" buttons get appended to.
+ * EntitiesFileEditor — the TOML file new Variable/Parameter/PathInput
+ * declarations created from the sidebar's "+" buttons are written to.
  * Rendered inside PathsPopup.tsx, loose-script projects only (packaged
  * projects configure this by hand in pyproject.toml, same as
  * ManagedPathsList's directories).
  *
- * Backed by set_variable_file/clear_variable_file, which write/rewrite
+ * Backed by set_entities_file/clear_entities_file, which write/rewrite
  * scistack.toml. Leaving the field blank and hitting "Set" auto-creates a
- * default src/scistack_entities.py in the project root -- same default the
- * project-creation wizard now pre-fills eagerly (ProjectBootstrapWizard.tsx)
- * and what happens transparently the first time an entity gets created from
- * the sidebar with nothing configured yet, so this editor is mainly for
- * visibility/override rather than a required setup step.
+ * default src/scistack_entities.toml **in the project root** -- which is
+ * not necessarily where the database lives (that is usually a datasets
+ * folder; see config.infer_project_root). Same default the
+ * project-creation wizard pre-fills eagerly (ProjectBootstrapWizard.tsx)
+ * and what happens transparently the first time an entity gets created
+ * from the sidebar with nothing configured yet, so this editor is mainly
+ * for visibility/override rather than a required setup step.
  */
 
 import { useState } from 'react'
@@ -22,11 +24,11 @@ interface MutationResult {
   error?: string
 }
 
-export default function VariableFileEditor({
-  variableFile,
+export default function EntitiesFileEditor({
+  entitiesFile,
   onChange,
 }: {
-  variableFile: string | null
+  entitiesFile: string | null
   onChange: () => void
 }) {
   const [editing, setEditing] = useState(false)
@@ -35,7 +37,7 @@ export default function VariableFileEditor({
   const [error, setError] = useState<string | null>(null)
 
   const startEdit = () => {
-    setDraft(variableFile ?? '')
+    setDraft(entitiesFile ?? '')
     setEditing(true)
     setError(null)
   }
@@ -50,9 +52,9 @@ export default function VariableFileEditor({
     setError(null)
     try {
       const path = draft.trim() || null
-      const result = await callBackend('set_variable_file', { path }) as MutationResult
+      const result = await callBackend('set_entities_file', { path }) as MutationResult
       if (!result.ok) {
-        setError(result.error || 'Failed to set variable file.')
+        setError(result.error || 'Failed to set entities file.')
         return
       }
       setEditing(false)
@@ -71,9 +73,9 @@ export default function VariableFileEditor({
     setBusy(true)
     setError(null)
     try {
-      const result = await callBackend('clear_variable_file') as MutationResult
+      const result = await callBackend('clear_entities_file') as MutationResult
       if (!result.ok) {
-        setError(result.error || 'Failed to clear variable file.')
+        setError(result.error || 'Failed to clear entities file.')
         return
       }
       onChange()
@@ -86,18 +88,18 @@ export default function VariableFileEditor({
 
   return (
     <div style={styles.wrap}>
-      <div style={styles.label}>Variable file</div>
+      <div style={styles.label}>Entities file</div>
       <div style={styles.hint}>
-        New PathInput/Sweep/Variable declarations created from the sidebar are appended here.
-        Left unset, one is auto-created the first time it's needed.
+        New Variable/Parameter/PathInput declarations created from the sidebar are written here,
+        as TOML. Left unset, one is auto-created in the project root the first time it's needed.
       </div>
       {!editing ? (
         <div style={styles.row}>
-          <div style={styles.value}>{variableFile ?? '(not set — auto-creates on first use)'}</div>
+          <div style={styles.value}>{entitiesFile ?? '(not set — auto-creates on first use)'}</div>
           <button style={styles.smallBtn} onClick={startEdit} disabled={busy} type="button">
-            {variableFile ? 'Change' : 'Set'}
+            {entitiesFile ? 'Change' : 'Set'}
           </button>
-          {variableFile && (
+          {entitiesFile && (
             <button style={styles.smallBtn} onClick={handleClear} disabled={busy} type="button">
               Clear
             </button>
@@ -108,7 +110,7 @@ export default function VariableFileEditor({
           <input
             style={styles.input}
             type="text"
-            placeholder="/absolute/path/to/file.py (blank = auto default)"
+            placeholder="src/scistack_entities.toml (blank = auto default)"
             value={draft}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => {

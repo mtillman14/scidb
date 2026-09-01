@@ -14,7 +14,7 @@ dependencies = ["scidb"]
 
 [tool.scistack]
 modules = ["src/my_study/pipeline.py"]
-variable_file = "src/my_study/variables.py"
+entities_file = "src/scistack_entities.toml"
 packages = ["lab_shared_utils"]
 auto_discover = true
 
@@ -32,7 +32,7 @@ The entire file IS the scistack config. No `[tool.scistack]` nesting needed:
 
 ```toml
 modules = ["src/my_study/pipeline.py"]
-variable_file = "src/my_study/variables.py"
+entities_file = "src/scistack_entities.toml"
 packages = ["lab_shared_utils"]
 auto_discover = true
 
@@ -51,12 +51,27 @@ Use this when:
 | `pyproject.toml` key | `scistack.toml` key |
 |---|---|
 | `[tool.scistack].modules` | `modules` |
+| `[tool.scistack].entities_file` | `entities_file` |
 | `[tool.scistack].variable_file` | `variable_file` |
 | `[tool.scistack].packages` | `packages` |
 | `[tool.scistack].auto_discover` | `auto_discover` |
 | `[tool.scistack.matlab].functions` | `[matlab].functions` |
 | `[tool.scistack.matlab].variables` | `[matlab].variables` |
 | `[tool.scistack.matlab].variable_dir` | `[matlab].variable_dir` |
+| `[tool.scistack.matlab].entities_file` | `[matlab].entities_file` |
+
+## The three entity-declaration keys
+
+Easy to confuse, so stated once. Full detail in `entities-toml-format.md`.
+
+| Key | Format | Written by the GUI? |
+|---|---|---|
+| `entities_file` | TOML | **Yes — the only one.** Default `src/scistack_entities.toml` |
+| `variable_file` | `.py` | No. Read-only legacy; folded into `modules` so its declarations stay discovered |
+| `[matlab] entities_file` | `.m` script | Read-only in principle; still writable pending a decision |
+
+A top-level `entities_file` (TOML, language-neutral) and a `[matlab]
+entities_file` (a MATLAB script) are different keys in different tables.
 
 ## Lookup and precedence
 
@@ -73,6 +88,41 @@ When the server resolves which config file to use (`_locate_pyproject` in `confi
 
 **Key rule**: `pyproject.toml` always wins over `scistack.toml` in the same directory.
 
+The upward walk itself lives in `scifor.discovery.find_project_config`, so
+`config.py` and `scidb.entities` (which has to answer the same "which
+project is this?" question for `scidb.entities.X`) can never disagree about
+the answer.
+
+## Where a NEW config file gets written
+
+Reading finds an existing config. *Writing* one — the first `add_path` or
+`set_entities_file` on a project that has none — needs a project root, and
+the database is routinely **not** in the project: a `.duckdb` usually lives
+in a datasets folder. Writing `scistack.toml` and `src/scistack_entities.toml`
+next to it (the behaviour before 2026-08-31) scattered project files across
+data directories.
+
+`config.infer_project_root(db_path)` resolves it, most to least
+authoritative, logging which rule fired:
+
+1. An existing `pyproject.toml`/`scistack.toml` above the database — an
+   established project always wins, so this never relocates one.
+2. `--project-root`, i.e. the VS Code workspace folder (passed by
+   `extension/src/pythonProcess.ts`).
+3. The server's working directory.
+4. The database's own directory, as a last resort, with a WARNING.
+
+The first write seeds `modules` with **both** the database's directory and
+the project root. Creating a config file switches discovery from folder-scan
+mode (which walks the database's directory) to config-driven, so seeding
+only the new root would silently stop discovering code the folder scan was
+already finding.
+
+Under pytest, rule 3 would make the repo itself the project root — the GUI
+test suite pins the hint to `tmp_path` in an autouse fixture
+(`scistack-gui/tests/conftest.py::_pin_project_root`) so a test that creates
+a project cannot write into the source tree.
+
 ## All fields are optional
 
 Every config field has a sensible default. An empty `scistack.toml` (or a `pyproject.toml` with an empty `[tool.scistack]` section, or even a `pyproject.toml` with no `[tool.scistack]` at all) produces a valid config:
@@ -80,7 +130,8 @@ Every config field has a sensible default. An empty `scistack.toml` (or a `pypro
 | Field | Default | Effect when omitted |
 |---|---|---|
 | `modules` | `[]` | No local `.py` files loaded explicitly (project source scanner still walks `src/{name}/`). Entries can be files, directories (recursive), or glob patterns. |
-| `variable_file` | not set | "Create Variable" UI action is disabled |
+| `entities_file` | not set | Auto-created as `src/scistack_entities.toml` in the project root the first time an entity is created from the GUI (or eagerly at project creation) |
+| `variable_file` | not set | No legacy `.py` entities file; nothing to fold into `modules` |
 | `packages` | `[]` | No extra pip-installed packages scanned |
 | `auto_discover` | `true` | `scistack.plugins` entry points are scanned |
 | `matlab.functions` | `[]` | No MATLAB `.m` function files loaded |

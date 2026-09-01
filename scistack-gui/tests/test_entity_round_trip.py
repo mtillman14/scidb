@@ -34,7 +34,7 @@ def _project(tmp_path, body):
 
     entities = tmp_path / "entities.py"
     entities.write_text(body)
-    config_mod.set_variable_file(get_db_path(), entities)
+    config_mod.set_entities_file(get_db_path(), entities)
     _registry._module_path = None
     _registry.load_from_config(config_mod.load_config(None, get_db_path()))
     return entities
@@ -214,7 +214,7 @@ class TestReadOnlyRoundTrip:
 
         entities = tmp_path / "entities.py"
         entities.write_text("import scidb\n")
-        config_mod.set_variable_file(get_db_path(), entities)
+        config_mod.set_entities_file(get_db_path(), entities)
         config_mod.add_path(get_db_path(), tmp_path)
         _registry._module_path = None
         _rescan()

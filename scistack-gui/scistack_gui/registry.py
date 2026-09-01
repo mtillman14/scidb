@@ -266,6 +266,12 @@ def load_from_config(config: SciStackConfig) -> dict:
     else:
         logger.info("[registry] Skipping entry point discovery (disabled)")
 
+    # Last, so a TOML declaration wins over a same-named one discovered in a
+    # module: the entities file is the file the GUI writes, so if the two
+    # disagree, what the user just edited is what they should see.
+    if config.entities_file is not None:
+        _load_entities_file(config.entities_file)
+
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
     logger.debug(
@@ -277,7 +283,7 @@ def load_from_config(config: SciStackConfig) -> dict:
     # while the file still matches it (target_file_service.update_declaration).
     from scistack_gui.services.target_file_service import record_source_hash
 
-    record_source_hash(config.variable_file)
+    record_source_hash(config.entities_file)
 
     logger.info("[registry] Config loading complete")
     return _diff_summary(old_fns, new_fns, old_vars, new_vars)
@@ -561,6 +567,42 @@ def _scan_module_functions(module, *, source: str) -> None:
             source,
             skipped_reexports,
         )
+
+
+def _load_entities_file(path: Path) -> None:
+    """Register everything the TOML entities file declares.
+
+    The read half of ``scidb.entities`` -- the format's owner does the
+    parsing and construction, this only registers the results and records
+    per-entry failures the way a failed module load is recorded, so a bad
+    declaration shows up in the GUI's load-errors panel instead of
+    disappearing.
+
+    Variables need no registration call: constructing the class registers
+    it in ``BaseVariable._all_subclasses`` via ``__init_subclass__``, which
+    is the same registry a ``class X(BaseVariable)`` statement lands in.
+    """
+    from scidb.entities import load
+
+    logger.info("[registry] Loading entities file: %s", path)
+    result = load(path)
+
+    for name, param in result.parameters.items():
+        _register_parameter(name, param, source=str(path))
+    for name, pi in result.path_inputs.items():
+        _register_path_input(name, pi, source=str(path))
+
+    for err in result.errors:
+        _record_load_error(f"{path}:{err.line}" if err.line else str(path), err.describe())
+
+    logger.info(
+        "[registry] Entities file gave %d variable(s), %d parameter(s), "
+        "%d path input(s), %d rejected",
+        len(result.variables),
+        len(result.parameters),
+        len(result.path_inputs),
+        len(result.errors),
+    )
 
 
 def _scan_module_parameters(module, *, source: str) -> None:

@@ -13,12 +13,21 @@ from scistack_gui.config import (
     _extract_scistack_section,
     _normalize,
     add_path,
-    clear_variable_file,
+    clear_entities_file,
+    infer_project_root,
     load_config,
     remove_path,
-    set_variable_file,
+    set_entities_file,
+    set_project_root_hint,
     tomllib,
 )
+
+
+# The project-root hint is pinned to tmp_path for every test by conftest's
+# autouse `_pin_project_root` fixture -- without it, a project with no config
+# file resolves its root to the server's working directory (the repo, under
+# pytest). Tests that need a *different* root call set_project_root_hint
+# themselves; see test_set_entities_file_outside_project_root_written_absolute.
 
 # ---------------------------------------------------------------------------
 # _extract_scistack_section
@@ -957,64 +966,76 @@ def test_remove_path_rejects_packaged_project(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# set_variable_file / clear_variable_file
+# set_entities_file / clear_entities_file
 #
-# Regression coverage for the "creating a PathInput/Sweep/Variable from the
-# GUI silently failed with 'No module file was loaded at startup'" bug --
+# Regression coverage for the "creating a PathInput/Parameter/Variable from
+# the GUI silently failed with 'No module file was loaded at startup'" bug --
 # see .claude/pathinput-sweep-variable-creation-fixes.md. Before this, there
-# was no way to configure variable_file for a loose-script project at all.
+# was no way to configure the entities file for a loose-script project at
+# all. Now also covers where that file LANDS (todos item 3b) -- see
+# .claude/plan-entities-toml-26-08-31.md.
 # ---------------------------------------------------------------------------
 
 
-def test_set_variable_file_auto_creates_default_when_none_exists(tmp_path):
+def test_set_entities_file_auto_creates_default_when_none_exists(tmp_path):
     """First-ever auto-create on a pure folder-scan project (no scistack.toml/
     pyproject.toml yet): creates scistack.toml seeded with the project root
-    (same reasoning as add_path), creates src/scistack_entities.py, and
-    points variable_file at it."""
+    (same reasoning as add_path), creates src/scistack_entities.toml, and
+    points entities_file at it."""
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
 
-    result = set_variable_file(db_path, None)
+    result = set_entities_file(db_path, None)
 
-    expected = _normalize(tmp_path / "src" / "scistack_entities.py")
+    expected = _normalize(tmp_path / "src" / "scistack_entities.toml")
     assert result == expected
     assert expected.exists()
     content = expected.read_text()
-    assert content  # non-empty scaffold, not a blank file
-    assert "import scidb" in content  # immediately valid Python on creation
+    # The `variables` key is scaffolded up front and above the first section
+    # header: TOML would bind it to the preceding table if added later.
+    assert "variables = []" in content
+    assert content.index("variables") < content.index("[parameters]")
 
     toml_path = tmp_path / "scistack.toml"
     data = _read_raw_section(toml_path)
-    # Written relative to project_root for portability -- a variable_file
+    # Written relative to project_root for portability -- an entities file
     # always lives inside the project, unlike modules/sources which may
-    # point at shared directories outside it (see set_variable_file's
-    # docstring and docs/claude/scistack-gui-project-setup-guide.md's
-    # pyproject.toml convention this mirrors).
-    assert data["variable_file"] == "src/scistack_entities.py"
+    # point at shared directories outside it.
+    assert data["entities_file"] == "src/scistack_entities.toml"
     assert str(_normalize(tmp_path)) in data["modules"]
 
 
-def test_set_variable_file_accepts_relative_path(tmp_path):
-    """A relative file_path (as the project-creation wizard now sends,
-    e.g. 'src/scistack_entities.py') resolves against whatever project_root
-    this function determines internally, instead of raising -- this is
-    what lets the wizard pass a bare relative string without first having
-    to know where the project root will end up."""
+def test_set_entities_file_is_not_added_to_modules(tmp_path):
+    """It is TOML, not Python: executing it as a module would fail. The .py
+    entities file it replaces WAS added to modules."""
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
 
-    result = set_variable_file(db_path, "custom/relative_entities.py")
+    entities_file = set_entities_file(db_path, None)
 
-    expected = _normalize(tmp_path / "custom" / "relative_entities.py")
+    data = _read_raw_section(tmp_path / "scistack.toml")
+    assert str(entities_file) not in data["modules"]
+    assert not any(str(m).endswith(".toml") for m in data["modules"])
+
+
+def test_set_entities_file_accepts_relative_path(tmp_path):
+    """A relative file_path (as the project-creation wizard sends, e.g.
+    'src/scistack_entities.toml') resolves against whatever project_root
+    this function determines internally, instead of raising."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+
+    result = set_entities_file(db_path, "custom/relative_entities.toml")
+
+    expected = _normalize(tmp_path / "custom" / "relative_entities.toml")
     assert result == expected
     assert expected.exists()
 
-    toml_path = tmp_path / "scistack.toml"
-    data = _read_raw_section(toml_path)
-    assert data["variable_file"] == "custom/relative_entities.py"
+    data = _read_raw_section(tmp_path / "scistack.toml")
+    assert data["entities_file"] == "custom/relative_entities.toml"
 
 
-def test_set_variable_file_relative_path_resolves_against_existing_root(tmp_path):
+def test_set_entities_file_relative_path_resolves_against_existing_root(tmp_path):
     """When a scistack.toml already exists (not the first-write case), a
     relative file_path resolves against ITS project_root, not db_path's
     parent."""
@@ -1025,127 +1046,184 @@ def test_set_variable_file_relative_path_resolves_against_existing_root(tmp_path
     db_path.parent.mkdir()
     db_path.write_text("")
 
-    result = set_variable_file(db_path, "src/entities.py")
+    result = set_entities_file(db_path, "src/entities.toml")
 
-    assert result == _normalize(project_root / "src" / "entities.py")
+    assert result == _normalize(project_root / "src" / "entities.toml")
 
 
-def test_set_variable_file_explicit_path_registers_module(tmp_path):
+def test_set_entities_file_lands_in_project_root_not_datasets_folder(tmp_path):
+    """The (b) fix: a database in a datasets folder must not drag the
+    project's config and entities file in with it."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    datasets = tmp_path / "datasets"
+    datasets.mkdir()
+    db_path = datasets / "proj.duckdb"
+    db_path.write_text("")
+    set_project_root_hint(project_root)
+
+    result = set_entities_file(db_path, None)
+
+    assert result == _normalize(project_root / "src" / "scistack_entities.toml")
+    assert (project_root / "scistack.toml").exists()
+    assert not (datasets / "scistack.toml").exists()
+
+
+def test_first_write_seeds_both_the_db_folder_and_the_project_root(tmp_path):
+    """Switching from folder-scan to config-driven discovery must not drop
+    the code the folder scan was implicitly finding next to the database,
+    even though the project root is now a different directory."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    datasets = tmp_path / "datasets"
+    datasets.mkdir()
+    db_path = datasets / "proj.duckdb"
+    db_path.write_text("")
+    set_project_root_hint(project_root)
+
+    set_entities_file(db_path, None)
+
+    data = _read_raw_section(project_root / "scistack.toml")
+    assert str(_normalize(datasets)) in data["modules"]
+    assert str(_normalize(project_root)) in data["modules"]
+
+
+def test_set_entities_file_does_not_overwrite_existing_file(tmp_path):
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
-    (tmp_path / "other").mkdir()
-    toml_file = tmp_path / "scistack.toml"
-    toml_file.write_text('modules = ["other"]\n')
+    existing = tmp_path / "my_entities.toml"
+    existing.write_text("[parameters]\nRATE = 1000\n")
 
-    explicit = tmp_path / "vars" / "custom_variables.py"
-    result = set_variable_file(db_path, explicit)
+    set_entities_file(db_path, existing)
 
-    assert result == _normalize(explicit)
-    assert explicit.exists()
-    data = _read_raw_section(toml_file)
-    # variable_file is written relative to project_root (portability); the
-    # modules entry added alongside it still uses the absolute form, same
-    # as every other modules/sources entry (those may point outside the
-    # project root, so they're never made relative).
-    assert data["variable_file"] == "vars/custom_variables.py"
-    assert str(_normalize(explicit)) in data["modules"]
-    assert "other" in data["modules"]  # untouched
+    assert existing.read_text() == "[parameters]\nRATE = 1000\n"
 
 
-def test_set_variable_file_does_not_overwrite_existing_file(tmp_path):
+def test_set_entities_file_absolute_path_used_as_is(tmp_path):
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
-    existing = tmp_path / "my_variables.py"
-    existing.write_text("from scidb import BaseVariable\n\nclass Foo(BaseVariable):\n    pass\n")
+    absolute = tmp_path / "elsewhere" / "entities.toml"
 
-    set_variable_file(db_path, existing)
-
-    assert existing.read_text() == (
-        "from scidb import BaseVariable\n\nclass Foo(BaseVariable):\n    pass\n"
-    )
-
-
-def test_set_variable_file_skips_module_entry_when_already_covered(tmp_path):
-    db_path = tmp_path / "proj.duckdb"
-    db_path.write_text("")
-    covering_dir = tmp_path / "src"
-    covering_dir.mkdir()
-    toml_file = tmp_path / "scistack.toml"
-    toml_file.write_text(f'modules = [{str(covering_dir)!r}]\n')
-
-    target = covering_dir / "variables.py"
-    set_variable_file(db_path, target)
-
-    data = _read_raw_section(toml_file)
-    # Not appended again -- already discoverable via the directory entry.
-    assert data["modules"] == [str(covering_dir)]
-
-
-def test_set_variable_file_absolute_path_used_as_is(tmp_path):
-    """An absolute file_path is used verbatim (unchanged behavior for
-    existing callers like the Paths popup's 'Change' action)."""
-    db_path = tmp_path / "proj.duckdb"
-    db_path.write_text("")
-    absolute = tmp_path / "elsewhere" / "vars.py"
-
-    result = set_variable_file(db_path, absolute)
+    result = set_entities_file(db_path, absolute)
 
     assert result == _normalize(absolute)
 
 
-def test_set_variable_file_outside_project_root_written_absolute(tmp_path):
-    """A variable_file that isn't under project_root at all (e.g. an
-    existing file elsewhere on disk) can't be made relative -- falls back
-    to the absolute form rather than raising."""
+def test_set_entities_file_outside_project_root_written_absolute(tmp_path):
+    """An entities_file that isn't under project_root at all can't be made
+    relative -- falls back to the absolute form rather than raising.
+
+    The hint has to be pinned to ``project_root`` explicitly here: the
+    autouse fixture points it at ``tmp_path``, which would make ``outside``
+    *inside* the root and quietly test the relative path instead.
+    """
     project_root = tmp_path / "project"
     project_root.mkdir()
     db_path = project_root / "proj.duckdb"
     db_path.write_text("")
-    outside = tmp_path / "elsewhere" / "vars.py"
+    set_project_root_hint(project_root)
+    outside = tmp_path / "elsewhere" / "entities.toml"
     outside.parent.mkdir()
-    outside.write_text("import scidb\n")
+    outside.write_text("[parameters]\n")
 
-    set_variable_file(db_path, outside)
+    set_entities_file(db_path, outside)
 
-    toml_file = project_root / "scistack.toml"
+    data = _read_raw_section(project_root / "scistack.toml")
+    assert data["entities_file"] == str(_normalize(outside))
+
+
+def test_set_entities_file_preserves_legacy_variable_file_key(tmp_path):
+    """variable_file is read-only now, but a user who still has one must not
+    lose it when the GUI rewrites scistack.toml."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('variable_file = "src/legacy.py"\n')
+
+    set_entities_file(db_path, None)
+
     data = _read_raw_section(toml_file)
-    assert data["variable_file"] == str(_normalize(outside))
+    assert data["variable_file"] == "src/legacy.py"
+    assert data["entities_file"] == "src/scistack_entities.toml"
 
 
-def test_set_variable_file_rejects_packaged_project(tmp_path):
+def test_set_entities_file_rejects_packaged_project(tmp_path):
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
     (tmp_path / "pyproject.toml").write_text("[tool.scistack]\n")
 
     with pytest.raises(ValueError):
-        set_variable_file(db_path, None)
+        set_entities_file(db_path, None)
 
 
-def test_clear_variable_file_removes_key_but_keeps_file(tmp_path):
+def test_clear_entities_file_removes_key_but_keeps_file(tmp_path):
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
-    variable_file = set_variable_file(db_path, None)
+    entities_file = set_entities_file(db_path, None)
 
     toml_path = tmp_path / "scistack.toml"
-    written = clear_variable_file(db_path)
+    written = clear_entities_file(db_path)
 
     assert written == toml_path
     data = _read_raw_section(toml_path)
-    assert "variable_file" not in data
-    assert variable_file.exists()  # never deletes the file itself
+    assert "entities_file" not in data
+    assert entities_file.exists()  # never deletes the file itself
 
 
-def test_clear_variable_file_noop_when_no_config_file(tmp_path):
+def test_clear_entities_file_noop_when_no_config_file(tmp_path):
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
     with pytest.raises(FileNotFoundError):
-        clear_variable_file(db_path)
+        clear_entities_file(db_path)
 
 
-def test_clear_variable_file_rejects_packaged_project(tmp_path):
+def test_clear_entities_file_rejects_packaged_project(tmp_path):
     db_path = tmp_path / "proj.duckdb"
     db_path.write_text("")
-    (tmp_path / "pyproject.toml").write_text("[tool.scistack]\nvariable_file = \"x.py\"\n")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.scistack]\nentities_file = "x.toml"\n'
+    )
 
     with pytest.raises(ValueError):
-        clear_variable_file(db_path)
+        clear_entities_file(db_path)
+
+
+# ---------------------------------------------------------------------------
+# infer_project_root -- where project files land (todos item 3b)
+# ---------------------------------------------------------------------------
+
+
+def test_infer_project_root_prefers_an_existing_config(tmp_path):
+    """An established project always wins, so this never relocates one."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "scistack.toml").write_text("modules = []\n")
+    db_path = project_root / "data" / "proj.duckdb"
+    db_path.parent.mkdir()
+    db_path.write_text("")
+    set_project_root_hint(tmp_path / "somewhere-else")
+
+    assert infer_project_root(db_path) == _normalize(project_root)
+
+
+def test_infer_project_root_uses_the_hint_when_there_is_no_config(tmp_path):
+    hint = tmp_path / "workspace"
+    hint.mkdir()
+    db_path = tmp_path / "datasets" / "proj.duckdb"
+    db_path.parent.mkdir()
+    db_path.write_text("")
+    set_project_root_hint(hint)
+
+    assert infer_project_root(db_path) == _normalize(hint)
+
+
+def test_infer_project_root_falls_back_to_cwd(tmp_path, monkeypatch):
+    db_path = tmp_path / "datasets" / "proj.duckdb"
+    db_path.parent.mkdir()
+    db_path.write_text("")
+    set_project_root_hint(None)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert infer_project_root(db_path) == _normalize(workdir)

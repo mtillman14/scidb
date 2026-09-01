@@ -2221,3 +2221,142 @@ class TestFindSciMatlabMatlabDir:
         assert result is not None
         cfg_db = Path(result) / "+scihist" / "configure_database.m"
         assert cfg_db.exists(), f"scihist.configure_database not found at {cfg_db}"
+
+
+# ---------------------------------------------------------------------------
+# TOML entities -> MATLAB (.claude/plan-entities-toml-26-08-31.md Stage 5)
+# ---------------------------------------------------------------------------
+
+
+class TestMatlabEntitiesBridge:
+    """``+scidb/entities.m`` rebuilds MATLAB objects from this payload, so
+    its shape is the contract. There is no MATLAB in this environment --
+    these cover the Python half; the .m half stays correct-by-inspection
+    until someone runs it (same standing caveat as
+    docs/claude/entity-editability-model.md)."""
+
+    def _project(self, tmp_path, body):
+        (tmp_path / "scistack.toml").write_text(
+            'entities_file = "entities.toml"\n', encoding="utf-8"
+        )
+        (tmp_path / "entities.toml").write_text(body, encoding="utf-8")
+
+    def test_payload_shape(self, tmp_path):
+        from scidb import entities
+        from scimatlab.bridge import load_entities
+
+        self._project(
+            tmp_path,
+            'variables = ["StepLength"]\n'
+            "\n"
+            "[parameters]\n"
+            "WINDOW = [10, 20]\n"
+            "RATE = 1000\n"
+            "\n"
+            "[path_inputs]\n"
+            'EMG = { template = "{subject}/emg.csv", root_folder = "/data" }\n',
+        )
+        entities.clear_cache()
+
+        payload = load_entities(str(tmp_path))
+
+        assert payload["variables"] == ["StepLength"]
+        assert payload["parameters"] == {"WINDOW": [10, 20], "RATE": [1000]}
+        assert payload["path_inputs"] == {
+            "EMG": [{"template": "{subject}/emg.csv", "root_folder": "/data"}]
+        }
+        assert payload["errors"] == []
+
+    def test_missing_root_folder_is_none_not_empty_string(self, tmp_path):
+        """MATLAB reads None as [] and branches on isempty; "" would be a
+        root folder named the empty string."""
+        from scidb import entities
+        from scimatlab.bridge import load_entities
+
+        self._project(tmp_path, '[path_inputs]\nEMG = "{subject}/emg.csv"\n')
+        entities.clear_cache()
+
+        payload = load_entities(str(tmp_path))
+
+        assert payload["path_inputs"]["EMG"][0]["root_folder"] is None
+
+    def test_alternate_templates_become_multiple_arms(self, tmp_path):
+        from scidb import entities
+        from scimatlab.bridge import load_entities
+
+        self._project(tmp_path, '[path_inputs]\nEMG = ["a/{s}.csv", "b/{s}.csv"]\n')
+        entities.clear_cache()
+
+        payload = load_entities(str(tmp_path))
+
+        assert [arm["template"] for arm in payload["path_inputs"]["EMG"]] == [
+            "a/{s}.csv",
+            "b/{s}.csv",
+        ]
+
+    def test_rejected_entries_are_reported_as_strings(self, tmp_path):
+        """Someone running from the MATLAB prompt never sees the GUI's
+        load-errors panel, so the errors have to cross the bridge."""
+        from scidb import entities
+        from scimatlab.bridge import load_entities
+
+        self._project(
+            tmp_path,
+            '[path_inputs]\nBAD = { template = "x.csv", nonsense = 1 }\n',
+        )
+        entities.clear_cache()
+
+        payload = load_entities(str(tmp_path))
+
+        assert len(payload["errors"]) == 1
+        assert "BAD" in payload["errors"][0]
+        assert all(isinstance(e, str) for e in payload["errors"])
+
+    def test_entities_m_exists_and_is_reachable(self):
+        from scistack_gui.server import _find_scimatlab_matlab_dir
+
+        result = _find_scimatlab_matlab_dir()
+        assert result is not None
+        assert (Path(result) / "+scidb" / "entities.m").exists()
+
+
+class TestMaterializeVariableStubs:
+    """A TOML-declared Variable needs a real classdef: MATLAB cannot create
+    a class at runtime, and class(obj) is what names the table."""
+
+    def test_creates_a_stub_per_declared_name(self, tmp_path):
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        created = materialize_variable_stubs(["StepLength", "Cadence"], tmp_path)
+
+        assert {p.name for p in created} == {"StepLength.m", "Cadence.m"}
+        assert "classdef StepLength < scidb.BaseVariable" in (
+            (tmp_path / "StepLength.m").read_text()
+        )
+
+    def test_existing_classdef_is_never_overwritten(self, tmp_path):
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        handwritten = tmp_path / "StepLength.m"
+        handwritten.write_text("classdef StepLength < scidb.BaseVariable\n% mine\nend\n")
+
+        created = materialize_variable_stubs(["StepLength"], tmp_path)
+
+        assert created == []
+        assert "% mine" in handwritten.read_text()
+
+    def test_is_idempotent(self, tmp_path):
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        materialize_variable_stubs(["StepLength"], tmp_path)
+        assert materialize_variable_stubs(["StepLength"], tmp_path) == []
+
+    def test_stub_for_a_removed_declaration_is_left_alone(self, tmp_path):
+        """Deleting generated-but-referenced files is how a pipeline stops
+        running mid-session; the project's ethos is hide, never delete."""
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        materialize_variable_stubs(["Gone"], tmp_path)
+        materialize_variable_stubs([], tmp_path)
+
+        assert (tmp_path / "Gone.m").exists()

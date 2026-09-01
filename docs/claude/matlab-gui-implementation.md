@@ -29,7 +29,7 @@ MATLAB settings live under `[tool.scistack.matlab]`:
 ```toml
 [tool.scistack]
 modules = ["pipeline.py"]
-variable_file = "variables.py"
+entities_file = "src/scistack_entities.toml"
 
 [tool.scistack.matlab]
 functions = ["matlab/bandpass_filter.m", "matlab/compute_vo2.m"]

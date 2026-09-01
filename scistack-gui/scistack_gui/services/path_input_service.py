@@ -62,25 +62,46 @@ def create_path_input(
     if name in registry.get_path_inputs_registry():
         return {"ok": False, "error": f"A PathInput named '{name}' already exists."}
 
-    from scistack_gui.services.target_file_service import get_or_create_target_file
+    from scistack_gui.services.target_file_service import (
+        get_or_create_target_file,
+        is_toml_target,
+        write_entity,
+    )
 
     target_file, target_err = get_or_create_target_file()
     if target_file is None:
         return {"ok": False, "error": target_err}
 
-    from scidb.source_edit import render_path_input
-
-    line = f"\n{name} = {render_path_input(template, root_folder, alternate_templates)}\n"
-
     logger.info(
         "[path_input_service] create_path_input: name=%r template=%r root_folder=%r "
-        "%d alternate(s)",
+        "%d alternate(s) target=%s",
         name,
         template,
         root_folder,
         len(alternate_templates or []),
+        target_file,
     )
-    err = _append_and_refresh(line, target_file)
+
+    if is_toml_target(target_file):
+        from scidb.entities import render_path_input_value
+
+        err = write_entity(
+            target_file,
+            section="path_inputs",
+            name=name,
+            rendered=render_path_input_value(
+                template, root_folder, alternate_templates
+            ),
+        )
+    else:
+        from scidb.source_edit import render_path_input
+
+        line = (
+            f"\n{name} = "
+            f"{render_path_input(template, root_folder, alternate_templates)}\n"
+        )
+        err = _append_and_refresh(line, target_file)
+
     if err:
         return err
     return {"ok": True, "name": name}
@@ -100,6 +121,7 @@ def update_path_input(
     what prior runs content-match against. D7's name-history table is what
     keeps that non-destructive.
     """
+    from scidb.entities import render_path_input_value
     from scidb.source_edit import render_path_input
 
     from scistack_gui.matlab_parser import render_matlab_path_input
@@ -110,6 +132,9 @@ def update_path_input(
         name,
         python_expr=render_path_input(template, root_folder, alternate_templates),
         matlab_expr=render_matlab_path_input(
+            template, root_folder, alternate_templates
+        ),
+        toml_expr=render_path_input_value(
             template, root_folder, alternate_templates
         ),
     )

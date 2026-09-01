@@ -158,7 +158,13 @@ def get_project_paths() -> dict:
         "configured": True,
         "project_root": str(config.project_root),
         "modules": [str(p) for p in config.modules],
+        "entities_file": str(config.entities_file) if config.entities_file else None,
+        # Read-only legacy declaration files, surfaced so the Paths popup can
+        # show where entities it refuses to edit are coming from.
         "variable_file": str(config.variable_file) if config.variable_file else None,
+        "matlab_entities_file": (
+            str(config.matlab_entities_file) if config.matlab_entities_file else None
+        ),
         "packages": config.packages,
         "auto_discover": config.auto_discover,
         "matlab_functions": [str(p) for p in config.matlab_functions],
@@ -183,7 +189,7 @@ def _reload_config_and_rescan() -> None:
     the TOML file). That's fine for the existing "Refresh" button, which
     only needs to pick up *content* changes in already-configured files.
     But after :func:`~scistack_gui.config.add_path`/``remove_path``/
-    ``set_variable_file`` change *which paths are configured*, reusing the
+    ``set_entities_file`` change *which paths are configured*, reusing the
     stale config would silently fail to discover the new path until the
     server restarts. So this re-runs ``load_config`` fresh first (see
     ``services.registry_reload_service``, shared with the auto-create
@@ -235,21 +241,21 @@ def remove_project_path(path: str) -> dict:
     return result
 
 
-@router.post("/variable-file")
-def set_project_variable_file(body: dict) -> dict:
-    """Set the file new Sweep/PathInput/Variable/Constant declarations get
-    appended to (loose-script projects only). Body: ``{"path":
-    "/absolute/path.py"}`` (also accepts a relative path, resolved against
-    the project root) or ``{"path": null}``/omitted to auto-create the
-    default ``src/scistack_entities.py`` in the project root.
+@router.post("/entities-file")
+def set_project_entities_file(body: dict) -> dict:
+    """Set the TOML file new Variable/Parameter/PathInput declarations are
+    written to (loose-script projects only). Body: ``{"path":
+    "/absolute/path.toml"}`` (also accepts a relative path, resolved
+    against the project root) or ``{"path": null}``/omitted to auto-create
+    the default ``src/scistack_entities.toml`` in the project root.
     """
-    from scistack_gui.config import set_variable_file
+    from scistack_gui.config import set_entities_file
 
     path_str = body.get("path") or None
     try:
-        set_variable_file(get_db_path(), Path(path_str) if path_str else None)
+        set_entities_file(get_db_path(), Path(path_str) if path_str else None)
     except (ValueError, OSError) as e:
-        logger.warning("[project.paths] set_project_variable_file failed: %s", e)
+        logger.warning("[project.paths] set_project_entities_file failed: %s", e)
         return {"ok": False, "error": str(e)}
 
     _reload_config_and_rescan()
@@ -258,16 +264,16 @@ def set_project_variable_file(body: dict) -> dict:
     return result
 
 
-@router.delete("/variable-file")
-def clear_project_variable_file() -> dict:
-    """Clear the configured variable_file (loose-script projects only).
-    Never deletes the file itself -- see ``config.clear_variable_file``."""
-    from scistack_gui.config import clear_variable_file
+@router.delete("/entities-file")
+def clear_project_entities_file() -> dict:
+    """Clear the configured entities_file (loose-script projects only).
+    Never deletes the file itself -- see ``config.clear_entities_file``."""
+    from scistack_gui.config import clear_entities_file
 
     try:
-        clear_variable_file(get_db_path())
+        clear_entities_file(get_db_path())
     except (ValueError, FileNotFoundError) as e:
-        logger.warning("[project.paths] clear_project_variable_file failed: %s", e)
+        logger.warning("[project.paths] clear_project_entities_file failed: %s", e)
         return {"ok": False, "error": str(e)}
 
     _reload_config_and_rescan()

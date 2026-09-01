@@ -62,11 +62,25 @@ def main():
         "does not exist, a new database is created.",
     )
     parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=None,
+        help="Directory to treat as the project root when no "
+        "pyproject.toml/scistack.toml exists yet. Determines where a new "
+        "scistack.toml and entities file are written; defaults to the "
+        "working directory.",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Don't open the browser automatically",
     )
     args = parser.parse_args()
+
+    if args.project_root is not None:
+        from scistack_gui.config import set_project_root_hint
+
+        set_project_root_hint(args.project_root)
 
     if args.module and args.project:
         print("Error: --module and --project are mutually exclusive.", file=sys.stderr)

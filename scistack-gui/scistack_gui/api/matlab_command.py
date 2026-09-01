@@ -12,27 +12,46 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _entities_script_lines(entities_script: "str | None") -> list[str]:
-    """Lines that run the MATLAB entities script, or ``[]``.
+def _entities_script_lines(
+    entities_script: "str | None", entities_file: "str | None" = None
+) -> list[str]:
+    """Lines that bring declared entities into scope, or ``[]``.
 
-    Must be emitted AFTER the addpath block (the script lives on one of
-    those directories) and before anything that references a declared entity
-    by name.
+    Two sources, because two coexist: the TOML entities file (the one the
+    GUI writes, read through ``scidb.entities()``) and a legacy MATLAB
+    entities script, which stays readable. Both are emitted when both are
+    configured — they declare different names, and dropping either would
+    make a name silently undefined at the point the generated command uses
+    it.
 
-    Re-run on every generated command rather than once per session: a MATLAB
-    script is re-read from disk each time, so this is also what makes a GUI
-    entity edit visible to a KEPT-WARM session (``matlab_sidecar``) with no
-    cache-clearing. That property is exactly why the entities file is a plain
-    script and not a classdef whose Constant properties would be cached for
-    the life of the session — see docs/claude/entity-editability-model.md.
+    Must be emitted AFTER the addpath block (both live on one of those
+    directories) and before anything that references a declared entity by
+    name.
+
+    Re-run on every generated command rather than once per session. A
+    MATLAB script is re-read from disk each time, and ``scidb.entities()``
+    re-reads whenever the file's mtime changes, so either way a GUI entity
+    edit is visible to a KEPT-WARM session (``matlab_sidecar``) with no
+    cache-clearing. That property is why the entities file was a plain
+    script rather than a classdef whose Constant properties would be cached
+    for the life of the session; TOML keeps it — see
+    docs/claude/entity-editability-model.md.
     """
-    if not entities_script:
-        return []
-    return [
-        "% Entity declarations (Sweeps/PathInputs/Constants)",
-        f"{Path(entities_script).stem};",
-        "",
-    ]
+    lines: list[str] = []
+    if entities_file:
+        lines += [
+            "% Entity declarations (Variables/Parameters/PathInputs) from "
+            f"{Path(entities_file).name}",
+            "scidb.entities();",
+            "",
+        ]
+    if entities_script:
+        lines += [
+            "% Entity declarations from the MATLAB entities script",
+            f"{Path(entities_script).stem};",
+            "",
+        ]
+    return lines
 
 
 
@@ -51,6 +70,7 @@ def generate_matlab_command(
     output_types: list[str] | None = None,
     project_root: str | None = None,
     entities_script: str | None = None,
+    entities_file: str | None = None,
 ) -> str:
     """Generate a complete MATLAB script to run a pipeline function.
 
@@ -107,7 +127,7 @@ def generate_matlab_command(
             lines.append(f"addpath('{_escape_matlab_string(d)}');")
         lines.append("")
 
-    lines.extend(_entities_script_lines(entities_script))
+    lines.extend(_entities_script_lines(entities_script, entities_file))
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)
@@ -330,6 +350,7 @@ def generate_matlab_pipeline_command(
     python_executable: str | None = None,
     project_root: str | None = None,
     entities_script: str | None = None,
+    entities_file: str | None = None,
 ) -> str:
     """Generate a complete MATLAB script that runs a whole GUI pipeline
     scope through ``scidb.Pipeline`` — deferred registration of every
@@ -400,7 +421,7 @@ def generate_matlab_pipeline_command(
             lines.append(f"addpath('{_escape_matlab_string(d)}');")
         lines.append("")
 
-    lines.extend(_entities_script_lines(entities_script))
+    lines.extend(_entities_script_lines(entities_script, entities_file))
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)

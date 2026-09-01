@@ -5,8 +5,8 @@ POST /api/bootstrap/create — create a new .duckdb (folder + filename +
                               schema keys) and load pipeline code into it.
                               Also eagerly writes scistack.toml + the
                               configured entities file (default
-                              src/scistack_entities.py) for loose-script
-                              projects, via config.set_variable_file, so a
+                              src/scistack_entities.toml) for loose-script
+                              projects, via config.set_entities_file, so a
                               freshly-created project never sits in the
                               pure-folder-scan config state that
                               pre-existing projects opened without ever
@@ -47,7 +47,10 @@ class CreateProjectRequest(BaseModel):
     schema_keys: list[str]
     module: str | None = None
     project: str | None = None
-    variable_file: str | None = "src/scistack_entities.py"
+    entities_file: str | None = "src/scistack_entities.toml"
+    """Relative to the *project root*, not to ``folder`` -- ``folder`` is
+    where the database goes, which is typically a datasets directory. See
+    ``config.infer_project_root``."""
 
 
 class OpenProjectRequest(BaseModel):
@@ -100,18 +103,18 @@ def create_project(req: CreateProjectRequest) -> dict:
     module = Path(req.module).expanduser() if req.module else None
     project = Path(req.project).expanduser() if req.project else None
 
-    if req.variable_file:
+    if req.entities_file:
         from scistack_gui import config as config_mod
 
         try:
-            entities_file = config_mod.set_variable_file(db_path, req.variable_file)
+            entities_file = config_mod.set_entities_file(db_path, req.entities_file)
             logger.info(
                 "[api.bootstrap] eagerly configured entities file: %s",
                 entities_file,
             )
         except ValueError as exc:
             # Packaged project (pyproject.toml already present somewhere
-            # above db_path) -- variable_file must be hand-added there;
+            # above db_path) -- entities_file must be hand-added there;
             # don't fail project creation over it.
             logger.info(
                 "[api.bootstrap] skipping eager entities-file setup: %s", exc

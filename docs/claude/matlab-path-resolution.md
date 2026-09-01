@@ -178,7 +178,7 @@ def _normalize(p) -> Path:
 call sites have been converted from `.resolve()` → `_normalize()`:
 
 - `_locate_pyproject`: `project_path` and `db_path` derivations.
-- `load_config`: module, variable_file, matlab variable_dir.
+- `load_config`: module, entities_file, variable_file, matlab variable_dir.
 - `_resolve_glob_paths`: individual MATLAB/Python file entries.
 - `matlab_parser.parse_matlab_function`: `MatlabFunctionInfo.file_path`.
 - `matlab_registry.load_from_config`: variable-path storage.

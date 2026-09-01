@@ -31,8 +31,8 @@ modules = [
     "pipeline/analysis.py",
 ]
 
-# Where create_variable writes new BaseVariable subclasses
-variable_file = "pipeline/variables.py"
+# Where the GUI writes new Variable/Parameter/PathInput declarations (TOML)
+entities_file = "src/scistack_entities.toml"
 
 # Pip-installed packages to scan for Functions/Variables
 packages = ["lab_shared_utils", "eeg_preprocessing"]
@@ -100,7 +100,7 @@ A user with an existing `pipeline.py` can either:
 ```toml
 [tool.scistack]
 modules = ["pipeline.py"]
-variable_file = "pipeline.py"
+entities_file = "src/scistack_entities.toml"
 ```
 
 To split code later, just add more entries to `modules` and move definitions between files.

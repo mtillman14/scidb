@@ -181,6 +181,15 @@ def load_from_config(config: SciStackConfig) -> dict:
     if config.matlab_entities_file is not None:
         load_entities_script(config.matlab_entities_file)
 
+    # --- TOML-declared variables need real classdef files ---
+    if config.entities_file is not None and config.matlab_variable_dir is not None:
+        from scidb.entities import load as _load_entities
+
+        materialize_variable_stubs(
+            list(_load_entities(config.entities_file).variables),
+            config.matlab_variable_dir,
+        )
+
     # --- Unified sources (folder-scan fallback: no functions/variables
     # split available, each file classified individually by content) ---
     if config.matlab_sources:
@@ -200,6 +209,62 @@ def load_from_config(config: SciStackConfig) -> dict:
         "matlab_path_inputs": sorted(_matlab_path_inputs.keys()),
         "matlab_parameters": sorted(_matlab_parameters.keys()),
     }
+
+
+def materialize_variable_stubs(names: list[str], variable_dir: Path) -> list[Path]:
+    """Write a ``classdef`` stub for each TOML-declared variable that has
+    none yet. Returns the files created.
+
+    Why this exists: MATLAB cannot create a class at runtime, and
+    ``class(obj)`` is what names the database table -- so unlike a Parameter
+    or a PathInput, a Variable cannot be handed over the bridge as a value.
+    A declaration in the TOML file is the source of truth; this stub is
+    *generated output* that makes the type referenceable as ``StepLength()``
+    from MATLAB code, not a second place the variable is declared.
+
+    Only ever creates. A stub whose TOML entry later disappears is left
+    alone -- deleting generated-but-referenced files is how a pipeline stops
+    running mid-session, and the project's ethos is to hide, never delete.
+    """
+    created: list[Path] = []
+    for name in names:
+        target = variable_dir / f"{name}.m"
+        if target.exists():
+            logger.debug(
+                "[matlab_registry] classdef for TOML variable '%s' already exists "
+                "at %s",
+                name,
+                target,
+            )
+            continue
+        try:
+            variable_dir.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                f"classdef {name} < scidb.BaseVariable\n"
+                f"    % Declared in the SciStack entities file; this stub exists\n"
+                f"    % because MATLAB requires one classdef file per type.\n"
+                f"end\n",
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(
+                "[matlab_registry] Could not write classdef stub for '%s' at %s: "
+                "%s -- the type will not be referenceable from MATLAB",
+                name,
+                target,
+                e,
+            )
+            _record_load_error(str(target), f"Could not write classdef stub: {e}")
+            continue
+        logger.info(
+            "[matlab_registry] Materialized classdef stub for TOML variable "
+            "'%s' at %s",
+            name,
+            target,
+        )
+        created.append(target)
+        _register_matlab_variable(name, target)
+    return created
 
 
 def load_entities_script(path: Path) -> None:

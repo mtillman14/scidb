@@ -755,21 +755,21 @@ def _h_remove_project_path(params):
     return result
 
 
-def _h_set_variable_file(params):
+def _h_set_entities_file(params):
     from scistack_gui.notify import notify
-    from scistack_gui.services.project_service import set_variable_file
+    from scistack_gui.services.project_service import set_entities_file
 
-    result = set_variable_file(params.get("path"))
+    result = set_entities_file(params.get("path"))
     if result.get("ok"):
         notify("dag_updated", {})
     return result
 
 
-def _h_clear_variable_file(params):
+def _h_clear_entities_file(params):
     from scistack_gui.notify import notify
-    from scistack_gui.services.project_service import clear_variable_file
+    from scistack_gui.services.project_service import clear_entities_file
 
-    result = clear_variable_file()
+    result = clear_entities_file()
     if result.get("ok"):
         notify("dag_updated", {})
     return result
@@ -917,8 +917,8 @@ METHODS = {
     "get_project_paths": _h_get_project_paths,
     "add_project_path": _h_add_project_path,
     "remove_project_path": _h_remove_project_path,
-    "set_variable_file": _h_set_variable_file,
-    "clear_variable_file": _h_clear_variable_file,
+    "set_entities_file": _h_set_entities_file,
+    "clear_entities_file": _h_clear_entities_file,
     "list_pipelines": _h_list_pipelines,
     "create_pipeline": _h_create_pipeline,
     "rename_pipeline": _h_rename_pipeline,
@@ -1038,7 +1038,22 @@ def main():
         help="Comma-separated schema keys; if provided and --db "
         "does not exist, a new database is created.",
     )
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=None,
+        help="Directory to treat as the project root when no "
+        "pyproject.toml/scistack.toml exists yet (the VS Code workspace "
+        "folder). Determines where a new scistack.toml and entities file "
+        "are written; without it the database's own directory is the last "
+        "resort, which is usually a datasets folder.",
+    )
     args = parser.parse_args()
+
+    if args.project_root is not None:
+        from scistack_gui.config import set_project_root_hint
+
+        set_project_root_hint(args.project_root)
 
     if args.module and args.project:
         print(

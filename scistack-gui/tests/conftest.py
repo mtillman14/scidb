@@ -152,6 +152,23 @@ def layout_path(tmp_path, populated_db):
     return _gui_db.get_db_path().with_suffix(".layout.json")
 
 
+@pytest.fixture(autouse=True)
+def _pin_project_root(tmp_path):
+    """Pin the inferred project root to tmp_path for every GUI test.
+
+    With no config file to locate a project by, ``config.infer_project_root``
+    falls back to the server's working directory -- under pytest that is the
+    repo, so any test that creates a project would write scistack.toml and an
+    entities file into the source tree. See
+    ``.claude/plan-entities-toml-26-08-31.md`` D5.
+    """
+    from scistack_gui.config import set_project_root_hint
+
+    set_project_root_hint(tmp_path)
+    yield
+    set_project_root_hint(None)
+
+
 @pytest.fixture
 def client(populated_db):
     """FastAPI TestClient backed by the populated database."""

@@ -13,12 +13,28 @@ logger = logging.getLogger(__name__)
 
 
 def _entities_script() -> "str | None":
-    """The configured ``[matlab] entities_file``, if any — its declarations
-    have to be in scope before a generated command references one by name."""
+    """The configured legacy ``[matlab] entities_file`` script, if any — its
+    declarations have to be in scope before a generated command references
+    one by name."""
     from scistack_gui import matlab_registry
 
     config = getattr(matlab_registry, "_config", None)
     entities = getattr(config, "matlab_entities_file", None)
+    return str(entities) if entities else None
+
+
+def _entities_file() -> "str | None":
+    """The configured TOML ``entities_file``, if any.
+
+    Read from the *Python* registry's config rather than
+    ``matlab_registry``'s: the entities file is language-neutral now, so a
+    MATLAB-only project still has one, and the two registries hold the same
+    ``SciStackConfig`` anyway.
+    """
+    from scistack_gui import registry
+
+    config = getattr(registry, "_config", None)
+    entities = getattr(config, "entities_file", None)
     return str(entities) if entities else None
 
 
@@ -315,6 +331,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         output_types=output_types if output_types else None,
         project_root=project_root,
         entities_script=_entities_script(),
+        entities_file=_entities_file(),
     )
     logger.info(
         "generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd)
@@ -498,6 +515,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         python_executable=sys.executable,
         project_root=project_root,
         entities_script=_entities_script(),
+        entities_file=_entities_file(),
     )
     logger.info(
         "generate_matlab_pipeline_command: pipeline=%s, command_length=%d",

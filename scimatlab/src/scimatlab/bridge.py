@@ -1114,6 +1114,69 @@ def pathinput_project_root() -> str:
     return str(_find_project_root())
 
 
+def load_entities(project_start=None) -> dict:
+    """The project's TOML entities file, flattened for MATLAB marshaling.
+
+    MATLAB has no TOML reader, so ``+scidb/entities.m`` gets the
+    declarations through here and rebuilds them as MATLAB
+    ``scidb.Parameter``/``scidb.PathInput`` objects. Only plain
+    dicts/lists/scalars cross the bridge -- handing MATLAB the constructed
+    Python objects would give it Python proxies, not the MATLAB classes
+    ``scidb.for_each`` expects.
+
+    ``root_folder`` is ``None`` when unset (MATLAB reads that as ``[]``),
+    never ``""``, so "no root" stays distinguishable from "rooted at the
+    empty string".
+
+    Returns ``{path, variables, parameters, path_inputs, errors}``. Errors
+    are pre-rendered strings: MATLAB shows them as warnings, and a rejected
+    entry must be visible there too, not only in the GUI.
+    """
+    from scidb import entities
+    from scidb.log import Log
+
+    result = entities.load_for_project(project_start)
+
+    def _arms(obj):
+        alternatives = getattr(obj, "alternatives", None)
+        return list(alternatives) if alternatives is not None else [obj]
+
+    path_inputs = {}
+    for name, obj in result.path_inputs.items():
+        path_inputs[name] = [
+            {
+                "template": getattr(arm, "path_template", ""),
+                "root_folder": (
+                    str(arm.root_folder)
+                    if getattr(arm, "root_folder", None) is not None
+                    else None
+                ),
+            }
+            for arm in _arms(obj)
+        ]
+
+    payload = {
+        "path": str(result.path),
+        "variables": list(result.variables),
+        "parameters": {
+            name: list(param.values) for name, param in result.parameters.items()
+        },
+        "path_inputs": path_inputs,
+        "errors": [err.describe() for err in result.errors],
+    }
+    Log.info(
+        "[entities] MATLAB load: %d variable(s), %d parameter(s), %d path "
+        "input(s), %d rejected, from %s",
+        len(payload["variables"]),
+        len(payload["parameters"]),
+        len(payload["path_inputs"]),
+        len(payload["errors"]),
+        payload["path"],
+        layer="matlab",
+    )
+    return payload
+
+
 def discover_pathinput_combos(pi, user_metadata=None):
     """Discover filesystem combos for a PathInput and filter by user values.
 

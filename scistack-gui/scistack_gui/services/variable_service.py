@@ -42,7 +42,12 @@ def create_variable(
     if name in BaseVariable._all_subclasses:
         return {"ok": False, "error": f"A variable named '{name}' already exists."}
 
-    # MATLAB variable creation.
+    # MATLAB variable creation. When the project has a TOML entities file,
+    # the declaration goes THERE and the classdef is materialized from it --
+    # one declaration, in the language-neutral file, plus the stub MATLAB
+    # needs to reference the type. Without one (a MATLAB-only project that
+    # never configured an entities file), the classdef is still the
+    # declaration, as before.
     if language == "matlab":
         return _create_matlab_variable(name, docstring)
 
@@ -50,6 +55,8 @@ def create_variable(
     from scistack_gui.services.target_file_service import (
         ensure_scidb_import,
         get_or_create_target_file,
+        is_toml_target,
+        write_variable,
     )
 
     target_file, target_err = get_or_create_target_file()
@@ -63,6 +70,25 @@ def create_variable(
         ):
             return _create_matlab_variable(name, docstring)
         return {"ok": False, "error": target_err}
+
+    if is_toml_target(target_file):
+        if docstring:
+            # A value-less list has nowhere to put one (plan D4). Logged
+            # rather than dropped silently.
+            logger.warning(
+                "[variable_service] Dropping docstring %r for %r: the TOML "
+                "entities file declares variables as bare names; declare the "
+                "class in Python if you need a docstring",
+                docstring,
+                name,
+            )
+        logger.info(
+            "[variable_service] create_variable: name=%r target=%s", name, target_file
+        )
+        err = write_variable(target_file, name)
+        if err:
+            return err
+        return {"ok": True, "name": name}
 
     lines = ["\n"]
     if docstring:
@@ -92,8 +118,20 @@ def create_variable(
 
 
 def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
-    """Create a MATLAB classdef variable file and register the surrogate."""
+    """Create a MATLAB classdef variable file and register the surrogate.
+
+    With a TOML entities file configured, the *declaration* is written there
+    first and the classdef becomes a materialized stub of it -- so the same
+    variable is visible to Python without being declared twice. The classdef
+    is still written here rather than left to the next scan, because the
+    user expects the file to exist the moment they hit create.
+    """
     from scistack_gui import matlab_registry
+    from scistack_gui.services.target_file_service import (
+        get_or_create_target_file,
+        is_toml_target,
+        write_variable,
+    )
 
     if (
         matlab_registry._config is None
@@ -103,6 +141,17 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
             "ok": False,
             "error": "No matlab.variable_dir configured in [tool.scistack.matlab].",
         }
+
+    entities_file, _ = get_or_create_target_file()
+    if is_toml_target(entities_file):
+        err = write_variable(entities_file, name)
+        if err:
+            return err
+        logger.info(
+            "[variable_service] Declared MATLAB variable %r in the entities "
+            "file; materializing its classdef",
+            name,
+        )
 
     target_dir = matlab_registry._config.matlab_variable_dir
     target_dir.mkdir(parents=True, exist_ok=True)
