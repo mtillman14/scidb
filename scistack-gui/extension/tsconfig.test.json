@@ -1,0 +1,15 @@
+// Build only the vscode-free modules and their tests, so `npm test` can run
+// them under node's built-in test runner (node --test).
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist/test",
+    "sourceMap": false,
+    "noEmit": false
+  },
+  "include": [
+    "src/startupDiagnostics.ts",
+    "src/matlabRunTracker.ts",
+    "src/*.test.ts"
+  ]
+}

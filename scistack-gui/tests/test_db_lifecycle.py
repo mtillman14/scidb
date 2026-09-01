@@ -143,11 +143,18 @@ class TestAcquireRaisesDoesNotLeakRefcount:
     ``_db.reopen()``, and the pre-incremented refcount was never rolled
     back.  The next successful acquire then recorded ``refcount=2`` with
     ``reopened=True`` — proof that one ghost holder was stuck at 1.
+
+    A lock conflict now surfaces as :class:`DatabaseLockedError` instead of
+    the raw ``OSError`` DuckDB raises, so the JSON-RPC dispatcher can give
+    it its own error code and an actionable message rather than a generic
+    failure. The refcount contract this class guards is unchanged — that is
+    still what the assertions below are about.
     """
 
     def test_reopen_failure_does_not_increment_refcount(self, db_path):
         import scistack_gui.db as db_mod
         from scistack_gui.db import (
+            DatabaseLockedError,
             acquire_db_connection,
             init_db,
             release_db_connection,
@@ -165,8 +172,10 @@ class TestAcquireRaisesDoesNotLeakRefcount:
         original_reopen = db_mod._db._duck.reopen
         db_mod._db._duck.reopen = _boom
         try:
-            with pytest.raises(OSError):
-                acquire_db_connection()
+            # timeout=0: no point backing off against a lock that, in this
+            # test, never clears.
+            with pytest.raises(DatabaseLockedError):
+                acquire_db_connection(timeout=0)
         finally:
             db_mod._db._duck.reopen = original_reopen
 
@@ -224,3 +233,210 @@ class TestMatlabCommandIncludesCleanup:
         )
         assert cmd.count("scidb.close_database(db)") == 2
         assert "catch scistack_err__" in cmd
+
+
+class TestLockConflictReporting:
+    """A DuckDB file held by another process (in practice: MATLAB) must be
+    reported as a recoverable, named condition — never as a silent failure.
+
+    This is the bug behind todo #13: ``acquire_db_connection`` raising made
+    the JSON-RPC request thread die without emitting a response, so the GUI
+    hung forever with no error anywhere.
+    """
+
+    def test_conflicting_lock_becomes_database_locked_error(self, db_path):
+        import scistack_gui.db as db_mod
+        from scistack_gui.db import DatabaseLockedError, acquire_db_connection, init_db
+
+        init_db(db_path)
+        db_mod._db._duck.close()
+        db_mod._db_open = False
+
+        # A second process holding the file is exactly what DuckDB reports
+        # with this message shape.
+        def _locked_reopen():
+            raise OSError(
+                "IO Error: Could not set lock on file "
+                '"/data/test.duckdb": Conflicting lock is held in '
+                "/usr/local/MATLAB/bin/glnxa64/MATLAB (PID 4242).\n"
+            )
+
+        db_mod._db.reopen = _locked_reopen
+        with pytest.raises(DatabaseLockedError) as excinfo:
+            acquire_db_connection(timeout=0)
+
+        err = excinfo.value
+        assert err.pid == "4242"
+        assert "MATLAB" in (err.holder or "")
+        assert "MATLAB" in str(err)
+        # A failed acquire must NOT bump the refcount, or the lock would be
+        # held permanently after the next successful acquire/release pair.
+        assert db_mod._db_refcount == 0
+        assert db_mod._db_open is False
+
+    def test_unrelated_io_error_is_not_reclassified(self, db_path):
+        """A genuine I/O failure must not be retried or blamed on MATLAB."""
+        import scistack_gui.db as db_mod
+        from scistack_gui.db import DatabaseLockedError, acquire_db_connection, init_db
+
+        init_db(db_path)
+        db_mod._db._duck.close()
+        db_mod._db_open = False
+
+        def _broken_reopen():
+            raise OSError("IO Error: Cannot open file: permission denied")
+
+        db_mod._db.reopen = _broken_reopen
+        with pytest.raises(OSError) as excinfo:
+            acquire_db_connection(timeout=5)
+        assert not isinstance(excinfo.value, DatabaseLockedError)
+        assert db_mod._db_refcount == 0
+
+    def test_retry_succeeds_when_the_lock_clears(self, db_path):
+        """MATLAB grabs the file for one write and lets go; a short backoff
+        should absorb that rather than surfacing an error."""
+        import scistack_gui.db as db_mod
+        from scistack_gui.db import acquire_db_connection, init_db
+
+        init_db(db_path)
+        real_reopen = db_mod._db._duck.reopen
+        db_mod._db._duck.close()
+        db_mod._db_open = False
+
+        attempts = []
+
+        def _reopen_after_two_failures():
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise OSError(
+                    "IO Error: Could not set lock on file: Conflicting lock "
+                    "is held in MATLAB (PID 7).\n"
+                )
+            real_reopen()
+
+        db_mod._db.reopen = _reopen_after_two_failures
+        acquire_db_connection(timeout=5)
+
+        assert len(attempts) == 3
+        assert db_mod._db_open is True
+        assert db_mod._db_refcount == 1
+
+
+class TestRequestAlwaysGetsAResponse:
+    """``_handle_request`` is a thread target: an exception escaping it
+    strands the extension's pending promise forever. Every path must emit
+    exactly one JSON-RPC frame."""
+
+    def _capture_frames(self, monkeypatch):
+        from scistack_gui import server
+
+        frames = []
+        monkeypatch.setattr(server, "_send", lambda obj: frames.append(obj))
+        return frames
+
+    def test_locked_database_yields_a_typed_error_frame(self, monkeypatch):
+        from scistack_gui import db as db_mod
+        from scistack_gui import server
+
+        frames = self._capture_frames(monkeypatch)
+
+        def _locked(timeout=db_mod.ACQUIRE_RETRY_TIMEOUT):
+            raise db_mod.DatabaseLockedError("/db.duckdb", "MATLAB", "99", "raw")
+
+        monkeypatch.setattr(db_mod, "acquire_db_connection", _locked)
+        monkeypatch.setitem(server.METHODS, "get_pipeline", lambda p: {"ok": True})
+
+        server._handle_request({"id": 7, "method": "get_pipeline", "params": {}})
+
+        assert len(frames) == 1
+        assert frames[0]["id"] == 7
+        assert frames[0]["error"]["code"] == server.ERR_DATABASE_LOCKED
+        assert "MATLAB" in frames[0]["error"]["message"]
+
+    def test_acquire_failure_does_not_release(self, monkeypatch):
+        """release_db_connection must not run for an acquire that failed —
+        it would drive the refcount negative and close a live connection."""
+        from scistack_gui import db as db_mod
+        from scistack_gui import server
+
+        self._capture_frames(monkeypatch)
+        released = []
+
+        def _locked(timeout=db_mod.ACQUIRE_RETRY_TIMEOUT):
+            raise db_mod.DatabaseLockedError("/db.duckdb", "MATLAB", "99", "raw")
+
+        monkeypatch.setattr(db_mod, "acquire_db_connection", _locked)
+        monkeypatch.setattr(
+            db_mod, "release_db_connection", lambda: released.append(1)
+        )
+        monkeypatch.setitem(server.METHODS, "get_pipeline", lambda p: {"ok": True})
+
+        server._handle_request({"id": 8, "method": "get_pipeline", "params": {}})
+
+        assert released == []
+
+    def test_handler_exception_yields_an_error_frame(self, monkeypatch):
+        from scistack_gui import db as db_mod
+        from scistack_gui import server
+
+        frames = self._capture_frames(monkeypatch)
+        monkeypatch.setattr(db_mod, "acquire_db_connection", lambda timeout=5.0: None)
+        monkeypatch.setattr(db_mod, "release_db_connection", lambda: None)
+
+        def _boom(params):
+            raise ValueError("handler blew up")
+
+        monkeypatch.setitem(server.METHODS, "get_pipeline", _boom)
+        server._handle_request({"id": 9, "method": "get_pipeline", "params": {}})
+
+        assert len(frames) == 1
+        assert frames[0]["error"]["code"] == -32000
+        assert "handler blew up" in frames[0]["error"]["message"]
+
+    def test_release_failure_does_not_double_respond(self, monkeypatch):
+        """The success frame is already out; a failing release must neither
+        kill the thread nor emit a second frame for the same id."""
+        from scistack_gui import db as db_mod
+        from scistack_gui import server
+
+        frames = self._capture_frames(monkeypatch)
+        monkeypatch.setattr(db_mod, "acquire_db_connection", lambda timeout=5.0: None)
+
+        def _bad_release():
+            raise RuntimeError("release exploded")
+
+        monkeypatch.setattr(db_mod, "release_db_connection", _bad_release)
+        monkeypatch.setitem(server.METHODS, "get_pipeline", lambda p: {"ok": True})
+
+        server._handle_request({"id": 10, "method": "get_pipeline", "params": {}})
+
+        assert len(frames) == 1
+        assert frames[0]["result"] == {"ok": True}
+
+    def test_respond_failure_falls_back_to_an_error_frame(self, monkeypatch):
+        """If the success frame itself can't be serialised, the request must
+        still be answered — otherwise the caller waits forever."""
+        from scistack_gui import db as db_mod
+        from scistack_gui import server
+
+        frames = []
+        calls = []
+
+        def _send(obj):
+            calls.append(obj)
+            # Fail only the first (success) frame, as json.dumps would for a
+            # non-serialisable result.
+            if "result" in obj:
+                raise TypeError("Object of type set is not JSON serializable")
+            frames.append(obj)
+
+        monkeypatch.setattr(server, "_send", _send)
+        monkeypatch.setattr(db_mod, "acquire_db_connection", lambda timeout=5.0: None)
+        monkeypatch.setattr(db_mod, "release_db_connection", lambda: None)
+        monkeypatch.setitem(server.METHODS, "get_pipeline", lambda p: {"bad": {1, 2}})
+
+        server._handle_request({"id": 11, "method": "get_pipeline", "params": {}})
+
+        assert len(frames) == 1
+        assert frames[0]["id"] == 11
+        assert frames[0]["error"]["code"] == -32000

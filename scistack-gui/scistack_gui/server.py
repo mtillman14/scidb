@@ -587,7 +587,11 @@ def _h_get_variables_list(params):
 def _h_start_run(params):
     import uuid
 
-    from scistack_gui.api.run import WhereFilterSpec, _run_in_thread
+    from scistack_gui.api.run import (
+        WhereFilterSpec,
+        _run_in_thread,
+        route_matlab_single_run,
+    )
     from scistack_gui.db import acquire_db_connection, get_db, release_db_connection
 
     logger.info("[server] JSON-RPC start_run handler called")
@@ -616,6 +620,19 @@ def _h_start_run(params):
         run_options,
         len(where_filters) if where_filters else 0,
     )
+
+    # MATLAB functions can't run through _run_in_thread's Python registry at
+    # all. Decide here, from matlab_registry — not from the caller's
+    # `language` hint — and hand host-dispatchable runs back to dagPanel.ts
+    # (which owns the MathWorks-terminal path where breakpoints work). Must
+    # happen BEFORE acquire_db_connection below: MATLAB needs the DuckDB
+    # file lock for its own run, and holding it here for a run this process
+    # will never execute would block the very thing we just dispatched.
+    routed = route_matlab_single_run(
+        function_name, params, run_id, db, host_can_dispatch_matlab=True
+    )
+    if routed is not None:
+        return routed
 
     logger.debug("[server] Acquiring DB connection for run thread")
     acquire_db_connection()
@@ -975,11 +992,36 @@ def _summarize_params(params: dict, max_len: int = 120) -> str:
     return s[:max_len] + "..." if len(s) > max_len else s
 
 
+# JSON-RPC error code for "the DuckDB file is open in another process".
+# Distinct from the catch-all -32000 so the extension can treat it as the
+# transient, self-explanatory condition it is rather than a crash.
+ERR_DATABASE_LOCKED = -32010
+
+
 def _handle_request(req: dict) -> None:
-    """Process a single JSON-RPC request."""
+    """Process a single JSON-RPC request.
+
+    **Every request must produce exactly one response frame.** This function
+    is a per-request thread target (see the dispatch loop in :func:`main`),
+    and the extension's ``pythonProcess.request()`` keeps a promise pending
+    until a frame with the matching id arrives. An exception that escapes
+    this function kills its thread silently and leaves that promise pending
+    forever — the GUI hangs with no error anywhere.
+
+    That is not hypothetical: ``acquire_db_connection()`` used to be called
+    *outside* the try below, and it raises whenever MATLAB holds the DuckDB
+    file lock (which the GUI deliberately allows — see ``db.py``'s
+    connection-lifecycle note). Clicking Run on a MATLAB node with MATLAB
+    attached therefore hung the whole GUI. Hence the acquire inside the try
+    and the outer safety net: a response is emitted no matter what fails.
+    """
     from scidb.log import Log
 
-    from scistack_gui.db import acquire_db_connection, release_db_connection
+    from scistack_gui.db import (
+        DatabaseLockedError,
+        acquire_db_connection,
+        release_db_connection,
+    )
 
     req_id = req.get("id")
     method = req.get("method", "")
@@ -995,21 +1037,76 @@ def _handle_request(req: dict) -> None:
     Log.debug(f"RPC >> {method}({summary})")
     t0 = time.monotonic()
 
-    acquire_db_connection()
+    # Exactly one frame per request: the safety net below must not answer a
+    # request the normal path already answered, or the caller sees a stray
+    # frame for an id it has already settled.
+    responded = False
+
+    def _answer(send) -> None:
+        # `responded` flips only after the frame is actually out. _send
+        # serialises before it writes, so a failed send wrote nothing — the
+        # request is still unanswered and the fallback below must be free to
+        # try again with a simpler payload.
+        nonlocal responded
+        if req_id is None or responded:
+            return
+        send()
+        responded = True
+
     try:
-        result = handler(params)
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        Log.debug(f"RPC << {method} OK ({elapsed_ms:.1f}ms)")
-        if req_id is not None:
-            _respond(req_id, result)
-    except Exception as e:
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        Log.error(f"RPC << {method} FAILED ({elapsed_ms:.1f}ms): {e}")
-        logger.exception("Error handling %s", method)
-        if req_id is not None:
-            _respond_error(req_id, -32000, str(e))
-    finally:
-        release_db_connection()
+        # A failed acquire must not be released — acquire_db_connection only
+        # increments the refcount on success (see its docstring).
+        acquired = False
+        try:
+            acquire_db_connection()
+            acquired = True
+            result = handler(params)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            Log.debug(f"RPC << {method} OK ({elapsed_ms:.1f}ms)")
+            _answer(lambda: _respond(req_id, result))
+        except DatabaseLockedError as locked:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            Log.error(f"RPC << {method} DB LOCKED ({elapsed_ms:.1f}ms): {locked}")
+            logger.warning(
+                "Database locked while handling %s (holder=%s pid=%s)",
+                method,
+                locked.holder,
+                locked.pid,
+            )
+            _answer(
+                lambda: _respond_error(req_id, ERR_DATABASE_LOCKED, str(locked))
+            )
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            Log.error(f"RPC << {method} FAILED ({elapsed_ms:.1f}ms): {e}")
+            logger.exception("Error handling %s", method)
+            _answer(lambda: _respond_error(req_id, -32000, str(e)))
+        finally:
+            if acquired:
+                release_db_connection()
+    except BaseException as e:  # noqa: BLE001 — last line of defence, see docstring
+        # Anything at all that got past the handlers above — a failure
+        # inside _respond itself, or in release_db_connection. Losing the
+        # response is strictly worse than any error we could report, so try
+        # once more on a clean path (and only if nothing was sent yet).
+        logger.exception("Unhandled failure dispatching %s", method)
+        try:
+            Log.error(f"RPC !! {method} NO RESPONSE: {e}")
+        except Exception:
+            pass
+        try:
+            _answer(
+                lambda: _respond_error(
+                    req_id, -32000, f"Internal dispatch failure: {e}"
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Could not send an error response for %s (id=%s) — the "
+                "caller will time out",
+                method,
+                req_id,
+            )
 
 
 def main():

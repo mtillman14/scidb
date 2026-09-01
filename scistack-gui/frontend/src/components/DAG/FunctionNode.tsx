@@ -11,6 +11,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, useReactFlow, useUpdateNodeInternals } from '@xyflow/react'
 import { callBackend, isVSCodeMode } from '../../api'
+import { SourceLocationDialog } from '../SourceLocationDialog'
+import type { SourceLocation } from '../SourceLocationDialog'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useRunLog } from '../../context/RunLogContext'
 import { useScope } from '../../context/ScopeContext'
@@ -75,6 +77,9 @@ export default function FunctionNode({ id, data }: Props) {
   const { currentScope } = useScope()
   const [running, setRunning] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  // Non-null while the "defined at" dialog is open (standalone mode only —
+  // in VS Code the source is revealed in the editor instead).
+  const [sourceLoc, setSourceLoc] = useState<SourceLocation | null>(null)
   const { startRun, appendLine, finishRun, markCancelling, setRunMeta, updateProgress } = useRunLog()
   // Ref (not state) so the WebSocket handler always sees the current value
   // without waiting for a React re-render — critical when the pipeline
@@ -146,22 +151,34 @@ export default function FunctionNode({ id, data }: Props) {
     }
 
     const wf = (data as unknown as Record<string, unknown>).whereFilters as unknown[] | undefined
-    await callBackend('start_run', {
-      function_name: data.label,
-      node_id: id,
-      variants: checkedVariants,
-      run_id: newRunId,
-      schema_filter: data.schemaFilter ?? null,
-      schema_level: data.schemaLevel ?? null,
-      run_options: data.runOptions ?? null,
-      where_filters: (wf && wf.length > 0) ? wf : null,
-      // Forward language so the extension can intercept MATLAB runs
-      // (dagPanel.ts checks params.language === 'matlab').
-      language: data.language,
-      // Output types for MATLAB command generation when no DB variants exist.
-      output_types: data.output_types ?? null,
-    })
-  }, [id, data, getNodes, getEdges, startRun])
+    try {
+      await callBackend('start_run', {
+        function_name: data.label,
+        node_id: id,
+        variants: checkedVariants,
+        run_id: newRunId,
+        schema_filter: data.schemaFilter ?? null,
+        schema_level: data.schemaLevel ?? null,
+        run_options: data.runOptions ?? null,
+        where_filters: (wf && wf.length > 0) ? wf : null,
+        // A hint only. The BACKEND decides whether this is a MATLAB run
+        // (api/run.route_matlab_single_run asks matlab_registry), so a
+        // browser session works the same as the VS Code host.
+        language: data.language,
+        // Output types for MATLAB command generation when no DB variants exist.
+        output_types: data.output_types ?? null,
+      })
+    } catch (err) {
+      // start_run can legitimately fail before any run exists — most often
+      // because MATLAB currently holds the DuckDB file lock. Without this
+      // the rejection escapes into an unhandled promise and the button
+      // stays stuck on "⏳ Running…" with the reason nowhere on screen.
+      const message = err instanceof Error ? err.message : String(err)
+      appendLine(newRunId, `Error: ${message}\n`)
+      finishRun(newRunId, false, 0, false, message)
+      setRunning(false)
+    }
+  }, [id, data, getNodes, getEdges, startRun, appendLine, finishRun])
 
   // Show (endpoint nodes only): draft-run this endpoint + ancestors via
   // the pipeline compiler — zero DB writes; rendered outputs arrive on the
@@ -227,7 +244,9 @@ export default function FunctionNode({ id, data }: Props) {
       if (isVSCodeMode) {
         await callBackend('reveal_in_editor', { file: src.file, line: src.line })
       } else {
-        window.alert(`${data.label} is defined at:\n${src.file}:${src.line}`)
+        // In-app dialog rather than window.alert — alert text can't be
+        // selected or copied, and the path is the whole message.
+        setSourceLoc({ name: data.label, file: src.file ?? '', line: src.line ?? 0 })
       }
     } catch (err) {
       window.alert(`Failed to open source: ${err}`)
@@ -305,6 +324,10 @@ export default function FunctionNode({ id, data }: Props) {
       ...(stateStyle ? { border: `2px solid ${stateStyle.border}`, background: stateStyle.background } : {}),
       ...(data.disconnected ? { borderStyle: 'dashed' } : {}),
     }}>
+      {sourceLoc && (
+        <SourceLocationDialog location={sourceLoc} onClose={() => setSourceLoc(null)} />
+      )}
+
       {leftHandles.length > 0
         ? leftHandles.map((h, i) => (
             <Handle

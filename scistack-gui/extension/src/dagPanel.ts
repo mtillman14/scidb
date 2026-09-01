@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { PythonProcess } from './pythonProcess';
 import { runInMatlabTerminal } from './matlabTerminal';
+import { MatlabRunTracker } from './matlabRunTracker';
 
 const DEBUG_SESSION_NAME = 'Attach to scistack-gui server';
 
@@ -20,6 +21,12 @@ export class DagPanel {
   private disposables: vscode.Disposable[] = [];
   private disposeCallbacks: (() => void)[] = [];
   private debugSession: vscode.DebugSession | undefined;
+  /**
+   * Which MATLAB runs currently own the DuckDB file lock. Shared with
+   * `extension.ts`'s DB file-watcher, which must not refresh the DAG while
+   * MATLAB has the database — see MatlabRunTracker.
+   */
+  readonly matlabRuns = new MatlabRunTracker();
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -71,8 +78,13 @@ export class DagPanel {
           }
           return;
         }
-        // MATLAB function execution: generate command and copy to clipboard
-        // instead of running in Python.
+        // Single-node runs. Whether this is a MATLAB run is decided by
+        // PYTHON (api/run.route_matlab_single_run asks matlab_registry),
+        // not by the webview's `language` field — that field used to be the
+        // only signal, which is why a MATLAB node clicked in a browser (no
+        // extension host to intercept it) fell through to the Python
+        // registry and failed. Same call-then-inspect shape as
+        // start_pipeline_run below.
         if (method === 'start_run') {
           const params = (msg.params ?? {}) as Record<string, unknown>;
           const language = params.language as string | undefined;
@@ -83,12 +95,28 @@ export class DagPanel {
             `language=${language ?? 'python'} ` +
             `variants=${variants ? variants.length : 0}`,
           );
-          if (language === 'matlab') {
-            await this.handleMatlabRun(msg.id as number, params);
-            return;
+          // The debugger has to be attached BEFORE Python spawns the run
+          // thread, so this one decision still uses the webview's hint —
+          // it only costs a pointless attach if the hint is wrong.
+          if (language !== 'matlab') {
+            await this.ensureDebugAttached();
           }
-          // Python function — auto-attach debugger so breakpoints get hit.
-          await this.ensureDebugAttached();
+          try {
+            const result = (await this.pythonProcess.request(
+              method,
+              params,
+            )) as { run_id: string; host_execution_required?: boolean; language?: string };
+            this.panel.webview.postMessage({ id: msg.id, result });
+            if (result.host_execution_required && result.language === 'matlab') {
+              await this.handleMatlabRun(result.run_id, params);
+            }
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) },
+            });
+          }
+          return;
         }
         // Whole-pipeline runs: unlike start_run, the frontend doesn't know
         // up front whether the pipeline scope contains MATLAB steps (it can
@@ -198,7 +226,7 @@ export class DagPanel {
 
     // Belt-and-suspenders: explicitly center the range in case the editor was
     // already open (selection in showTextDocument only applies on first open).
-    editor.revealRange(selection, vscode.TextEditorRevealKind.InCenter);
+    editor.revealRange(selection, vscode.TextEditorRevealType.InCenter);
     return { ok: true };
   }
 
@@ -288,16 +316,28 @@ export class DagPanel {
   /**
    * Handle "Run" for a MATLAB function: generate the command, then run it
    * through the Stage 4 fallback ladder (terminal -> sidecar -> clipboard).
+   *
+   * The JSON-RPC response for `start_run` has already been sent by the
+   * caller (Python answered it with `host_execution_required`), so this
+   * only emits run_output/run_done on `runId` — exactly like
+   * handleMatlabPipelineRun.
    */
   private async handleMatlabRun(
-    msgId: number,
+    runId: string,
     params: Record<string, unknown>,
   ): Promise<void> {
     const functionName = params.function_name as string | undefined;
-    const runId = params.run_id as string | undefined;
     this.outputChannel.appendLine(
       `handleMatlabRun: requesting generate_matlab_command for ${functionName ?? '<?>'}`,
     );
+    const finish = (success: boolean) => {
+      this.matlabRuns.end(runId);
+      this.panel.webview.postMessage({
+        method: 'run_done',
+        params: { run_id: runId, success, duration_ms: 0, cancelled: false },
+      });
+    };
+    this.beginMatlabRun(runId);
     try {
       const result = await this.pythonProcess.request(
         'generate_matlab_command',
@@ -310,44 +350,40 @@ export class DagPanel {
 
       const tier = await this.dispatchMatlabCommand(command, runId, undefined);
 
-      this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
-
       // Terminal/clipboard dispatch aren't tracked by anything else — treat
       // "dispatched" as "done" from the GUI's perspective (the DB file
       // watcher triggers a dag_updated once MATLAB actually writes
       // results). The sidecar tier pushes its own real run_done — see
       // dispatchMatlabCommand's docstring.
-      if (tier !== 'sidecar' && runId) {
-        this.panel.webview.postMessage({
-          method: 'run_done',
-          params: {
-            run_id: runId,
-            success: true,
-            duration_ms: 0,
-            cancelled: false,
-          },
-        });
+      if (tier !== 'sidecar') {
+        finish(true);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`handleMatlabRun: failed: ${msg}`);
       this.panel.webview.postMessage({
-        id: msgId,
-        error: { message: String(err) },
+        method: 'run_output',
+        params: { run_id: runId, text: `Error: ${msg}\n` },
       });
-      // Also reset the running state on error so the button doesn't stay stuck.
-      if (runId) {
-        this.panel.webview.postMessage({
-          method: 'run_done',
-          params: {
-            run_id: runId,
-            success: false,
-            duration_ms: 0,
-            cancelled: false,
-          },
-        });
-      }
+      // Reset the running state on error so the button doesn't stay stuck.
+      finish(false);
     }
+  }
+
+  /**
+   * Note that a MATLAB run owns the database from here until its run_done.
+   *
+   * MATLAB holds the DuckDB file lock for the whole run, and the GUI drops
+   * its own lock between requests specifically so that can happen (see
+   * scistack_gui/db.py). Refreshing the DAG during that window means RPCs
+   * that can only fail, so `extension.ts`'s DB file-watcher consults
+   * `matlabRuns` before broadcasting `dag_updated`.
+   */
+  private beginMatlabRun(runId: string): void {
+    this.matlabRuns.begin(runId);
+    this.outputChannel.appendLine(
+      `MATLAB run ${runId} in flight — DAG refreshes deferred until it finishes`,
+    );
   }
 
   /**
@@ -377,12 +413,14 @@ export class DagPanel {
       });
     };
     const finish = (success: boolean) => {
+      this.matlabRuns.end(runId);
       this.panel.webview.postMessage({
         method: 'run_done',
         params: { run_id: runId, success, duration_ms: 0, cancelled: false },
       });
     };
 
+    this.beginMatlabRun(runId);
     try {
       const result = await this.pythonProcess.request(
         'generate_matlab_pipeline_command',

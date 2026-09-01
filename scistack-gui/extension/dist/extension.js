@@ -41,8 +41,10 @@ var vscode5 = __toESM(require("vscode"));
 var import_child_process = require("child_process");
 var readline = __toESM(require("readline"));
 var vscode = __toESM(require("vscode"));
+var STDERR_TAIL_LINES = 200;
 var PythonProcess = class {
   constructor(pythonPath, dbPath, modulePath, outputChannel2, schemaKeys, projectPath) {
+    this.pythonPath = pythonPath;
     this.outputChannel = outputChannel2;
     this.nextId = 1;
     this.pending = /* @__PURE__ */ new Map();
@@ -51,6 +53,9 @@ var PythonProcess = class {
     this.readyReject = null;
     this.readyTimer = null;
     this.readyTimeoutMs = 0;
+    /** Ring of recent stderr lines, so a failed start can report why. */
+    this.stderrTail = [];
+    this.exitCode = null;
     const args = ["-m", "scistack_gui.server", "--db", dbPath];
     if (projectPath) {
       args.push("--project", projectPath);
@@ -60,6 +65,11 @@ var PythonProcess = class {
     if (schemaKeys && schemaKeys.length > 0) {
       args.push("--schema-keys", schemaKeys.join(","));
     }
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder) {
+      args.push("--project-root", workspaceFolder.uri.fsPath);
+    }
+    this.args = args;
     this.outputChannel.appendLine(`Spawning: ${pythonPath} ${args.join(" ")}`);
     const cfg = vscode.workspace.getConfiguration("scistack");
     const debugEnabled = cfg.get("debug", false);
@@ -76,12 +86,23 @@ var PythonProcess = class {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv
     });
+    this.closed = new Promise((resolve) => {
+      this.proc.on("close", () => resolve());
+    });
     const rl = readline.createInterface({ input: this.proc.stdout });
     rl.on("line", (line) => this.handleLine(line));
     this.proc.stderr?.on("data", (data) => {
-      this.outputChannel.appendLine(data.toString().trimEnd());
+      const text = data.toString().trimEnd();
+      this.outputChannel.appendLine(text);
+      for (const line of text.split("\n")) {
+        this.stderrTail.push(line);
+      }
+      if (this.stderrTail.length > STDERR_TAIL_LINES) {
+        this.stderrTail.splice(0, this.stderrTail.length - STDERR_TAIL_LINES);
+      }
     });
     this.proc.on("exit", (code, signal) => {
+      this.exitCode = code;
       const msg = `Python process exited (code=${code}, signal=${signal})`;
       this.outputChannel.appendLine(msg);
       for (const [, pending] of this.pending) {
@@ -110,6 +131,27 @@ var PythonProcess = class {
         this.readyReject = null;
       }
     });
+  }
+  /**
+   * Wait until the child has closed its stdio, or `timeoutMs` elapses.
+   *
+   * The ready promise can reject (on 'exit', or on the inactivity timer)
+   * while the last stderr chunk is still queued, so a diagnostic report must
+   * wait for 'close' or it can quote an empty traceback.
+   */
+  whenClosed(timeoutMs = 2e3) {
+    return Promise.race([
+      this.closed,
+      new Promise((resolve) => setTimeout(resolve, timeoutMs))
+    ]);
+  }
+  /** Recent stderr from the child process (oldest first). */
+  getStderr() {
+    return this.stderrTail.join("\n");
+  }
+  /** Exit code, or null while the process is still running. */
+  getExitCode() {
+    return this.exitCode;
   }
   /**
    * Wait for the Python server to signal readiness.
@@ -145,16 +187,50 @@ var PythonProcess = class {
   }
   /**
    * Send a JSON-RPC request and return a promise for the result.
+   *
+   * Every request carries a timeout. The server is supposed to answer every
+   * request exactly once — long work is reported asynchronously through
+   * run_output/run_done notifications, not by holding an RPC open — so a
+   * response that never arrives means the server lost the request, and
+   * without a timeout that wedges the caller permanently with no error
+   * anywhere. (That is precisely how a MATLAB-locked database used to hang
+   * the whole GUI; see scistack_gui/server.py::_handle_request.) The
+   * timeout is a backstop, not a work limit: it is deliberately generous
+   * and configurable via `scistack.rpcTimeoutMs`.
    */
   request(method, params) {
     const id = this.nextId++;
+    const timeoutMs = vscode.workspace.getConfiguration("scistack").get("rpcTimeoutMs", 3e5);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const settle = (fn) => {
+        const pending = this.pending.get(id);
+        if (pending?.timer) clearTimeout(pending.timer);
+        this.pending.delete(id);
+        fn();
+      };
+      const timer = timeoutMs > 0 ? setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        const elapsed = Date.now() - pending.startedAt;
+        this.outputChannel.appendLine(
+          `RPC timeout: ${method} (id=${id}) got no response in ${elapsed}ms. The Python server may have dropped the request \u2014 check the stderr above for a traceback.`
+        );
+        settle(() => reject(new Error(
+          `SciStack: no response from the Python server for '${method}' after ${Math.round(elapsed / 1e3)}s.`
+        )));
+      }, timeoutMs) : null;
+      this.pending.set(id, {
+        resolve: (value) => settle(() => resolve(value)),
+        reject: (reason) => settle(() => reject(reason)),
+        method,
+        startedAt: Date.now(),
+        timer
+      });
       const msg = JSON.stringify({ jsonrpc: "2.0", method, params, id });
       this.proc.stdin?.write(msg + "\n", (err) => {
         if (err) {
-          this.pending.delete(id);
-          reject(err);
+          const pending = this.pending.get(id);
+          if (pending) pending.reject(err);
         }
       });
     });
@@ -183,13 +259,19 @@ var PythonProcess = class {
       const id = msg.id;
       const pending = this.pending.get(id);
       if (pending) {
-        this.pending.delete(id);
         if ("error" in msg) {
           const err = msg.error;
+          this.outputChannel.appendLine(
+            `RPC error: ${pending.method} (id=${id}, ${Date.now() - pending.startedAt}ms): ${err.message}`
+          );
           pending.reject(new Error(err.message));
         } else {
           pending.resolve(msg.result);
         }
+      } else {
+        this.outputChannel.appendLine(
+          `[stdout] response for unknown/expired request id=${id} \u2014 ignored`
+        );
       }
       return;
     }
@@ -273,6 +355,61 @@ async function runInMatlabTerminal(command, outputChannel2) {
   }
 }
 
+// src/matlabRunTracker.ts
+var MatlabRunTracker = class {
+  constructor() {
+    this.inFlight = /* @__PURE__ */ new Set();
+    this.refreshPending = false;
+    this.finishedCallbacks = [];
+  }
+  /** Mark a MATLAB run as owning the database from now until its run_done. */
+  begin(runId) {
+    this.inFlight.add(runId);
+  }
+  /**
+   * Clear a run's mark. Safe to call for every run_done — Python runs are
+   * simply absent from the set. Returns whether this was a tracked MATLAB
+   * run, and fires the finished callbacks once the last one clears.
+   */
+  end(runId) {
+    if (!runId) return false;
+    const wasTracked = this.inFlight.delete(runId);
+    if (wasTracked && this.inFlight.size === 0) {
+      this.finishedCallbacks.forEach((cb) => cb());
+    }
+    return wasTracked;
+  }
+  /** Whether any MATLAB run currently holds the database. */
+  get isActive() {
+    return this.inFlight.size > 0;
+  }
+  /**
+   * Called by the DB file-watcher. Returns true when the caller should
+   * refresh the DAG now; false when MATLAB owns the database, in which case
+   * the change is remembered for {@link takeDeferredRefresh}.
+   */
+  noteDbChange() {
+    if (this.isActive) {
+      this.refreshPending = true;
+      return false;
+    }
+    return true;
+  }
+  /**
+   * Consume the deferred refresh, if any. Returns true at most once per
+   * withheld change — a MATLAB run that wrote nothing costs no re-fetch.
+   */
+  takeDeferredRefresh() {
+    if (!this.refreshPending) return false;
+    this.refreshPending = false;
+    return true;
+  }
+  /** Register a callback fired when the LAST in-flight MATLAB run ends. */
+  onAllFinished(callback) {
+    this.finishedCallbacks.push(callback);
+  }
+};
+
 // src/dagPanel.ts
 var DEBUG_SESSION_NAME = "Attach to scistack-gui server";
 var DagPanel = class {
@@ -282,6 +419,12 @@ var DagPanel = class {
     this.outputChannel = outputChannel2;
     this.disposables = [];
     this.disposeCallbacks = [];
+    /**
+     * Which MATLAB runs currently own the DuckDB file lock. Shared with
+     * `extension.ts`'s DB file-watcher, which must not refresh the DAG while
+     * MATLAB has the database — see MatlabRunTracker.
+     */
+    this.matlabRuns = new MatlabRunTracker();
     this.panel = vscode3.window.createWebviewPanel(
       "scistack.dag",
       "SciStack Pipeline",
@@ -331,11 +474,46 @@ var DagPanel = class {
           this.outputChannel.appendLine(
             `start_run: function=${functionName ?? "<?>"} language=${language ?? "python"} variants=${variants ? variants.length : 0}`
           );
-          if (language === "matlab") {
-            await this.handleMatlabRun(msg.id, params);
-            return;
+          if (language !== "matlab") {
+            await this.ensureDebugAttached();
           }
-          await this.ensureDebugAttached();
+          try {
+            const result = await this.pythonProcess.request(
+              method,
+              params
+            );
+            this.panel.webview.postMessage({ id: msg.id, result });
+            if (result.host_execution_required && result.language === "matlab") {
+              await this.handleMatlabRun(result.run_id, params);
+            }
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) }
+            });
+          }
+          return;
+        }
+        if (method === "start_pipeline_run") {
+          try {
+            const result = await this.pythonProcess.request(
+              method,
+              msg.params ?? {}
+            );
+            this.panel.webview.postMessage({ id: msg.id, result });
+            if (result.host_execution_required && result.language === "matlab") {
+              await this.handleMatlabPipelineRun(
+                result.run_id,
+                msg.params ?? {}
+              );
+            }
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) }
+            });
+          }
+          return;
         }
         try {
           const result = await this.pythonProcess.request(
@@ -358,8 +536,7 @@ var DagPanel = class {
     );
     this.panel.onDidDispose(() => {
       this.disposables.forEach((d) => d.dispose());
-      for (const cb of this.disposeCallbacks)
-        cb();
+      for (const cb of this.disposeCallbacks) cb();
     }, null, this.disposables);
   }
   /**
@@ -376,8 +553,7 @@ var DagPanel = class {
   async revealInEditor(params) {
     const { file, line } = params;
     this.outputChannel.appendLine(`reveal_in_editor: file=${file} line=${line}`);
-    if (!file)
-      return { ok: false, error: "No file path provided." };
+    if (!file) return { ok: false, error: "No file path provided." };
     const uri = this.buildFileUri(file);
     this.outputChannel.appendLine(`reveal_in_editor: resolved uri=${uri.toString()}`);
     let doc;
@@ -406,7 +582,7 @@ var DagPanel = class {
       );
       return { ok: false, error: `showTextDocument failed: ${msg}` };
     }
-    editor.revealRange(selection, vscode3.TextEditorRevealKind.InCenter);
+    editor.revealRange(selection, vscode3.TextEditorRevealType.InCenter);
     return { ok: true };
   }
   /**
@@ -428,14 +604,81 @@ var DagPanel = class {
     return vscode3.Uri.file(file);
   }
   /**
-   * Handle "Run" for a MATLAB function: generate command, then either send
-   * to the MathWorks MATLAB terminal or copy to clipboard.
+   * Stage 4 fallback ladder for an already-generated MATLAB command:
+   * MathWorks terminal (Tier 2 — real breakpoint debugging) -> standalone
+   * sidecar (Tier 3 — Python-driven, real run_output/run_done via the
+   * notify channel; requires a run_id) -> clipboard (last resort).
+   *
+   * Returns which tier actually served the command. Callers need this:
+   * the terminal and clipboard tiers aren't tracked by anything else, so
+   * the caller must synthesize its own run_done; the sidecar tier is
+   * driven by Python's start_matlab_sidecar_run
+   * (_run_matlab_command_in_thread), which pushes a REAL run_done once
+   * MATLAB actually finishes — synthesizing one here would show "done"
+   * before it's actually done.
    */
-  async handleMatlabRun(msgId, params) {
+  async dispatchMatlabCommand(command, runId, warnings) {
+    const sent = await runInMatlabTerminal(command, this.outputChannel);
+    if (sent) {
+      this.outputChannel.appendLine("dispatchMatlabCommand: sent to MATLAB terminal");
+      vscode3.window.showInformationMessage("Running in MATLAB terminal...");
+      return "terminal";
+    }
+    if (runId) {
+      try {
+        const sidecarResult = await this.pythonProcess.request(
+          "start_matlab_sidecar_run",
+          { command, run_id: runId, warnings: warnings ?? [] }
+        );
+        if (sidecarResult.sidecar_available) {
+          this.outputChannel.appendLine(
+            "dispatchMatlabCommand: dispatched via standalone MATLAB sidecar"
+          );
+          vscode3.window.showInformationMessage(
+            "Running via standalone MATLAB sidecar..."
+          );
+          return "sidecar";
+        }
+        this.outputChannel.appendLine(
+          "dispatchMatlabCommand: sidecar unavailable (matlab not on PATH)"
+        );
+      } catch (err) {
+        this.outputChannel.appendLine(
+          `dispatchMatlabCommand: sidecar dispatch failed: ${err}`
+        );
+      }
+    }
+    await vscode3.env.clipboard.writeText(command);
+    this.outputChannel.appendLine(
+      "dispatchMatlabCommand: no MATLAB terminal or sidecar available, copied to clipboard"
+    );
+    vscode3.window.showInformationMessage(
+      "MATLAB command copied to clipboard. Paste into MATLAB to run."
+    );
+    return "clipboard";
+  }
+  /**
+   * Handle "Run" for a MATLAB function: generate the command, then run it
+   * through the Stage 4 fallback ladder (terminal -> sidecar -> clipboard).
+   *
+   * The JSON-RPC response for `start_run` has already been sent by the
+   * caller (Python answered it with `host_execution_required`), so this
+   * only emits run_output/run_done on `runId` — exactly like
+   * handleMatlabPipelineRun.
+   */
+  async handleMatlabRun(runId, params) {
     const functionName = params.function_name;
     this.outputChannel.appendLine(
       `handleMatlabRun: requesting generate_matlab_command for ${functionName ?? "<?>"}`
     );
+    const finish = (success) => {
+      this.matlabRuns.end(runId);
+      this.panel.webview.postMessage({
+        method: "run_done",
+        params: { run_id: runId, success, duration_ms: 0, cancelled: false }
+      });
+    };
+    this.beginMatlabRun(runId);
     try {
       const result = await this.pythonProcess.request(
         "generate_matlab_command",
@@ -445,53 +688,93 @@ var DagPanel = class {
       this.outputChannel.appendLine(
         `handleMatlabRun: got command (${command.length} chars)`
       );
-      const sent = await runInMatlabTerminal(command, this.outputChannel);
-      if (sent) {
-        this.outputChannel.appendLine(
-          "handleMatlabRun: sent to MATLAB terminal"
-        );
-        vscode3.window.showInformationMessage("Running in MATLAB terminal...");
-      } else {
-        await vscode3.env.clipboard.writeText(command);
-        this.outputChannel.appendLine(
-          "handleMatlabRun: no MATLAB terminal found, copied to clipboard"
-        );
-        vscode3.window.showInformationMessage(
-          "MATLAB command copied to clipboard. Paste into MATLAB to run."
-        );
-      }
-      this.panel.webview.postMessage({ id: msgId, result: { ok: true } });
-      const runId = params.run_id;
-      if (runId) {
-        this.panel.webview.postMessage({
-          method: "run_done",
-          params: {
-            run_id: runId,
-            success: true,
-            duration_ms: 0,
-            cancelled: false
-          }
-        });
+      const tier = await this.dispatchMatlabCommand(command, runId, void 0);
+      if (tier !== "sidecar") {
+        finish(true);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`handleMatlabRun: failed: ${msg}`);
       this.panel.webview.postMessage({
-        id: msgId,
-        error: { message: String(err) }
+        method: "run_output",
+        params: { run_id: runId, text: `Error: ${msg}
+` }
       });
-      const runId = params.run_id;
-      if (runId) {
-        this.panel.webview.postMessage({
-          method: "run_done",
-          params: {
-            run_id: runId,
-            success: false,
-            duration_ms: 0,
-            cancelled: false
-          }
-        });
+      finish(false);
+    }
+  }
+  /**
+   * Note that a MATLAB run owns the database from here until its run_done.
+   *
+   * MATLAB holds the DuckDB file lock for the whole run, and the GUI drops
+   * its own lock between requests specifically so that can happen (see
+   * scistack_gui/db.py). Refreshing the DAG during that window means RPCs
+   * that can only fail, so `extension.ts`'s DB file-watcher consults
+   * `matlabRuns` before broadcasting `dag_updated`.
+   */
+  beginMatlabRun(runId) {
+    this.matlabRuns.begin(runId);
+    this.outputChannel.appendLine(
+      `MATLAB run ${runId} in flight \u2014 DAG refreshes deferred until it finishes`
+    );
+  }
+  /**
+   * Handle host-side execution for a whole MATLAB-containing pipeline run.
+   * Python's start_pipeline_run already detected the MATLAB step(s)
+   * (execution_service.pipeline_has_matlab_steps) and, instead of spawning
+   * its own background thread, returned host_execution_required=true —
+   * this generates the whole-pipeline script and dispatches it exactly the
+   * way handleMatlabRun does for a single node, tagging run_output/run_done
+   * with the SAME run_id the frontend's PipelineRunController is already
+   * listening on (so the existing run console just works).
+   */
+  async handleMatlabPipelineRun(runId, params) {
+    const pipelineId = params.pipeline_id;
+    this.outputChannel.appendLine(
+      `handleMatlabPipelineRun: requesting generate_matlab_pipeline_command for ${pipelineId ?? "<?>"} (run_id=${runId})`
+    );
+    const emit = (text) => {
+      this.panel.webview.postMessage({
+        method: "run_output",
+        params: { run_id: runId, text }
+      });
+    };
+    const finish = (success) => {
+      this.matlabRuns.end(runId);
+      this.panel.webview.postMessage({
+        method: "run_done",
+        params: { run_id: runId, success, duration_ms: 0, cancelled: false }
+      });
+    };
+    this.beginMatlabRun(runId);
+    try {
+      const result = await this.pythonProcess.request(
+        "generate_matlab_pipeline_command",
+        params
+      );
+      const command = result.command;
+      this.outputChannel.appendLine(
+        `handleMatlabPipelineRun: got command (${command.length} chars)`
+      );
+      for (const w of result.warnings ?? []) {
+        emit(`\u26A0 ${w}
+`);
       }
+      const tier = await this.dispatchMatlabCommand(command, runId, result.warnings);
+      if (tier !== "sidecar") {
+        if (tier === "terminal") {
+          emit("\u25B6 Sent whole-pipeline script to MATLAB terminal...\n");
+        } else {
+          emit("MATLAB pipeline script copied to clipboard. Paste into MATLAB to run.\n");
+        }
+        finish(true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.outputChannel.appendLine(`handleMatlabPipelineRun: failed: ${msg}`);
+      emit(`Error: ${msg}
+`);
+      finish(false);
     }
   }
   /**
@@ -514,10 +797,8 @@ var DagPanel = class {
    */
   async ensureDebugAttached() {
     const cfg = vscode3.workspace.getConfiguration("scistack");
-    if (!cfg.get("debug", false))
-      return;
-    if (this.debugSession)
-      return;
+    if (!cfg.get("debug", false)) return;
+    if (this.debugSession) return;
     const existing = this.findExistingDebugSession();
     if (existing) {
       this.debugSession = existing;
@@ -552,8 +833,7 @@ var DagPanel = class {
   }
   findExistingDebugSession() {
     const active = vscode3.debug.activeDebugSession;
-    if (active && active.name === DEBUG_SESSION_NAME)
-      return active;
+    if (active && active.name === DEBUG_SESSION_NAME) return active;
     return void 0;
   }
   /**
@@ -646,8 +926,8 @@ function createScistackToml(dirPath) {
 # Auto-discover scistack.plugins entry points (default: true)
 # auto_discover = true
 
-# File where 'create_variable' writes new variable classes
-# variable_file = "src/vars.py"
+# TOML file the GUI writes new Variable/Parameter/PathInput declarations to
+# entities_file = "src/scistack_entities.toml"
 
 # [matlab]
 # functions = ["src/"]
@@ -684,6 +964,184 @@ async function promptForMissingConfig(dirPath, outputChannel2) {
   return void 0;
 }
 
+// src/startupDiagnostics.ts
+var import_child_process2 = require("child_process");
+var REQUIRED_MODULES = ["scistack_gui", "scidb", "scifor", "duckdb"];
+var PROBE_SCRIPT = [
+  "import json, sys",
+  'info = {"executable": sys.executable, "version": sys.version.split()[0], "prefix": sys.prefix, "modules": {}}',
+  "try:",
+  "    import importlib.util as u",
+  "except Exception:",
+  "    u = None",
+  `for name in (${REQUIRED_MODULES.map((m) => `"${m}"`).join(", ")}):`,
+  "    entry = {}",
+  "    try:",
+  "        spec = u.find_spec(name) if u else None",
+  "        if spec is None:",
+  '            entry["found"] = False',
+  "        else:",
+  '            entry["found"] = True',
+  '            entry["location"] = getattr(spec, "origin", None)',
+  "    except Exception as e:",
+  '        entry["found"] = False',
+  '        entry["error"] = "%s: %s" % (type(e).__name__, e)',
+  '    info["modules"][name] = entry',
+  "print(json.dumps(info))"
+].join("\n");
+function probeInterpreter(pythonPath, timeoutMs = 1e4) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (probe) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(probe);
+    };
+    let proc;
+    try {
+      proc = (0, import_child_process2.spawn)(pythonPath, ["-c", PROBE_SCRIPT], {
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+    } catch (err) {
+      resolve({ ok: false, spawnError: String(err) });
+      return;
+    }
+    const timer = setTimeout(() => {
+      proc.kill();
+      done({ ok: false, spawnError: `probe timed out after ${timeoutMs}ms` });
+    }, timeoutMs);
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (d) => stdout += d.toString());
+    proc.stderr?.on("data", (d) => stderr += d.toString());
+    proc.on("error", (err) => done({ ok: false, spawnError: err.message }));
+    proc.on("close", () => {
+      const parsed = parseProbeOutput(stdout);
+      if (parsed) {
+        done(parsed);
+      } else {
+        done({ ok: false, spawnError: "probe produced no JSON", raw: (stdout + stderr).trim() });
+      }
+    });
+  });
+}
+function parseProbeOutput(stdout) {
+  const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].startsWith("{")) continue;
+    try {
+      const info = JSON.parse(lines[i]);
+      if (info.modules) return { ok: true, ...info };
+    } catch {
+    }
+  }
+  return null;
+}
+function missingModuleFromStderr(stderr) {
+  const m = /No module named ['"]?([\w.]+)['"]?/.exec(stderr);
+  return m ? m[1] : void 0;
+}
+function isUnrunnable(text) {
+  return /ENOENT|not found|cannot find the (file|path) specified|No such file or directory|Microsoft Store/i.test(
+    text
+  );
+}
+function pipInstallCommand(pythonPath) {
+  const quoted = /\s/.test(pythonPath) ? `"${pythonPath}"` : pythonPath;
+  return `${quoted} -m pip install scistack-gui`;
+}
+function stderrTail(stderr, maxLines) {
+  const lines = stderr.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim());
+  return lines.slice(-maxLines).join("\n");
+}
+function diagnoseStartupFailure(ctx) {
+  const stderr = ctx.stderr ?? "";
+  const probe = ctx.probe;
+  const python = ctx.pythonPath;
+  const runtimePath = probe?.executable && probe.executable !== python ? `${python} (resolved to ${probe.executable})` : python;
+  const detailLines = [
+    `Interpreter (configured): ${python}`
+  ];
+  if (ctx.interpreterSource) detailLines.push(`Interpreter source: ${ctx.interpreterSource}`);
+  if (probe?.executable) detailLines.push(`Interpreter (sys.executable): ${probe.executable}`);
+  if (probe?.prefix) detailLines.push(`Environment (sys.prefix): ${probe.prefix}`);
+  if (probe?.version) detailLines.push(`Python version: ${probe.version}`);
+  if (ctx.args) detailLines.push(`Command: ${python} ${ctx.args.join(" ")}`);
+  if (ctx.exitCode !== void 0 && ctx.exitCode !== null) {
+    detailLines.push(`Exit code: ${ctx.exitCode}`);
+  }
+  if (probe?.modules) {
+    detailLines.push("Packages:");
+    for (const name of REQUIRED_MODULES) {
+      const mod = probe.modules[name];
+      if (!mod) continue;
+      const status = mod.found ? `found${mod.location ? ` at ${mod.location}` : ""}` : `NOT FOUND${mod.error ? ` (${mod.error})` : ""}`;
+      detailLines.push(`  - ${name}: ${status}`);
+    }
+  }
+  if (probe && !probe.ok && probe.spawnError) {
+    detailLines.push(`Interpreter probe failed: ${probe.spawnError}`);
+  }
+  if (probe?.raw) detailLines.push(`Probe output: ${probe.raw}`);
+  detailLines.push(`Failure: ${ctx.errorMessage}`);
+  const tail = stderrTail(stderr, 20);
+  if (tail) detailLines.push("Server stderr (tail):", tail);
+  const detail = detailLines.join("\n");
+  const finish = (kind, message, actions, installCommand) => ({ kind, message, detail, actions, installCommand });
+  const unrunnable = isUnrunnable(ctx.errorMessage) || probe !== void 0 && !probe.ok && isUnrunnable(`${probe.spawnError ?? ""}
+${probe.raw ?? ""}`);
+  if (unrunnable) {
+    return finish(
+      "interpreter_missing",
+      `SciStack: cannot run the Python interpreter "${python}". Set scistack.pythonPath, or pick an interpreter with the Python extension.`,
+      ["selectInterpreter", "openSettings", "showOutput"]
+    );
+  }
+  const stderrMissing = missingModuleFromStderr(stderr);
+  const guiProbeMissing = probe?.modules?.scistack_gui?.found === false;
+  if (guiProbeMissing || stderrMissing === "scistack_gui") {
+    return finish(
+      "package_missing",
+      `SciStack: the Python environment "${runtimePath}" does not have scistack_gui installed. Install it there, or switch to the environment that has it.`,
+      ["copyInstallCommand", "selectInterpreter", "showOutput"],
+      pipInstallCommand(python)
+    );
+  }
+  const depProbeMissing = REQUIRED_MODULES.filter(
+    (m) => m !== "scistack_gui" && probe?.modules?.[m]?.found === false
+  );
+  const missingDep = depProbeMissing[0] ?? (stderrMissing && stderrMissing !== "scistack_gui" ? stderrMissing : void 0);
+  if (missingDep) {
+    return finish(
+      "dependency_missing",
+      `SciStack: the Python environment "${runtimePath}" has scistack_gui but is missing "${missingDep}", which the server imports at startup.`,
+      ["copyInstallCommand", "selectInterpreter", "showOutput"],
+      pipInstallCommand(python)
+    );
+  }
+  if (/did not become ready/.test(ctx.errorMessage)) {
+    return finish(
+      "startup_timeout",
+      `SciStack: the server on "${runtimePath}" started but never became ready. See the SciStack output for what it was doing.`,
+      ["showOutput"]
+    );
+  }
+  const excLine = /^\s*([\w.]*(?:Error|Exception|Exit|Interrupt)\b.*)$/m.exec(tail);
+  if (excLine) {
+    return finish(
+      "server_error",
+      `SciStack: the server on "${runtimePath}" crashed during startup \u2014 ${excLine[1].trim()}`,
+      ["showOutput"]
+    );
+  }
+  return finish(
+    "unknown",
+    `SciStack: the server on "${runtimePath}" failed to start \u2014 ${ctx.errorMessage}`,
+    ["showOutput"]
+  );
+}
+
 // src/extension.ts
 var pythonProcess = null;
 var dagPanel = null;
@@ -700,8 +1158,7 @@ function activate(context) {
         ["Open existing database", "Create new database"],
         { placeHolder: "SciStack: Open or create a .duckdb file?" }
       );
-      if (!dbChoice)
-        return;
+      if (!dbChoice) return;
       let dbPath;
       let schemaKeys;
       if (dbChoice === "Open existing database") {
@@ -712,8 +1169,7 @@ function activate(context) {
           filters: { "DuckDB Database": ["duckdb"] },
           title: "Select SciStack Database"
         });
-        if (!dbUris || dbUris.length === 0)
-          return;
+        if (!dbUris || dbUris.length === 0) return;
         dbPath = dbUris[0].fsPath;
       } else {
         const folderUris = await vscode5.window.showOpenDialog({
@@ -723,24 +1179,21 @@ function activate(context) {
           title: "Select folder for new SciStack database",
           openLabel: "Select Folder"
         });
-        if (!folderUris || folderUris.length === 0)
-          return;
+        if (!folderUris || folderUris.length === 0) return;
         const folderPath = folderUris[0].fsPath;
         const nameInput = await vscode5.window.showInputBox({
           prompt: "Database filename",
           placeHolder: "e.g. my_pipeline.duckdb",
           validateInput: (v) => {
             const trimmed = v.trim();
-            if (!trimmed)
-              return "Provide a filename";
+            if (!trimmed) return "Provide a filename";
             if (trimmed.includes("/") || trimmed.includes("\\")) {
               return "Filename must not contain path separators";
             }
             return null;
           }
         });
-        if (!nameInput)
-          return;
+        if (!nameInput) return;
         const fileName = nameInput.trim().endsWith(".duckdb") ? nameInput.trim() : `${nameInput.trim()}.duckdb`;
         dbPath = path4.join(folderPath, fileName);
         const keysInput = await vscode5.window.showInputBox({
@@ -751,8 +1204,7 @@ function activate(context) {
             return parts.length === 0 ? "Provide at least one schema key" : null;
           }
         });
-        if (!keysInput)
-          return;
+        if (!keysInput) return;
         schemaKeys = keysInput.split(",").map((s) => s.trim()).filter(Boolean);
       }
       const sourceChoice = await vscode5.window.showQuickPick(
@@ -763,8 +1215,7 @@ function activate(context) {
         ],
         { placeHolder: "How should SciStack discover your pipeline code?" }
       );
-      if (!sourceChoice)
-        return;
+      if (!sourceChoice) return;
       let modulePath;
       let projectPath;
       if (sourceChoice === "Select a project (pyproject.toml)") {
@@ -780,8 +1231,7 @@ function activate(context) {
           const configStatus = checkProjectConfig(selectedPath);
           if (configStatus === "no_config_file") {
             const result = await promptForMissingConfig(selectedPath, outputChannel);
-            if (result === void 0)
-              return;
+            if (result === void 0) return;
             projectPath = result;
           } else {
             projectPath = selectedPath;
@@ -840,22 +1290,20 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
     pythonProcess.kill();
     pythonProcess = null;
   }
-  const pythonPath = await resolvePythonPath();
-  if (!pythonPath) {
+  const interpreter = await resolvePythonPath();
+  if (!interpreter) {
     vscode5.window.showErrorMessage(
       "SciStack: Could not find a Python interpreter. Install the Python extension or set scistack.pythonPath in settings."
     );
     return;
   }
+  const { path: pythonPath, source: interpreterSource } = interpreter;
   outputChannel.appendLine(`Starting SciStack server...`);
-  outputChannel.appendLine(`  Python: ${pythonPath}`);
+  outputChannel.appendLine(`  Python: ${pythonPath} (from ${interpreterSource})`);
   outputChannel.appendLine(`  DB: ${dbPath}`);
-  if (projectPath)
-    outputChannel.appendLine(`  Project: ${projectPath}`);
-  if (modulePath)
-    outputChannel.appendLine(`  Module: ${modulePath}`);
-  if (schemaKeys)
-    outputChannel.appendLine(`  Schema keys: [${schemaKeys.join(", ")}] (new DB)`);
+  if (projectPath) outputChannel.appendLine(`  Project: ${projectPath}`);
+  if (modulePath) outputChannel.appendLine(`  Module: ${modulePath}`);
+  if (schemaKeys) outputChannel.appendLine(`  Schema keys: [${schemaKeys.join(", ")}] (new DB)`);
   pythonProcess = new PythonProcess(pythonPath, dbPath, modulePath, outputChannel, schemaKeys, projectPath);
   try {
     const cfg = vscode5.workspace.getConfiguration("scistack");
@@ -865,9 +1313,10 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
       `Server ready \u2014 DB: ${readyParams.db_name}, schema: [${readyParams.schema_keys.join(", ")}]`
     );
   } catch (err) {
-    vscode5.window.showErrorMessage(`SciStack: Server failed to start \u2014 ${err}`);
-    pythonProcess.kill();
+    const failed = pythonProcess;
     pythonProcess = null;
+    failed.kill();
+    await reportStartupFailure(failed, interpreterSource, err);
     return;
   }
   if (dagPanel) {
@@ -883,12 +1332,14 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
         pythonProcess = null;
       }
     });
+    dagPanel.matlabRuns.onAllFinished(flushDeferredDagRefresh);
   }
   pythonProcess.onNotification((method, params) => {
     if (dagPanel) {
       dagPanel.postMessage({ method, params });
       if (method === "run_done") {
         dagPanel.stopDebugSession();
+        dagPanel.matlabRuns.end(params.run_id);
       }
     }
   });
@@ -901,23 +1352,88 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
   statusItem.tooltip = dbPath;
   statusItem.show();
 }
+async function reportStartupFailure(failed, interpreterSource, err) {
+  const errorMessage = err instanceof Error ? err.message : String(err);
+  outputChannel.appendLine(`Server failed to start: ${errorMessage}`);
+  outputChannel.appendLine(`Probing interpreter ${failed.pythonPath}...`);
+  await failed.whenClosed();
+  const probe = await probeInterpreter(failed.pythonPath);
+  const diagnosis = diagnoseStartupFailure({
+    pythonPath: failed.pythonPath,
+    interpreterSource,
+    args: failed.args,
+    errorMessage,
+    stderr: failed.getStderr(),
+    exitCode: failed.getExitCode(),
+    probe
+  });
+  outputChannel.appendLine("");
+  outputChannel.appendLine(`=== SciStack startup failure (${diagnosis.kind}) ===`);
+  outputChannel.appendLine(diagnosis.detail);
+  if (diagnosis.installCommand) {
+    outputChannel.appendLine(`Install with: ${diagnosis.installCommand}`);
+  }
+  outputChannel.appendLine("=== end of startup failure report ===");
+  await showDiagnosisMessage(diagnosis);
+}
+var ACTION_LABELS = {
+  showOutput: "Show Details",
+  selectInterpreter: "Select Interpreter",
+  openSettings: "Open Settings",
+  copyInstallCommand: "Copy Install Command"
+};
+async function showDiagnosisMessage(diagnosis) {
+  const labels = diagnosis.actions.map((a) => ACTION_LABELS[a]);
+  const picked = await vscode5.window.showErrorMessage(diagnosis.message, ...labels);
+  if (!picked) return;
+  const action = diagnosis.actions.find((a) => ACTION_LABELS[a] === picked);
+  switch (action) {
+    case "showOutput":
+      outputChannel.show(true);
+      break;
+    case "selectInterpreter":
+      await vscode5.commands.executeCommand("python.setInterpreter");
+      break;
+    case "openSettings":
+      await vscode5.commands.executeCommand(
+        "workbench.action.openSettings",
+        "scistack.pythonPath"
+      );
+      break;
+    case "copyInstallCommand":
+      if (diagnosis.installCommand) {
+        await vscode5.env.clipboard.writeText(diagnosis.installCommand);
+        vscode5.window.showInformationMessage(
+          `SciStack: copied to clipboard \u2014 ${diagnosis.installCommand}`
+        );
+      }
+      break;
+  }
+}
 async function resolvePythonPath() {
   const config = vscode5.workspace.getConfiguration("scistack");
   const configured = config.get("pythonPath");
-  if (configured)
-    return configured;
+  if (configured) return { path: configured, source: "scistack.pythonPath setting" };
   const pythonExt = vscode5.extensions.getExtension("ms-python.python");
   if (pythonExt) {
-    if (!pythonExt.isActive)
-      await pythonExt.activate();
+    if (!pythonExt.isActive) await pythonExt.activate();
     const api = pythonExt.exports;
     if (api?.environments?.getActiveEnvironmentPath) {
       const envPath = api.environments.getActiveEnvironmentPath();
-      if (envPath?.path)
-        return envPath.path;
+      if (envPath?.path) {
+        return { path: envPath.path, source: "active interpreter from the Python extension" };
+      }
     }
   }
-  return "python3";
+  return { path: "python3", source: "PATH fallback (no Python extension interpreter)" };
+}
+function flushDeferredDagRefresh() {
+  if (!dagPanel) return;
+  if (!dagPanel.matlabRuns.takeDeferredRefresh()) return;
+  outputChannel.appendLine(
+    "MATLAB run finished \u2014 applying the deferred DAG refresh"
+  );
+  dagPanel.postMessage({ method: "dag_updated", params: {} });
 }
 function setupDbWatcher(dbPath) {
   if (dbWatcher) {
@@ -938,10 +1454,15 @@ function setupDbWatcher(dbPath) {
     }
     dbWatcherDebounce = setTimeout(() => {
       dbWatcherDebounce = null;
-      if (dagPanel) {
-        outputChannel.appendLine("DuckDB file changed externally \u2014 refreshing DAG");
-        dagPanel.postMessage({ method: "dag_updated", params: {} });
+      if (!dagPanel) return;
+      if (!dagPanel.matlabRuns.noteDbChange()) {
+        outputChannel.appendLine(
+          "DuckDB file changed while MATLAB owns the database \u2014 deferring DAG refresh until the run finishes"
+        );
+        return;
       }
+      outputChannel.appendLine("DuckDB file changed externally \u2014 refreshing DAG");
+      dagPanel.postMessage({ method: "dag_updated", params: {} });
     }, 2e3);
   };
   dbWatcher.onDidChange(onDbChange);

@@ -442,3 +442,92 @@ class TestStartMatlabSidecarRun:
 
         # The run is abandoned before MATLAB is asked to do any work.
         assert fake.commands == []
+
+
+class TestDatabaseHandoffToMatlab:
+    """MATLAB opens the same .duckdb file the GUI does.
+
+    The JSON-RPC server drops its lock between requests, but nothing else
+    does — in browser/standalone mode (FastAPI) the connection stays open
+    for the life of the process, so a sidecar run started from there would
+    find the database locked by *us* and die on its first
+    ``scihist.configure_database`` call. ``external_db_access`` hands it
+    over for the duration.
+    """
+
+    def test_lock_is_released_while_matlab_runs(self, monkeypatch, tmp_path):
+        import duckdb
+        from scistack_gui import db as db_mod
+        from scistack_gui import matlab_sidecar
+        from scistack_gui.api.run import start_matlab_sidecar_run
+
+        p = tmp_path / "handoff.duckdb"
+        con = duckdb.connect(str(p))
+        con.execute("CREATE TABLE _schema (schema_id INTEGER, subject INTEGER)")
+        con.close()
+
+        db_mod.init_db(p)
+        assert db_mod._db_open is True
+
+        monkeypatch.setattr(matlab_sidecar, "sidecar_capable", lambda: True)
+        observed: dict = {}
+
+        class FakeSidecar:
+            def start(self):
+                return True
+
+            def check_health(self, timeout=None):
+                return None
+
+            def run_command(self, command, on_line, timeout=None):
+                # This is what MATLAB does first. It must succeed.
+                observed["db_open_during_run"] = db_mod._db_open
+                try:
+                    other = duckdb.connect(str(p))
+                    other.close()
+                    observed["matlab_could_open"] = True
+                except Exception as exc:  # pragma: no cover - failure detail
+                    observed["matlab_could_open"] = False
+                    observed["error"] = str(exc)
+                return True
+
+        monkeypatch.setattr(matlab_sidecar, "get_sidecar", lambda: FakeSidecar())
+
+        try:
+            start_matlab_sidecar_run("disp('hi')", "rid_handoff")
+            _wait_for_threads("Thread-")
+
+            assert observed["db_open_during_run"] is False
+            assert observed["matlab_could_open"] is True, observed.get("error")
+            # …and we take it back afterwards.
+            assert db_mod._db_open is True
+        finally:
+            if db_mod._db is not None:
+                db_mod._db._duck.close()
+            db_mod._db = None
+            db_mod._db_path = None
+            db_mod._db_open = False
+            db_mod._db_refcount = 0
+            db_mod._external_holder = None
+
+    def test_concurrent_request_is_refused_not_raced(self):
+        """A request arriving mid-run must be told MATLAB has the database,
+        not quietly reopen it and steal the lock back from the run we just
+        dispatched."""
+        from scistack_gui import db as db_mod
+
+        saved = (db_mod._db, db_mod._db_open, db_mod._db_refcount)
+        db_mod._db, db_mod._db_open, db_mod._db_refcount = None, False, 0
+        try:
+            with db_mod.external_db_access("MATLAB"):
+                with pytest.raises(db_mod.DatabaseLockedError) as excinfo:
+                    db_mod.acquire_db_connection(timeout=0)
+                assert "MATLAB" in str(excinfo.value)
+            # Ownership is given back on exit.
+            assert db_mod._external_holder is None
+            # …and acquiring works again.
+            db_mod.acquire_db_connection(timeout=0)
+            assert db_mod._db_refcount == 1
+        finally:
+            db_mod._external_holder = None
+            db_mod._db, db_mod._db_open, db_mod._db_refcount = saved

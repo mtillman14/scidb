@@ -22,6 +22,7 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import redirect_stdout
 from io import StringIO
 
@@ -32,7 +33,7 @@ from scidb.database import DatabaseManager
 from scihist import for_each
 from scistack_gui import registry
 from scistack_gui.api.ws import push_message
-from scistack_gui.db import get_db
+from scistack_gui.db import external_db_access, get_db
 
 # This logger is configured in server.py (FastAPI) / __main__.py (JSON-RPC)
 # to write to stderr with the "[scistack] …" prefix. The extension forwards
@@ -82,6 +83,14 @@ class RunRequest(BaseModel):
     # — without it, targets are derived by NAME alone and a click on one
     # node's Run button can silently execute a DIFFERENT node's real history.
     node_id: str | None = None
+    # A hint from the canvas node's data.language. NOT authoritative — the
+    # backend asks matlab_registry itself (see route_matlab_single_run), so
+    # a browser client that never sends this still gets MATLAB routing.
+    language: str | None = None
+    # MATLAB output parameter names for command generation when the function
+    # has no DB history yet. Consumed by generate_matlab_command; ignored on
+    # the Python path.
+    output_types: list[str] | None = None
 
 
 def _run_in_thread(
@@ -794,12 +803,77 @@ def restart_matlab_engine():
     return {"ok": True, **sidecar.status()}
 
 
+def route_matlab_single_run(
+    function_name: str,
+    params: dict,
+    run_id: str,
+    db: DatabaseManager,
+    *,
+    host_can_dispatch_matlab: bool = False,
+) -> "dict | None":
+    """Route a single-node Run for a MATLAB function, or return ``None``
+    when ``function_name`` is a Python function and the caller should
+    continue down its normal ``_run_in_thread`` path.
+
+    This is the single-node counterpart to the ladder
+    :func:`start_pipeline_run` already applies to whole pipelines, and it
+    lives **here** rather than in the VS Code extension for a reason: the
+    extension used to be the only place that knew a run was MATLAB, keyed
+    on a ``language`` field the webview happened to send
+    (``dagPanel.ts``). Browser/standalone clients never went through that
+    host, so a MATLAB node clicked in a browser fell through to the Python
+    registry and failed with "Function '…' not found in registry" (todo
+    #5). ``matlab_registry`` is the authority now, so every transport
+    reaches the same decision.
+
+    - ``host_can_dispatch_matlab=True`` — set only by ``server.py``'s
+      JSON-RPC handler, which has the privileged ``dagPanel.ts`` host in
+      front of it — returns ``host_execution_required`` so that host can
+      generate the script and hand it to the MathWorks terminal (where
+      breakpoints actually work). No thread is spawned here.
+    - Otherwise the standalone sidecar drives it in-process, emitting real
+      ``run_output``/``run_done`` on the same ``run_id``.
+    """
+    from scistack_gui import matlab_registry
+
+    if not matlab_registry.is_matlab_function(function_name):
+        return None
+
+    if host_can_dispatch_matlab:
+        logger.info(
+            "[api/run] '%s' is a MATLAB function — routing to host-side "
+            "execution (run_id=%s)",
+            function_name,
+            run_id,
+        )
+        return {
+            "run_id": run_id,
+            "host_execution_required": True,
+            "language": "matlab",
+        }
+
+    logger.info(
+        "[api/run] '%s' is a MATLAB function — routing to standalone MATLAB "
+        "sidecar (run_id=%s)",
+        function_name,
+        run_id,
+    )
+    thread = threading.Thread(
+        target=_run_matlab_function_in_thread,
+        args=(run_id, function_name, params, db),
+        daemon=True,
+    )
+    thread.start()
+    return {"run_id": run_id, "language": "matlab"}
+
+
 @router.post("/run")
 def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     logger.info("[api/run] POST /api/run - Validating request")
     logger.debug(
         "[api/run] Request: function_name=%s, node_id=%s, variants=%d, run_id=%s, "
-        "schema_filter=%s, schema_level=%s, run_options=%s, where_filters=%d",
+        "schema_filter=%s, schema_level=%s, run_options=%s, where_filters=%d, "
+        "language=%s",
         req.function_name,
         req.node_id,
         len(req.variants),
@@ -808,10 +882,23 @@ def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
         req.schema_level,
         req.run_options,
         len(req.where_filters) if req.where_filters else 0,
+        req.language,
     )
 
     run_id = req.run_id or str(uuid.uuid4())[:8]
     logger.info("[api/run] Generated run_id: %s", run_id)
+
+    # Browser/standalone mode: no privileged host exists to intercept this,
+    # so MATLAB functions are driven here through the sidecar.
+    routed = route_matlab_single_run(
+        req.function_name,
+        req.model_dump(),
+        run_id,
+        db,
+        host_can_dispatch_matlab=False,
+    )
+    if routed is not None:
+        return routed
 
     logger.info("[api/run] Spawning background thread for run_id=%s", run_id)
     thread = threading.Thread(
@@ -1068,23 +1155,11 @@ def _run_matlab_pipeline_in_thread(
             emit(f"⚠ {w}\n")
         command = result["command"]
 
-        sidecar = matlab_sidecar.get_sidecar()
-        if not sidecar.start():
-            emit(
-                "Error: 'matlab' not found on PATH — cannot run this "
-                "pipeline without VS Code + the MathWorks extension "
-                "installed.\n"
-            )
-        else:
-            health = sidecar.check_health()
-            if health:
-                # A setup problem, not a pipeline failure — say so before the
-                # first py.* call turns it into a confusing scidb traceback.
-                emit(f"Error: {health}\n")
-                raise RuntimeError(health)
-            success = sidecar.run_command(command, emit)
-            if not success:
-                emit("✗ MATLAB reported an error — see log above\n")
+        # MATLAB opens the same .duckdb file itself — hand it over for the
+        # duration, or its scihist.configure_database call is locked out by
+        # this process (see external_db_access).
+        with external_db_access("MATLAB"):
+            success = _drive_sidecar(matlab_sidecar, command, emit)
     except KeyboardInterrupt:
         # force_cancel_run killed the sidecar process, which unblocks
         # run_command's queue wait with a RuntimeError (not
@@ -1143,6 +1218,58 @@ def _run_matlab_command_in_thread(
     Pushes real run_output/run_done — the caller doesn't synthesize
     anything for this tier (unlike the terminal-dispatch tier, which must,
     since nothing else drives that path)."""
+    _drive_matlab_in_thread(run_id, lambda: (command, list(warnings)))
+
+
+def _run_matlab_function_in_thread(
+    run_id: str,
+    function_name: str,
+    params: dict,
+    db: DatabaseManager,
+) -> None:
+    """Background execution of a SINGLE MATLAB function node through the
+    standalone sidecar — the browser/standalone counterpart to the VS Code
+    host's generate-then-dispatch path in ``dagPanel.ts::handleMatlabRun``,
+    and the single-node sibling of ``_run_matlab_pipeline_in_thread``.
+
+    Command generation happens *inside* the thread on purpose: it reads the
+    DB and the canvas wiring and can fail, and a failure has to reach the
+    user as ``run_output``/``run_done`` on this ``run_id``. Raising it out
+    of the ``start_run`` RPC instead would leave the node's Run button stuck
+    on "⏳ Running…" with no console output.
+    """
+
+    def make_command() -> "tuple[str, list[str]]":
+        from scistack_gui.services.matlab_command_service import (
+            generate_matlab_command,
+        )
+
+        result = generate_matlab_command(function_name, db, params)
+        return result["command"], list(result.get("warnings") or [])
+
+    db.set_current_db()
+    logger.info(
+        "[run_thread][matlab] single-node run via sidecar (run_id=%s fn=%s)",
+        run_id,
+        function_name,
+    )
+    _drive_matlab_in_thread(run_id, make_command)
+
+
+def _drive_matlab_in_thread(
+    run_id: str,
+    make_command: "Callable[[], tuple[str, list[str]]]",
+) -> None:
+    """Shared body for every sidecar-driven MATLAB run: register the run so
+    it can be cancelled, obtain the script, drive it through the kept-warm
+    engine relaying stdout as ``run_output``, and always finish with exactly
+    one ``run_done`` + ``dag_updated``.
+
+    ``make_command`` is a callable rather than a string so callers that must
+    *generate* the script (per-function, per-pipeline) get their generation
+    failures reported through the same run console as an execution failure,
+    instead of as an RPC error the frontend can't attribute to the run.
+    """
     from scistack_gui import matlab_sidecar
 
     def emit(text: str):
@@ -1158,24 +1285,21 @@ def _run_matlab_command_in_thread(
             "matlab_sidecar": True,
         }
     run_started_at = time.time()
-    for w in warnings:
-        emit(f"⚠ {w}\n")
 
     success = False
     try:
-        sidecar = matlab_sidecar.get_sidecar()
-        if not sidecar.start():
-            emit("Error: 'matlab' not found on PATH.\n")
-        else:
-            health = sidecar.check_health()
-            if health:
-                # A setup problem, not a pipeline failure — say so before the
-                # first py.* call turns it into a confusing scidb traceback.
-                emit(f"Error: {health}\n")
-                raise RuntimeError(health)
-            success = sidecar.run_command(command, emit)
-            if not success:
-                emit("✗ MATLAB reported an error — see log above\n")
+        # Generate BEFORE handing the database over: generation reads the DB
+        # (variants, wiring) and needs our own connection.
+        command, warnings = make_command()
+        for w in warnings:
+            emit(f"⚠ {w}\n")
+        # MATLAB opens the same .duckdb file itself. In browser/standalone
+        # mode nothing otherwise releases our connection (only the JSON-RPC
+        # server drops it between requests), so without this hand-off MATLAB
+        # would fail on its first scihist.configure_database call — locked
+        # out by us.
+        with external_db_access("MATLAB"):
+            success = _drive_sidecar(matlab_sidecar, command, emit)
     except Exception as exc:
         logger.exception("[run_thread][matlab] failed (run_id=%s)", run_id)
         emit(f"Error: {exc}\n")
@@ -1204,6 +1328,33 @@ def _run_matlab_command_in_thread(
             }
         )
         push_message({"type": "dag_updated"})
+
+
+def _drive_sidecar(matlab_sidecar, command: str, emit) -> bool:
+    """Start (or reuse) the kept-warm engine and run ``command`` on it,
+    relaying stdout through ``emit``. Returns whether MATLAB succeeded.
+
+    Called with the DuckDB file already handed over to MATLAB — see
+    ``_drive_matlab_in_thread``.
+    """
+    sidecar = matlab_sidecar.get_sidecar()
+    if not sidecar.start():
+        emit(
+            "Error: MATLAB is required here, but 'matlab' is not on PATH. "
+            "Add it, or run this from VS Code with the MathWorks MATLAB "
+            "extension installed.\n"
+        )
+        return False
+    health = sidecar.check_health()
+    if health:
+        # A setup problem, not a pipeline failure — say so before the first
+        # py.* call turns it into a confusing scidb traceback.
+        emit(f"Error: {health}\n")
+        raise RuntimeError(health)
+    success = sidecar.run_command(command, emit)
+    if not success:
+        emit("✗ MATLAB reported an error — see log above\n")
+    return success
 
 
 def start_matlab_sidecar_run(

@@ -1,5 +1,10 @@
 # Migrating scistack-gui to a VS Code Extension
 
+> **Status:** this is the pre-implementation migration plan, kept for its
+> architecture rationale. For how the shipped extension actually starts the
+> Python server (interpreter resolution, the readiness handshake, and
+> startup-failure diagnostics), see `gui-extension-startup-path.md`.
+
 ## Why Migrate?
 
 The standalone GUI (React + FastAPI) needs a code editor and debugger to be a self-contained solution. Rather than reimplementing what VS Code already provides, we can embed the scistack DAG UI inside VS Code and get editor, debugger, terminal, git, and file management for free.

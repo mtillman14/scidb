@@ -43,6 +43,11 @@
           "type": "number",
           "default": 60000,
           "description": "Max time (ms) of silence from the server during startup before the extension kills it. Reset whenever a progress notification arrives, so long-but-progressing startups (e.g. projects on network drives) do not falsely time out."
+        },
+        "scistack.rpcTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "Max time (ms) to wait for the server's response to a single request before failing it. A backstop against a lost response wedging the UI forever, not a work limit: long operations report progress through notifications rather than holding a request open. Set to 0 to disable."
         }
       }
     }
@@ -52,6 +57,7 @@
     "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
     "build:webview": "cd ../frontend && VITE_BUILD_TARGET=webview npx vite build",
     "build:all": "npm run build && npm run build:webview",
+    "test": "tsc -p tsconfig.test.json && node --test dist/test",
     "package": "npm run build:all && vsce package"
   },
   "devDependencies": {

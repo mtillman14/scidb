@@ -9,6 +9,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useRunLog } from '../../context/RunLogContext'
 import { callBackend, isVSCodeMode } from '../../api'
 import type { RunEntry } from '../../context/RunLogContext'
+import { SourceLocationDialog } from '../SourceLocationDialog'
+import type { SourceLocation } from '../SourceLocationDialog'
 
 export default function RunsTab() {
   const { runs } = useRunLog()
@@ -58,6 +60,9 @@ function formatDuration(ms: number): string {
 
 function RunCard({ run }: { run: RunEntry }) {
   const [logOpen, setLogOpen] = useState(false)
+  // Non-null while the "defined at" dialog is open (standalone mode only —
+  // in VS Code the source is revealed in the editor instead).
+  const [sourceLoc, setSourceLoc] = useState<SourceLocation | null>(null)
   const isPipeline = run.kind === 'pipeline'
 
   // Pipeline runs have no cooperative cancel (v1: no between-step hook in
@@ -81,7 +86,9 @@ function RunCard({ run }: { run: RunEntry }) {
       if (isVSCodeMode) {
         await callBackend('reveal_in_editor', { file: src.file, line: src.line })
       } else {
-        window.alert(`${run.function_name} is defined at:\n${src.file}:${src.line}`)
+        // In-app dialog rather than window.alert — alert text can't be
+        // selected or copied, and the path is the whole message.
+        setSourceLoc({ name: run.function_name, file: src.file ?? '', line: src.line ?? 0 })
       }
     } catch { /* ignore */ }
   }, [run.function_name])
@@ -111,6 +118,10 @@ function RunCard({ run }: { run: RunEntry }) {
 
   return (
     <div style={styles.card}>
+      {sourceLoc && (
+        <SourceLocationDialog location={sourceLoc} onClose={() => setSourceLoc(null)} />
+      )}
+
       {/* Header: status + function name + time */}
       <div style={styles.header}>
         <span style={{ color: statusColor, marginRight: 6, flexShrink: 0 }}>{statusIcon}</span>

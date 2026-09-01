@@ -2360,3 +2360,141 @@ class TestMaterializeVariableStubs:
         materialize_variable_stubs([], tmp_path)
 
         assert (tmp_path / "Gone.m").exists()
+
+
+class TestSingleNodeMatlabRunRouting:
+    """A single-node Run on a MATLAB function must never reach the Python
+    registry.
+
+    Routing used to live only in the VS Code extension (`dagPanel.ts`,
+    keyed on a `language` field the webview happened to send), so browser
+    clients fell through to `_run_in_thread` and failed with "Function '…'
+    not found in registry" (todo #5). `route_matlab_single_run` moves the
+    decision into the backend, where `matlab_registry` is the authority.
+    """
+
+    def _as_matlab(self, monkeypatch, *names):
+        from scistack_gui import matlab_registry
+
+        monkeypatch.setattr(
+            matlab_registry, "is_matlab_function", lambda n: n in names
+        )
+
+    def test_python_function_is_not_routed(self, monkeypatch):
+        from scistack_gui.api.run import route_matlab_single_run
+
+        self._as_matlab(monkeypatch)  # nothing is MATLAB
+        assert (
+            route_matlab_single_run("compute_vo2", {}, "r1", object())
+            is None
+        )
+
+    def test_host_capable_caller_gets_host_execution_required(self, monkeypatch):
+        """The VS Code path: no run is driven here — dagPanel.ts generates
+        the script and sends it to the MathWorks terminal, where breakpoints
+        work."""
+        import threading
+
+        import scistack_gui.api.run as run_mod
+
+        self._as_matlab(monkeypatch, "loadDelsysEMGOneFile")
+        started = threading.Event()
+        monkeypatch.setattr(
+            run_mod,
+            "_run_matlab_function_in_thread",
+            lambda *a: started.set(),
+        )
+
+        result = run_mod.route_matlab_single_run(
+            "loadDelsysEMGOneFile",
+            {},
+            "r2",
+            object(),
+            host_can_dispatch_matlab=True,
+        )
+
+        assert result == {
+            "run_id": "r2",
+            "host_execution_required": True,
+            "language": "matlab",
+        }
+        assert not started.wait(0.2), "host-dispatched run must not also run here"
+
+    def test_browser_caller_drives_the_sidecar(self, monkeypatch):
+        """The standalone path: no privileged host, so the sidecar runs it
+        here and the same run_id gets real run_output/run_done."""
+        import threading
+
+        import scistack_gui.api.run as run_mod
+
+        self._as_matlab(monkeypatch, "loadDelsysEMGOneFile")
+        started = threading.Event()
+        seen: list = []
+
+        def _record(run_id, function_name, params, db):
+            seen.extend([run_id, function_name, params])
+            started.set()
+
+        monkeypatch.setattr(run_mod, "_run_matlab_function_in_thread", _record)
+
+        result = run_mod.route_matlab_single_run(
+            "loadDelsysEMGOneFile", {"variants": []}, "r3", object()
+        )
+
+        assert result == {"run_id": "r3", "language": "matlab"}
+        assert started.wait(2), "sidecar run thread never started"
+        assert seen[0] == "r3"
+        assert seen[1] == "loadDelsysEMGOneFile"
+
+    def test_start_run_rpc_routes_before_taking_the_db_lock(self, monkeypatch):
+        """server.py's handler must decide BEFORE acquire_db_connection:
+        holding the DuckDB file lock for a run this process will never
+        execute would block the MATLAB session we just dispatched to."""
+        from scistack_gui import db as db_mod
+        from scistack_gui import server
+
+        self._as_matlab(monkeypatch, "loadDelsysEMGOneFile")
+        monkeypatch.setattr(db_mod, "get_db", lambda: object())
+
+        def _must_not_acquire(timeout=5.0):
+            raise AssertionError("acquire_db_connection called for a MATLAB run")
+
+        monkeypatch.setattr(db_mod, "acquire_db_connection", _must_not_acquire)
+
+        result = server._h_start_run(
+            {"function_name": "loadDelsysEMGOneFile", "run_id": "r4"}
+        )
+
+        assert result["host_execution_required"] is True
+        assert result["language"] == "matlab"
+
+    def test_generation_failure_is_reported_on_the_run_not_raised(
+        self, monkeypatch
+    ):
+        """Command generation happens inside the run thread so a failure
+        reaches the user as run_output/run_done. Raising it out of the RPC
+        instead would leave the Run button stuck on '⏳ Running…'."""
+        import scistack_gui.api.run as run_mod
+
+        messages = []
+        monkeypatch.setattr(run_mod, "push_message", messages.append)
+
+        class _DB:
+            def set_current_db(self):
+                pass
+
+        import scistack_gui.services.matlab_command_service as svc
+
+        monkeypatch.setattr(
+            svc,
+            "generate_matlab_command",
+            lambda *a, **k: (_ for _ in ()).throw(ValueError("no such wiring")),
+        )
+
+        run_mod._run_matlab_function_in_thread("r5", "someFn", {}, _DB())
+
+        texts = [m.get("text", "") for m in messages if m["type"] == "run_output"]
+        assert any("no such wiring" in t for t in texts)
+        done = [m for m in messages if m["type"] == "run_done"]
+        assert len(done) == 1
+        assert done[0]["success"] is False

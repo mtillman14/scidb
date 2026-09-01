@@ -19,12 +19,18 @@ type NotificationHandler = (method: string, params: Record<string, unknown>) => 
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
+  method: string;
+  startedAt: number;
+  timer: NodeJS.Timeout | null;
 }
 
 interface ReadyParams {
   db_name: string;
   schema_keys: string[];
 }
+
+/** How many stderr lines to keep for startup diagnostics. */
+const STDERR_TAIL_LINES = 200;
 
 export class PythonProcess {
   private proc: ChildProcess;
@@ -35,9 +41,16 @@ export class PythonProcess {
   private readyReject: ((err: Error) => void) | null = null;
   private readyTimer: NodeJS.Timeout | null = null;
   private readyTimeoutMs = 0;
+  /** Ring of recent stderr lines, so a failed start can report why. */
+  private stderrTail: string[] = [];
+  private exitCode: number | null = null;
+  /** Resolves on 'close', i.e. after the child's stdio has been drained. */
+  private closed: Promise<void>;
+  /** The spawn args, kept for the diagnostic report on a failed start. */
+  readonly args: string[];
 
   constructor(
-    pythonPath: string,
+    readonly pythonPath: string,
     dbPath: string,
     modulePath: string | undefined,
     private outputChannel: vscode.OutputChannel,
@@ -62,6 +75,7 @@ export class PythonProcess {
     if (workspaceFolder) {
       args.push('--project-root', workspaceFolder.uri.fsPath);
     }
+    this.args = args;
 
     this.outputChannel.appendLine(`Spawning: ${pythonPath} ${args.join(' ')}`);
 
@@ -86,17 +100,31 @@ export class PythonProcess {
       env: childEnv,
     });
 
+    this.closed = new Promise((resolve) => {
+      this.proc.on('close', () => resolve());
+    });
+
     // Parse newline-delimited JSON from stdout
     const rl = readline.createInterface({ input: this.proc.stdout! });
     rl.on('line', (line) => this.handleLine(line));
 
-    // Forward stderr to Output Channel
+    // Forward stderr to Output Channel, and keep a tail of it: when the
+    // server dies before "ready" (e.g. this interpreter has no scistack_gui)
+    // its stderr is the only statement of *why*, and the exit code is not.
     this.proc.stderr?.on('data', (data: Buffer) => {
-      this.outputChannel.appendLine(data.toString().trimEnd());
+      const text = data.toString().trimEnd();
+      this.outputChannel.appendLine(text);
+      for (const line of text.split('\n')) {
+        this.stderrTail.push(line);
+      }
+      if (this.stderrTail.length > STDERR_TAIL_LINES) {
+        this.stderrTail.splice(0, this.stderrTail.length - STDERR_TAIL_LINES);
+      }
     });
 
     // Handle process exit
     this.proc.on('exit', (code, signal) => {
+      this.exitCode = code;
       const msg = `Python process exited (code=${code}, signal=${signal})`;
       this.outputChannel.appendLine(msg);
 
@@ -130,6 +158,30 @@ export class PythonProcess {
         this.readyReject = null;
       }
     });
+  }
+
+  /**
+   * Wait until the child has closed its stdio, or `timeoutMs` elapses.
+   *
+   * The ready promise can reject (on 'exit', or on the inactivity timer)
+   * while the last stderr chunk is still queued, so a diagnostic report must
+   * wait for 'close' or it can quote an empty traceback.
+   */
+  whenClosed(timeoutMs = 2000): Promise<void> {
+    return Promise.race([
+      this.closed,
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+  }
+
+  /** Recent stderr from the child process (oldest first). */
+  getStderr(): string {
+    return this.stderrTail.join('\n');
+  }
+
+  /** Exit code, or null while the process is still running. */
+  getExitCode(): number | null {
+    return this.exitCode;
   }
 
   /**
@@ -169,16 +221,59 @@ export class PythonProcess {
 
   /**
    * Send a JSON-RPC request and return a promise for the result.
+   *
+   * Every request carries a timeout. The server is supposed to answer every
+   * request exactly once — long work is reported asynchronously through
+   * run_output/run_done notifications, not by holding an RPC open — so a
+   * response that never arrives means the server lost the request, and
+   * without a timeout that wedges the caller permanently with no error
+   * anywhere. (That is precisely how a MATLAB-locked database used to hang
+   * the whole GUI; see scistack_gui/server.py::_handle_request.) The
+   * timeout is a backstop, not a work limit: it is deliberately generous
+   * and configurable via `scistack.rpcTimeoutMs`.
    */
   request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = this.nextId++;
+    const timeoutMs = vscode.workspace
+      .getConfiguration('scistack')
+      .get<number>('rpcTimeoutMs', 300000);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const settle = (fn: () => void) => {
+        const pending = this.pending.get(id);
+        if (pending?.timer) clearTimeout(pending.timer);
+        this.pending.delete(id);
+        fn();
+      };
+      const timer = timeoutMs > 0
+        ? setTimeout(() => {
+            const pending = this.pending.get(id);
+            if (!pending) return;
+            const elapsed = Date.now() - pending.startedAt;
+            this.outputChannel.appendLine(
+              `RPC timeout: ${method} (id=${id}) got no response in ${elapsed}ms. ` +
+              `The Python server may have dropped the request — check the ` +
+              `stderr above for a traceback.`,
+            );
+            settle(() => reject(new Error(
+              `SciStack: no response from the Python server for '${method}' ` +
+              `after ${Math.round(elapsed / 1000)}s.`,
+            )));
+          }, timeoutMs)
+        : null;
+
+      this.pending.set(id, {
+        resolve: (value) => settle(() => resolve(value)),
+        reject: (reason) => settle(() => reject(reason)),
+        method,
+        startedAt: Date.now(),
+        timer,
+      });
+
       const msg = JSON.stringify({ jsonrpc: '2.0', method, params, id });
       this.proc.stdin?.write(msg + '\n', (err) => {
         if (err) {
-          this.pending.delete(id);
-          reject(err);
+          const pending = this.pending.get(id);
+          if (pending) pending.reject(err);
         }
       });
     });
@@ -212,13 +307,24 @@ export class PythonProcess {
       const id = msg.id as number;
       const pending = this.pending.get(id);
       if (pending) {
-        this.pending.delete(id);
+        // Deliberately NOT deleting here: pending.resolve/reject are the
+        // wrappers installed by request(), which clear the timeout and
+        // remove the entry themselves. Deleting first would strand the
+        // timer.
         if ('error' in msg) {
           const err = msg.error as { message: string };
+          this.outputChannel.appendLine(
+            `RPC error: ${pending.method} (id=${id}, ` +
+            `${Date.now() - pending.startedAt}ms): ${err.message}`,
+          );
           pending.reject(new Error(err.message));
         } else {
           pending.resolve(msg.result);
         }
+      } else {
+        this.outputChannel.appendLine(
+          `[stdout] response for unknown/expired request id=${id} — ignored`,
+        );
       }
       return;
     }

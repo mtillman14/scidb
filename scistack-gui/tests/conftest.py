@@ -56,6 +56,36 @@ def bandpass_filter(signal, low_hz):
 # ---------------------------------------------------------------------------
 
 
+# Variable classes that exist before any test runs: the ones this conftest
+# and each test module define at import time. Captured lazily on the first
+# fixture call — by then every test module has been imported, so anything
+# appearing in _all_subclasses AFTER this point was created by a test.
+_baseline_variable_subclasses: "dict | None" = None
+
+
+def _reset_variable_subclasses() -> None:
+    """Drop BaseVariable subclasses created during a test.
+
+    ``BaseVariable.__init_subclass__`` registers every subclass in the
+    process-wide ``_all_subclasses`` dict, and tests create them at runtime
+    — ``create_variable``, and ``matlab_registry`` surrogates via
+    ``scimatlab.bridge.register_matlab_variable``. Nothing used to remove
+    them, so a name registered in one file leaked into every later one:
+    ``test_matlab.py``'s ``materialize_variable_stubs(["StepLength", …])``
+    made ``test_target_file_service.py``'s ``create_variable("StepLength")``
+    fail with "already exists" — but only when the full suite ran, never
+    when that file ran alone.
+
+    Mutated in place rather than rebound: callers hold the dict itself.
+    """
+    global _baseline_variable_subclasses
+    if _baseline_variable_subclasses is None:
+        _baseline_variable_subclasses = dict(BaseVariable._all_subclasses)
+        return
+    BaseVariable._all_subclasses.clear()
+    BaseVariable._all_subclasses.update(_baseline_variable_subclasses)
+
+
 @pytest.fixture(autouse=True)
 def clear_db_state():
     """
@@ -63,10 +93,17 @@ def clear_db_state():
     Runs before (via yield) and after each test.
     """
     # Pre-test: clear everything
+    _reset_variable_subclasses()
     if hasattr(_local, "database"):
         delattr(_local, "database")
     _gui_db._db = None
     _gui_db._db_path = None
+    # Connection-lifecycle state travels with _db and must be reset with it.
+    # A leaked _external_holder in particular would make every later test's
+    # acquire_db_connection raise DatabaseLockedError (see db.py).
+    _gui_db._db_open = False
+    _gui_db._db_refcount = 0
+    _gui_db._external_holder = None
     _scifor.set_schema([])
     # Keep only the test functions registered across tests
     _registry._functions.clear()
@@ -83,10 +120,17 @@ def clear_db_state():
     yield
 
     # Post-test: clean up again
+    _reset_variable_subclasses()
     if hasattr(_local, "database"):
         delattr(_local, "database")
     _gui_db._db = None
     _gui_db._db_path = None
+    # Connection-lifecycle state travels with _db and must be reset with it.
+    # A leaked _external_holder in particular would make every later test's
+    # acquire_db_connection raise DatabaseLockedError (see db.py).
+    _gui_db._db_open = False
+    _gui_db._db_refcount = 0
+    _gui_db._external_holder = None
     _scifor.set_schema([])
     _registry._functions.clear()
     _registry._parameters.clear()

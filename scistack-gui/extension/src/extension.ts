@@ -10,6 +10,12 @@ import * as vscode from 'vscode';
 import { PythonProcess } from './pythonProcess';
 import { DagPanel } from './dagPanel';
 import { checkProjectConfig, promptForMissingConfig } from './projectInit';
+import {
+  diagnoseStartupFailure,
+  probeInterpreter,
+  StartupAction,
+  StartupDiagnosis,
+} from './startupDiagnostics';
 
 let pythonProcess: PythonProcess | null = null;
 let dagPanel: DagPanel | null = null;
@@ -195,18 +201,19 @@ async function startPipeline(
   }
 
   // Resolve Python interpreter
-  const pythonPath = await resolvePythonPath();
-  if (!pythonPath) {
+  const interpreter = await resolvePythonPath();
+  if (!interpreter) {
     vscode.window.showErrorMessage(
       'SciStack: Could not find a Python interpreter. ' +
       'Install the Python extension or set scistack.pythonPath in settings.'
     );
     return;
   }
+  const { path: pythonPath, source: interpreterSource } = interpreter;
 
   // Start the Python JSON-RPC server
   outputChannel.appendLine(`Starting SciStack server...`);
-  outputChannel.appendLine(`  Python: ${pythonPath}`);
+  outputChannel.appendLine(`  Python: ${pythonPath} (from ${interpreterSource})`);
   outputChannel.appendLine(`  DB: ${dbPath}`);
   if (projectPath) outputChannel.appendLine(`  Project: ${projectPath}`);
   if (modulePath) outputChannel.appendLine(`  Module: ${modulePath}`);
@@ -222,9 +229,10 @@ async function startPipeline(
       `Server ready — DB: ${readyParams.db_name}, schema: [${readyParams.schema_keys.join(', ')}]`
     );
   } catch (err) {
-    vscode.window.showErrorMessage(`SciStack: Server failed to start — ${err}`);
-    pythonProcess.kill();
+    const failed = pythonProcess;
     pythonProcess = null;
+    failed.kill();
+    await reportStartupFailure(failed, interpreterSource, err);
     return;
   }
 
@@ -244,6 +252,12 @@ async function startPipeline(
         pythonProcess = null;
       }
     });
+    // MATLAB has released the database — replay whatever the file-watcher
+    // withheld while it was running. Registered here (once per panel)
+    // rather than in the run_done branch below, because the terminal and
+    // clipboard tiers finish inside DagPanel and never emit a Python
+    // notification at all.
+    dagPanel.matlabRuns.onAllFinished(flushDeferredDagRefresh);
   }
 
   // Forward push notifications from Python → Webview
@@ -253,6 +267,9 @@ async function startPipeline(
       // When a run finishes, auto-detach the debugger if we auto-attached it.
       if (method === 'run_done') {
         dagPanel.stopDebugSession();
+        // Sidecar-driven MATLAB runs end here; the tracker fires the
+        // callback registered above once the last one clears.
+        dagPanel.matlabRuns.end(params.run_id as string | undefined);
       }
     }
   });
@@ -270,11 +287,94 @@ async function startPipeline(
   statusItem.show();
 }
 
-async function resolvePythonPath(): Promise<string | undefined> {
+/**
+ * Explain a failed server start.
+ *
+ * The bare rejection reason ("Python process exited (code=1)") never says
+ * which interpreter was used or what it was missing, which is the whole
+ * question when scistack_gui simply is not installed in the environment
+ * VS Code picked. So: probe the interpreter, classify, and offer the fix.
+ */
+async function reportStartupFailure(
+  failed: PythonProcess,
+  interpreterSource: string,
+  err: unknown,
+): Promise<void> {
+  const errorMessage = err instanceof Error ? err.message : String(err);
+  outputChannel.appendLine(`Server failed to start: ${errorMessage}`);
+  outputChannel.appendLine(`Probing interpreter ${failed.pythonPath}...`);
+
+  // Let the dying child flush its stderr before we quote it.
+  await failed.whenClosed();
+  const probe = await probeInterpreter(failed.pythonPath);
+  const diagnosis = diagnoseStartupFailure({
+    pythonPath: failed.pythonPath,
+    interpreterSource,
+    args: failed.args,
+    errorMessage,
+    stderr: failed.getStderr(),
+    exitCode: failed.getExitCode(),
+    probe,
+  });
+
+  outputChannel.appendLine('');
+  outputChannel.appendLine(`=== SciStack startup failure (${diagnosis.kind}) ===`);
+  outputChannel.appendLine(diagnosis.detail);
+  if (diagnosis.installCommand) {
+    outputChannel.appendLine(`Install with: ${diagnosis.installCommand}`);
+  }
+  outputChannel.appendLine('=== end of startup failure report ===');
+
+  await showDiagnosisMessage(diagnosis);
+}
+
+const ACTION_LABELS: Record<StartupAction, string> = {
+  showOutput: 'Show Details',
+  selectInterpreter: 'Select Interpreter',
+  openSettings: 'Open Settings',
+  copyInstallCommand: 'Copy Install Command',
+};
+
+async function showDiagnosisMessage(diagnosis: StartupDiagnosis): Promise<void> {
+  const labels = diagnosis.actions.map((a) => ACTION_LABELS[a]);
+  const picked = await vscode.window.showErrorMessage(diagnosis.message, ...labels);
+  if (!picked) return;
+
+  const action = diagnosis.actions.find((a) => ACTION_LABELS[a] === picked);
+  switch (action) {
+    case 'showOutput':
+      outputChannel.show(true);
+      break;
+    case 'selectInterpreter':
+      await vscode.commands.executeCommand('python.setInterpreter');
+      break;
+    case 'openSettings':
+      await vscode.commands.executeCommand(
+        'workbench.action.openSettings', 'scistack.pythonPath'
+      );
+      break;
+    case 'copyInstallCommand':
+      if (diagnosis.installCommand) {
+        await vscode.env.clipboard.writeText(diagnosis.installCommand);
+        vscode.window.showInformationMessage(
+          `SciStack: copied to clipboard — ${diagnosis.installCommand}`
+        );
+      }
+      break;
+  }
+}
+
+interface ResolvedInterpreter {
+  path: string;
+  /** Human-readable origin, so an error message can say where to change it. */
+  source: string;
+}
+
+async function resolvePythonPath(): Promise<ResolvedInterpreter | undefined> {
   // 1. Check extension setting
   const config = vscode.workspace.getConfiguration('scistack');
   const configured = config.get<string>('pythonPath');
-  if (configured) return configured;
+  if (configured) return { path: configured, source: 'scistack.pythonPath setting' };
 
   // 2. Try the VS Code Python extension
   const pythonExt = vscode.extensions.getExtension('ms-python.python');
@@ -284,12 +384,29 @@ async function resolvePythonPath(): Promise<string | undefined> {
     const api = pythonExt.exports;
     if (api?.environments?.getActiveEnvironmentPath) {
       const envPath = api.environments.getActiveEnvironmentPath();
-      if (envPath?.path) return envPath.path;
+      if (envPath?.path) {
+        return { path: envPath.path, source: 'active interpreter from the Python extension' };
+      }
     }
   }
 
   // 3. Fallback to "python3" on PATH
-  return 'python3';
+  return { path: 'python3', source: 'PATH fallback (no Python extension interpreter)' };
+}
+
+/**
+ * Emit the DAG refresh that was withheld while MATLAB owned the database.
+ *
+ * No-op when nothing was withheld: a MATLAB run that wrote nothing (or that
+ * failed before writing) shouldn't cost a full graph re-fetch.
+ */
+function flushDeferredDagRefresh(): void {
+  if (!dagPanel) return;
+  if (!dagPanel.matlabRuns.takeDeferredRefresh()) return;
+  outputChannel.appendLine(
+    'MATLAB run finished — applying the deferred DAG refresh',
+  );
+  dagPanel.postMessage({ method: 'dag_updated', params: {} });
 }
 
 function setupDbWatcher(dbPath: string): void {
@@ -315,10 +432,20 @@ function setupDbWatcher(dbPath: string): void {
     }
     dbWatcherDebounce = setTimeout(() => {
       dbWatcherDebounce = null;
-      if (dagPanel) {
-        outputChannel.appendLine('DuckDB file changed externally — refreshing DAG');
-        dagPanel.postMessage({ method: 'dag_updated', params: {} });
+      if (!dagPanel) return;
+      // MATLAB writes to the WAL throughout a run, not just at the end. A
+      // refresh now would fire graph RPCs at a database MATLAB currently
+      // holds the file lock on, and every one of them can only fail — so
+      // the tracker remembers the change and we refresh once it lets go.
+      if (!dagPanel.matlabRuns.noteDbChange()) {
+        outputChannel.appendLine(
+          'DuckDB file changed while MATLAB owns the database — ' +
+          'deferring DAG refresh until the run finishes',
+        );
+        return;
       }
+      outputChannel.appendLine('DuckDB file changed externally — refreshing DAG');
+      dagPanel.postMessage({ method: 'dag_updated', params: {} });
     }, 2000);
   };
 
