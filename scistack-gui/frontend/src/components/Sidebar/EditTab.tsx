@@ -172,7 +172,6 @@ export default function EditTab() {
   useEffect(() => {
     fetchRegistry()
     fetchParameters()
-    fetchParameters()
     fetchNotes()
   }, [fetchNotes])
 

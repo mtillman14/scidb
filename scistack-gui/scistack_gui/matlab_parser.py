@@ -384,11 +384,83 @@ def _split_matlab_args(args_text: str) -> list[str]:
     return parts
 
 
-def _parse_matlab_literal_token(token: str) -> "tuple[bool, object]":
-    """``(True, value)`` if *token* is a simple MATLAB literal (a quoted
-    string or a number), else ``(False, None)`` — a MATLAB variable
-    reference, function call, or expression is deliberately NOT evaluated
-    (this never runs MATLAB)."""
+_MATLAB_IDENT_RE = re.compile(r"^[A-Za-z]\w*$")
+
+# Calls that join their arguments into one string. `fullfile` is by far the
+# most common way a MATLAB path template gets built from a base directory.
+_MATLAB_JOIN_CALL_RE = re.compile(r"^(fullfile|strcat|horzcat)\s*\(", re.IGNORECASE)
+
+# MATLAB's canonical separator is platform-dependent, but forward slashes
+# resolve on Windows too, and PathInput templates are matched against
+# discovered paths rather than opened literally.
+_FULLFILE_SEP = "/"
+
+
+def _split_matlab_concat_parts(inner: str) -> list[str]:
+    """Split the inside of a ``[...]`` on top-level commas *and* whitespace.
+
+    Bracket concatenation accepts either (``[a b]`` and ``[a, b]`` are the
+    same), unlike an argument list, which only splits on commas.
+    """
+    parts: list[str] = []
+    for comma_part in _split_matlab_args(inner):
+        current: list[str] = []
+        depth = 0
+        i = 0
+        n = len(comma_part)
+        while i < n:
+            c = comma_part[i]
+            if c in "'\"":
+                quote = c
+                current.append(c)
+                i += 1
+                while i < n:
+                    current.append(comma_part[i])
+                    if comma_part[i] == quote:
+                        if i + 1 < n and comma_part[i + 1] == quote:
+                            current.append(comma_part[i + 1])
+                            i += 2
+                            continue
+                        i += 1
+                        break
+                    i += 1
+                continue
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+            if c.isspace() and depth == 0:
+                if current:
+                    parts.append("".join(current).strip())
+                    current = []
+                i += 1
+                continue
+            current.append(c)
+            i += 1
+        if current:
+            parts.append("".join(current).strip())
+    return [p for p in parts if p]
+
+
+def _parse_matlab_literal_token(
+    token: str, scope: "dict[str, object] | None" = None
+) -> "tuple[bool, object]":
+    """``(True, value)`` if *token* can be statically reduced to a MATLAB
+    literal, else ``(False, None)``. This never runs MATLAB.
+
+    Without *scope* only quoted strings and numbers reduce. With one — a map
+    of earlier ``name = <literal>`` bindings in the same file, from
+    :func:`collect_matlab_literal_scope` — three more forms fold:
+
+    - a bare variable reference (``emgTemplate``)
+    - bracket concatenation (``[baseDir '\\6MWT.csv']``, comma or space)
+    - ``fullfile`` / ``strcat`` / ``horzcat`` of foldable parts
+
+    These cover how a path template is usually assembled from a base
+    directory. Anything else (``sprintf``, arithmetic, a function call) stays
+    unresolvable on purpose: guessing a value would put a wrong path on the
+    canvas, which is worse than the honest "can't extract this" warning.
+    """
     token = token.strip()
     if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"":
         quote = token[0]
@@ -398,7 +470,82 @@ def _parse_matlab_literal_token(token: str) -> "tuple[bool, object]":
         return True, (
             float(token) if ("." in token or "e" in token.lower()) else int(token)
         )
+
+    if not scope:
+        return False, None
+
+    if _MATLAB_IDENT_RE.match(token):
+        if token in scope:
+            return True, scope[token]
+        return False, None
+
+    if token.startswith("[") and token.endswith("]"):
+        return _fold_parts(_split_matlab_concat_parts(token[1:-1]), "", scope)
+
+    join = _MATLAB_JOIN_CALL_RE.match(token)
+    if join is not None:
+        args_end = _matching_paren(token, join.end())
+        # Trailing text after the call (``fullfile(a,b) + x``) means this is a
+        # larger expression that isn't a plain join.
+        if args_end is not None and token[args_end + 1 :].strip() == "":
+            sep = _FULLFILE_SEP if join.group(1).lower() == "fullfile" else ""
+            return _fold_parts(
+                _split_matlab_args(token[join.end() : args_end]), sep, scope
+            )
+
     return False, None
+
+
+def _fold_parts(
+    parts: list[str], sep: str, scope: "dict[str, object]"
+) -> "tuple[bool, object]":
+    """Resolve every part and join with *sep*; all-or-nothing."""
+    if not parts:
+        return False, None
+    resolved: list[str] = []
+    for part in parts:
+        ok, value = _parse_matlab_literal_token(part, scope)
+        if not ok:
+            return False, None
+        resolved.append(str(value))
+    return True, sep.join(resolved)
+
+
+def collect_matlab_literal_scope(text: str) -> "dict[str, object]":
+    """Statically foldable ``name = <expr>`` bindings in an entities script.
+
+    Walks bindings in file order, folding each against everything already
+    resolved, so a chain (``root = 'Y:\\data'; sub = [root '\\emg']``)
+    resolves in one pass. Later bindings of a name overwrite earlier ones,
+    matching MATLAB's sequential execution and the parser's
+    last-binding-wins rule.
+
+    Entity constructor calls are skipped -- they are the things being
+    resolved, not inputs to the fold.
+
+    Text is preprocessed exactly as :func:`parse_matlab_entities_script`
+    preprocesses it, so a binding sitting inside a block comment can't slip
+    into scope and silently redefine a real one.
+    """
+    parsed = _preprocess_for_parsing(text)
+    scope: dict[str, object] = {}
+    for m in _BINDING_RE.finditer(parsed):
+        rhs_start = m.end()
+        while rhs_start < len(parsed) and parsed[rhs_start] in " \t":
+            rhs_start += 1
+        if _ENTITY_CTOR_RE.match(parsed, rhs_start):
+            continue
+        rhs = parsed[rhs_start : _statement_end(parsed, rhs_start)].strip()
+        ok, value = _parse_matlab_literal_token(rhs, scope)
+        if ok:
+            scope[m.group(1)] = value
+    if scope:
+        logger.debug(
+            "[matlab_parser] Folded %d literal binding(s) for resolution: %s",
+            len(scope),
+            sorted(scope),
+        )
+    return scope
 
 
 def read_source_text(path: Path) -> "str | None":
@@ -546,13 +693,18 @@ def parse_matlab_entities_script(path: Path) -> "list[MatlabBinding]":
 
 
 def binding_path_input_literal(
-    binding: MatlabBinding, text: str
+    binding: MatlabBinding, text: str, scope: "dict[str, object] | None" = None
 ) -> "tuple[str, str | None] | None":
     """``(template, root_folder)`` from a ``PathInput`` binding, or ``None``
     if any needed argument isn't a simple literal — the same all-or-nothing
-    all-or-nothing rule as :func:`binding_parameter_literal`."""
+    all-or-nothing rule as :func:`binding_parameter_literal`.
+
+    Pass *scope* (from :func:`collect_matlab_literal_scope`) to additionally
+    fold templates built from earlier variables, e.g.
+    ``PathInput([baseDir '/6MWT.csv'])``.
+    """
     args = _split_matlab_args(binding.args_span.extract(text))
-    return _path_input_args_to_literal(args)
+    return _path_input_args_to_literal(args, scope)
 
 
 # `name=value` as a single argument token — MATLAB R2021b+ syntax, which is
@@ -691,7 +843,9 @@ def binding_parameter_literal(
     return (values, description) if values else None
 
 
-def _path_input_args_to_literal(args: list[str]) -> "tuple[str, str | None] | None":
+def _path_input_args_to_literal(
+    args: list[str], scope: "dict[str, object] | None" = None
+) -> "tuple[str, str | None] | None":
     """``(template, root_folder)`` from an already-split PathInput argument
     list.
 
@@ -703,7 +857,7 @@ def _path_input_args_to_literal(args: list[str]) -> "tuple[str, str | None] | No
     """
     if not args:
         return None
-    ok, template = _parse_matlab_literal_token(args[0])
+    ok, template = _parse_matlab_literal_token(args[0], scope)
     if not ok or not isinstance(template, str):
         return None
 
@@ -714,15 +868,15 @@ def _path_input_args_to_literal(args: list[str]) -> "tuple[str, str | None] | No
         if named is not None:
             key, value_token = named
             if key == "root_folder":
-                ok_val, val = _parse_matlab_literal_token(value_token)
+                ok_val, val = _parse_matlab_literal_token(value_token, scope)
                 if ok_val and isinstance(val, str):
                     root_folder = val
             i += 1
             continue
         if i + 1 < len(args):
-            ok_key, key = _parse_matlab_literal_token(args[i])
+            ok_key, key = _parse_matlab_literal_token(args[i], scope)
             if ok_key and key == "root_folder":
-                ok_val, val = _parse_matlab_literal_token(args[i + 1])
+                ok_val, val = _parse_matlab_literal_token(args[i + 1], scope)
                 if ok_val and isinstance(val, str):
                     root_folder = val
                 i += 2

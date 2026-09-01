@@ -4,7 +4,7 @@ Generate synthetic breath-by-breath CPET (cardiopulmonary exercise test) data.
 Simulates one CSV per subject/session, where each row is a single breath:
   - "time (sec)": cumulative time of the breath, strictly increasing but
     irregularly spaced (breathing is not metronomic), spanning 0-600 sec.
-  - "vo2 (kg/mL/min)": oxygen uptake for that breath. Trends upward over
+  - "vo2 (mL/kg/min)": oxygen uptake for that breath. Trends upward over
     the test (ramp protocol) but is noisy breath-to-breath, so any given
     breath is not guaranteed to be higher than the previous one.
 
@@ -61,7 +61,7 @@ def generate_session(seed: int) -> pd.DataFrame:
     vo2_noise = rng.normal(0, 1, n) * (0.12 * vo2_base)
     vo2 = np.round(np.clip(vo2_base + vo2_noise, 0, None), 2)
 
-    return pd.DataFrame({"time (sec)": np.round(times, 2), "vo2 (kg/mL/min)": vo2})
+    return pd.DataFrame({"time (sec)": np.round(times, 2), "vo2 (mL/kg/min)": vo2})
 
 
 if __name__ == "__main__":
@@ -78,5 +78,5 @@ if __name__ == "__main__":
         print(
             f"{out_path.relative_to(data_dir.parent)}: {len(df)} breaths, "
             f"time {df['time (sec)'].iloc[0]:.1f}-{df['time (sec)'].iloc[-1]:.1f} sec, "
-            f"vo2 {df['vo2 (kg/mL/min)'].min():.1f}-{df['vo2 (kg/mL/min)'].max():.1f}"
+            f"vo2 {df['vo2 (mL/kg/min)'].min():.1f}-{df['vo2 (mL/kg/min)'].max():.1f}"
         )

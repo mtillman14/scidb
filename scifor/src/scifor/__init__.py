@@ -25,13 +25,19 @@ Example:
 from .colname import ColName
 from .column_selection import ColumnSelection
 from .discovery import (
+    BENIGN_TOPLEVEL_CALLS,
     ModuleWalkError,
     PathInsert,
+    PathInsertAll,
+    TopLevelSideEffect,
     WalkResult,
+    find_top_level_side_effects,
+    headless_matplotlib,
     is_test_modname,
     is_test_path,
     purge_module,
     read_project_name,
+    sibling_import_dirs,
     walk_package,
 )
 from .each_of import EachOf
@@ -76,5 +82,11 @@ __all__ = [
     "is_test_modname",
     "read_project_name",
     "PathInsert",
+    "PathInsertAll",
+    "sibling_import_dirs",
     "purge_module",
+    "BENIGN_TOPLEVEL_CALLS",
+    "TopLevelSideEffect",
+    "find_top_level_side_effects",
+    "headless_matplotlib",
 ]

@@ -21,6 +21,7 @@ from scistack_gui.matlab_parser import (
     binding_parameter_literal,
     binding_path_input_literal,
     classify_matlab_file,
+    collect_matlab_literal_scope,
     parse_matlab_entities_script,
     parse_matlab_function,
     parse_matlab_variable,
@@ -237,10 +238,15 @@ def load_entities_script(path: Path) -> None:
     # executes (and scidb.source_edit.find_binding_span on the Python side).
     latest = {b.name: b for b in bindings}
 
+    # Plain `name = 'literal'` helper bindings, so a template assembled from a
+    # base directory (`PathInput([baseDir '/6MWT.csv'])`) still resolves
+    # statically instead of being dropped as non-literal.
+    scope = collect_matlab_literal_scope(text)
+
     registered = 0
     for name, binding in latest.items():
         if binding.kind == "path_input":
-            literal = binding_path_input_literal(binding, text)
+            literal = binding_path_input_literal(binding, text, scope)
             if literal is None:
                 _warn_non_literal(name, path, "PathInput")
                 continue

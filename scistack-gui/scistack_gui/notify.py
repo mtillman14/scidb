@@ -9,8 +9,11 @@ by redirect_stdout in run.py, so it never leaks into the JSON-RPC stream.
 """
 
 import json
+import logging
 import sys
 import threading
+
+logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _enabled = False
@@ -28,10 +31,22 @@ def notify(method: str, params: dict) -> None:
 
     This is the JSON-RPC equivalent of ws.push_message / ws.broadcast.
     Called from background threads (e.g. run.py) and async handlers.
+
+    Every emission is logged. The frame itself goes to *stdout*, where the
+    extension host consumes and parses it -- so it never reaches the output
+    channel, and a notification storm (e.g. a ``dag_updated`` that makes every
+    client re-fetch the whole graph) is otherwise invisible in a captured log.
+    The log line is the only trace.
     """
     if not _enabled:
+        logger.debug("[notify] Suppressed (output disabled): %s", method)
         return
     msg = json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
+    logger.info(
+        "[notify] Emitting %s to extension host (thread=%s)",
+        method,
+        threading.get_ident(),
+    )
     with _lock:
         sys.stdout.write(msg + "\n")
         sys.stdout.flush()

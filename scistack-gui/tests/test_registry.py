@@ -547,3 +547,329 @@ class TestLoadPackagesExcludesTestSubmodules:
             for name in list(sys.modules):
                 if name == pkg_name or name.startswith(pkg_name + "."):
                     del sys.modules[name]
+
+
+# ---------------------------------------------------------------------------
+# Sibling imports in folder-scan (loose) projects.
+#
+# Loose files are imported by location, not by package name, so a bare
+# ``import sibling`` inside one has no anchor unless the containing
+# directories are on sys.path. Regression guard: a real project lost 6 of 13
+# modules to ModuleNotFoundError purely because of this, and the failures were
+# swallowed into the Discovered Code panel rather than raised.
+# See registry._load_file_modules and scifor.discovery.sibling_import_dirs.
+# ---------------------------------------------------------------------------
+
+
+class TestSiblingImportsInLooseProjects:
+    @pytest.fixture
+    def loose_project(self, tmp_path):
+        """Mirror the real-world layout: a helper at the scan root, another in
+        a subdirectory, and importers pointing *both* directions across them."""
+        import sys
+
+        src = tmp_path / "src"
+        sub = src / "plot_pt_measures"
+        sub.mkdir(parents=True)
+
+        (src / "apply_branding.py").write_text("def brand_axes(ax):\n    return ax\n")
+        (sub / "df_parser.py").write_text("def parse_df_rom(df):\n    return df\n")
+        # same-directory sibling
+        (src / "plot_spm.py").write_text(
+            "from apply_branding import brand_axes\n\ndef plot_spm(x):\n    return x\n"
+        )
+        # subdirectory importing from the parent directory
+        (sub / "plotter.py").write_text(
+            "from apply_branding import brand_axes\n\ndef plot_it(x):\n    return x\n"
+        )
+        # parent directory importing from a subdirectory
+        (src / "main_plot_all.py").write_text(
+            "from df_parser import parse_df_rom\n\ndef plot_all(x):\n    return x\n"
+        )
+
+        paths = [
+            src / "apply_branding.py",
+            src / "main_plot_all.py",
+            src / "plot_spm.py",
+            sub / "df_parser.py",
+            sub / "plotter.py",
+        ]
+
+        before_modules = set(sys.modules)
+        yield paths
+        for name in set(sys.modules) - before_modules:
+            sys.modules.pop(name, None)
+
+    def _load(self, paths):
+        registry._functions.clear()
+        registry._function_sources.clear()
+        registry._load_errors.clear()
+        registry._module_paths.clear()
+        registry._load_file_modules(paths)
+
+    def test_same_directory_sibling_import_resolves(self, loose_project):
+        self._load(loose_project)
+        assert registry.get_load_errors() == []
+        assert "plot_spm" in registry._functions
+
+    def test_subdirectory_importing_parent_directory_resolves(self, loose_project):
+        """plot_pt_measures/plotter.py does ``from apply_branding import ...``
+        where apply_branding.py lives one level *up* -- the case a per-file
+        "add my own parent dir" fix would still miss."""
+        self._load(loose_project)
+        assert registry.get_load_errors() == []
+        assert "plot_it" in registry._functions
+
+    def test_parent_directory_importing_subdirectory_resolves(self, loose_project):
+        """src/main_plot_all.py does ``from df_parser import ...`` where
+        df_parser.py lives in a *subdirectory*."""
+        self._load(loose_project)
+        assert registry.get_load_errors() == []
+        assert "plot_all" in registry._functions
+
+    def test_all_modules_load_without_errors(self, loose_project):
+        self._load(loose_project)
+        assert registry.get_load_errors() == []
+        for fn in ("brand_axes", "parse_df_rom", "plot_spm", "plot_it", "plot_all"):
+            assert fn in registry._functions
+
+    def test_sys_path_restored_after_load(self, loose_project):
+        import sys
+
+        before = list(sys.path)
+        self._load(loose_project)
+        assert sys.path == before
+
+    def test_sys_path_restored_even_when_a_module_raises(self, loose_project, tmp_path):
+        """One bad file must not leave the scan directories stranded on
+        sys.path -- that would silently change import resolution for every
+        later scan in the same server process."""
+        import sys
+
+        boom = tmp_path / "src" / "boom.py"
+        boom.write_text("raise RuntimeError('top-level explosion')\n")
+
+        before = list(sys.path)
+        self._load([*loose_project, boom])
+
+        assert sys.path == before
+        errors = registry.get_load_errors()
+        assert len(errors) == 1
+        assert errors[0]["source"] == str(boom)
+        # The good modules alongside it still registered.
+        assert "plot_spm" in registry._functions
+
+    def test_search_dirs_logged_for_diagnosis(self, loose_project, caplog):
+        """Putting user directories at the front of sys.path can shadow other
+        modules; the added dirs must be visible in the log to diagnose that."""
+        import logging
+
+        with caplog.at_level(logging.INFO):
+            self._load(loose_project)
+
+        assert "sys.path for sibling imports" in caplog.text
+        assert "plot_pt_measures" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Top-level side-effect refusal.
+#
+# Discovery imports files to read their definitions, which also *runs* them. A
+# real scan spent 13 of its 15 startup seconds rendering matplotlib figures
+# from two unguarded plotting scripts before dying on a hardcoded output path.
+# Files with module-level work are now refused, not executed.
+# See registry._screen_for_side_effects and
+# scifor.discovery.find_top_level_side_effects.
+# ---------------------------------------------------------------------------
+
+
+class TestTopLevelSideEffectRefusal:
+    def _load(self, paths):
+        registry._functions.clear()
+        registry._function_sources.clear()
+        registry._load_errors.clear()
+        registry._module_paths.clear()
+        registry._load_file_modules(paths)
+
+    def test_side_effecting_file_is_never_executed(self, tmp_path):
+        """The regression: top-level work must not run during a scan."""
+        sentinel = tmp_path / "side_effect_happened.txt"
+        f = tmp_path / "plot_gait_speeds.py"
+        f.write_text(
+            "from pathlib import Path\n\n"
+            "def plot_gait(a, b, c):\n"
+            f"    Path({str(sentinel)!r}).write_text('ran')\n"
+            "    return a\n\n"
+            "plot_gait(1, 2, 3)\n"
+        )
+
+        self._load([f])
+
+        assert not sentinel.exists(), "top-level call executed during discovery"
+        assert "plot_gait" not in registry._functions
+
+    def test_assigned_local_call_is_never_executed(self, tmp_path):
+        """``data = plot_gait(...)`` does the same work as a bare call --
+        statement form alone can't tell it apart from ``RATE = Parameter(...)``,
+        so the callee has to decide."""
+        sentinel = tmp_path / "assigned_side_effect.txt"
+        f = tmp_path / "plot_assigned.py"
+        f.write_text(
+            "from pathlib import Path\n\n"
+            "def plot_gait(a, b, c):\n"
+            f"    Path({str(sentinel)!r}).write_text('ran')\n"
+            "    return a\n\n"
+            "data = plot_gait(1, 2, 3)\n"
+        )
+
+        self._load([f])
+
+        assert not sentinel.exists(), "assigned top-level call executed"
+        errors = registry.get_load_errors()
+        assert len(errors) == 1
+        assert "defined in this file" in errors[0]["error"]
+
+    def test_imported_callee_in_assignment_still_executes(self, tmp_path):
+        """The other half: entity construction and ordinary module setup call
+        *imported* names, so they must keep running."""
+        f = tmp_path / "entities_and_setup.py"
+        f.write_text(
+            "import logging\n"
+            "from pathlib import Path\n"
+            "from scidb import Parameter, PathInput\n\n"
+            "logger = logging.getLogger(__name__)\n"
+            "HERE = Path(__file__).parent\n"
+            "RATE = Parameter(1, 2, 3)\n"
+            "RAW = PathInput('{subject}.mat')\n\n"
+            "def use_it(x):\n"
+            "    return x\n"
+        )
+
+        registry._parameters.clear()
+        registry._path_inputs.clear()
+        self._load([f])
+
+        assert registry.get_load_errors() == []
+        assert "RATE" in registry._parameters
+        assert "RAW" in registry._path_inputs
+        assert "use_it" in registry._functions
+
+    def test_refusal_recorded_with_line_number_and_hint(self, tmp_path):
+        f = tmp_path / "script.py"
+        f.write_text("def render():\n    return 1\n\nrender()\n")
+
+        self._load([f])
+
+        errors = registry.get_load_errors()
+        assert len(errors) == 1
+        assert errors[0]["source"] == str(f)
+        assert "render() at line 4" in errors[0]["error"]
+        assert "__main__" in errors[0]["error"]
+
+    def test_main_guarded_file_still_loads(self, tmp_path):
+        """The documented fix must actually work."""
+        f = tmp_path / "guarded.py"
+        f.write_text(
+            "def plot_gait(a):\n"
+            "    return a\n\n"
+            'if __name__ == "__main__":\n'
+            "    plot_gait(1)\n"
+        )
+
+        self._load([f])
+
+        assert registry.get_load_errors() == []
+        assert "plot_gait" in registry._functions
+
+    def test_parameter_and_path_input_assignments_still_execute(self, tmp_path):
+        """Module-level construction is an Assign, not a bare call -- it must
+        keep running, since registering those objects is the point."""
+        f = tmp_path / "entities.py"
+        f.write_text(
+            "from scidb import Parameter, PathInput\n\n"
+            "RATE = Parameter(1, 2, 3)\n"
+            "RAW = PathInput('{subject}.mat')\n\n"
+            "def use_it(x):\n"
+            "    return x\n"
+        )
+
+        registry._parameters.clear()
+        registry._path_inputs.clear()
+        self._load([f])
+
+        assert registry.get_load_errors() == []
+        assert "RATE" in registry._parameters
+        assert "RAW" in registry._path_inputs
+
+    def test_clean_file_alongside_refused_one_still_registers(self, tmp_path):
+        good = tmp_path / "good.py"
+        good.write_text("def good_fn(x):\n    return x\n")
+        bad = tmp_path / "bad.py"
+        bad.write_text("def bad_fn(x):\n    return x\n\nbad_fn(1)\n")
+
+        self._load([good, bad])
+
+        assert "good_fn" in registry._functions
+        assert "bad_fn" not in registry._functions
+        assert len(registry.get_load_errors()) == 1
+
+    def test_unparseable_file_recorded_not_executed(self, tmp_path):
+        f = tmp_path / "broken.py"
+        f.write_text("def broken(\n")
+
+        self._load([f])
+
+        errors = registry.get_load_errors()
+        assert len(errors) == 1
+        assert "SyntaxError" in errors[0]["error"]
+
+    def test_allowlisted_config_call_does_not_block_import(self, tmp_path):
+        """A top-of-file backend/logging setting is configuration, not work."""
+        f = tmp_path / "configured.py"
+        f.write_text(
+            "import logging\n"
+            "logging.basicConfig()\n\n"
+            "def real_fn(x):\n"
+            "    return x\n"
+        )
+
+        self._load([f])
+
+        assert registry.get_load_errors() == []
+        assert "real_fn" in registry._functions
+
+    def test_output_only_toplevel_code_does_not_block_import(self, tmp_path):
+        """Console output is not work. Refusing over a debug print would cost
+        every function the file defines, and the import already runs inside a
+        stdout/stderr redirect that captures it."""
+        f = tmp_path / "chatty.py"
+        f.write_text(
+            "import logging\n\n"
+            "logger = logging.getLogger(__name__)\n"
+            "print('loading chatty module')\n"
+            "logger.info('chatty module loaded')\n\n"
+            "def real_fn(x):\n"
+            "    return x\n"
+        )
+
+        self._load([f])
+
+        assert registry.get_load_errors() == []
+        assert "real_fn" in registry._functions
+
+    def test_refusal_logs_at_info_not_error(self, tmp_path, caplog):
+        """A stray script in a folder-scanned tree is routine -- it must not
+        read as a GUI failure on the console."""
+        import logging
+
+        f = tmp_path / "stray.py"
+        f.write_text("def fn(x):\n    return x\n\nfn(1)\n")
+
+        with caplog.at_level(logging.DEBUG):
+            self._load([f])
+
+        assert not any(
+            r.levelno >= logging.WARNING and "Refusing to import" in r.getMessage()
+            for r in caplog.records
+        )
+        assert "Refusing to import" in caplog.text

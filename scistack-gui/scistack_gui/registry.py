@@ -23,7 +23,14 @@ from typing import TYPE_CHECKING
 
 from scidb import BaseVariable, EachOf, Parameter, PathInput
 from scidb.discover import is_parameter, is_path_input
-from scifor.discovery import PathInsert, walk_package
+from scifor.discovery import (
+    PathInsert,
+    PathInsertAll,
+    find_top_level_side_effects,
+    headless_matplotlib,
+    sibling_import_dirs,
+    walk_package,
+)
 
 from scistack_gui import library_functions
 
@@ -289,14 +296,77 @@ def refresh_all() -> dict:
 
 
 def _load_file_modules(paths: list[Path]) -> None:
-    """Import each .py file and scan for functions."""
+    """Import each .py file and scan for functions.
+
+    Loose files are loaded by location (``spec_from_file_location``) rather
+    than by package name, so nothing anchors a bare ``import sibling``
+    inside them. Every directory contributing a file is placed on sys.path
+    for the duration of the batch -- see ``sibling_import_dirs`` for why the
+    union is needed rather than each file's own parent.
+    """
     logger.debug("[registry] Importing %d module files", len(paths))
+    search_dirs = sibling_import_dirs(paths)
+    logger.info(
+        "[registry] Adding %d source directory(ies) to sys.path for sibling "
+        "imports: %s",
+        len(search_dirs),
+        search_dirs,
+    )
+    with PathInsertAll(search_dirs), headless_matplotlib():
+        _exec_file_modules(paths)
+
+
+def _screen_for_side_effects(path: Path) -> str | None:
+    """Return a load-error message if *path* must not be imported, else None.
+
+    Importing is how discovery reads a file's definitions, so a file with
+    module-level work (an unguarded plotting script dropped in a
+    folder-scanned tree) would do that work during a scan. One real project
+    spent 13 of its 15 startup seconds rendering figures this way before
+    dying on a hardcoded output path. Refuse rather than execute.
+
+    A file that doesn't parse is also refused here: importing it would only
+    raise ``SyntaxError`` anyway, so there's nothing to gain by trying.
+    """
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return f"Could not read file: {e}"
+
+    try:
+        effects = find_top_level_side_effects(source)
+    except SyntaxError as e:
+        return f"SyntaxError: {e}"
+
+    if not effects:
+        return None
+
+    detail = ", ".join(e.describe() for e in effects)
+    return (
+        f"Skipped: {detail} would execute on import. Wrap it in "
+        '`if __name__ == "__main__":` to make this file discoverable.'
+    )
+
+
+def _exec_file_modules(paths: list[Path]) -> None:
+    """Import/scan each file. Assumes sys.path is already prepared."""
     for i, path in enumerate(paths):
         logger.debug("[registry] Processing module %d/%d: %s", i + 1, len(paths), path)
         if not path.exists():
             logger.warning("[registry] Skipping missing module: %s", path)
             _record_load_error(str(path), "File does not exist")
             continue
+
+        refusal = _screen_for_side_effects(path)
+        if refusal is not None:
+            # INFO, not WARNING: a stray script sitting in a folder-scanned
+            # tree is routine and must not read as a GUI failure on the
+            # console -- same reasoning as the failed-import path below. The
+            # Paths -> Discovered Code panel is where this surfaces to users.
+            logger.info("[registry] Refusing to import %s -- %s", path, refusal)
+            _record_load_error(str(path), refusal)
+            continue
+
         mod_name = f"scistack_user_{i}_{path.stem}"
         _module_paths[mod_name] = str(path)
         try:
@@ -349,7 +419,7 @@ def _load_packages(names: list[str]) -> None:
             _scan_module_path_inputs(mod, source=source)
 
         fn_count_before = len(_functions)
-        with _suppress_user_code_output():
+        with _suppress_user_code_output(), headless_matplotlib():
             wr = walk_package(pkg_name, on_module)
 
         if not wr.per_module and wr.errors and wr.errors[0].module_name == pkg_name:

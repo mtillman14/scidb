@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -9,10 +10,14 @@ from pathlib import Path
 import pytest
 from scifor.discovery import (
     PathInsert,
+    PathInsertAll,
+    find_top_level_side_effects,
+    headless_matplotlib,
     is_test_modname,
     is_test_path,
     purge_module,
     read_project_name,
+    sibling_import_dirs,
     walk_package,
 )
 
@@ -187,6 +192,351 @@ class TestPathInsert:
             assert target in sys.path
         finally:
             sys.path.remove(target)
+
+
+class TestPathInsertAll:
+    def test_inserts_and_removes_every_directory(self, tmp_path):
+        targets = [str(tmp_path / "a"), str(tmp_path / "b"), str(tmp_path / "c")]
+        for t in targets:
+            assert t not in sys.path
+
+        with PathInsertAll(targets):
+            for t in targets:
+                assert t in sys.path
+
+        for t in targets:
+            assert t not in sys.path
+
+    def test_restores_path_when_body_raises(self, tmp_path):
+        targets = [str(tmp_path / "a"), str(tmp_path / "b")]
+        with pytest.raises(RuntimeError):
+            with PathInsertAll(targets):
+                raise RuntimeError("import blew up")
+        for t in targets:
+            assert t not in sys.path
+
+    def test_empty_list_is_a_noop(self):
+        before = list(sys.path)
+        with PathInsertAll([]):
+            assert sys.path == before
+        assert sys.path == before
+
+    def test_leaves_preexisting_entries_alone(self, tmp_path):
+        pre = str(tmp_path / "already")
+        sys.path.insert(0, pre)
+        try:
+            with PathInsertAll([pre, str(tmp_path / "fresh")]):
+                assert sys.path.count(pre) == 1
+            assert pre in sys.path
+        finally:
+            sys.path.remove(pre)
+
+
+class TestSiblingImportDirs:
+    def test_returns_distinct_parent_dirs(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        paths = [
+            tmp_path / "a.py",
+            tmp_path / "b.py",
+            tmp_path / "sub" / "c.py",
+        ]
+        assert sibling_import_dirs(paths) == sorted(
+            {str(tmp_path.resolve()), str((tmp_path / "sub").resolve())}
+        )
+
+    def test_accepts_strings(self, tmp_path):
+        assert sibling_import_dirs([str(tmp_path / "a.py")]) == [
+            str(tmp_path.resolve())
+        ]
+
+    def test_empty_input(self):
+        assert sibling_import_dirs([]) == []
+
+
+class TestFindTopLevelSideEffects:
+    def test_flags_bare_call_with_lineno_and_callee(self):
+        src = textwrap.dedent(
+            """\
+            def plot_gait(a, b, c):
+                return a
+
+            plot_gait(1, 2, 3)
+            """
+        )
+        effects = find_top_level_side_effects(src)
+        assert len(effects) == 1
+        assert effects[0].lineno == 4
+        assert effects[0].call == "plot_gait"
+        assert "plot_gait() at line 4" in effects[0].describe()
+
+    def test_flags_dotted_callee(self):
+        effects = find_top_level_side_effects("import plt\nplt.savefig('x.png')\n")
+        assert [e.call for e in effects] == ["plt.savefig"]
+
+    def test_reports_multiple_in_line_order(self):
+        src = "f()\ng()\nh()\n"
+        effects = find_top_level_side_effects(src)
+        assert [(e.lineno, e.call) for e in effects] == [
+            (1, "f"),
+            (2, "g"),
+            (3, "h"),
+        ]
+
+    # -- Form 2: assignment calling a function defined in this file --------
+
+    def test_flags_assignment_calling_local_function(self):
+        """The hole a form-only rule leaves: an Assign does the same work as
+        a bare call, and ``Parameter(...)`` looks identical by shape."""
+        src = textwrap.dedent(
+            """\
+            def plot_gait(a, b, c):
+                return a
+
+            data = plot_gait(1, 2, 3)
+            """
+        )
+        effects = find_top_level_side_effects(src)
+        assert len(effects) == 1
+        assert effects[0].lineno == 4
+        assert effects[0].call == "plot_gait"
+        assert "defined in this file" in effects[0].reason
+
+    def test_flags_annotated_assignment_calling_local_function(self):
+        src = "def work():\n    return 1\n\nx: int = work()\n"
+        assert [e.call for e in find_top_level_side_effects(src)] == ["work"]
+
+    def test_flags_local_call_nested_in_expression(self):
+        src = "def work():\n    return 1\n\nx = 2 * work() + 1\n"
+        assert [e.call for e in find_top_level_side_effects(src)] == ["work"]
+
+    def test_flags_local_call_in_async_def(self):
+        src = "async def work():\n    return 1\n\nx = work()\n"
+        assert [e.call for e in find_top_level_side_effects(src)] == ["work"]
+
+    def test_deduplicates_repeated_call_on_one_line(self):
+        src = "def f(x):\n    return x\n\ny = f(f(1))\n"
+        effects = find_top_level_side_effects(src)
+        assert len(effects) == 1
+
+    def test_does_not_flag_assignment_calling_imported_name(self):
+        """The discriminator: imported callee, so it must run."""
+        src = textwrap.dedent(
+            """\
+            import logging
+            from pathlib import Path
+
+            logger = logging.getLogger(__name__)
+            HERE = Path(__file__).parent
+            """
+        )
+        assert find_top_level_side_effects(src) == []
+
+    def test_does_not_flag_locally_defined_class_instantiation(self):
+        src = textwrap.dedent(
+            """\
+            class Config:
+                pass
+
+            CONFIG = Config()
+            """
+        )
+        assert find_top_level_side_effects(src) == []
+
+    def test_local_function_call_inside_another_def_is_not_flagged(self):
+        src = "def a():\n    return 1\n\ndef b():\n    return a()\n"
+        assert find_top_level_side_effects(src) == []
+
+    def test_reports_both_forms_together_in_line_order(self):
+        src = textwrap.dedent(
+            """\
+            def work():
+                return 1
+
+            x = work()
+            work()
+            """
+        )
+        effects = find_top_level_side_effects(src)
+        assert [(e.lineno, e.call) for e in effects] == [(4, "work"), (5, "work")]
+
+    # -- Must NOT flag: these are the whole point of discovery --------------
+
+    def test_does_not_flag_parameter_assignment(self):
+        assert find_top_level_side_effects("RATE = Parameter(1, 2, 3)\n") == []
+
+    def test_does_not_flag_path_input_assignment(self):
+        assert find_top_level_side_effects("RAW = PathInput('{s}.mat')\n") == []
+
+    def test_does_not_flag_annotated_assignment(self):
+        assert find_top_level_side_effects("RATE: object = Parameter(1)\n") == []
+
+    def test_does_not_flag_module_docstring(self):
+        assert find_top_level_side_effects('"""A module docstring."""\n') == []
+
+    def test_does_not_flag_imports_defs_or_classes(self):
+        src = textwrap.dedent(
+            """\
+            import os
+            from pathlib import Path
+
+            def fn(x):
+                return x
+
+            class Thing:
+                def method(self):
+                    helper()
+            """
+        )
+        assert find_top_level_side_effects(src) == []
+
+    def test_does_not_flag_main_guard(self):
+        """The If is the module-body child; we never descend into it."""
+        src = textwrap.dedent(
+            """\
+            def main():
+                return 1
+
+            if __name__ == "__main__":
+                main()
+                render_everything()
+            """
+        )
+        assert find_top_level_side_effects(src) == []
+
+    def test_does_not_flag_calls_nested_inside_functions(self):
+        src = "def fn():\n    plot_gait(1, 2, 3)\n"
+        assert find_top_level_side_effects(src) == []
+
+    # -- Allowlist ---------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "matplotlib.use('Agg')",
+            "mpl.use('Agg')",
+            "logging.basicConfig()",
+            "warnings.filterwarnings('ignore')",
+            "pd.set_option('display.width', 200)",
+            "sns.set_theme()",
+            "plt.style.use('ggplot')",
+        ],
+    )
+    def test_allowlisted_config_calls_are_not_flagged(self, line):
+        assert find_top_level_side_effects(line + "\n") == []
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "print('hello')",
+            "pprint(thing)",
+            "pprint.pprint(thing)",
+            "sys.stdout.write('x')",
+            "sys.stderr.write('x')",
+            "logger.info('module loaded')",
+            "log.debug('x')",
+            "LOGGER.warning('x')",
+            "_log.error('x')",
+            "warnings.warn('deprecated')",
+        ],
+    )
+    def test_output_only_calls_are_not_flagged(self, line):
+        """A stray print says nothing about whether a file does work, and
+        refusing over one would cost every function the file defines."""
+        assert find_top_level_side_effects(line + "\n") == []
+
+    def test_print_alongside_definitions_does_not_refuse_the_file(self):
+        src = textwrap.dedent(
+            """\
+            print('hello from noisy module')
+
+            def noisy_fn(x):
+                return x
+            """
+        )
+        assert find_top_level_side_effects(src) == []
+
+    def test_local_function_named_like_a_logging_method_is_still_flagged(self):
+        """The logging carve-out requires a dotted callee, so a local
+        ``def error(...)`` invoked bare is not smuggled through."""
+        src = "def error(msg):\n    return msg\n\nerror('boom')\n"
+        assert [e.call for e in find_top_level_side_effects(src)] == ["error"]
+
+    def test_allowlist_can_be_overridden(self):
+        src = "setup_project()\n"
+        assert len(find_top_level_side_effects(src)) == 1
+        assert find_top_level_side_effects(src, allow=frozenset({"setup_project"})) == []
+
+    def test_non_name_callee_is_flagged_and_rendered_safely(self):
+        effects = find_top_level_side_effects("funcs[0]()\n")
+        assert [e.call for e in effects] == ["<expr>"]
+
+    def test_raises_on_unparseable_source(self):
+        with pytest.raises(SyntaxError):
+            find_top_level_side_effects("def broken(\n")
+
+
+class TestHeadlessMatplotlib:
+    def test_sets_and_restores_env_var(self, monkeypatch):
+        monkeypatch.delenv("MPLBACKEND", raising=False)
+        with headless_matplotlib():
+            assert os.environ["MPLBACKEND"] == "Agg"
+        assert "MPLBACKEND" not in os.environ
+
+    def test_restores_preexisting_env_var(self, monkeypatch):
+        monkeypatch.setenv("MPLBACKEND", "TkAgg")
+        with headless_matplotlib():
+            assert os.environ["MPLBACKEND"] == "Agg"
+        assert os.environ["MPLBACKEND"] == "TkAgg"
+
+    def test_restores_env_var_when_body_raises(self, monkeypatch):
+        monkeypatch.setenv("MPLBACKEND", "TkAgg")
+        with pytest.raises(RuntimeError):
+            with headless_matplotlib():
+                raise RuntimeError("import blew up")
+        assert os.environ["MPLBACKEND"] == "TkAgg"
+
+    def test_no_op_when_matplotlib_not_imported(self, monkeypatch):
+        """Must not import matplotlib itself -- it stays an optional dep."""
+        monkeypatch.delitem(sys.modules, "matplotlib", raising=False)
+        with headless_matplotlib():
+            assert "matplotlib" not in sys.modules
+
+    def test_switches_and_restores_already_imported_matplotlib(self, monkeypatch):
+        calls: list[tuple[str, bool]] = []
+
+        fake = type(sys)("matplotlib")
+        fake.get_backend = lambda: "TkAgg"
+        fake.use = lambda backend, force=False: calls.append((backend, force))
+        monkeypatch.setitem(sys.modules, "matplotlib", fake)
+
+        with headless_matplotlib():
+            assert calls == [("Agg", True)]
+        assert calls == [("Agg", True), ("TkAgg", True)]
+
+    def test_does_not_switch_when_already_agg(self, monkeypatch):
+        calls: list[str] = []
+
+        fake = type(sys)("matplotlib")
+        fake.get_backend = lambda: "agg"
+        fake.use = lambda backend, force=False: calls.append(backend)
+        monkeypatch.setitem(sys.modules, "matplotlib", fake)
+
+        with headless_matplotlib():
+            pass
+        assert calls == []
+
+    def test_survives_matplotlib_raising(self, monkeypatch):
+        """A broken/partial matplotlib must not abort discovery."""
+        fake = type(sys)("matplotlib")
+
+        def boom():
+            raise RuntimeError("no backend")
+
+        fake.get_backend = boom
+        monkeypatch.setitem(sys.modules, "matplotlib", fake)
+
+        with headless_matplotlib():
+            pass  # no exception
 
 
 class TestPurgeModule:

@@ -628,6 +628,108 @@ class TestParseMatlabEntitiesScript:
         assert binding_path_input_literal(bindings["a"], text) == ("x.mat", "/data")
         assert binding_path_input_literal(bindings["b"], text) == ("x.mat", "/data")
 
+    # -- Static folding of templates built from variables ------------------
+    #
+    # A real project lost 5 of 8 MATLAB PathInputs to "not a literal
+    # construction" because their templates were assembled from a base
+    # directory rather than written inline, so they never appeared as canvas
+    # nodes. Folding resolves the common assembly idioms without running
+    # MATLAB. See matlab_parser.collect_matlab_literal_scope.
+
+    def _fold(self, tmp_path, src, name="p"):
+        from scistack_gui.matlab_parser import (
+            binding_path_input_literal,
+            collect_matlab_literal_scope,
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(tmp_path, src)
+        text = read_source_text(f)
+        scope = collect_matlab_literal_scope(text)
+        bindings = {b.name: b for b in parse_matlab_entities_script(f)}
+        return binding_path_input_literal(bindings[name], text, scope)
+
+    def test_folds_bare_variable_reference(self, tmp_path):
+        src = "tmpl = '6MWT-{pass}.xlsx';\np = scidb.PathInput(tmpl);\n"
+        assert self._fold(tmp_path, src) == ("6MWT-{pass}.xlsx", None)
+
+    def test_folds_bracket_concatenation_with_spaces(self, tmp_path):
+        """``[a b]`` splits on whitespace, unlike an argument list."""
+        src = (
+            "baseDir = 'Y:/data';\n"
+            "p = scidb.PathInput([baseDir '/6MWT-{pass}.xlsx']);\n"
+        )
+        assert self._fold(tmp_path, src) == ("Y:/data/6MWT-{pass}.xlsx", None)
+
+    def test_folds_bracket_concatenation_with_commas(self, tmp_path):
+        src = "baseDir = 'Y:/data';\np = scidb.PathInput([baseDir, '/x.xlsx']);\n"
+        assert self._fold(tmp_path, src) == ("Y:/data/x.xlsx", None)
+
+    def test_folds_fullfile(self, tmp_path):
+        src = (
+            "baseDir = 'Y:/data';\n"
+            "p = scidb.PathInput(fullfile(baseDir, 'EMG', '6MWT.csv'));\n"
+        )
+        assert self._fold(tmp_path, src) == ("Y:/data/EMG/6MWT.csv", None)
+
+    def test_folds_strcat_without_separator(self, tmp_path):
+        src = "stem = 'trial';\np = scidb.PathInput(strcat(stem, '.mat'));\n"
+        assert self._fold(tmp_path, src) == ("trial.mat", None)
+
+    def test_folds_chained_variable_definitions(self, tmp_path):
+        """A later helper may be built from an earlier one."""
+        src = (
+            "root = 'Y:/study';\n"
+            "emgDir = [root '/EMG'];\n"
+            "p = scidb.PathInput([emgDir '/{pass}.csv']);\n"
+        )
+        assert self._fold(tmp_path, src) == ("Y:/study/EMG/{pass}.csv", None)
+
+    def test_folds_root_folder_argument_too(self, tmp_path):
+        src = (
+            "rootDir = '/data';\n"
+            "p = scidb.PathInput('x.mat', 'root_folder', rootDir);\n"
+        )
+        assert self._fold(tmp_path, src) == ("x.mat", "/data")
+
+    def test_last_binding_of_a_helper_wins(self, tmp_path):
+        src = (
+            "baseDir = 'Y:/old';\n"
+            "baseDir = 'Y:/new';\n"
+            "p = scidb.PathInput([baseDir '/x.csv']);\n"
+        )
+        assert self._fold(tmp_path, src) == ("Y:/new/x.csv", None)
+
+    def test_unresolvable_expression_still_reports_non_literal(self, tmp_path):
+        """Guessing a value would put a wrong path on the canvas -- worse
+        than the honest 'cannot extract' warning."""
+        src = "p = scidb.PathInput(sprintf('%s.csv', subject));\n"
+        assert self._fold(tmp_path, src) is None
+
+    def test_unknown_variable_is_not_invented(self, tmp_path):
+        src = "p = scidb.PathInput([undefinedVar '/x.csv']);\n"
+        assert self._fold(tmp_path, src) is None
+
+    def test_partially_resolvable_concat_is_all_or_nothing(self, tmp_path):
+        src = "baseDir = 'Y:/data';\np = scidb.PathInput([baseDir unknownTail]);\n"
+        assert self._fold(tmp_path, src) is None
+
+    def test_folding_is_opt_in_no_scope_behaves_as_before(self, tmp_path):
+        """Callers that don't pass a scope keep the old literal-only rule."""
+        from scistack_gui.matlab_parser import (
+            binding_path_input_literal,
+            parse_matlab_entities_script,
+            read_source_text,
+        )
+
+        f = self._write(
+            tmp_path, "tmpl = 'x.mat';\np = scidb.PathInput(tmpl);\n"
+        )
+        text = read_source_text(f)
+        b = {x.name: x for x in parse_matlab_entities_script(f)}["p"]
+        assert binding_path_input_literal(b, text) is None
+
     def test_equals_inside_a_template_is_not_a_named_argument(self, tmp_path):
         from scistack_gui.matlab_parser import (
             binding_path_input_literal,

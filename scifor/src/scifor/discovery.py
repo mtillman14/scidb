@@ -12,9 +12,12 @@ what "discovery" means for them.
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import importlib
 import importlib.util
 import logging
+import os
 import pkgutil
 import re
 import sys
@@ -109,6 +112,314 @@ class PathInsert:
             except ValueError:
                 pass
         importlib.invalidate_caches()
+
+
+@dataclass
+class PathInsertAll:
+    """Insert several directories onto sys.path for the duration of a block.
+
+    Composes :class:`PathInsert` over each directory, so the same
+    idempotence and restore-on-exit rules apply per entry. Directories are
+    entered in the given order; on exit they unwind in reverse.
+
+    Used when a batch of loose files is imported together and they import
+    *each other* by bare module name -- no single directory suffices,
+    because a file in a subdirectory may import one from its parent and
+    vice versa.
+    """
+
+    directories: list[str]
+    _stack: contextlib.ExitStack | None = None
+
+    def __enter__(self) -> "PathInsertAll":
+        self._stack = contextlib.ExitStack()
+        for directory in self.directories:
+            self._stack.enter_context(PathInsert(directory))
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._stack is not None:
+            self._stack.close()
+            self._stack = None
+
+
+def sibling_import_dirs(paths: list[Path] | list[str]) -> list[str]:
+    """Directories that must be on sys.path for *paths* to import each other.
+
+    Returns the distinct, resolved parent directory of every path, sorted
+    for determinism. Loose (non-packaged) project files are imported by
+    absolute location rather than by package name, so Python has no anchor
+    for a bare ``import sibling`` inside them unless the containing
+    directories are on sys.path.
+
+    The *union* is deliberate rather than each file's own parent: within one
+    discovered file set, imports cross directory boundaries in both
+    directions (``src/a.py`` importing ``src/sub/b.py`` and ``src/sub/c.py``
+    importing ``src/a.py`` are both common), so every contributing directory
+    has to be visible for the whole batch.
+    """
+    dirs = {str(Path(p).resolve().parent) for p in paths}
+    return sorted(dirs)
+
+
+BENIGN_TOPLEVEL_CALLS = frozenset(
+    {
+        # Backend / style selection -- the whole point is to run at import.
+        # ``mpl`` is listed alongside ``matplotlib`` because the aliased
+        # import is at least as common as the full name.
+        "matplotlib.use",
+        "mpl.use",
+        "matplotlib.style.use",
+        "style.use",
+        "plt.style.use",
+        # Logging / warnings configuration.
+        "logging.basicConfig",
+        "logging.captureWarnings",
+        "logging.disable",
+        "warnings.filterwarnings",
+        "warnings.simplefilter",
+        # Library-wide options.
+        "pandas.set_option",
+        "pd.set_option",
+        "numpy.seterr",
+        "np.seterr",
+        "seaborn.set_theme",
+        "seaborn.set_style",
+        "seaborn.set_context",
+        "seaborn.set_palette",
+        "sns.set_theme",
+        "sns.set_style",
+        "sns.set_context",
+        "sns.set_palette",
+        "sys.setrecursionlimit",
+        # Output-only: emits text and does nothing else. Refusing a file over
+        # a stray debug ``print`` would cost every function it defines, and
+        # the console noise is already handled -- discovery imports run inside
+        # a stdout/stderr redirect that routes this to the debug log.
+        "print",
+        "pprint",
+        "pprint.pprint",
+        "stdout.write",
+        "stderr.write",
+    }
+)
+"""Top-level calls that are configuration or console output, not work -- see
+:func:`find_top_level_side_effects`."""
+
+_LOGGING_METHODS = frozenset(
+    {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
+)
+"""Emission methods treated as output-only on any *dotted* callee, so a
+module-level ``logger.info("loaded")`` doesn't get a file refused regardless of
+what the logger is named (``log``, ``LOGGER``, ``_log``, ...)."""
+
+
+def _is_benign_call(callee: str, allow: frozenset[str]) -> bool:
+    """True if *callee* is configuration or output rather than work."""
+    if callee in allow:
+        return True
+    parts = callee.split(".")
+    if ".".join(parts[-2:]) in allow:
+        return True
+    # Requires a dot, so a locally-defined ``def error(...)`` invoked bare is
+    # still flagged -- only attribute calls read as logger emission.
+    return len(parts) > 1 and parts[-1] in _LOGGING_METHODS
+
+
+@dataclass
+class TopLevelSideEffect:
+    """A module-level call that runs for its side effect on import."""
+
+    lineno: int
+    call: str
+    """Rendered callee, e.g. ``plot_gait`` or ``fig.savefig``."""
+    reason: str = "its result is discarded"
+
+    def describe(self) -> str:
+        return f"top-level call {self.call}() at line {self.lineno} ({self.reason})"
+
+
+def _render_callee(node: ast.expr) -> str:
+    """Render a call's callee as a dotted name (``a.b.c``), best-effort.
+
+    Returns ``"<expr>"`` for callees that aren't a plain name/attribute chain
+    (e.g. ``funcs[0]()``), which are never allowlisted.
+    """
+    parts: list[str] = []
+    cur: ast.expr | None = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return "<expr>"
+
+
+def find_top_level_side_effects(
+    source: str, *, allow: frozenset[str] = BENIGN_TOPLEVEL_CALLS
+) -> list[TopLevelSideEffect]:
+    """Find module-level calls that do the file's own work, in line order.
+
+    Discovery has to *import* a file to read its definitions, which also runs
+    every statement in the module body. Importing a file with module-level
+    work therefore does that work: renders plots, writes files, hits the
+    network.
+
+    Two forms are reported:
+
+    1. **A bare call** -- an ``ast.Expr`` wrapping an ``ast.Call``. The result
+       is discarded, so the call exists only for what it does.
+    2. **An assignment that calls a function defined in this same file** --
+       ``data = plot_gait(sex, age, speed)``.
+
+    Form 2 is why the callee, not the statement shape, is the discriminator.
+    ``RATE = Parameter(1, 2, 3)`` and ``data = plot_gait(...)`` are both
+    Assign-of-Call and indistinguishable by form; what separates them is that
+    ``Parameter`` is *imported* while ``plot_gait`` is ``def``'d right there.
+    A file that defines work and then does it is the exact shape this exists
+    to catch.
+
+    That also means entity construction needs no allowlist and keeps working
+    for entity types that don't exist yet: ``Parameter``, ``PathInput``,
+    ``EachOf``, ``Sweep`` and friends are imported names, so they never match.
+
+    Never flagged:
+
+    - ``RATE = Parameter(1, 2, 3)`` -- imported callee; executing it is the
+      entire point of discovery.
+    - ``logger = logging.getLogger(__name__)``, ``HERE = Path(__file__).parent``
+      -- likewise imported, and assignments are *only* flagged for local
+      functions precisely so these stay silent without maintenance.
+    - Docstrings: ``Expr`` wrapping a ``Constant``, not a ``Call``.
+    - ``if __name__ == "__main__": main()`` -- the ``If`` is the module-body
+      child and only direct children are inspected, never descended into.
+
+    ``allow`` suppresses form-1 calls that are configuration or console output
+    rather than work (see :data:`BENIGN_TOPLEVEL_CALLS`); a callee matches if
+    its rendered dotted name, or that name's last two segments, is in the set,
+    or if it is an attribute call naming a logging method.
+
+    Output-only calls are deliberately benign: a stray ``print`` says nothing
+    about whether a file does *work*, discovery already imports inside a
+    stdout/stderr redirect that routes such output to the debug log, and
+    refusing over one would cost every function the file defines.
+
+    Known gaps, all chosen for a low false-positive rate:
+
+    - A bare top-level ``for``/``while``/``with`` executes and is not reported.
+    - ``df = pd.read_csv("huge.csv")`` reads a file, but flagging *imported*
+      callees in assignments would also flag every ``logging.getLogger`` and
+      ``Path(...)`` in the wild -- far too noisy to be useful.
+    - Locally-defined *classes* are excluded, so ``CONFIG = Config(a=1)`` for a
+      local ``@dataclass`` stays silent. Instantiation is usually cheap;
+      functions are where the work lives.
+
+    Raises ``SyntaxError`` if *source* does not parse.
+    """
+    tree = ast.parse(source)
+    local_fns = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    found: list[TopLevelSideEffect] = []
+
+    for node in tree.body:
+        # Form 1: a bare call. The result is thrown away, so the call exists
+        # only for what it does.
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            callee = _render_callee(node.value.func)
+            if _is_benign_call(callee, allow):
+                logger.debug(
+                    "Allowing benign top-level call %s at line %d", callee, node.lineno
+                )
+                continue
+            found.append(TopLevelSideEffect(lineno=node.lineno, call=callee))
+
+        # Form 2: an assignment that calls one of *this file's own*
+        # functions. Statement form alone can't separate
+        # ``RATE = Parameter(1, 2, 3)`` from ``data = plot_gait(...)`` --
+        # both are Assign-of-Call -- so the callee decides.
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            if node.value is None:  # bare annotation: ``x: int``
+                continue
+            for sub in ast.walk(node.value):
+                if not isinstance(sub, ast.Call):
+                    continue
+                callee = _render_callee(sub.func)
+                if callee in local_fns:
+                    found.append(
+                        TopLevelSideEffect(
+                            lineno=sub.lineno,
+                            call=callee,
+                            reason="calls a function defined in this file",
+                        )
+                    )
+
+    # ast.walk is unordered, and a nested call (``x = f(f(1))``) can report
+    # the same site twice.
+    seen: set[tuple[int, str]] = set()
+    unique: list[TopLevelSideEffect] = []
+    for effect in found:
+        key = (effect.lineno, effect.call)
+        if key not in seen:
+            seen.add(key)
+            unique.append(effect)
+    unique.sort(key=lambda e: (e.lineno, e.call))
+    return unique
+
+
+@contextlib.contextmanager
+def headless_matplotlib():
+    """Force a non-interactive matplotlib backend for the duration of a block.
+
+    Discovery imports user code, and a plotting script that builds figures at
+    module level will otherwise try to open a GUI window on whatever backend
+    matplotlib picked -- slow, and on some platforms it steals focus or hangs
+    a headless server.
+
+    Sets ``MPLBACKEND=Agg`` so a matplotlib imported *during* the block picks
+    Agg, and additionally switches an already-imported matplotlib, restoring
+    its previous backend on exit. Never imports matplotlib itself -- projects
+    that don't use it pay nothing and it stays an optional dependency.
+
+    This does not stop ``savefig`` or other file writes; it only removes the
+    interactive-backend hazard. Refusing to execute side-effecting files at all
+    is :func:`find_top_level_side_effects`' job.
+
+    Note: a matplotlib first imported *inside* the block stays on Agg
+    afterward -- there was no prior backend to restore, and Agg is the correct
+    steady state for a server process.
+    """
+    prev_env = os.environ.get("MPLBACKEND")
+    os.environ["MPLBACKEND"] = "Agg"
+
+    mpl = sys.modules.get("matplotlib")
+    prev_backend: str | None = None
+    if mpl is not None:
+        try:
+            current = mpl.get_backend()
+            if current.lower() != "agg":
+                mpl.use("Agg", force=True)
+                prev_backend = current
+                logger.debug("Switched matplotlib backend %s -> Agg", current)
+        except Exception:
+            logger.debug("Could not switch matplotlib backend", exc_info=True)
+
+    try:
+        yield
+    finally:
+        if prev_env is None:
+            os.environ.pop("MPLBACKEND", None)
+        else:
+            os.environ["MPLBACKEND"] = prev_env
+        if prev_backend is not None:
+            try:
+                mpl.use(prev_backend, force=True)
+                logger.debug("Restored matplotlib backend -> %s", prev_backend)
+            except Exception:
+                logger.debug("Could not restore matplotlib backend", exc_info=True)
 
 
 def purge_module(package_name: str) -> None:

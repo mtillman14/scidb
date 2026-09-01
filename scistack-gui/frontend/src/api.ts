@@ -66,11 +66,56 @@ export function addNotificationHandler(handler: MessageHandler): () => void {
  * In standalone mode: translates the method + params into a fetch() call
  * to the equivalent REST endpoint.
  */
+/**
+ * Read-only methods whose concurrent duplicates may share one request.
+ *
+ * Independent components legitimately need the same data — EditTab wants the
+ * hypothesis *ids* while HypothesisTabs wants the full records, so both call
+ * `list_hypotheses` on mount and the backend serves it twice (four times, for
+ * the endpoints two components each fetch). Coalescing collapses that without
+ * forcing the components into a shared provider.
+ *
+ * Deliberately an explicit list rather than a `get_`/`list_` prefix rule: a
+ * mutation mis-classified as coalescable would be silently dropped when it
+ * happened to overlap an identical in-flight call. Adding a read endpoint here
+ * is a cheap, reversible win; adding a mutation is a correctness bug.
+ */
+const COALESCABLE_METHODS = new Set([
+  'get_info',
+  'get_schema',
+  'get_registry',
+  'get_notes',
+  'get_pipeline',
+  'get_layout',
+  'get_parameters',
+  'get_path_inputs',
+  'get_hidden_ports',
+  'get_hidden_edges',
+  'get_hidden_pipelines',
+  'get_variables_list',
+  'list_pipelines',
+  'list_hypotheses',
+]);
+
+/** In-flight coalescable requests, keyed by method + params. */
+const inFlight = new Map<string, Promise<unknown>>();
+
 export async function callBackend(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
-  if (vscode) {
-    return callVSCode(method, params);
-  }
-  return callFetch(method, params);
+  const send = () => (vscode ? callVSCode(method, params) : callFetch(method, params));
+
+  if (!COALESCABLE_METHODS.has(method)) return send();
+
+  // Same method AND same params — a different pipeline_id is a different
+  // request and must not be served another scope's response.
+  const key = `${method}:${JSON.stringify(params)}`;
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+
+  // Cleared on settle, so this only ever merges genuinely concurrent callers
+  // and never caches a stale result for a later fetch.
+  const request = send().finally(() => { inFlight.delete(key); });
+  inFlight.set(key, request);
+  return request;
 }
 
 function callVSCode(method: string, params: Record<string, unknown>): Promise<unknown> {
