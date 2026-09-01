@@ -29,12 +29,30 @@ running mid-session, and the project's ethos is to hide, never delete.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
-DEFAULT_STUB_DIRNAME = "scistack_variables"
+DEFAULT_STUB_DIRNAME = "scistack_matlab_variables"
 """Where stubs go when ``[matlab] variable_dir`` is not configured: a
 directory beside the entities file, named so it reads as generated output
-rather than a place to hand-author code."""
+rather than a place to hand-author code, and so it is not mistaken for a
+second declaration surface next to ``scistack_entities.toml``.
+
+Renamed from ``scistack_variables`` with no alias (beta: clean breaks, no
+shims). A project that already has the old directory keeps it -- nothing
+deletes it -- but it stops being added to the MATLAB path, so its stubs go
+inert and are re-materialized here on the next run. Only one of the two
+directories is ever on the path, so the duplicate classdefs cannot shadow
+each other."""
+
+LEGACY_STUB_DIRNAME = "scistack_variables"
+"""The pre-rename directory name. Referenced only so callers can *report*
+an inert leftover to the user; never written to, never added to the path."""
+
+MATLAB_NAMELENGTHMAX = 63
+"""MATLAB's ``namelengthmax``. A longer name cannot be a class."""
+
+_MATLAB_IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
 def variable_stub_dir(project_start: "Path | str | None" = None) -> "Path | None":
@@ -76,6 +94,55 @@ def variable_stub_dir(project_start: "Path | str | None" = None) -> "Path | None
     return entities.parent / DEFAULT_STUB_DIRNAME
 
 
+def legacy_stub_dir(project_start: "Path | str | None" = None) -> "Path | None":
+    """An existing pre-rename ``scistack_variables`` directory, or ``None``.
+
+    Reporting only -- see :data:`DEFAULT_STUB_DIRNAME`. Returns a path only
+    when the directory actually exists, so a caller can say "this is inert
+    now" without inventing a folder that was never there.
+    """
+    from scidb.entities import entities_path
+
+    start = Path(project_start) if project_start is not None else Path.cwd()
+    entities = entities_path(start)
+    if entities is None:
+        return None
+    legacy = entities.parent / LEGACY_STUB_DIRNAME
+    return legacy if legacy.is_dir() else None
+
+
+def invalid_name_reason(name: str) -> "str | None":
+    """Why *name* cannot be a MATLAB class, or ``None`` if it can.
+
+    A classdef file's name must equal the class name it declares, so a stub
+    written under a mangled name can never resolve -- ``RawEMGscistack.m``
+    holding ``classdef RawEMG`` is simply invisible to MATLAB, and so is
+    ``classdef RawEMGscistack`` to any code that says ``RawEMG()``. Either
+    way the run fails later with ``Unrecognized function or variable``, far
+    from the write that caused it.
+
+    So names are validated *here*, at the only place that turns a name into
+    a filename, rather than trusting the three independent sources that feed
+    it (the TOML ``variables`` array, MATLAB's ``exist(n,'class')~=8`` list,
+    and the GUI's create request). A rejected name is reported through the
+    usual ``errors`` channel -- a MATLAB warning and a GUI load error --
+    instead of silently becoming an unusable file.
+    """
+    if not name:
+        return "the name is empty"
+    if len(name) > MATLAB_NAMELENGTHMAX:
+        return (
+            f"the name is {len(name)} characters; MATLAB's namelengthmax is "
+            f"{MATLAB_NAMELENGTHMAX}"
+        )
+    if not _MATLAB_IDENTIFIER_RE.match(name):
+        return (
+            "the name is not a valid MATLAB identifier (it must start with a "
+            "letter and contain only letters, digits and underscores)"
+        )
+    return None
+
+
 def classdef_text(name: str) -> str:
     """The stub source. One place, so the GUI's copy and MATLAB's
     self-healing copy can never drift into writing different files."""
@@ -103,8 +170,36 @@ def write_variable_classdefs(
     from scidb.log import Log
 
     wanted = [str(n) for n in names if str(n)]
+    # The exact list as received, before anything touches the filesystem.
+    # A stub written under a mangled name is indistinguishable from a missing
+    # one by the time MATLAB reports it, so the names have to be on the record
+    # at the hand-off, not inferred afterwards from what landed on disk.
+    Log.debug(
+        "[stubs] write_variable_classdefs received %d name(s): %s",
+        len(wanted),
+        ", ".join(repr(n) for n in wanted) or "(none)",
+        layer="matlab",
+    )
     if not wanted:
         return {"dir": "", "created": [], "skipped": [], "errors": []}
+
+    errors: list[str] = []
+    valid: list[str] = []
+    for name in wanted:
+        reason = invalid_name_reason(name)
+        if reason is None:
+            valid.append(name)
+            continue
+        message = (
+            f"refusing to write a classdef for {name!r}: {reason}. A classdef "
+            f"file must be named after the class it declares, so this stub "
+            f"could never resolve."
+        )
+        Log.warn("[stubs] %s", message, layer="matlab")
+        errors.append(message)
+    wanted = valid
+    if not wanted:
+        return {"dir": "", "created": [], "skipped": [], "errors": errors}
 
     resolved = (
         Path(target_dir) if target_dir is not None else variable_stub_dir(project_start)
@@ -115,13 +210,14 @@ def write_variable_classdefs(
             f"there is nowhere to write classdefs for: {', '.join(sorted(wanted))}"
         )
         Log.warn("[stubs] %s", message, layer="matlab")
-        return {"dir": "", "created": [], "skipped": [], "errors": [message]}
+        errors.append(message)
+        return {"dir": "", "created": [], "skipped": [], "errors": errors}
 
     created: list[str] = []
     skipped: list[str] = []
-    errors: list[str] = []
     for name in wanted:
         target = resolved / f"{name}.m"
+        Log.debug("[stubs] '%s' -> %s", name, target, layer="matlab")
         if target.exists():
             Log.debug(
                 "[stubs] classdef for '%s' already exists at %s",

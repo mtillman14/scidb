@@ -1250,9 +1250,22 @@ def ensure_variable_classdefs(names, project_start=None) -> dict:
     ``names`` arrives from MATLAB as a cell of char/string; each entry is
     stringified here so both marshal correctly.
     """
+    from scidb.log import Log
     from scimatlab.stubs import write_variable_classdefs
 
-    wanted = [str(n) for n in names] if names is not None else []
+    raw = list(names) if names is not None else []
+    wanted = [str(n) for n in raw]
+    # Both sides of the marshalling boundary, because a MATLAB `string` vs
+    # `char` mismatch mangles a name *here* and nowhere downstream can tell
+    # that from a name that arrived wrong. Only logged when str() actually
+    # changed something, so the common case stays quiet.
+    changed = [(a, b) for a, b in zip(raw, wanted) if not isinstance(a, str) or a != b]
+    if changed:
+        Log.debug(
+            "[bridge] ensure_variable_classdefs marshalled %s",
+            "; ".join(f"{a!r} -> {b!r}" for a, b in changed),
+            layer="matlab",
+        )
     return write_variable_classdefs(wanted, project_start=project_start)
 
 

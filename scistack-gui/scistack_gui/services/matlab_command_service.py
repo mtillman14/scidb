@@ -338,7 +338,24 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     logger.info(
         "generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd)
     )
-    return {"command": cmd}
+    # Advisory only -- MATLAB's path is the authority on what resolves (see
+    # matlab_command._unresolvable_var_types). Returned so api/run.py can put
+    # it in the run console before the user starts waiting on MATLAB, rather
+    # than leaving it as a comment they may never read.
+    #
+    # Its own key, NOT "warnings": on the pipeline branch below that key
+    # means "steps excluded from the script", which a caller may act on, and
+    # mixing an unrelated diagnostic into it makes both unreadable.
+    from scistack_gui.api.matlab_command import (
+        _collect_var_types,
+        unresolvable_var_type_warning,
+    )
+
+    checked = set(output_types or []) | _collect_var_types(
+        fn_variants if fn_variants else (params.get("variants") or [])
+    )
+    diagnostics = [d for d in [unresolvable_var_type_warning(checked)] if d]
+    return {"command": cmd, "diagnostics": diagnostics}
 
 
 def _drop_project_root_folder(path_inputs: dict, project_root) -> None:
@@ -563,4 +580,18 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         pipeline_id,
         len(cmd),
     )
-    return {"command": cmd, "warnings": warnings}
+    # See the single-function branch: advisory, surfaced in the run console,
+    # and kept out of "warnings" so that list stays exactly the excluded
+    # Python steps its callers and tests expect.
+    from scistack_gui.api.matlab_command import (
+        _collect_var_types,
+        unresolvable_var_type_warning,
+    )
+
+    pipeline_var_types: set[str] = set()
+    for step in steps:
+        pipeline_var_types |= _collect_var_types(step.get("variants") or [])
+    diagnostics = [
+        d for d in [unresolvable_var_type_warning(pipeline_var_types)] if d
+    ]
+    return {"command": cmd, "warnings": warnings, "diagnostics": diagnostics}

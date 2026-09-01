@@ -561,7 +561,62 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         variable_file,
         matlab_entities_file,
     )
+    _log_declaration_surfaces(config)
     return config
+
+
+def _log_declaration_surfaces(config) -> None:
+    """Name every file that can declare an entity, and say which may be written.
+
+    The summary line above reports the three *configured* surfaces, and for a
+    project with none of them set it prints three ``None``s -- which reads as
+    "nothing declares entities here" even when a conventionally-named
+    ``src/scistack_entities.py`` is being discovered as an ordinary module and
+    is the only thing declaring the project's variables. That gap is what made
+    ``Raw_EMG`` look like it came from nowhere (2026-09-01). So the surfaces
+    are enumerated explicitly, including the ones nothing configured.
+    """
+    lines: list[str] = []
+
+    if config.entities_file is not None:
+        lines.append(f"  writable  {config.entities_file}  (TOML, GUI writes here)")
+    else:
+        lines.append(
+            "  writable  <none configured> — the GUI has nowhere to declare "
+            "entities; opening the project should have created one"
+        )
+
+    for path, why in (
+        (config.variable_file, "legacy Python entities file"),
+        (config.matlab_entities_file, "legacy MATLAB entities script"),
+    ):
+        if path is not None:
+            lines.append(f"  read-only {path}  ({why})")
+
+    # Conventionally-named entity modules picked up by ordinary discovery.
+    # These declare real entities and are read-only, but nothing else names
+    # them anywhere, so a variable from one appears to have no source at all.
+    for module in config.modules:
+        if Path(module).stem == "scistack_entities" and module != config.variable_file:
+            lines.append(
+                f"  read-only {module}  (discovered as a module; declares "
+                f"entities but is not the configured entities_file)"
+            )
+
+    try:
+        from scimatlab.stubs import variable_stub_dir
+
+        stub_dir = variable_stub_dir(config.project_root)
+    except Exception:  # pragma: no cover - reporting only
+        stub_dir = None
+    if stub_dir is not None:
+        lines.append(f"  generated {stub_dir}  (MATLAB classdef stubs, not a source)")
+
+    logger.info(
+        "[config] Entity declaration surfaces for %s:\n%s",
+        config.project_root,
+        "\n".join(lines),
+    )
 
 
 def _resolve_glob_paths(

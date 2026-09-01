@@ -126,6 +126,9 @@ def create_project(req: CreateProjectRequest) -> dict:
             schema_keys=req.schema_keys,
             module=module,
             project=project,
+            # An explicit null entities_file is an opt-out, so bootstrap's
+            # own initialization must not put the files back.
+            init_project_files=bool(req.entities_file),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

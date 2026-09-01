@@ -107,6 +107,25 @@ def _deregister_stale_matlab_path_inputs_and_sweeps() -> None:
             registry._parameter_sources.pop(name, None)
 
 
+def _deregister_stale_matlab_variables() -> None:
+    """Withdraw every variable surrogate this module registered, from the
+    shared ``scistack_gui.registry`` and from ``BaseVariable``.
+
+    The variable analogue of
+    :func:`_deregister_stale_matlab_path_inputs_and_sweeps`, and it carries
+    the same guard: only a name whose recorded source still points at the
+    ``.m`` file we registered it from is withdrawn, never one that a
+    same-named Python declaration has since taken over.
+    """
+    from scidb import BaseVariable
+    from scistack_gui import registry
+
+    for name, path in _matlab_variables.items():
+        if registry._variable_sources.get(name) == str(path):
+            BaseVariable.unregister(name)
+            registry._variable_sources.pop(name, None)
+
+
 def load_from_config(config: SciStackConfig) -> dict:
     """Scan configured MATLAB paths, parse .m files, populate registries.
 
@@ -121,6 +140,12 @@ def load_from_config(config: SciStackConfig) -> dict:
 
     logger.info("[matlab_registry] Clearing registries")
     _matlab_functions.clear()
+    # Same reasoning as the PathInput/Sweep deregistration below, and same
+    # ordering requirement: withdraw from the shared registry while we still
+    # know which names we own. Matters when this runs on its own (a MATLAB-only
+    # refresh); in the usual pair, registry.load_from_config has already
+    # withdrawn every tracked variable just before this.
+    _deregister_stale_matlab_variables()
     _matlab_variables.clear()
     # Deregister from the SHARED scistack_gui.registry BEFORE clearing our
     # own name-tracking dicts below — otherwise a renamed or deleted
@@ -455,6 +480,62 @@ def load_from_sources(paths: list[Path]) -> None:
             _register_matlab_function(payload)
 
 
+def reload_source(path: Path) -> "str | None":
+    """Re-parse one ``.m`` file. Returns an error string, or ``None``.
+
+    The narrow counterpart to :func:`refresh_all`, for editing a declaration
+    that lives in a MATLAB file. ``refresh_all`` re-classifies every
+    configured source to pick up a change in one of them -- 14.9 s for 303
+    files on a real project (measured 2026-09-01) -- when the edit is known
+    to have touched exactly this path.
+
+    Everything previously attributed to *path* is withdrawn first, so a
+    declaration deleted by the edit actually disappears instead of lingering
+    from the last scan.
+    """
+    from scistack_gui import registry
+
+    path = Path(path)
+    logger.info("[matlab_registry] Narrow reload of single source: %s", path)
+
+    for name, src in [(n, p) for n, p in _matlab_variables.items() if p == path]:
+        _matlab_variables.pop(name, None)
+        if registry._variable_sources.get(name) == str(src):
+            from scidb import BaseVariable
+
+            BaseVariable.unregister(name)
+            registry._variable_sources.pop(name, None)
+    for name in [n for n, p in _matlab_functions_paths() if p == path]:
+        _matlab_functions.pop(name, None)
+    for store, shared, shared_sources in (
+        (_matlab_path_inputs, registry._path_inputs, registry._path_input_sources),
+        (_matlab_parameters, registry._parameters, registry._parameter_sources),
+    ):
+        for name in [n for n, p in store.items() if p == path]:
+            store.pop(name, None)
+            if shared_sources.get(name) == str(path):
+                shared.pop(name, None)
+                shared_sources.pop(name, None)
+    _load_errors[:] = [e for e in _load_errors if e.get("source") != str(path)]
+
+    try:
+        load_from_sources([path])
+    except Exception as e:
+        logger.exception("[matlab_registry] Narrow reload failed for %s", path)
+        return f"Definition was written but re-reading {path.name} failed: {e}"
+    return None
+
+
+def _matlab_functions_paths():
+    """``(name, file_path)`` for every registered MATLAB function that has
+    one. Builtins have ``file_path is None`` and are never path-scoped."""
+    return [
+        (name, info.file_path)
+        for name, info in _matlab_functions.items()
+        if getattr(info, "file_path", None) is not None
+    ]
+
+
 def register_builtin_function(info: MatlabFunctionInfo) -> None:
     """Register a manually-declared reference to a MATLAB built-in/toolbox
     function (validated by scistack_gui.api.builtin_functions via a real
@@ -497,6 +578,12 @@ def _register_matlab_variable(var_name: str, path: Path) -> None:
         from scimatlab.bridge import register_matlab_variable
 
         register_matlab_variable(var_name)
+        # Attribute the surrogate so a reload can withdraw it again. Without
+        # this the MATLAB half of the variable registry was append-only in
+        # exactly the way the Python half was -- see registry._variable_sources.
+        from scistack_gui import registry
+
+        registry._register_variable(var_name, source=str(path))
         logger.info(
             "[matlab_registry] Registered MATLAB variable: %s (%s)", var_name, path
         )

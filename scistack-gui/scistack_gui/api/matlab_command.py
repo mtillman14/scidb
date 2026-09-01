@@ -115,9 +115,9 @@ def _project_root_lines(
     ]
 
 
-def _unresolvable_var_type_lines(var_types) -> list[str]:
-    """Comment lines naming variable types the generated script is about to
-    call as ``Type()`` that nothing in this project accounts for.
+def _unresolvable_var_types(var_types) -> list[str]:
+    """Variable types the script is about to call as ``Type()`` that nothing
+    in this project accounts for. Empty when everything resolves.
 
     A MATLAB variable resolves only if a classdef file for it is on the
     path. Two things can supply one: a .m file the registry parsed, or a
@@ -130,6 +130,24 @@ def _unresolvable_var_type_lines(var_types) -> list[str]:
 
     Declared-but-not-yet-materialized names are NOT reported: the entities
     call fixes those before the run reaches them.
+
+    **Advisory, never a refusal.** It is tempting to block the run on this
+    -- on 2026-09-01 the warning fired at 15:33:03 and MATLAB failed at
+    15:35:02 with ``Unrecognized function or variable 'Raw_EMG'``, two
+    minutes of nothing. But this check is not authoritative and cannot be:
+    it sees classdefs the GUI's registry happened to parse plus entities-file
+    declarations, while a user's own ``startup.m`` can ``addpath`` a
+    perfectly good ``RawEMG.m`` that nothing here will ever know about.
+    Refusing would break that working setup.
+
+    ``scimatlab.stubs`` states the same rule for the same reason: MATLAB's
+    path is the only authority on whether a class resolves, which is why
+    ``+scidb/entities.m`` asks MATLAB itself (``exist(name, 'class')``)
+    rather than deciding from Python.
+
+    So the answer is surfaced as loudly as possible -- in the log, as a
+    comment in the script, and in the run console before MATLAB starts (see
+    ``api/run.py``) -- and the authority stays with MATLAB.
     """
     names = sorted({str(t) for t in var_types if t})
     if not names:
@@ -158,14 +176,24 @@ def _unresolvable_var_type_lines(var_types) -> list[str]:
                 e,
             )
 
-    unknown = [n for n in names if n not in known]
+    return [n for n in names if n not in known]
+
+
+def _unresolvable_var_type_lines(var_types) -> list[str]:
+    """Comment lines naming the types that will not resolve, or ``[]``.
+
+    Emitted into the generated script so a user reading or pasting it sees
+    the problem in place. The run path surfaces the same answer in the run
+    console — see :func:`unresolvable_var_type_warning`.
+    """
+    unknown = _unresolvable_var_types(var_types)
     if not unknown:
         return []
 
     logger.warning(
         "generate_matlab_command: no MATLAB classdef and no entity declaration "
-        "for %s — the generated script will fail with 'Unrecognized function "
-        "or variable' unless these resolve on the MATLAB path",
+        "for %s — this script will fail with 'Unrecognized function or "
+        "variable' unless these resolve on the MATLAB path",
         ", ".join(unknown),
     )
     return [
@@ -177,6 +205,47 @@ def _unresolvable_var_type_lines(var_types) -> list[str]:
         "variable'.",
         "",
     ]
+
+
+def unresolvable_var_type_warning(var_types) -> "str | None":
+    """A one-line, actionable warning naming the types that will not resolve,
+    or ``None``.
+
+    For the run console: the user is about to wait on MATLAB, so the thing
+    they need in front of them is the name, where to declare it, and where
+    the classdef would go. Advisory, not a gate -- see
+    :func:`_unresolvable_var_types`.
+    """
+    unknown = _unresolvable_var_types(var_types)
+    if not unknown:
+        return None
+
+    from scistack_gui import matlab_registry
+
+    config = getattr(matlab_registry, "_config", None)
+    entities_file = getattr(config, "entities_file", None)
+    stub_dir = None
+    try:
+        from scimatlab.stubs import variable_stub_dir
+
+        stub_dir = variable_stub_dir(getattr(config, "project_root", None))
+    except Exception:  # pragma: no cover - reporting only
+        pass
+
+    detail = (
+        f"{', '.join(unknown)} "
+        f"{'has' if len(unknown) == 1 else 'have'} no MATLAB classdef and no "
+        f"entity declaration that this project knows about. Unless "
+        f"{'it resolves' if len(unknown) == 1 else 'they resolve'} on "
+        f"MATLAB's own path, this run will fail with 'Unrecognized function "
+        f"or variable'. Declare "
+        f"{'it' if len(unknown) == 1 else 'them'} in "
+        f"{entities_file or 'the project entities file'}"
+        + (f" (a classdef stub is materialized under {stub_dir})" if stub_dir else "")
+        + ", or add an existing .m classdef to a configured MATLAB path."
+    )
+    logger.warning("generate_matlab_command: %s", detail)
+    return detail
 
 
 def generate_matlab_command(

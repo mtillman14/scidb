@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 
+from scidb import BaseVariable
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,6 +73,26 @@ def put_layout(
                 )
             else:
                 logger.info("[layout_service] Function node placed: %r (Python)", label)
+        elif node_type == "variableNode" and label not in BaseVariable._all_subclasses:
+            # NOT refused. A manual variable node whose label nothing declares
+            # yet is a legitimate, designed state: it is a placeholder that
+            # graduates to a canonical var__ id once a run gives it DB history
+            # (graph_builder.merge_manual_nodes), and paste/extract copy such
+            # nodes wholesale. Refusing here broke duplicate, paste,
+            # extract-to-submodule and edge-driven binding.
+            #
+            # It is still worth a line in the log, because this is the state
+            # that ends in "Unrecognized function or variable" if a MATLAB run
+            # reaches it undeclared. The hard gate is at the run boundary,
+            # where the decision is unambiguous — see api/run.py and
+            # matlab_command._unresolvable_var_types.
+            logger.info(
+                "[layout_service] Variable node %r placed with label %r, which "
+                "nothing declares yet — fine for a placeholder, but a MATLAB "
+                "run will refuse until it is declared",
+                node_id,
+                label,
+            )
         else:
             logger.debug(
                 "[layout_service] Node added to DAG: node_id=%r, type=%r, label=%r",

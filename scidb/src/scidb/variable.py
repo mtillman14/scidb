@@ -188,6 +188,31 @@ class BaseVariable(metaclass=VariableMeta):
         """Look up a subclass by its name from the global registry."""
         return cls._all_subclasses.get(name)
 
+    @classmethod
+    def unregister(cls, name: str) -> bool:
+        """Drop *name* from the global registry. Returns whether it was there.
+
+        The counterpart ``__init_subclass__`` never had. Without it the
+        registry only ever grew: every other registry a discovery scan
+        maintains is cleared and rebuilt, but variables accumulated for the
+        life of the process, so a class whose declaration had been deleted
+        (or that belonged to a previously-opened project) stayed registered
+        forever. That made the GUI list variables nothing on disk declared,
+        and made creating a variable fail as "already exists" against a name
+        with no source file behind it.
+
+        Callers are the discovery layers, which track *where* each name came
+        from and so know which of their own registrations to withdraw --
+        this deliberately takes a name rather than clearing wholesale, so
+        entries registered by something else (scidb's own types, a test
+        fixture, a still-live import) are never collateral.
+
+        Unregistering does not invalidate the class object itself; anything
+        already holding a reference keeps working. It only stops *lookup by
+        name* from finding it.
+        """
+        return cls._all_subclasses.pop(name, None) is not None
+
     def __init__(self, data: Any):
         """
         Initialize with native data.

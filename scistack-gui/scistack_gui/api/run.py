@@ -1151,7 +1151,10 @@ def _run_matlab_pipeline_in_thread(
                 "skip_computed": skip_computed,
             },
         )
-        for w in result.get("warnings") or []:
+        # Two channels: "warnings" is composition (steps excluded from the
+        # script), "diagnostics" is why a variable type may not resolve in
+        # MATLAB. Both belong in front of the user before the wait starts.
+        for w in (result.get("warnings") or []) + (result.get("diagnostics") or []):
             emit(f"⚠ {w}\n")
         command = result["command"]
 
@@ -1245,7 +1248,9 @@ def _run_matlab_function_in_thread(
         )
 
         result = generate_matlab_command(function_name, db, params)
-        return result["command"], list(result.get("warnings") or [])
+        return result["command"], list(
+            (result.get("warnings") or []) + (result.get("diagnostics") or [])
+        )
 
     db.set_current_db()
     logger.info(

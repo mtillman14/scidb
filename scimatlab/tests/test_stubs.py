@@ -101,7 +101,7 @@ class TestWriteVariableClassdefs:
         )
 
     def test_directory_created_only_when_there_is_something_to_write(self, tmp_path):
-        target = tmp_path / "scistack_variables"
+        target = tmp_path / DEFAULT_STUB_DIRNAME
 
         assert write_variable_classdefs([], target_dir=target)["created"] == []
         assert not target.exists()
@@ -143,3 +143,83 @@ class TestWriteVariableClassdefs:
 
         assert result["created"] == []
         assert any("RawEMG" in e for e in result["errors"])
+
+
+class TestNameValidation:
+    """A classdef file must be named after the class it declares, so a stub
+    written under a mangled name can never resolve -- it just fails later as
+    ``Unrecognized function or variable``, far from the write that caused it.
+
+    Prompted by user-reported ``{varName}scistack.m`` files. No code path in
+    the repo builds that name (every one is ``f"{name}.m"``), so the suffix
+    has to arrive on the name itself; this is the choke point that refuses it
+    wherever it comes from.
+    """
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "RawEMG.m",  # a filename passed where a class name was wanted
+            "RawEMG scistack",  # whitespace
+            "9RawEMG",  # leading digit
+            "_RawEMG",  # leading underscore
+            "Raw-EMG",  # hyphen
+            "Raw/EMG",  # a path fragment
+            "x" * 64,  # over namelengthmax
+        ],
+    )
+    def test_invalid_names_are_refused_not_written(self, tmp_path, bad):
+        result = write_variable_classdefs([bad], target_dir=tmp_path)
+
+        assert result["created"] == []
+        assert any(bad in e for e in result["errors"])
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_valid_name_is_written_as_exactly_name_dot_m(self, tmp_path):
+        """The whole point: no infix, no suffix, no decoration."""
+        result = write_variable_classdefs(["RawEMG"], target_dir=tmp_path)
+
+        assert result["created"] == ["RawEMG"]
+        assert [p.name for p in tmp_path.iterdir()] == ["RawEMG.m"]
+        assert (tmp_path / "RawEMG.m").read_text().startswith(
+            "classdef RawEMG < scidb.BaseVariable"
+        )
+
+    def test_one_bad_name_does_not_block_the_good_ones(self, tmp_path):
+        result = write_variable_classdefs(["RawEMG", "Bad Name"], target_dir=tmp_path)
+
+        assert result["created"] == ["RawEMG"]
+        assert any("Bad Name" in e for e in result["errors"])
+        assert (tmp_path / "RawEMG.m").exists()
+
+    def test_underscores_inside_a_name_are_fine(self, tmp_path):
+        """``Raw_EMG`` is a legal MATLAB class name -- the validator must not
+        over-reach into rejecting names the user legitimately uses."""
+        result = write_variable_classdefs(["Raw_EMG"], target_dir=tmp_path)
+
+        assert result["created"] == ["Raw_EMG"]
+        assert (tmp_path / "Raw_EMG.m").exists()
+
+
+class TestLegacyStubDir:
+    def test_reports_an_existing_pre_rename_folder(self, tmp_path):
+        from scimatlab.stubs import LEGACY_STUB_DIRNAME, legacy_stub_dir
+
+        (tmp_path / "scistack.toml").write_text(
+            'entities_file = "src/scistack_entities.toml"\n', encoding="utf-8"
+        )
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "scistack_entities.toml").write_text(
+            "variables = []\n", encoding="utf-8"
+        )
+
+        assert legacy_stub_dir(tmp_path) is None
+
+        (tmp_path / "src" / LEGACY_STUB_DIRNAME).mkdir()
+        assert legacy_stub_dir(tmp_path) == tmp_path / "src" / LEGACY_STUB_DIRNAME
+
+    def test_the_two_directory_names_are_distinct(self):
+        from scimatlab.stubs import DEFAULT_STUB_DIRNAME, LEGACY_STUB_DIRNAME
+
+        assert DEFAULT_STUB_DIRNAME == "scistack_matlab_variables"
+        assert LEGACY_STUB_DIRNAME != DEFAULT_STUB_DIRNAME

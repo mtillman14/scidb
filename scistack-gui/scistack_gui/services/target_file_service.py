@@ -106,7 +106,7 @@ def write_entity(
     logger.info(
         "[target_file_service] Wrote %s.%s to %s", section, name, target_file
     )
-    error = _refresh_registries()
+    error = _reload_after_write(target_file)
     if error is not None:
         return {"ok": False, "error": error}
     record_source_hash(target_file)
@@ -124,7 +124,7 @@ def write_variable(target_file: Path, name: str) -> "dict | None":
         return {"ok": False, "error": f"Failed to write to entities file: {e}"}
 
     logger.info("[target_file_service] Wrote variable %s to %s", name, target_file)
-    error = _refresh_registries()
+    error = _reload_after_write(target_file)
     if error is not None:
         return {"ok": False, "error": error}
     record_source_hash(target_file)
@@ -169,7 +169,7 @@ def append_and_refresh(line: str, target_file: Path) -> "dict | None":
     except OSError as e:
         return {"ok": False, "error": f"Failed to write to module file: {e}"}
 
-    error = _refresh_registries()
+    error = _reload_after_write(target_file)
     if error is not None:
         return {"ok": False, "error": error}
     return None
@@ -489,7 +489,7 @@ def update_declaration(
     except OSError as e:
         return {"ok": False, "error": f"Failed to write {path}: {e}"}
 
-    refresh_error = _refresh_registries()
+    refresh_error = _reload_after_write(path)
     if refresh_error is None and not _resolves_as_any_kind(name):
         refresh_error = _verify_failure_reason(name)
 
@@ -509,7 +509,7 @@ def update_declaration(
                     f"The file may be left in a bad state."
                 ),
             }
-        _refresh_registries()
+        _reload_after_write(path)
         return {"ok": False, "error": refresh_error, "reason": "verify_failed"}
 
     record_source_hash(path)
@@ -659,6 +659,58 @@ def _invalidate_bytecode(path: Path) -> None:
             e,
         )
     importlib.invalidate_caches()
+
+
+def _reload_after_write(path: "Path | None") -> "str | None":
+    """Re-read just the file that was written. Returns an error, or ``None``.
+
+    The default for every GUI entity write. A write can only have changed
+    the file it wrote, so re-importing every configured module and
+    re-parsing every MATLAB source to discover that is pure waste: on a real
+    project a full :func:`_refresh_registries` is ~16.5 s (2.5 s config +
+    1.6 s Python modules + 14.9 s for 303 MATLAB sources, measured
+    2026-09-01), against a single file parse here. Creating one variable
+    used to cost the full amount.
+
+    Dispatch is by suffix, matching :func:`is_toml_target`'s reasoning:
+
+    - ``.toml`` -> ``registry.reload_entities_file()``
+    - ``.m``    -> ``matlab_registry.reload_source(path)``
+    - the loaded single-file module (legacy ``--module``) ->
+      ``registry.refresh_module()``, which is already a one-file reload.
+
+    Anything else falls back to the full :func:`_refresh_registries`. That
+    is the hand-configured ``.py`` entities file: it is imported as one of
+    many project modules, so there is no narrower way to re-read it, and
+    being slow is much better than not reloading it at all.
+
+    Note what does *not* happen here: scistack.toml is never re-read. No
+    entity write can change which files are configured. The two things that
+    can -- add/remove path, and creating the entities file itself -- go
+    through ``services.registry_reload_service`` instead, and the Refresh
+    Code button keeps its full reload as the deliberate escape hatch.
+    """
+    from scistack_gui import matlab_registry, registry
+
+    if path is None:
+        return _refresh_registries()
+
+    suffix = Path(path).suffix
+    try:
+        if suffix == ".toml":
+            return registry.reload_entities_file()
+        if suffix == ".m":
+            return matlab_registry.reload_source(Path(path))
+        if registry._module_path is not None and Path(path) == Path(
+            registry._module_path
+        ):
+            registry.refresh_module()
+            return None
+        return _refresh_registries()
+    except Exception as e:
+        logger.exception("[target_file_service] Narrow reload of %s failed", path)
+        return f"Definition was written but re-reading {Path(path).name} failed: {e}"
+    return None
 
 
 def _refresh_registries() -> "str | None":

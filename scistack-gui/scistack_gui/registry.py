@@ -51,6 +51,20 @@ _path_inputs: dict[str, PathInput | EachOf] = {}
 """Top-level ``PathInput`` (or ``EachOf`` of ``PathInput``, i.e. alternate
 templates) objects, keyed by the module-level name they're bound to."""
 _path_input_sources: dict[str, str] = {}
+_variable_sources: dict[str, str] = {}
+"""Variable class name -> the source this registry registered it from.
+
+The bookkeeping that makes ``BaseVariable._all_subclasses`` prunable. That
+dict is global and append-only by construction (``__init_subclass__`` fires
+on class creation and there is no matching hook for "this class went away"),
+so a reload can only withdraw registrations it can *prove* it made -- hence
+tracking them here, exactly as ``_function_sources``/``_parameter_sources``/
+``_path_input_sources`` already do for the other three kinds.
+
+Anything absent from this dict is left alone on reload: scidb's own types,
+classes defined by a test fixture, or a variable some other importer
+registered are none of this registry's business to delete.
+"""
 _module_paths: dict[str, str] = {}
 """Synthetic module name (``scistack_user_{i}_{stem}``, from
 ``_load_file_modules``) -> source file path. A BaseVariable subclass's
@@ -143,6 +157,7 @@ def register_module(module, *, module_path: Path | None = None) -> None:
     _scan_module_functions(module, source=str(module_path or "<unknown>"))
     _scan_module_parameters(module, source=str(module_path or "<unknown>"))
     _scan_module_path_inputs(module, source=str(module_path or "<unknown>"))
+    _scan_module_variables(module, source=str(module_path or "<unknown>"))
     logger.info(
         "[registry] Module registration complete - %d functions registered",
         len(_functions),
@@ -179,6 +194,7 @@ def refresh_module() -> dict:
     _path_inputs.clear()
     _path_input_sources.clear()
     _load_errors.clear()
+    _unregister_tracked_variables()
 
     # Re-execute the module file. This will re-define all functions and
     # BaseVariable subclasses (which auto-register via the metaclass).
@@ -192,6 +208,7 @@ def refresh_module() -> dict:
     _scan_module_functions(user_mod, source=str(_module_path))
     _scan_module_parameters(user_mod, source=str(_module_path))
     _scan_module_path_inputs(user_mod, source=str(_module_path))
+    _scan_module_variables(user_mod, source=str(_module_path))
 
     new_fns = set(_functions.keys())
     new_vars = set(BaseVariable._all_subclasses.keys())
@@ -244,6 +261,10 @@ def load_from_config(config: SciStackConfig) -> dict:
     _path_input_sources.clear()
     _module_paths.clear()
     _load_errors.clear()
+    # Variables are cleared the same way everything else here is. They were
+    # the one registry that never was, so a declaration deleted from disk
+    # stayed live until the server restarted -- see _variable_sources.
+    _unregister_tracked_variables()
 
     logger.info("[registry] Loading %d file modules", len(config.modules))
     _load_file_modules(config.modules)
@@ -385,6 +406,7 @@ def _exec_file_modules(paths: list[Path]) -> None:
             fn_count_after = len(_functions)
             _scan_module_parameters(mod, source=str(path))
             _scan_module_path_inputs(mod, source=str(path))
+            _scan_module_variables(mod, source=str(path))
             logger.info(
                 "[registry] Loaded module file: %s (%d functions)",
                 path,
@@ -423,6 +445,7 @@ def _load_packages(names: list[str]) -> None:
             _scan_module_functions(mod, source=source)
             _scan_module_parameters(mod, source=source)
             _scan_module_path_inputs(mod, source=source)
+            _scan_module_variables(mod, source=source)
 
         fn_count_before = len(_functions)
         with _suppress_user_code_output(), headless_matplotlib():
@@ -484,6 +507,7 @@ def _load_entry_points() -> None:
                 fn_count_after = len(_functions)
                 _scan_module_parameters(mod, source=f"entrypoint:{ep.name}")
                 _scan_module_path_inputs(mod, source=f"entrypoint:{ep.name}")
+                _scan_module_variables(mod, source=f"entrypoint:{ep.name}")
                 logger.info(
                     "[registry] Loaded entry point: %s = %s (%d functions)",
                     ep.name,
@@ -569,6 +593,173 @@ def _scan_module_functions(module, *, source: str) -> None:
         )
 
 
+def _register_variable(name: str, *, source: str) -> None:
+    """Record that *this* registry registered variable *name* from *source*.
+
+    The class itself is already in ``BaseVariable._all_subclasses`` by the
+    time this is called -- ``__init_subclass__`` put it there when the class
+    statement executed. This only records the attribution that lets
+    :func:`_unregister_tracked_variables` withdraw it later.
+    """
+    previous = _variable_sources.get(name)
+    if previous is not None and previous != source:
+        logger.warning(
+            "[registry] Variable '%s' is declared in more than one place: %s "
+            "and %s. The last one scanned wins; remove one to make which is "
+            "used deterministic.",
+            name,
+            previous,
+            source,
+        )
+    _variable_sources[name] = source
+
+
+def _unregister_tracked_variables(sources: "set[str] | None" = None) -> list[str]:
+    """Withdraw variables this registry registered. Returns the names dropped.
+
+    With *sources*, only variables attributed to those exact sources go --
+    that is what makes a narrow single-file reload possible. Without it,
+    every tracked variable goes, which is what a full reload wants before it
+    rebuilds from scratch.
+    """
+    from scidb import BaseVariable
+
+    doomed = [
+        name
+        for name, src in _variable_sources.items()
+        if sources is None or src in sources
+    ]
+    for name in doomed:
+        BaseVariable.unregister(name)
+        del _variable_sources[name]
+    if doomed:
+        logger.info(
+            "[registry] Unregistered %d variable(s) before reload: %s",
+            len(doomed),
+            ", ".join(sorted(doomed)),
+        )
+    return doomed
+
+
+def _scan_module_variables(module, *, source: str) -> None:
+    """Attribute a module's BaseVariable subclasses to it.
+
+    Registration itself already happened at import (``__init_subclass__``);
+    this records *which file* each one came from. Filtered by ``__module__``
+    for the same reason :func:`_scan_module_functions` is: a pipeline file
+    doing ``from scidb import BaseVariable`` or importing a sibling's
+    variable class would otherwise claim a type it does not declare, and
+    then a reload of that file would unregister someone else's variable.
+    """
+    from scidb import BaseVariable
+
+    module_name = getattr(module, "__name__", None)
+    discovered = []
+    for name, cls in vars(module).items():
+        if name.startswith("_") or not inspect.isclass(cls):
+            continue
+        if not issubclass(cls, BaseVariable) or cls is BaseVariable:
+            continue
+        if getattr(cls, "__module__", None) != module_name:
+            continue
+        _register_variable(cls.__name__, source=source)
+        discovered.append(cls.__name__)
+    if discovered:
+        logger.debug(
+            "[registry] Discovered %d variable(s) from %s: %s",
+            len(discovered),
+            source,
+            discovered,
+        )
+
+
+def _prune_sources(sources: set[str]) -> None:
+    """Drop every entity this registry attributed to *sources*.
+
+    The shared "forget one file" step behind both the full reload and
+    :func:`reload_entities_file`. Load errors recorded against those sources
+    go too, otherwise a fixed file keeps showing its old error forever.
+
+    Known narrow gap: when two sources declare the same name, the last one
+    scanned wins (see :func:`_register_parameter`'s shadowing warning). If
+    the winner was the entities file and the entry is *deleted* from it, the
+    shadowed declaration from the other source does not come back until a
+    full reload -- pruning knows what to remove, but only a re-scan of that
+    other file could restore it. Refresh Code fixes it, the collision is
+    already warned about, and re-importing every module to cover it would
+    reintroduce exactly the cost this function exists to avoid.
+    """
+    for registry_dict, source_map in (
+        (_parameters, _parameter_sources),
+        (_path_inputs, _path_input_sources),
+        (_functions, _function_sources),
+    ):
+        for name in [n for n, s in source_map.items() if s in sources]:
+            registry_dict.pop(name, None)
+            source_map.pop(name, None)
+    _unregister_tracked_variables(sources)
+
+    # Entities-file errors are recorded as "{path}:{line}" (see
+    # _load_entities_file), so match on the path prefix rather than splitting
+    # on ":" -- a Windows path is "Y:\..." and splitting would reduce every
+    # source to its drive letter and drop unrelated errors wholesale.
+    def _from_pruned_source(entry: dict) -> bool:
+        recorded = str(entry.get("source", ""))
+        return any(
+            recorded == src or recorded.startswith(f"{src}:") for src in sources
+        )
+
+    _load_errors[:] = [e for e in _load_errors if not _from_pruned_source(e)]
+
+
+def reload_entities_file() -> "str | None":
+    """Re-read *only* the TOML entities file. Returns an error, or ``None``.
+
+    The narrow counterpart to :func:`refresh_all`, for the one case that
+    dominates GUI writes: the user created or edited an entity, so the only
+    file whose contents can have changed is the one the GUI just wrote.
+
+    A full reload re-imports every configured module and re-parses every
+    MATLAB source to learn the same thing. On a real project that is
+    ~16.5 s (2.5 s config + 1.6 s Python modules + 14.9 s for 303 MATLAB
+    sources, measured 2026-09-01); this is a single TOML parse. Creating a
+    variable used to pay the former.
+
+    Deliberately does NOT re-read scistack.toml: nothing here can change
+    *which* files are configured. A change to that is
+    ``services.registry_reload_service.reload_registries_from_disk``, and a
+    change to a module's contents is the Refresh Code button.
+    """
+    if _config is None or _config.entities_file is None:
+        return "No entities file is configured for this project."
+
+    path = _config.entities_file
+    before = set(_variable_sources)
+    _prune_sources({str(path)})
+    try:
+        _load_entities_file(path)
+    except Exception as e:
+        logger.exception("[registry] Narrow entities reload failed for %s", path)
+        return f"Entities file was written but re-reading it failed: {e}"
+
+    from scistack_gui.services.target_file_service import record_source_hash
+
+    record_source_hash(path)
+
+    added = sorted(set(_variable_sources) - before)
+    removed = sorted(before - set(_variable_sources))
+    logger.info(
+        "[registry] Narrow entities reload of %s: +%d variable(s) %s, "
+        "-%d variable(s) %s (no modules re-imported, no MATLAB sources re-parsed)",
+        path,
+        len(added),
+        added or "[]",
+        len(removed),
+        removed or "[]",
+    )
+    return None
+
+
 def _load_entities_file(path: Path) -> None:
     """Register everything the TOML entities file declares.
 
@@ -581,6 +772,8 @@ def _load_entities_file(path: Path) -> None:
     Variables need no registration call: constructing the class registers
     it in ``BaseVariable._all_subclasses`` via ``__init_subclass__``, which
     is the same registry a ``class X(BaseVariable)`` statement lands in.
+    Their *source* is recorded here, though -- that is what lets a later
+    reload withdraw them again (:func:`_unregister_tracked_variables`).
     """
     from scidb.entities import load
 
@@ -591,6 +784,8 @@ def _load_entities_file(path: Path) -> None:
         _register_parameter(name, param, source=str(path))
     for name, pi in result.path_inputs.items():
         _register_path_input(name, pi, source=str(path))
+    for name in result.variables:
+        _register_variable(name, source=str(path))
 
     for err in result.errors:
         _record_load_error(f"{path}:{err.line}" if err.line else str(path), err.describe())

@@ -40,7 +40,27 @@ def create_variable(
             "error": "Variable names must not start with an underscore.",
         }
     if name in BaseVariable._all_subclasses:
-        return {"ok": False, "error": f"A variable named '{name}' already exists."}
+        # Always say WHERE. This message used to be the bare "already
+        # exists", which was unfalsifiable from the user's side when the
+        # registry held a name nothing on disk declared -- the reason
+        # BaseVariable.unregister and registry._variable_sources now exist.
+        # Naming the source makes a stale registration visibly wrong instead
+        # of just baffling.
+        source = registry._variable_sources.get(name)
+        where = f" It is declared in {source}." if source else (
+            " Nothing in this project declares it, so it is a stale "
+            "registration — hit 🔄 Refresh Code and try again."
+        )
+        logger.info(
+            "[variable_service] Refusing to create '%s': already registered "
+            "(source=%s)",
+            name,
+            source or "<untracked>",
+        )
+        return {
+            "ok": False,
+            "error": f"A variable named '{name}' already exists.{where}",
+        }
 
     # MATLAB variable creation. When the project has a TOML entities file,
     # the declaration goes THERE and the classdef is materialized from it --
@@ -104,13 +124,14 @@ def create_variable(
     except OSError as e:
         return {"ok": False, "error": f"Failed to write to module file: {e}"}
 
-    try:
-        if registry._config is not None:
-            registry.refresh_all()
-        else:
-            registry.refresh_module()
-    except Exception as e:
-        return {"ok": False, "error": f"Class was written but refresh failed: {e}"}
+    # Narrow by default: the append above went into one file, so re-reading
+    # that file is the whole reload. Never refresh_all() here -- see
+    # target_file_service._reload_after_write for the dispatch and the cost.
+    from scistack_gui.services.target_file_service import _reload_after_write
+
+    error = _reload_after_write(target_file)
+    if error is not None:
+        return {"ok": False, "error": error}
 
     return {"ok": True, "name": name}
 
@@ -173,22 +194,34 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
     if target_file.exists():
         return {"ok": False, "error": f"File already exists: {target_file}"}
 
-    m_lines = [f"classdef {name} < scidb.BaseVariable"]
+    # scimatlab owns the stub's text, so a GUI-created classdef and one
+    # materialized from the entities file at run time are byte-identical
+    # (CLAUDE.md NOTE 3). A docstring is appended as a comment because the
+    # shared text has nowhere to carry one.
+    from scimatlab.stubs import classdef_text, invalid_name_reason
+
+    reason = invalid_name_reason(name)
+    if reason is not None:
+        return {
+            "ok": False,
+            "error": f"'{name}' cannot be a MATLAB class: {reason}.",
+        }
+
+    body = classdef_text(name)
     if docstring:
-        m_lines.append(f"    % {docstring}")
-    m_lines.append("end")
-    m_lines.append("")
+        body = body.replace("end\n", f"    % {docstring}\nend\n")
 
     try:
-        target_file.write_text("\n".join(m_lines), encoding="utf-8")
+        target_file.write_text(body, encoding="utf-8")
     except OSError as e:
         return {"ok": False, "error": f"Failed to write .m file: {e}"}
 
+    # Register just this one file. The full matlab_registry.refresh_all()
+    # this used to call re-classified every configured .m source (14.9 s for
+    # 303 files on a real project) to learn about a file whose path we are
+    # holding -- see target_file_service._reload_after_write.
     try:
-        from scimatlab.bridge import register_matlab_variable
-
-        register_matlab_variable(name)
-        matlab_registry.refresh_all()
+        matlab_registry._register_matlab_variable(name, target_file)
     except Exception as e:
         return {"ok": False, "error": f"File written but registration failed: {e}"}
 

@@ -39,6 +39,7 @@ def open_or_create_project(
     schema_keys: list[str] | None = None,
     module: Path | None = None,
     project: Path | None = None,
+    init_project_files: bool = True,
 ) -> BootstrapResult:
     """Import pipeline code, then open (or create) ``db_path``.
 
@@ -89,6 +90,21 @@ def open_or_create_project(
 
     warnings: list[str] = []
 
+    # Make the project's declaration surfaces exist BEFORE anything reads the
+    # config, so the load below picks them up and nothing has to reload to
+    # discover them. See services.project_init_service.
+    #
+    # Skipped in single-file (--module) mode, which has no project root to
+    # initialize, and when the caller opts out: ``POST /api/bootstrap/create``
+    # with an explicit ``entities_file: null`` means "leave this project in
+    # the pure folder-scan state", and initializing anyway would override a
+    # choice the user made on purpose.
+    if not module and init_project_files:
+        from scistack_gui.services.project_init_service import ensure_project_files
+
+        init = ensure_project_files(db_path, project)
+        warnings.extend(init.warnings)
+
     # Import user code first so that configure_database() can auto-register
     # the user's variable classes.
     from scistack_gui import registry
@@ -97,12 +113,14 @@ def open_or_create_project(
     variables_loaded = 0
     matlab_functions_loaded = 0
     matlab_variables_loaded = 0
+    loaded_config = None
 
     if project:
         from scistack_gui.config import load_config
 
         logger.info("[bootstrap] project mode: loading config from %s", project)
         config = load_config(project, db_path)
+        loaded_config = config
         result = registry.load_from_config(config)
         functions_loaded = len(result["functions"])
         variables_loaded = len(result["variables"])
@@ -143,6 +161,7 @@ def open_or_create_project(
         )
         try:
             config = load_config(None, db_path)
+            loaded_config = config
             result = registry.load_from_config(config)
             functions_loaded = len(result["functions"])
             variables_loaded = len(result["variables"])
@@ -166,6 +185,17 @@ def open_or_create_project(
             msg = f"Auto-discovery failed ({e}); starting with an empty registry."
             logger.warning("[bootstrap] %s", msg)
             warnings.append(msg)
+
+    # After the load, because which stubs are wanted depends on what the
+    # config actually resolved. A fresh stub declares nothing, so this adds
+    # no reload -- see services.project_init_service.
+    if loaded_config is not None:
+        from scistack_gui.services.project_init_service import ensure_language_stubs
+
+        try:
+            warnings.extend(ensure_language_stubs(loaded_config).warnings)
+        except Exception:
+            logger.exception("[bootstrap] failed to create language entities stubs")
 
     from scistack_gui.db import create_db, init_db
 
