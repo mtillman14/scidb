@@ -9,7 +9,7 @@
  * scistack.toml. Leaving the field blank and hitting "Set" auto-creates a
  * default src/scistack_entities.toml **in the project root** -- which is
  * not necessarily where the database lives (that is usually a datasets
- * folder; see config.infer_project_root). Same default the
+ * folder; see config.resolve_project_root). Same default the
  * project-creation wizard pre-fills eagerly (ProjectBootstrapWizard.tsx)
  * and what happens transparently the first time an entity gets created
  * from the sidebar with nothing configured yet, so this editor is mainly

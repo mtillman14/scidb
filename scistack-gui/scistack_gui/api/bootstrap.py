@@ -50,7 +50,7 @@ class CreateProjectRequest(BaseModel):
     entities_file: str | None = "src/scistack_entities.toml"
     """Relative to the *project root*, not to ``folder`` -- ``folder`` is
     where the database goes, which is typically a datasets directory. See
-    ``config.infer_project_root``."""
+    ``config.resolve_project_root``."""
 
 
 class OpenProjectRequest(BaseModel):

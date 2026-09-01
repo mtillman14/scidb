@@ -95,9 +95,16 @@ export class PythonProcess {
       );
     }
 
+    // Run the server FROM the folder the user opened. Without this the
+    // child inherits the extension host's working directory (typically
+    // VS Code's own install directory), which makes cwd meaningless as a
+    // project-root signal — see config.resolve_project_root, where cwd is
+    // the fallback for non-VS-Code callers. --project-root above remains
+    // the explicit signal; this just makes the two agree.
     this.proc = spawn(pythonPath, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
+      cwd: workspaceFolder?.uri.fsPath,
     });
 
     this.closed = new Promise((resolve) => {

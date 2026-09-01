@@ -198,13 +198,18 @@ def layout_path(tmp_path, populated_db):
 
 @pytest.fixture(autouse=True)
 def _pin_project_root(tmp_path):
-    """Pin the inferred project root to tmp_path for every GUI test.
+    """Pin the project root to tmp_path for every GUI test.
 
-    With no config file to locate a project by, ``config.infer_project_root``
-    falls back to the server's working directory -- under pytest that is the
-    repo, so any test that creates a project would write scistack.toml and an
-    entities file into the source tree. See
-    ``.claude/plan-entities-toml-26-08-31.md`` D5.
+    ``config.resolve_project_root`` answers "the folder the user opened":
+    ``--project-root`` if set, else the working directory. Under pytest the
+    working directory is the repo, so without this pin any test that creates
+    a project would write scistack.toml and an entities file into the source
+    tree. See ``.claude/plan-entities-toml-26-08-31.md`` D5.
+
+    Since the root now also decides where config is READ from and where
+    folder-scan discovery walks (``.claude/plan-unify-project-root.md``),
+    this pin is what makes ``tmp_path`` behave as the project in every test,
+    not just those that write files.
     """
     from scistack_gui.config import set_project_root_hint
 

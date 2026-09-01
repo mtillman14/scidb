@@ -24,6 +24,8 @@ interface PathsInfo {
   packaged: boolean
   managed_paths: string[]
   project_root: string
+  /** The scistack.toml/pyproject.toml actually in use, or null if none yet. */
+  config_path?: string | null
   modules?: string[]
   entities_file?: string | null
   /** Legacy .py / .m declaration files: discovered, but never written to. */
@@ -82,6 +84,17 @@ export default function PathsPopup({ onClose }: { onClose: () => void }) {
               </>
             ) : (
               <>
+                {/* Everything below is resolved relative to the project root
+                    — which is the folder you opened, NOT wherever the
+                    database happens to live. Shown because an unexpected
+                    root is otherwise indistinguishable from "no code here". */}
+                <div style={styles.pathsGrid}>
+                  <PathRow label="Project root" values={[paths.project_root]} />
+                  <PathRow
+                    label="Config file"
+                    values={paths.config_path ? [paths.config_path] : []}
+                  />
+                </div>
                 <ManagedPathsList paths={paths.managed_paths ?? []} onChange={fetchPaths} />
                 <div style={styles.hint}>
                   Each path is recursively scanned for Python (.py) and MATLAB (.m) code — typically a shared, reusable code repository, not necessarily anything inside this project's own folder.

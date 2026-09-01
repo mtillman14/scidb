@@ -138,9 +138,11 @@ def get_project_paths() -> dict:
             "(single-file mode)",
             db_path,
         )
+        # project_root comes from managed_info — the resolved project root,
+        # NOT db_path.parent. The database is routinely nowhere near the
+        # project (see config.resolve_project_root).
         return {
             "configured": False,
-            "project_root": str(db_path.parent),
             **managed_info,
         }
 
@@ -156,7 +158,6 @@ def get_project_paths() -> dict:
     )
     return {
         "configured": True,
-        "project_root": str(config.project_root),
         "modules": [str(p) for p in config.modules],
         "entities_file": str(config.entities_file) if config.entities_file else None,
         # Read-only legacy declaration files, surfaced so the Paths popup can

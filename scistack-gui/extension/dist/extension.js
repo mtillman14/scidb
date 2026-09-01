@@ -84,7 +84,8 @@ var PythonProcess = class {
     }
     this.proc = (0, import_child_process.spawn)(pythonPath, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: childEnv
+      env: childEnv,
+      cwd: workspaceFolder?.uri.fsPath
     });
     this.closed = new Promise((resolve) => {
       this.proc.on("close", () => resolve());

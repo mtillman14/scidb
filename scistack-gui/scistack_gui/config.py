@@ -16,10 +16,13 @@ from pathlib import Path
 
 from scifor.discovery import (
     extract_scistack_section,
-    find_project_config,
     is_test_path,
     read_project_name,
 )
+# NOTE: scifor.discovery.find_project_config (the upward walk) is deliberately
+# NOT used here any more. Anchoring that walk at the database directory is what
+# let the reader and the writer disagree about the project root. It remains the
+# right tool for scidb.entities, which walks from cwd.
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -138,11 +141,13 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     Parameters
     ----------
     project_path
-        Explicit path to a pyproject.toml file *or* a directory containing one.
-        If ``None``, searches upward from *db_path* for a pyproject.toml that
-        contains a ``[tool.scistack]`` section.
+        Explicit path to a config file *or* a project directory. If ``None``,
+        the project root comes from :func:`resolve_project_root` — the folder
+        the user opened, **not** anywhere near the database.
     db_path
-        Path to the .duckdb file (used as fallback search root).
+        Path to the .duckdb file. Used only as
+        :func:`resolve_project_root`'s last-resort fallback; it does not
+        otherwise influence which project this is.
 
     Raises
     ------
@@ -160,9 +165,12 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         project_path,
         db_path,
     )
-    toml_path = _locate_pyproject(project_path, db_path)
+    root = resolve_project_root(project_path, db_path)
+    toml_path = locate_config_at(root)
     if toml_path is None:
-        root = _normalize(project_path) if project_path is not None else _normalize(db_path).parent
+        # Folder-scan the PROJECT, not the database's directory. Scanning
+        # next to the .duckdb is what produced "0 .py, 0 .m" for a project
+        # whose code lives on another drive entirely.
         logger.info(
             "[config] No pyproject.toml/scistack.toml found; falling back to "
             "folder-scan discovery rooted at %s",
@@ -509,55 +517,6 @@ def _resolve_glob_paths(
     return result
 
 
-def _locate_pyproject(project_path: Path | None, db_path: Path) -> Path | None:
-    """Find the pyproject.toml or scistack.toml to use.
-
-    Returns ``None`` (rather than raising) when no config file can be found —
-    callers treat that as "use folder-scan discovery instead." An explicit
-    ``project_path`` that doesn't exist on disk at all is still a hard error
-    (that's a typo, not a missing-config situation).
-    """
-    if project_path is not None:
-        logger.debug("[config] Explicit project_path provided: %s", project_path)
-        p = _normalize(project_path)
-        if p.is_file():
-            logger.debug("[config] project_path is a file: %s", p)
-            return p
-        if p.is_dir():
-            logger.debug(
-                "[config] project_path is a directory, searching for config file"
-            )
-            # Prefer pyproject.toml, fall back to scistack.toml
-            for name in ("pyproject.toml", "scistack.toml"):
-                candidate = p / name
-                if candidate.exists():
-                    logger.debug("[config] Found %s in directory", name)
-                    return candidate
-            logger.info(
-                "[config] No pyproject.toml or scistack.toml found in directory: %s",
-                p,
-            )
-            return None
-        raise FileNotFoundError(f"Path does not exist: {p}")
-
-    # Search upward from the database file's directory. The walk itself
-    # lives in scifor.discovery so scidb.entities (which has to answer the
-    # same "which project is this?" question for scidb.entities.X) and the
-    # GUI can never disagree about the answer.
-    logger.debug(
-        "[config] No explicit project_path, searching upward from db_path: %s", db_path
-    )
-    found = find_project_config(_normalize(db_path).parent)
-    if found is None:
-        logger.info(
-            "[config] No pyproject.toml/scistack.toml with [tool.scistack] found "
-            "in ancestors of %s",
-            db_path,
-        )
-    else:
-        logger.debug("[config] Found config by upward search: %s", found)
-    return found
-
 
 def _extract_scistack_section(data: dict, filename: str) -> dict | None:
     """Extract the scistack config section from parsed TOML data.
@@ -575,8 +534,12 @@ def _extract_scistack_section(data: dict, filename: str) -> dict | None:
 
 _project_root_hint: Path | None = None
 """Set once at startup from ``--project-root`` (the VS Code workspace
-folder). Consulted only when there is no config file to locate the project
-by -- see :func:`infer_project_root`."""
+folder) -- the launching context's statement of which folder the user
+opened. See :func:`resolve_project_root`.
+
+The extension also spawns the server with ``cwd`` set to that same folder,
+so rules 2 and 3 there agree; the flag remains because a child process's
+cwd is not something the server can rely on being meaningful."""
 
 
 def set_project_root_hint(path: "Path | str | None") -> None:
@@ -586,41 +549,88 @@ def set_project_root_hint(path: "Path | str | None") -> None:
     logger.info("[config] Project root hint set to %s", _project_root_hint)
 
 
-def infer_project_root(db_path: Path) -> Path:
-    """Where this project's config and entities file belong.
+def locate_config_at(root: Path) -> Path | None:
+    """The config file in *root*, or ``None``.
 
-    The database is routinely NOT in the project: a ``.duckdb`` usually
-    lives in a datasets folder, and writing ``scistack.toml`` +
-    ``src/scistack_entities.toml`` next to it (the old behaviour) scattered
-    project files across data directories. Resolution order, most to least
+    **Looks in that directory and nowhere else.** No upward walk: the
+    project root is decided once, by :func:`resolve_project_root`, and the
+    config file lives there by definition. Walking is what let the reader
+    and the writer disagree — see :func:`resolve_project_root`.
+
+    ``pyproject.toml`` wins over ``scistack.toml`` when both exist: a
+    packaged project's own metadata file is the more authoritative of the
+    two, and ``add_path`` refuses to write to it anyway
+    (``_reject_packaged_project``).
+    """
+    for name in ("pyproject.toml", "scistack.toml"):
+        candidate = _normalize(root) / name
+        if candidate.exists():
+            logger.debug("[config] Found %s at project root %s", name, root)
+            return candidate
+    logger.info(
+        "[config] No pyproject.toml/scistack.toml at project root %s", root
+    )
+    return None
+
+
+def resolve_project_root(project_path: "Path | None", db_path: Path) -> Path:
+    """**The** answer to "which directory is this project?".
+
+    Every caller — reading config, writing config, placing the entities
+    file — goes through here, so the reader and the writer cannot disagree.
+    They used to: writing asked ``infer_project_root`` (which consulted
+    ``--project-root``) while reading walked upward from the *database*
+    directory. With a database on ``C:\\`` and a project on ``Y:\\`` that
+    walk could never reach the project, so the GUI wrote a ``scistack.toml``
+    it was then structurally incapable of reading back, and discovery
+    silently stayed empty. See .claude/plan-unify-project-root.md.
+
+    **The project root is the folder the user opened.** The database's
+    location does not influence it (rule 4 is a last resort for a database
+    opened with no session context at all). Order, most to least
     authoritative:
 
-    1. An existing ``pyproject.toml``/``scistack.toml`` above the database
-       -- an established project always wins, so this never moves an
-       existing one.
+    1. An explicit ``--project``/``--module`` argument — the user naming a
+       project outright.
     2. ``--project-root``, i.e. the VS Code workspace folder.
-    3. The server's working directory.
-    4. The database's own directory, as a last resort.
+    3. The current working directory (browser/CLI, where the user launched
+       from). ``scidb.entities`` already resolves this way.
+    4. The database's own directory, with a warning.
 
-    Always logged, because which rule fired determines where files land.
+    Deliberately does NOT search upward for a config file. A stray
+    ``pyproject.toml`` in a parent directory — entirely plausible on a
+    shared network drive — would otherwise capture every project beneath
+    it. The cost is that opening a *subfolder* of a packaged repo no longer
+    finds the config above it; open the repo root instead. The resolved
+    root is logged on every load, and surfaced by
+    :func:`describe_managed_paths`, so a wrong answer is visible rather
+    than mysterious.
+
+    An explicit ``project_path`` that doesn't exist is a hard error — that's
+    a typo, not a missing-config situation.
     """
-    existing = find_project_config(_normalize(db_path).parent)
-    if existing is not None:
-        logger.info(
-            "[config] Project root %s (from existing config %s)",
-            existing.parent,
-            existing,
-        )
-        return existing.parent
+    if project_path is not None:
+        p = _normalize(project_path)
+        if p.is_file():
+            # --module /path/to/pipeline.py, or --project /path/pyproject.toml
+            logger.info("[config] Project root %s (from explicit path %s)", p.parent, p)
+            return p.parent
+        if p.is_dir():
+            logger.info("[config] Project root %s (from explicit path)", p)
+            return p
+        raise FileNotFoundError(f"Path does not exist: {p}")
+
     if _project_root_hint is not None:
         logger.info(
             "[config] Project root %s (from --project-root)", _project_root_hint
         )
         return _project_root_hint
+
     cwd = _normalize(Path.cwd())
     if cwd.is_dir():
-        logger.info("[config] Project root %s (server working directory)", cwd)
+        logger.info("[config] Project root %s (working directory)", cwd)
         return cwd
+
     fallback = _normalize(db_path).parent
     logger.warning(
         "[config] Falling back to the database's own directory as the project "
@@ -865,14 +875,26 @@ def describe_managed_paths(db_path: Path) -> dict:
     ``modules`` entries currently written to scistack.toml. Empty until the
     first path is added via :func:`add_path`, even if folder-scan discovery
     is already finding files implicitly.
+
+    Also reports ``project_root`` and ``config_path``. Everything here now
+    hangs off which folder was resolved as the project, and the answer is
+    deliberately NOT derived from the database's location -- so when it is
+    wrong (VS Code opened somewhere unexpected), the popup can say which
+    folder it settled on instead of just showing an empty list.
     """
-    toml_path = _locate_pyproject(None, db_path)
+    project_root = resolve_project_root(None, db_path)
+    toml_path = locate_config_at(project_root)
     packaged = toml_path is not None and toml_path.name == "pyproject.toml"
     managed_paths: list[str] = []
     if toml_path is not None and toml_path.name == "scistack.toml":
         section = _load_raw_scistack_section(toml_path)
         managed_paths = list(section.get("modules", []))
-    return {"packaged": packaged, "managed_paths": managed_paths}
+    return {
+        "packaged": packaged,
+        "managed_paths": managed_paths,
+        "project_root": str(project_root),
+        "config_path": str(toml_path) if toml_path is not None else None,
+    }
 
 
 def add_path(db_path: Path, new_path: Path) -> Path:
@@ -899,12 +921,17 @@ def add_path(db_path: Path, new_path: Path) -> Path:
     if not raw_new_path.is_dir():
         raise NotADirectoryError(f"Path is not a directory: {new_path}")
 
-    toml_path = _locate_pyproject(None, db_path)
+    # Same resolver the READER uses, so `is_first_write` reflects reality.
+    # It didn't before: this looked for a config next to the database while
+    # the write below went to the project root, so every add believed it was
+    # the first, started from an empty section, and silently discarded every
+    # path added earlier.
+    project_root = resolve_project_root(None, db_path)
+    toml_path = locate_config_at(project_root)
     _reject_packaged_project(toml_path)
 
     is_first_write = toml_path is None
     if is_first_write:
-        project_root = infer_project_root(db_path)
         target_path = project_root / "scistack.toml"
         section: dict = {}
         logger.info(
@@ -913,7 +940,6 @@ def add_path(db_path: Path, new_path: Path) -> Path:
     else:
         target_path = toml_path
         section = _load_raw_scistack_section(toml_path)
-        project_root = toml_path.parent
 
     raw_modules = list(section.get("modules", []))
     matlab_section = dict(section.get("matlab", {}))
@@ -965,10 +991,11 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
     logger.info(
         "[config] remove_path: db_path=%s, path_to_remove=%s", db_path, path_to_remove
     )
-    toml_path = _locate_pyproject(None, db_path)
+    project_root = resolve_project_root(None, db_path)
+    toml_path = locate_config_at(project_root)
     if toml_path is None:
         raise FileNotFoundError(
-            f"No scistack.toml/pyproject.toml found near {db_path}; nothing to remove."
+            f"No scistack.toml/pyproject.toml at {project_root}; nothing to remove."
         )
     _reject_packaged_project(toml_path)
 
@@ -1053,7 +1080,7 @@ def set_entities_file(
 
     If *file_path* is ``None``, defaults to
     ``<project_root>/src/scistack_entities.toml``, where *project root* is
-    :func:`infer_project_root`'s answer -- **not** the database's own
+    :func:`resolve_project_root`'s answer -- **not** the database's own
     directory, which is usually a datasets folder that project files have
     no business being written into. A relative *file_path* resolves against
     that same root, which is what lets the creation wizard pass a bare
@@ -1068,12 +1095,12 @@ def set_entities_file(
     Python, and executing it as a module would fail.
     """
     logger.info("[config] set_entities_file: db_path=%s, file_path=%s", db_path, file_path)
-    toml_path = _locate_pyproject(None, db_path)
+    project_root = resolve_project_root(None, db_path)
+    toml_path = locate_config_at(project_root)
     _reject_packaged_project(toml_path)
 
     is_first_write = toml_path is None
     if is_first_write:
-        project_root = infer_project_root(db_path)
         target_path = project_root / "scistack.toml"
         section: dict = {}
         logger.info(
@@ -1082,7 +1109,6 @@ def set_entities_file(
     else:
         target_path = toml_path
         section = _load_raw_scistack_section(toml_path)
-        project_root = toml_path.parent
 
     raw_modules = list(section.get("modules", []))
     matlab_section = dict(section.get("matlab", {}))
@@ -1162,10 +1188,11 @@ def clear_entities_file(db_path: Path) -> Path:
     pointing at it, never destroy it.
     """
     logger.info("[config] clear_entities_file: db_path=%s", db_path)
-    toml_path = _locate_pyproject(None, db_path)
+    project_root = resolve_project_root(None, db_path)
+    toml_path = locate_config_at(project_root)
     if toml_path is None:
         raise FileNotFoundError(
-            f"No scistack.toml/pyproject.toml found near {db_path}; nothing to clear."
+            f"No scistack.toml/pyproject.toml at {project_root}; nothing to clear."
         )
     _reject_packaged_project(toml_path)
 

@@ -14,9 +14,10 @@ from scistack_gui.config import (
     _normalize,
     add_path,
     clear_entities_file,
-    infer_project_root,
     load_config,
+    locate_config_at,
     remove_path,
+    resolve_project_root,
     set_entities_file,
     set_project_root_hint,
     tomllib,
@@ -675,16 +676,22 @@ def test_folder_scan_project_path_directory_with_no_config(tmp_path):
     assert [p.name for p in config.modules] == ["pipeline.py"]
 
 
-def test_folder_scan_no_project_path_roots_at_db_directory(tmp_path):
-    """With no --project at all, folder-scan roots at the .duckdb's own
-    directory (not an ancestor search — that's only for locating a config
-    file, which doesn't exist here)."""
-    project_dir = tmp_path / "my_study"
-    project_dir.mkdir()
-    (project_dir / "pipeline.py").write_text("")
+def test_folder_scan_no_project_path_roots_at_the_project_not_the_db(tmp_path):
+    """With no --project, folder-scan roots at the PROJECT root.
 
-    config = load_config(None, project_dir / "my_study.duckdb")
-    assert config.project_root == project_dir
+    It used to root at the .duckdb's own directory, which is how a project
+    whose database sits in a datasets folder on another drive scanned the
+    wrong tree and discovered nothing. The autouse ``_pin_project_root``
+    fixture pins the hint to tmp_path, standing in for the VS Code
+    workspace folder.
+    """
+    db_dir = tmp_path / "datasets"
+    db_dir.mkdir()
+    (db_dir / "not_code.txt").write_text("")
+    (tmp_path / "pipeline.py").write_text("")
+
+    config = load_config(None, db_dir / "my_study.duckdb")
+    assert config.project_root == _normalize(tmp_path)
     assert [p.name for p in config.modules] == ["pipeline.py"]
 
 
@@ -1037,14 +1044,21 @@ def test_set_entities_file_accepts_relative_path(tmp_path):
 
 def test_set_entities_file_relative_path_resolves_against_existing_root(tmp_path):
     """When a scistack.toml already exists (not the first-write case), a
-    relative file_path resolves against ITS project_root, not db_path's
-    parent."""
+    relative file_path resolves against the PROJECT root, not db_path's
+    parent -- here the database sits in a subdirectory of the project.
+
+    The hint is pinned explicitly: the project root is now strictly the
+    folder the user opened, so an existing config only counts when it is AT
+    that folder. It is no longer found by walking up from the database (see
+    .claude/plan-unify-project-root.md).
+    """
     project_root = tmp_path / "project"
     project_root.mkdir()
     (project_root / "scistack.toml").write_text("")
     db_path = project_root / "sub" / "proj.duckdb"
     db_path.parent.mkdir()
     db_path.write_text("")
+    set_project_root_hint(project_root)
 
     result = set_entities_file(db_path, "src/entities.toml")
 
@@ -1189,24 +1203,41 @@ def test_clear_entities_file_rejects_packaged_project(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# infer_project_root -- where project files land (todos item 3b)
+# resolve_project_root -- THE answer to "which directory is this project?"
+#
+# One resolver for readers and writers alike. These used to be two: writing
+# consulted --project-root, reading walked upward from the DATABASE. With a
+# database on one drive and the project on another, the GUI wrote a
+# scistack.toml it could never read back and discovery silently stayed
+# empty. See .claude/plan-unify-project-root.md.
 # ---------------------------------------------------------------------------
 
 
-def test_infer_project_root_prefers_an_existing_config(tmp_path):
-    """An established project always wins, so this never relocates one."""
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    (project_root / "scistack.toml").write_text("modules = []\n")
-    db_path = project_root / "data" / "proj.duckdb"
+def test_resolve_project_root_prefers_an_explicit_path(tmp_path):
+    """--project/--module names the project outright and outranks all else."""
+    explicit = tmp_path / "named"
+    explicit.mkdir()
+    set_project_root_hint(tmp_path / "workspace")
+    db_path = tmp_path / "datasets" / "proj.duckdb"
     db_path.parent.mkdir()
     db_path.write_text("")
-    set_project_root_hint(tmp_path / "somewhere-else")
 
-    assert infer_project_root(db_path) == _normalize(project_root)
+    assert resolve_project_root(explicit, db_path) == _normalize(explicit)
 
 
-def test_infer_project_root_uses_the_hint_when_there_is_no_config(tmp_path):
+def test_resolve_project_root_explicit_file_uses_its_directory(tmp_path):
+    """--module points at a .py file; the project is the folder holding it."""
+    module = tmp_path / "proj" / "pipeline.py"
+    module.parent.mkdir()
+    module.write_text("")
+
+    assert resolve_project_root(module, tmp_path / "x.duckdb") == _normalize(
+        module.parent
+    )
+
+
+def test_resolve_project_root_uses_the_hint(tmp_path):
+    """--project-root is the VS Code workspace folder: what the user opened."""
     hint = tmp_path / "workspace"
     hint.mkdir()
     db_path = tmp_path / "datasets" / "proj.duckdb"
@@ -1214,10 +1245,28 @@ def test_infer_project_root_uses_the_hint_when_there_is_no_config(tmp_path):
     db_path.write_text("")
     set_project_root_hint(hint)
 
-    assert infer_project_root(db_path) == _normalize(hint)
+    assert resolve_project_root(None, db_path) == _normalize(hint)
 
 
-def test_infer_project_root_falls_back_to_cwd(tmp_path, monkeypatch):
+def test_resolve_project_root_ignores_a_config_above_the_database(tmp_path):
+    """The rule is "the folder you opened", full stop.
+
+    A config file sitting above the DATABASE used to win outright, which is
+    precisely the anchor that made the reader and the writer disagree.
+    """
+    beside_db = tmp_path / "datasets"
+    beside_db.mkdir()
+    (beside_db / "scistack.toml").write_text("modules = []\n")
+    db_path = beside_db / "proj.duckdb"
+    db_path.write_text("")
+    hint = tmp_path / "workspace"
+    hint.mkdir()
+    set_project_root_hint(hint)
+
+    assert resolve_project_root(None, db_path) == _normalize(hint)
+
+
+def test_resolve_project_root_falls_back_to_cwd(tmp_path, monkeypatch):
     db_path = tmp_path / "datasets" / "proj.duckdb"
     db_path.parent.mkdir()
     db_path.write_text("")
@@ -1226,4 +1275,91 @@ def test_infer_project_root_falls_back_to_cwd(tmp_path, monkeypatch):
     workdir.mkdir()
     monkeypatch.chdir(workdir)
 
-    assert infer_project_root(db_path) == _normalize(workdir)
+    assert resolve_project_root(None, db_path) == _normalize(workdir)
+
+
+def test_locate_config_at_does_not_walk_upward(tmp_path):
+    """The project root is decided once; the config lives there or nowhere.
+
+    An upward walk is what let a stray config in a parent directory — very
+    plausible on a shared network drive — capture every project beneath it.
+    """
+    (tmp_path / "scistack.toml").write_text("modules = []\n")
+    child = tmp_path / "child"
+    child.mkdir()
+
+    assert locate_config_at(tmp_path) == _normalize(tmp_path / "scistack.toml")
+    assert locate_config_at(child) is None
+
+
+def test_locate_config_at_prefers_pyproject(tmp_path):
+    (tmp_path / "scistack.toml").write_text("modules = []\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.scistack]\n")
+
+    assert locate_config_at(tmp_path) == _normalize(tmp_path / "pyproject.toml")
+
+
+# ---------------------------------------------------------------------------
+# The regression itself: database and project on different drives.
+# ---------------------------------------------------------------------------
+
+
+def test_add_path_is_readable_back_when_db_is_outside_the_project(tmp_path):
+    """Write it, then read it. This is the bug from test_logs.md.
+
+    The database lived under C:\\Users\\...\\Datasets while the project was
+    on Y:\\LabMembers\\..., so the reader's upward walk from the database
+    could never reach the config the writer had just created. Discovery
+    reported "0 .py, 0 .m" forever.
+    """
+    from scistack_gui.config import add_path, load_config
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "pipeline.py").write_text("")
+    # Nowhere near the project — a different tree entirely, as C:\ is from Y:\.
+    db_path = tmp_path / "datasets" / "study" / "proj.duckdb"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("")
+    library = tmp_path / "shared_libs"
+    library.mkdir()
+    (library / "helper.py").write_text("")
+
+    set_project_root_hint(project_root)
+
+    written = add_path(db_path, library)
+    assert written == _normalize(project_root / "scistack.toml")
+
+    # The reader must find that exact file, and see the added library.
+    config = load_config(None, db_path)
+    assert config.project_root == _normalize(project_root)
+    assert _normalize(library / "helper.py") in [_normalize(m) for m in config.modules]
+
+
+def test_two_add_paths_both_survive(tmp_path):
+    """Each add used to believe it was the first — because it looked for the
+    config next to the DATABASE and never found the one it had written to the
+    project root — so it re-seeded from an empty section and silently
+    discarded everything added before."""
+    from scistack_gui.config import add_path, load_config
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    db_path = tmp_path / "datasets" / "proj.duckdb"
+    db_path.parent.mkdir()
+    db_path.write_text("")
+    first = tmp_path / "lib_one"
+    first.mkdir()
+    (first / "one.py").write_text("")
+    second = tmp_path / "lib_two"
+    second.mkdir()
+    (second / "two.py").write_text("")
+
+    set_project_root_hint(project_root)
+
+    add_path(db_path, first)
+    add_path(db_path, second)
+
+    names = {p.name for p in load_config(None, db_path).modules}
+    assert "one.py" in names
+    assert "two.py" in names
