@@ -26,7 +26,7 @@ function close_database(db)
     try
         db.close();
     catch close_err__
-        scidb.Log.error('MATLAB: db.close FAILED for %s: %s', ...
+        scidb.Log.err('MATLAB: db.close FAILED for %s: %s', ...
             db_path, close_err__.message);
         rethrow(close_err__);
     end

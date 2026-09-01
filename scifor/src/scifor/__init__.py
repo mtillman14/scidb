@@ -45,7 +45,12 @@ from .filters import Col, ColFilter, CompoundFilter, NotFilter
 from .fixed import Fixed
 from .foreach import ColumnFunctionError, ForColumnsError, NoDataError, for_each
 from .merge import Merge
-from .pathinput import PathInput
+from .pathinput import (
+    PathInput,
+    clear_project_root,
+    get_project_root,
+    set_project_root,
+)
 from .pathoutput import PathOutput
 from .schema import expand_schema_keys, get_schema, set_schema
 
@@ -69,6 +74,10 @@ __all__ = [
     "EachOf",
     "PathInput",
     "PathOutput",
+    # Rootless-PathInput resolution base
+    "set_project_root",
+    "get_project_root",
+    "clear_project_root",
     # Filters
     "Col",
     "ColFilter",

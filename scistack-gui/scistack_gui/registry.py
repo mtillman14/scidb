@@ -720,6 +720,14 @@ def get_path_input(name: str) -> "PathInput | EachOf | None":
     return _path_inputs.get(name)
 
 
+def get_project_root() -> "Path | None":
+    """The loaded project's root directory, or ``None`` before any config is
+    loaded. One accessor so callers that only need the root (the generated
+    MATLAB command's resolution pin, ``graph_builder``'s project-rooted
+    PathInput matching) don't each reach into ``_config``."""
+    return getattr(_config, "project_root", None)
+
+
 def _register_function(name: str, fn, *, source: str) -> None:
     """Register a single function, warning on name collisions."""
     existing_source = _function_sources.get(name)

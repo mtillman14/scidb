@@ -12,7 +12,7 @@ schema = ["subject", "session", "speed", "trial", "cycle"];
 db_root = 'C:\Users\mtillman\Datasets\Stroke Aim 2';
 % delete(fullfile(db_root, 'data.db'));
 scidb.configure_database(fullfile(db_root, 'data.db'), schema);
-py.scidb.log.Log.set_level('DEBUG')
+scidb.Log.set_level('DEBUG')
 
 %% Load the assessment day GAITRite data
 gaitritePathTemplate = '{subject}/Gaitrite/{session}/{subject}_{session}_GR_{speed}.xlsx';

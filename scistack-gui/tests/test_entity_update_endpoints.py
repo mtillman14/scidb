@@ -279,6 +279,61 @@ class TestMatlabTomlEntitiesPreamble:
         assert cmd.index("addpath('/proj/src');") < cmd.index("scidb.entities();")
         assert cmd.index("scidb.entities();") < cmd.index("configure_database")
 
+    def test_project_root_is_passed_when_known(self):
+        """Without it MATLAB resolves the project by walking up from its own
+        cwd: outside the project that finds nothing, the load logs
+        ``0 variable(s), 0 parameter(s), 0 path input(s) ... from .``, and
+        every declared entity is silently out of scope."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            "process",
+            "/tmp/x.duckdb",
+            ["subject"],
+            entities_file="/proj/src/scistack_entities.toml",
+            project_root="/proj",
+        )
+
+        assert "scidb.entities('/proj');" in cmd
+
+    def test_project_root_is_escaped(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            "process",
+            "/tmp/x.duckdb",
+            ["subject"],
+            entities_file="/proj/src/scistack_entities.toml",
+            project_root="/it's/a/proj",
+        )
+
+        assert "scidb.entities('/it''s/a/proj');" in cmd
+
+    def test_pipeline_command_passes_the_project_root_too(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="main",
+            steps=[
+                {
+                    "function_name": "load_csv",
+                    "variants": [
+                        {
+                            "input_types": {},
+                            "output_type": "RawSignal",
+                            "constants": {},
+                        }
+                    ],
+                }
+            ],
+            db_path="/tmp/x.duckdb",
+            schema_keys=["subject"],
+            entities_file="/proj/src/scistack_entities.toml",
+            project_root="/proj",
+        )
+
+        assert "scidb.entities('/proj');" in cmd
+
     def test_both_sources_are_emitted_when_both_configured(self):
         """They declare different names; dropping either would leave a name
         undefined at the point the command uses it."""

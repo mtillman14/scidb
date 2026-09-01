@@ -297,14 +297,16 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
                 function_name,
             )
 
-    # Resolve project root so relative PathInput templates get an explicit
-    # root_folder in the generated script (MATLAB's CWD is a temp dir, so
-    # CWD-relative paths would be wrong without it).
-    project_root: str | None = None
-    from scistack_gui import registry as _reg
+    # Resolve the project root so the generated script can pin it as the
+    # resolution base for rootless PathInput templates (MATLAB's cwd is a temp
+    # dir, so cwd-relative resolution would be wrong). It is stated to scifor,
+    # NOT written into each PathInput's root_folder — that rewrote the input's
+    # recorded identity and grew __unresolved__ ghost nodes on the canvas; see
+    # api.matlab_command._project_root_lines.
+    _root = registry.get_project_root()
+    project_root: str | None = str(_root) if _root is not None else None
 
-    if _reg._config is not None:
-        project_root = str(_reg._config.project_root)
+    _drop_project_root_folder(path_input_params, _root)
 
     logger.info(
         "generate_matlab_command: fn=%s, total_variants=%d, fn_variants=%d, "
@@ -337,6 +339,45 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         "generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd)
     )
     return {"command": cmd}
+
+
+def _drop_project_root_folder(path_inputs: dict, project_root) -> None:
+    """Normalize a DB-recorded ``root_folder`` that is just the project root
+    back to ``None``, in place.
+
+    Runs made before the generator stopped substituting the project root for a
+    rootless declaration are on disk with that root baked into their
+    ``PathInput`` key. ``path_input_params`` reads those rows back, so without
+    this the next run re-emits the rooted form and records the divergent key
+    all over again — one ``__unresolved__`` ghost node that never heals.
+
+    Dropping it changes nothing about what resolves: the generated script pins
+    the same directory as scifor's resolution base for rootless PathInputs (see
+    ``api.matlab_command._project_root_lines``). Any other ``root_folder`` is a
+    real declaration and is left alone.
+    """
+    if project_root is None:
+        return
+    from pathlib import Path
+
+    root = Path(project_root).resolve()
+    for param_name, pi in path_inputs.items():
+        rf = pi.get("root_folder")
+        if not rf:
+            continue
+        try:
+            same = Path(rf).resolve() == root
+        except OSError:  # pragma: no cover - unresolvable path on this machine
+            same = str(rf) == str(project_root)
+        if same:
+            logger.info(
+                "generate_matlab_command: dropping the project root recorded as "
+                "%r's root_folder (%s) — it is the resolution base already, and "
+                "keeping it would re-record a PathInput key no declaration has",
+                param_name,
+                rf,
+            )
+            pi["root_folder"] = None
 
 
 def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict:
@@ -404,9 +445,8 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
             "found; scihist.* / scidb.* may be unavailable in MATLAB"
         )
 
-    project_root: str | None = None
-    if _reg._config is not None:
-        project_root = str(_reg._config.project_root)
+    _root = _reg.get_project_root()
+    project_root: str | None = str(_root) if _root is not None else None
 
     pending_consts = pipeline_store.get_pending_constants(db)
     hidden_ids = pipeline_store.get_hidden_node_ids(db)
@@ -471,6 +511,7 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         path_input_params.update(
             _collect_edge_path_inputs(fn_label, saved_pis, manual_edges, manual_nodes)
         )
+        _drop_project_root_folder(path_input_params, project_root)
 
         sweep_params = _collect_sweep_params(
             fn_label, saved_sweeps, manual_edges, manual_nodes

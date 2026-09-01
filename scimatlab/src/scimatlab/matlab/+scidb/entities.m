@@ -30,10 +30,13 @@ function varargout = entities(project_root)
 %   preferable to a classdef, preserved.
 %
 %   Variables are NOT returned as fields: a variable is a *type*, and
-%   MATLAB requires a real classdef file per type. The GUI materialises a
-%   stub classdef for each declared variable (see
-%   scistack_gui.matlab_registry.materialize_variable_stubs), so a declared
-%   variable is referenced as StepLength() the same way it always was.
+%   MATLAB requires a real classdef file per type. Any declared variable
+%   that does not already resolve as a class gets a stub classdef written
+%   for it here (scimatlab.stubs, via
+%   py.scimatlab.bridge.ensure_variable_classdefs) and its directory added
+%   to the path, so a declared variable is referenced as StepLength() the
+%   same way it always was -- including one just created in the GUI, with
+%   no further setup.
 
     arguments
         project_root string = ""
@@ -65,10 +68,27 @@ function varargout = entities(project_root)
         objs = cell(1, numel(arms));
         for j = 1:numel(arms)
             arm = arms{j};
-            if isempty(arm.root_folder)
-                objs{j} = scidb.PathInput(arm.template);
-            else
-                objs{j} = scidb.PathInput(arm.template, arm.root_folder);
+            % root_folder is name-value on scifor.PathInput (the template is
+            % its only positional), so it must be passed as one -- a second
+            % positional fails the arguments block at construction time.
+            % Quoted 'name', value form, not name=value: scidb.PathInput
+            % forwards varargin{:} and declares no arguments block, so it
+            % cannot accept the name=value syntax.
+            try
+                if isempty(arm.root_folder)
+                    objs{j} = scidb.PathInput(arm.template);
+                else
+                    objs{j} = scidb.PathInput(arm.template, ...
+                        'root_folder', string(arm.root_folder));
+                end
+            catch err
+                % Without this the failure reads as a bare constructor error
+                % with no hint of which declaration produced it.
+                error('scidb:entities:pathInputFailed', ...
+                      ['Path input ''%s'' (arm %d of %d, template ''%s'') ' ...
+                       'from %s could not be constructed: %s'], ...
+                      name, j, numel(arms), char(string(arm.template)), ...
+                      char(payload{'path'}), err.message);
             end
         end
         if numel(objs) == 1
@@ -77,6 +97,75 @@ function varargout = entities(project_root)
             % Alternate templates are an EachOf of PathInputs -- the same
             % shape Python builds, so for_each fans them out identically.
             s.(name) = scifor.EachOf(objs{:});
+        end
+    end
+
+    % --- Variables need a real classdef file on the path ------------------
+    % A Variable is a *type*, not a value, so it cannot cross the bridge as
+    % one: `RawEMG()` only resolves once a classdef file for it exists on
+    % the MATLAB path. Ask MATLAB which declared names it cannot resolve --
+    % its path is the only authority, and writing a stub for a name that
+    % already has a hand-written classdef elsewhere would shadow it -- then
+    % have the bridge materialize exactly those (see scimatlab/stubs.py).
+    % This is what makes a variable created in the GUI runnable from here
+    % with no further setup, and it runs before anything in the generated
+    % script references the type.
+    declared_vars = scidb.internal.pylist_to_cell(payload{'variables'});
+    missing = {};
+    for i = 1:numel(declared_vars)
+        vname = char(declared_vars{i});
+        if exist(vname, 'class') ~= 8
+            missing{end+1} = vname; %#ok<AGROW>
+        end
+    end
+    if ~isempty(missing)
+        if strlength(project_root) == 0
+            stub_result = py.scimatlab.bridge.ensure_variable_classdefs( ...
+                py.list(missing));
+        else
+            stub_result = py.scimatlab.bridge.ensure_variable_classdefs( ...
+                py.list(missing), char(project_root));
+        end
+        stub_dir = char(stub_result{'dir'});
+        if ~isempty(stub_dir) && isfolder(stub_dir)
+            addpath(stub_dir);
+            % New files in a freshly added folder are not visible to the
+            % class resolver until the caches are refreshed.
+            rehash;
+        end
+
+        created = scidb.internal.pylist_to_cell(stub_result{'created'});
+        if ~isempty(created)
+            created_names = cellfun(@char, created, 'UniformOutput', false);
+            scidb.Log.info(sprintf( ...
+                '[entities] Materialized %d MATLAB classdef(s) in %s: %s', ...
+                numel(created_names), stub_dir, ...
+                strjoin(created_names, ', ')));
+        end
+
+        stub_errors = scidb.internal.pylist_to_cell(stub_result{'errors'});
+        for i = 1:numel(stub_errors)
+            warning('scidb:entities:classdefWriteFailed', ...
+                    'Entities file: %s', char(stub_errors{i}));
+        end
+
+        % Anything that still does not resolve is named here rather than
+        % surfacing later as "Unrecognized function or variable 'X'" from
+        % the middle of a for_each call.
+        for i = 1:numel(missing)
+            if exist(missing{i}, 'class') ~= 8
+                if isempty(stub_dir)
+                    expected = '(no directory could be resolved)';
+                else
+                    expected = fullfile(stub_dir, [missing{i} '.m']);
+                end
+                warning('scidb:entities:noClassdef', ...
+                        ['Variable ''%s'' is declared in %s but does not ' ...
+                         'resolve as a MATLAB class (expected %s). ' ...
+                         '%s() will error until that file exists.'], ...
+                        missing{i}, char(payload{'path'}), expected, ...
+                        missing{i});
+            end
         end
     end
 

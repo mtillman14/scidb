@@ -1374,34 +1374,22 @@ class TestFormatPathInput:
         result = _format_path_input(pi)
         assert result == 'scifor.PathInput("{subject}/data.mat")'
 
-    def test_relative_template_uses_project_root_when_no_root_folder(self):
-        from scistack_gui.api.matlab_command import _format_path_input
-
-        pi = {"template": "{subject}/data.mat", "root_folder": None}
-        result = _format_path_input(pi, project_root="/projects/myexp")
-        assert (
-            result
-            == 'scifor.PathInput("{subject}/data.mat", root_folder="/projects/myexp")'
-        )
-
-    def test_explicit_root_folder_takes_priority_over_project_root(self):
-        from scistack_gui.api.matlab_command import _format_path_input
-
-        pi = {"template": "{subject}/data.mat", "root_folder": "/explicit/root"}
-        result = _format_path_input(pi, project_root="/projects/myexp")
-        assert (
-            result
-            == 'scifor.PathInput("{subject}/data.mat", root_folder="/explicit/root")'
-        )
-
-    def test_absolute_template_ignores_project_root(self):
+    def test_absolute_template_without_root_folder(self):
         from scistack_gui.api.matlab_command import _format_path_input
 
         pi = {"template": "/absolute/path/{subject}.mat", "root_folder": None}
-        result = _format_path_input(pi, project_root="/projects/myexp")
+        result = _format_path_input(pi)
         assert result == 'scifor.PathInput("/absolute/path/{subject}.mat")'
 
-    def test_generate_matlab_command_injects_project_root_for_path_inputs(self):
+    def test_generate_matlab_command_never_substitutes_project_root(self):
+        """A rootless declaration must stay rootless in the generated script.
+
+        Writing the project root into ``root_folder`` changes what
+        ``PathInput.to_key()`` records, so the run could no longer be
+        content-matched against the declaration that produced it and the canvas
+        grew an ``__unresolved__`` ghost node. Resolution is pinned separately
+        (see ``test_generate_matlab_command_pins_project_root``).
+        """
         from scistack_gui.api.matlab_command import generate_matlab_command
 
         cmd = generate_matlab_command(
@@ -1413,7 +1401,59 @@ class TestFormatPathInput:
             },
             project_root="/projects/myexp",
         )
-        assert 'root_folder="/projects/myexp"' in cmd
+        assert 'scifor.PathInput("{subject}/data.mat")' in cmd
+        assert 'root_folder="/projects/myexp"' not in cmd
+
+    def test_generate_matlab_command_keeps_declared_root_folder(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="load_file",
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+            path_inputs={
+                "filepath": {
+                    "template": "{subject}/data.mat",
+                    "root_folder": "/explicit/root",
+                }
+            },
+            project_root="/projects/myexp",
+        )
+        assert (
+            'scifor.PathInput("{subject}/data.mat", root_folder="/explicit/root")'
+            in cmd
+        )
+
+    def test_generate_matlab_command_pins_project_root(self):
+        """The project root is stated to scifor instead, so a rootless
+        PathInput resolves against the project and not MATLAB's cwd."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="load_file",
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+            path_inputs={
+                "filepath": {"template": "{subject}/data.mat", "root_folder": None}
+            },
+            project_root="/projects/myexp",
+        )
+        assert (
+            "py.scimatlab.bridge.set_pathinput_project_root('/projects/myexp');" in cmd
+        )
+        # It is a py.* call, so it must land after the pyenv binding and
+        # before the first for_each that uses a PathInput.
+        assert cmd.index("set_pathinput_project_root") < cmd.index("scifor.PathInput")
+
+    def test_generate_matlab_command_omits_pin_without_project_root(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="load_file",
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+        )
+        assert "set_pathinput_project_root" not in cmd
 
     def test_generate_matlab_command_injects_sweep_as_scifor_sweep(self):
         from scistack_gui.api.matlab_command import generate_matlab_command
@@ -1661,6 +1701,48 @@ class TestGenerateMatlabCommandOutputTypes:
         assert "time()" not in cmd
         assert "force_left()" not in cmd
         assert "force_right()" not in cmd
+
+
+class TestDropProjectRootFolder:
+    """Old runs recorded with the project root baked into ``root_folder`` must
+    not be re-emitted that way, or the divergent key is recorded again and the
+    ``__unresolved__`` ghost node never heals."""
+
+    def test_project_root_becomes_none(self):
+        from scistack_gui.services.matlab_command_service import (
+            _drop_project_root_folder,
+        )
+
+        pis = {"filepath": {"template": "data/f.csv", "root_folder": "/proj/exp"}}
+        _drop_project_root_folder(pis, "/proj/exp")
+        assert pis["filepath"]["root_folder"] is None
+
+    def test_a_real_declared_root_is_kept(self):
+        from scistack_gui.services.matlab_command_service import (
+            _drop_project_root_folder,
+        )
+
+        pis = {"filepath": {"template": "data/f.csv", "root_folder": "/mnt/raw"}}
+        _drop_project_root_folder(pis, "/proj/exp")
+        assert pis["filepath"]["root_folder"] == "/mnt/raw"
+
+    def test_no_project_root_is_a_no_op(self):
+        from scistack_gui.services.matlab_command_service import (
+            _drop_project_root_folder,
+        )
+
+        pis = {"filepath": {"template": "data/f.csv", "root_folder": "/proj/exp"}}
+        _drop_project_root_folder(pis, None)
+        assert pis["filepath"]["root_folder"] == "/proj/exp"
+
+    def test_unnormalized_root_still_recognized(self):
+        from scistack_gui.services.matlab_command_service import (
+            _drop_project_root_folder,
+        )
+
+        pis = {"filepath": {"template": "data/f.csv", "root_folder": "/proj/exp/./"}}
+        _drop_project_root_folder(pis, "/proj/exp")
+        assert pis["filepath"]["root_folder"] is None
 
 
 class TestSortInferredByParamsOrder:
@@ -2360,6 +2442,113 @@ class TestMaterializeVariableStubs:
         materialize_variable_stubs([], tmp_path)
 
         assert (tmp_path / "Gone.m").exists()
+
+    def test_name_with_a_classdef_elsewhere_is_not_shadowed(self, tmp_path):
+        """Two classdefs for one type on the MATLAB path shadow each other,
+        and the hand-written one is the declaration."""
+        from scistack_gui import matlab_registry
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        handwritten = tmp_path / "src" / "StepLength.m"
+        handwritten.parent.mkdir()
+        handwritten.write_text("classdef StepLength < scidb.BaseVariable\nend\n")
+        matlab_registry._matlab_variables["StepLength"] = handwritten
+
+        stub_dir = tmp_path / "stubs"
+        created = materialize_variable_stubs(["StepLength"], stub_dir)
+
+        assert created == []
+        assert not stub_dir.exists()
+
+    def test_falls_back_to_the_default_dir_when_none_is_configured(self, tmp_path):
+        """The failure this fixes: with no [matlab] variable_dir, nothing
+        was written at all and the run died with 'Unrecognized function or
+        variable' from inside for_each."""
+        from scimatlab.stubs import DEFAULT_STUB_DIRNAME
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        (tmp_path / "scistack.toml").write_text(
+            'entities_file = "src/scistack_entities.toml"\n', encoding="utf-8"
+        )
+        (tmp_path / "src").mkdir()
+        entities = tmp_path / "src" / "scistack_entities.toml"
+        entities.write_text('variables = ["RawEMG"]\n', encoding="utf-8")
+
+        created = materialize_variable_stubs(
+            ["RawEMG"], None, project_start=entities
+        )
+
+        expected = tmp_path / "src" / DEFAULT_STUB_DIRNAME / "RawEMG.m"
+        assert created == [expected]
+        assert "classdef RawEMG < scidb.BaseVariable" in expected.read_text()
+
+
+class TestUnresolvableVarTypePreflight:
+    """A generated script that calls ``RawEMG()`` when nothing in the
+    project can supply that classdef fails deep inside for_each with
+    'Unrecognized function or variable'. Say so at generation time."""
+
+    def test_unknown_output_type_is_flagged_in_the_script(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            "load_emg", "/tmp/x.duckdb", ["subject"], output_types=["RawEMG"]
+        )
+
+        assert "% WARNING:" in cmd
+        assert "RawEMG" in cmd.split("% WARNING:")[1].splitlines()[0]
+        # Still generated: the user may be about to create the variable.
+        assert "{RawEMG()}" in cmd
+
+    def test_type_with_a_known_classdef_is_not_flagged(self, tmp_path):
+        from scistack_gui import matlab_registry
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        matlab_registry._matlab_variables["RawEMG"] = tmp_path / "RawEMG.m"
+
+        cmd = generate_matlab_command(
+            "load_emg", "/tmp/x.duckdb", ["subject"], output_types=["RawEMG"]
+        )
+
+        assert "% WARNING:" not in cmd
+
+    def test_declared_in_the_entities_file_is_not_flagged(self, tmp_path):
+        """+scidb/entities.m materializes a classdef for a declared
+        variable before the run reaches it, so a declaration is enough."""
+        from scistack_gui import matlab_registry
+        from scistack_gui.api.matlab_command import generate_matlab_command
+        from scistack_gui.config import SciStackConfig
+
+        entities = tmp_path / "scistack_entities.toml"
+        entities.write_text('variables = ["RawEMG"]\n', encoding="utf-8")
+        matlab_registry._config = SciStackConfig(
+            project_root=tmp_path, entities_file=entities
+        )
+
+        cmd = generate_matlab_command(
+            "load_emg", "/tmp/x.duckdb", ["subject"], output_types=["RawEMG"]
+        )
+
+        assert "% WARNING:" not in cmd
+
+    def test_variant_types_are_checked_too(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            "filter_emg",
+            "/tmp/x.duckdb",
+            ["subject"],
+            variants=[
+                {
+                    "input_types": {"sig": "RawEMG"},
+                    "output_type": "FilteredEMG",
+                    "constants": {},
+                }
+            ],
+        )
+
+        flagged = cmd.split("% WARNING:")[1].splitlines()[0]
+        assert "RawEMG" in flagged and "FilteredEMG" in flagged
 
 
 class TestSingleNodeMatlabRunRouting:

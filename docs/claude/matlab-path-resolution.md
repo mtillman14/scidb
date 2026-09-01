@@ -177,7 +177,7 @@ def _normalize(p) -> Path:
 *without* following symlinks or rewriting mapped drives. The following
 call sites have been converted from `.resolve()` → `_normalize()`:
 
-- `_locate_pyproject`: `project_path` and `db_path` derivations.
+- `resolve_project_root` / `locate_config_at`: how the project root is decided.
 - `load_config`: module, entities_file, variable_file, matlab variable_dir.
 - `_resolve_glob_paths`: individual MATLAB/Python file entries.
 - `matlab_parser.parse_matlab_function`: `MatlabFunctionInfo.file_path`.

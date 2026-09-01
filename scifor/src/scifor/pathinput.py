@@ -52,13 +52,63 @@ def _numeric_like(value: Any) -> bool:
     return False
 
 
+_project_root_override: Path | None = None
+
+
+def set_project_root(root: "str | Path | None") -> "Path | None":
+    """Pin the directory a *rootless* PathInput resolves against.
+
+    A ``PathInput`` with no ``root_folder`` resolves relative paths against
+    ``_find_project_root()``, which walks up from the **cwd**.  That is right
+    for a script run from inside the project and wrong for every embedded
+    interpreter: MATLAB's cwd is wherever the user's MATLAB happens to be
+    sitting (for a generated command, a temp script directory), so the walk
+    finds the wrong project or none at all.
+
+    Callers that already know which project they are running — ``scidb.entities``
+    over the MATLAB bridge, the GUI's generated command preamble — set it here
+    once, and every rootless PathInput in the process resolves against it.
+
+    This deliberately changes *resolution only*.  ``root_folder`` stays ``None``
+    and ``to_key()`` is untouched, so the recorded identity of a PathInput is
+    the same no matter where it ran.  Writing the project root into
+    ``root_folder`` instead is what produced ``__unresolved__`` ghost nodes in
+    the GUI (a run recorded under a key its own declaration does not have) and
+    would bake a machine-specific absolute path into portable history.
+
+    Passing ``None`` clears the override.  Returns the resolved override.
+    """
+    global _project_root_override
+    _project_root_override = Path(root).resolve() if root is not None else None
+    Log.info("[pathinput] project root override set to %s", _project_root_override)
+    return _project_root_override
+
+
+def get_project_root() -> "Path | None":
+    """The pinned project root, or ``None`` when resolution falls back to
+    walking up from the cwd.  See :func:`set_project_root`."""
+    return _project_root_override
+
+
+def clear_project_root() -> None:
+    """Drop the pinned project root (tests, and any caller switching projects
+    inside one process)."""
+    set_project_root(None)
+
+
 def _find_project_root(start: Path | None = None) -> Path:
     """Walk up from *start* (or cwd) to find the nearest project root.
 
     The root is the first ancestor directory that contains ``pyproject.toml``
     or ``scistack.toml``.  Falls back to *start* (or cwd) when neither file
     is found anywhere in the hierarchy.
+
+    With no explicit *start*, a project root pinned by
+    :func:`set_project_root` wins outright — the caller that pinned it knows
+    which project is running, and the cwd does not.
     """
+    if start is None and _project_root_override is not None:
+        return _project_root_override
     current = (start or Path.cwd()).resolve()
     for directory in [current, *current.parents]:
         if (directory / "pyproject.toml").exists() or (

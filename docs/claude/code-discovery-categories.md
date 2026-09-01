@@ -207,6 +207,20 @@ name. No match → a `__unresolved__:{template}` synthetic key, logged at
 WARN — the node still renders (best-effort) but isn't wired to any current
 source declaration.
 
+**A PathInput's `root_folder` is part of its identity, so nothing may
+rewrite it on the way to a run.** `PathInput.to_key()` serializes
+`(template, root_folder)` and that pair is the *only* link between a run and
+a node. Generated MATLAB commands used to substitute the project root for a
+rootless declaration — to stop MATLAB's cwd (a temp script dir) from
+deciding resolution — and the first successful run then grew an
+`__unresolved__` ghost node beside the very declaration that produced it. The
+resolution base is now pinned separately, without touching identity:
+`scifor.set_project_root()`, stated by the generated script's preamble and by
+`scidb.entities(PROJECT_ROOT)` over the bridge. `resolve_path_input_name`
+additionally treats a recorded `root_folder` equal to the project root as
+equivalent to no root, because the already-recorded rows are permanent. See
+`.claude/plan-pathinput-unresolved-after-run.md`.
+
 ### MATLAB
 
 > **Superseded 2026-09-01**: both languages now declare GUI-written

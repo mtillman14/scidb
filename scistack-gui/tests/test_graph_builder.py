@@ -861,6 +861,125 @@ class TestResolvePathInputName:
         )[0].startswith("__unresolved__")
 
 
+class TestResolvePathInputNameProjectRoot:
+    """A run recorded with the project root as its ``root_folder`` belongs to
+    the rootless declaration that produced it.
+
+    Generated MATLAB commands used to substitute the project root for a missing
+    ``root_folder``, so the run went into the DB under a key its own
+    declaration does not have and the canvas grew an ``__unresolved__`` ghost
+    node beside the real one after the first successful run. The generator no
+    longer does that, but those rows are permanent — see
+    ``.claude/plan-pathinput-unresolved-after-run.md``.
+    """
+
+    ROOT = "/projects/myexp"
+
+    def test_project_rooted_history_attributes_to_rootless_declaration(self):
+        registry = {"delsysEMG": PathInput("data/10MWT_{pass}.mat")}
+
+        name, display = resolve_path_input_name(
+            {"template": "data/10MWT_{pass}.mat", "root_folder": self.ROOT},
+            registry,
+            None,
+            self.ROOT,
+        )
+
+        assert name == "delsysEMG"
+        # The declaration is still the display authority: rootless is what
+        # source says, and what the next run will record.
+        assert display["root_folder"] is None
+
+    def test_a_different_root_is_still_unresolved(self):
+        """Only the project root is equivalent to no root. Another absolute
+        root is a genuinely different input and must not be absorbed."""
+        registry = {"delsysEMG": PathInput("data/10MWT_{pass}.mat")}
+
+        name, _ = resolve_path_input_name(
+            {"template": "data/10MWT_{pass}.mat", "root_folder": "/somewhere/else"},
+            registry,
+            None,
+            self.ROOT,
+        )
+
+        assert name.startswith("__unresolved__")
+
+    def test_exact_match_still_wins(self):
+        """A declaration that really does declare the project root as its root
+        must win over the rootless one — the normalization is a fallback."""
+        registry = {
+            "ROOTLESS": PathInput("data/f.csv"),
+            "ROOTED": PathInput("data/f.csv", root_folder=self.ROOT),
+        }
+
+        name, _ = resolve_path_input_name(
+            {"template": "data/f.csv", "root_folder": self.ROOT},
+            registry,
+            None,
+            self.ROOT,
+        )
+
+        assert name == "ROOTED"
+
+    def test_unnormalized_root_still_matches(self):
+        registry = {"delsysEMG": PathInput("data/f.csv")}
+
+        name, _ = resolve_path_input_name(
+            {"template": "data/f.csv", "root_folder": f"{self.ROOT}/./"},
+            registry,
+            None,
+            self.ROOT,
+        )
+
+        assert name == "delsysEMG"
+
+    def test_project_rooted_history_reaches_the_name_history_table(self):
+        """The two repair paths compose: a template edited in the GUI *and*
+        recorded under the injected root still finds its node."""
+        registry = {"RAW": PathInput("new.csv")}
+        history = {("old.csv", None): "RAW"}
+
+        name, _ = resolve_path_input_name(
+            {"template": "old.csv", "root_folder": self.ROOT},
+            registry,
+            history,
+            self.ROOT,
+        )
+
+        assert name == "RAW"
+
+    def test_no_project_root_leaves_behavior_unchanged(self):
+        """Callers that pass no project root keep the old three-strategy
+        behavior — there is nothing to normalize against."""
+        registry = {"delsysEMG": PathInput("data/f.csv")}
+
+        name, _ = resolve_path_input_name(
+            {"template": "data/f.csv", "root_folder": self.ROOT}, registry
+        )
+
+        assert name.startswith("__unresolved__")
+
+    def test_convert_scidb_path_inputs_passes_the_root_through(self):
+        """The shared converter must resolve the same name its callers'
+        hidden-edge-id lookups expect — the root has to reach it."""
+        from scistack_gui.domain.graph_builder import convert_scidb_path_inputs
+
+        result = convert_scidb_path_inputs(
+            {
+                "filepath": {
+                    "template": "data/f.csv",
+                    "root_folder": self.ROOT,
+                    "functions": [("load_file", "call1")],
+                }
+            },
+            {"delsysEMG": PathInput("data/f.csv")},
+            None,
+            self.ROOT,
+        )
+
+        assert list(result) == ["delsysEMG"]
+
+
 class TestSeedUndiscoveredPathInputs:
     def test_adds_registry_entries_with_no_history(self):
         result = seed_undiscovered_path_inputs(

@@ -63,11 +63,9 @@ def create_variable(
 
     if target_file is None:
         # No Python target — fall back to MATLAB if configured.
-        if (
-            matlab_registry.has_matlab_config()
-            and matlab_registry._config is not None
-            and matlab_registry._config.matlab_variable_dir is not None
-        ):
+        if matlab_registry.has_matlab_config() and matlab_registry._config is not None:
+            # No longer requires a configured variable_dir: the classdef
+            # destination falls back to scimatlab.stubs.variable_stub_dir.
             return _create_matlab_variable(name, docstring)
         return {"ok": False, "error": target_err}
 
@@ -133,13 +131,10 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
         write_variable,
     )
 
-    if (
-        matlab_registry._config is None
-        or matlab_registry._config.matlab_variable_dir is None
-    ):
+    if matlab_registry._config is None:
         return {
             "ok": False,
-            "error": "No matlab.variable_dir configured in [tool.scistack.matlab].",
+            "error": "No MATLAB configuration loaded for this project.",
         }
 
     entities_file, _ = get_or_create_target_file()
@@ -153,7 +148,25 @@ def _create_matlab_variable(name: str, docstring: str | None = None) -> dict:
             name,
         )
 
+    # An explicit [matlab] variable_dir wins; otherwise the classdef goes
+    # where scimatlab materializes stubs, which is the directory
+    # +scidb/entities.m adds to the MATLAB path at run time. Falling back
+    # rather than refusing is the point: a project can declare its
+    # variables in the entities file and never configure a variable_dir.
     target_dir = matlab_registry._config.matlab_variable_dir
+    if target_dir is None:
+        from scimatlab.stubs import variable_stub_dir
+
+        target_dir = variable_stub_dir(matlab_registry._config.project_root)
+    if target_dir is None:
+        return {
+            "ok": False,
+            "error": (
+                "Nowhere to write the classdef: configure "
+                "[tool.scistack.matlab] variable_dir, or an entities_file "
+                "for its default location."
+            ),
+        }
     target_dir.mkdir(parents=True, exist_ok=True)
     target_file = target_dir / f"{name}.m"
 

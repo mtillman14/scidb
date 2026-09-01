@@ -518,6 +518,44 @@ def test_matlab_addpath_empty_when_no_matlab_files(tmp_path):
     assert config.matlab_addpath == []
 
 
+def test_matlab_addpath_includes_the_default_variable_stub_dir(tmp_path):
+    """With MATLAB code and an entities file but no [matlab] variable_dir,
+    classdef stubs land in scimatlab's default directory — which must be on
+    the generated script's path, or the type it materializes still fails to
+    resolve."""
+    from scimatlab.stubs import DEFAULT_STUB_DIRNAME
+
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text(
+        'entities_file = "src/scistack_entities.toml"\n'
+        "[matlab]\n"
+        'functions = ["matlab/foo.m"]\n'
+    )
+    (tmp_path / "matlab").mkdir()
+    (tmp_path / "matlab" / "foo.m").write_text("function y = foo(x)\ny = x;\nend\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "scistack_entities.toml").write_text('variables = ["RawEMG"]\n')
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+
+    assert config.matlab_variable_dir is None  # still configured-only
+    assert (tmp_path / "src" / DEFAULT_STUB_DIRNAME) in set(config.matlab_addpath)
+
+
+def test_matlab_addpath_omits_the_stub_dir_for_a_python_only_project(tmp_path):
+    """A Python-only project never needs a MATLAB classdef directory, and
+    must not start loading the MATLAB registry because one appeared."""
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('entities_file = "src/scistack_entities.toml"\n')
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "scistack_entities.toml").write_text('variables = ["RawEMG"]\n')
+
+    config = load_config(tmp_path, tmp_path / "dummy.duckdb")
+
+    assert config.matlab_addpath == []
+    assert config.has_matlab is False
+
+
 def test_matlab_variables_excluded_from_functions(tmp_path):
     """Files in matlab.variables must not also be parsed as matlab.functions.
 
@@ -1363,3 +1401,150 @@ def test_two_add_paths_both_survive(tmp_path):
     names = {p.name for p in load_config(None, db_path).modules}
     assert "one.py" in names
     assert "two.py" in names
+
+
+# ---------------------------------------------------------------------------
+# Same directory, two spellings — mapped drive vs UNC (2026-09-01)
+#
+# The database is routinely opened by one spelling and the project root
+# arrives as another for the SAME directory:
+#
+#   [config] add_path: seeding new scistack.toml with \\fs2...\aging-well-abilitylab
+#   [config] add_path: seeding new scistack.toml with y:\...\aging-well-abilitylab
+#   [config] Resolved 34 module files total          <- 17 files, counted twice
+#
+# ...which made discovery parse and register every file in the project twice
+# (35 "shadows previous definition" warnings; discovery load errors doubling
+# 17 -> 36 mid-session). _normalize deliberately preserves the caller's
+# spelling, so comparison has to go through file identity instead.
+#
+# Windows mapped drives don't exist here, so a symlinked directory stands in:
+# os.path.samefile / (st_dev, st_ino) treat both aliases identically.
+# See .claude/plan-layout-write-race-and-duplicate-seed-roots.md.
+# ---------------------------------------------------------------------------
+
+
+def _aliased_dir(tmp_path):
+    """``(real, alias)`` — two spellings of one directory, or skip."""
+    real = tmp_path / "project"
+    real.mkdir()
+    alias = tmp_path / "project_alias"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform
+        pytest.skip(f"cannot create a directory symlink here: {exc}")
+    return real, alias
+
+
+def test_first_write_seeds_aliased_root_once(tmp_path):
+    """DB opened via one spelling, project root given as another."""
+    real, alias = _aliased_dir(tmp_path)
+    db_path = alias / "proj.duckdb"
+    db_path.write_text("")
+    library = tmp_path / "lib"
+    library.mkdir()
+    set_project_root_hint(real)
+
+    written = add_path(db_path, library)
+
+    data = _read_raw_section(written)
+    root_entries = [
+        e for e in data["modules"] if str(_normalize(library)) != e
+    ]
+    assert len(root_entries) == 1, (
+        f"the project directory was seeded more than once: {root_entries}"
+    )
+    assert data["matlab"]["sources"].count(root_entries[0]) == 1
+
+
+def test_first_write_keeps_the_project_root_spelling(tmp_path):
+    """Of the two spellings, the project root's wins — it is the non-UNC
+    one, and the form the rest of the session already uses."""
+    real, alias = _aliased_dir(tmp_path)
+    db_path = alias / "proj.duckdb"
+    db_path.write_text("")
+    library = tmp_path / "lib"
+    library.mkdir()
+    set_project_root_hint(real)
+
+    written = add_path(db_path, library)
+
+    assert str(_normalize(real)) in _read_raw_section(written)["modules"]
+
+
+def test_add_path_skips_an_aliased_existing_entry(tmp_path):
+    """Adding \\\\server\\share\\x when y:\\x is already listed must not
+    append a second entry for the same directory."""
+    real, alias = _aliased_dir(tmp_path)
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    library = real / "lib"
+    library.mkdir()
+
+    add_path(db_path, library)
+    written = add_path(db_path, alias / "lib")
+
+    data = _read_raw_section(written)
+    assert len(data["modules"]) == len(set(data["modules"]))
+    lib_entries = [e for e in data["modules"] if e.endswith("lib")]
+    assert len(lib_entries) == 1, f"library added twice: {lib_entries}"
+
+
+def test_remove_path_matches_the_other_spelling(tmp_path):
+    """Removing one spelling must not leave the other behind."""
+    real, alias = _aliased_dir(tmp_path)
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    library = real / "lib"
+    library.mkdir()
+
+    add_path(db_path, library)
+    written = remove_path(db_path, alias / "lib")
+
+    data = _read_raw_section(written)
+    assert not [e for e in data["modules"] if e.endswith("lib")]
+    assert not [e for e in data["matlab"]["sources"] if e.endswith("lib")]
+
+
+def test_load_config_dedups_aliased_module_files(tmp_path):
+    """Repairs a config that ALREADY lists both spellings — the state the
+    broken add_path left on disk — with no migration step."""
+    real, alias = _aliased_dir(tmp_path)
+    (real / "analysis.py").write_text("")
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "scistack.toml").write_text(
+        f'modules = ["{_normalize(real).as_posix()}", '
+        f'"{_normalize(alias).as_posix()}"]\n'
+    )
+
+    modules = load_config(None, db_path).modules
+
+    assert [p.name for p in modules] == ["analysis.py"]
+
+
+def test_load_config_dedups_aliased_matlab_sources(tmp_path):
+    """Same repair for the MATLAB lists (matlab_registry shadow warnings)."""
+    real, alias = _aliased_dir(tmp_path)
+    (real / "computeThing.m").write_text("function y = computeThing(x)\ny = x;\nend\n")
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    (tmp_path / "scistack.toml").write_text(
+        "[matlab]\n"
+        f'sources = ["{_normalize(real).as_posix()}", '
+        f'"{_normalize(alias).as_posix()}"]\n'
+    )
+
+    sources = load_config(None, db_path).matlab_sources
+
+    assert [p.name for p in sources] == ["computeThing.m"]
+
+
+def test_normalize_still_preserves_the_alias_spelling(tmp_path):
+    """Guard the constraint the fix had to work around: _normalize must NOT
+    canonicalize, or reveal_in_editor starts handing VS Code UNC paths it
+    refuses to open (config.py:38)."""
+    real, alias = _aliased_dir(tmp_path)
+
+    assert _normalize(alias / "x.py") == alias / "x.py"
+    assert _normalize(alias / "x.py") != _normalize(real / "x.py")

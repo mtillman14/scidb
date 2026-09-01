@@ -156,6 +156,7 @@ def _db_path_input_params(db, function_name: str) -> dict[str, dict[str, str]]:
         db.get_aggregated_variants()["path_inputs"],
         registry.get_path_inputs_registry(),
         pipeline_store.path_input_history_index(db),
+        registry.get_project_root(),
     )
     by_call: dict[str, dict[str, str]] = {}
     for pi_name, pi in path_inputs.items():
@@ -651,6 +652,7 @@ def disconnected_report_entries(db, pipeline_id: str) -> list[dict]:
         scidb_agg["path_inputs"],
         registry.get_path_inputs_registry(),
         pipeline_store.path_input_history_index(db),
+        registry.get_project_root(),
     )
 
     manual_edges = pipeline_store.get_manual_edges(db)

@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 def _entities_script_lines(
-    entities_script: "str | None", entities_file: "str | None" = None
+    entities_script: "str | None",
+    entities_file: "str | None" = None,
+    project_root: "str | None" = None,
 ) -> list[str]:
     """Lines that bring declared entities into scope, or ``[]``.
 
@@ -23,6 +25,15 @@ def _entities_script_lines(
     configured — they declare different names, and dropping either would
     make a name silently undefined at the point the generated command uses
     it.
+
+    ``project_root`` is passed to ``scidb.entities`` explicitly. Without it
+    MATLAB resolves the project by walking up from its own **cwd**, which is
+    wherever the user's MATLAB happens to be sitting — outside the project
+    that finds no config at all, and every declared Parameter/PathInput is
+    then silently out of scope (the load logs ``0 variable(s), 0
+    parameter(s), 0 path input(s) ... from .``). It is also what tells the
+    self-healing classdef materialization in ``+scidb/entities.m`` which
+    project's entities file to read.
 
     Must be emitted AFTER the addpath block (both live on one of those
     directories) and before anything that references a declared entity by
@@ -39,10 +50,15 @@ def _entities_script_lines(
     """
     lines: list[str] = []
     if entities_file:
+        call = (
+            f"scidb.entities('{_escape_matlab_string(project_root)}');"
+            if project_root
+            else "scidb.entities();"
+        )
         lines += [
             "% Entity declarations (Variables/Parameters/PathInputs) from "
             f"{Path(entities_file).name}",
-            "scidb.entities();",
+            call,
             "",
         ]
     if entities_script:
@@ -54,6 +70,113 @@ def _entities_script_lines(
     return lines
 
 
+
+
+def _project_root_lines(
+    project_root: "str | None", path_inputs: "dict | None" = None
+) -> list[str]:
+    """Lines pinning scifor's resolution base for rootless PathInputs, or ``[]``.
+
+    A ``PathInput`` declared with no ``root_folder`` resolves its relative
+    template against the nearest project root found by walking up from the
+    **cwd**. Under MATLAB the cwd is a temp script directory, so that walk
+    finds the wrong project or none at all and every relative template misses.
+
+    The generated script therefore states the project explicitly. This is
+    emitted for every command that knows its project root, not only ones with
+    an entities file, so the guarantee never depends on unrelated config.
+    ``scidb.entities`` pins the same thing for hand-written scripts (see
+    ``scimatlab.bridge.set_pathinput_project_root``); pinning twice is
+    idempotent.
+
+    Must come after the pyenv preamble (it is a ``py.*`` call) and before the
+    first ``for_each``. Deliberately NOT written into each PathInput's
+    ``root_folder``: that is part of the recorded identity of the input, and
+    rewriting it is what produced ``__unresolved__`` ghost nodes on the canvas
+    — see ``_format_path_input``.
+    """
+    if not project_root:
+        rootless = [
+            p for p, pi in (path_inputs or {}).items() if not pi.get("root_folder")
+        ]
+        if rootless:
+            logger.warning(
+                "generate_matlab_command: no project root, but %s use a PathInput "
+                "with no root_folder — those will resolve against MATLAB's cwd "
+                "(a temp script dir) and their relative templates will not be found",
+                ", ".join(sorted(rootless)),
+            )
+        return []
+    return [
+        "% Resolve rootless PathInput templates against this project, not MATLAB's cwd",
+        "py.scimatlab.bridge.set_pathinput_project_root("
+        f"'{_escape_matlab_string(project_root)}');",
+        "",
+    ]
+
+
+def _unresolvable_var_type_lines(var_types) -> list[str]:
+    """Comment lines naming variable types the generated script is about to
+    call as ``Type()`` that nothing in this project accounts for.
+
+    A MATLAB variable resolves only if a classdef file for it is on the
+    path. Two things can supply one: a .m file the registry parsed, or a
+    declaration in the entities file, which ``+scidb/entities.m``
+    materializes a stub for at the top of the generated script. A name with
+    neither will fail at the ``for_each`` call with ``Unrecognized function
+    or variable 'X'`` and no indication of why — which is exactly the
+    failure this preflight exists to pre-empt, so it is reported at
+    generation time, in the script, and in the log.
+
+    Declared-but-not-yet-materialized names are NOT reported: the entities
+    call fixes those before the run reaches them.
+    """
+    names = sorted({str(t) for t in var_types if t})
+    if not names:
+        return []
+
+    known: set[str] = set()
+    try:
+        from scistack_gui import matlab_registry
+
+        known |= set(matlab_registry._matlab_variables)
+        config = getattr(matlab_registry, "_config", None)
+    except ImportError:  # pragma: no cover - GUI always has this
+        config = None
+
+    entities_file = getattr(config, "entities_file", None)
+    if entities_file is not None:
+        try:
+            from scidb.entities import load as _load_entities
+
+            known |= set(_load_entities(entities_file).variables)
+        except Exception as e:
+            logger.warning(
+                "generate_matlab_command: could not read declared variables "
+                "from %s (%s); preflight may over-report",
+                entities_file,
+                e,
+            )
+
+    unknown = [n for n in names if n not in known]
+    if not unknown:
+        return []
+
+    logger.warning(
+        "generate_matlab_command: no MATLAB classdef and no entity declaration "
+        "for %s — the generated script will fail with 'Unrecognized function "
+        "or variable' unless these resolve on the MATLAB path",
+        ", ".join(unknown),
+    )
+    return [
+        f"% WARNING: no classdef and no entity declaration found for: "
+        f"{', '.join(unknown)}",
+        "%          Create the variable in the GUI, or add its .m file to a "
+        "configured MATLAB path,",
+        "%          or this run will fail with 'Unrecognized function or "
+        "variable'.",
+        "",
+    ]
 
 
 def generate_matlab_command(
@@ -127,7 +250,8 @@ def generate_matlab_command(
             lines.append(f"addpath('{_escape_matlab_string(d)}');")
         lines.append("")
 
-    lines.extend(_entities_script_lines(entities_script, entities_file))
+    lines.extend(_project_root_lines(project_root, path_inputs))
+    lines.extend(_entities_script_lines(entities_script, entities_file, project_root))
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)
@@ -144,7 +268,7 @@ def generate_matlab_command(
         template_inputs: dict[str, str] = {}
         if path_inputs:
             for p, pi in path_inputs.items():
-                template_inputs[p] = _format_path_input(pi, project_root)
+                template_inputs[p] = _format_path_input(pi)
         if sweeps:
             for p, values in sweeps.items():
                 template_inputs[p] = _format_sweep(values)
@@ -153,6 +277,7 @@ def generate_matlab_command(
         )
         if output_types:
             outputs_str = _format_matlab_cell([f"{t}()" for t in output_types])
+            lines.extend(_unresolvable_var_type_lines(output_types))
         else:
             outputs_str = "{}"
             logger.warning(
@@ -168,7 +293,7 @@ def generate_matlab_command(
         lines.append("    scidb.close_database(db);")
         lines.append("catch scistack_err__")
         lines.append(
-            "    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);"
+            "    scidb.Log.err('MATLAB: for_each FAILED: %s', scistack_err__.message);"
         )
         lines.append("    try")
         lines.append("        scidb.close_database(db);")
@@ -183,6 +308,7 @@ def generate_matlab_command(
 
     # Register variable types
     all_var_types = _collect_var_types(variants)
+    lines.extend(_unresolvable_var_type_lines(all_var_types))
     if all_var_types:
         lines.append("% Register variable types")
         for vtype in sorted(all_var_types):
@@ -202,7 +328,6 @@ def generate_matlab_command(
             schema_filter,
             schema_level,
             path_inputs,
-            project_root,
             matlab_fn="scihist.for_each",
             sweeps=sweeps,
         )
@@ -211,7 +336,7 @@ def generate_matlab_command(
     lines.append("    scidb.close_database(db);")
     lines.append("catch scistack_err__")
     lines.append(
-        "    scidb.Log.error('MATLAB: for_each FAILED: %s', scistack_err__.message);"
+        "    scidb.Log.err('MATLAB: for_each FAILED: %s', scistack_err__.message);"
     )
     lines.append("    try")
     lines.append("        scidb.close_database(db);")
@@ -276,7 +401,6 @@ def _for_each_call_lines(
     schema_filter: dict[str, list] | None,
     schema_level: list[str] | None,
     path_inputs: dict[str, dict] | None,
-    project_root: str | None,
     matlab_fn: str = "scihist.for_each",
     indent: str = "    ",
     sweeps: dict[str, list] | None = None,
@@ -303,7 +427,7 @@ def _for_each_call_lines(
         # Add path inputs as scifor.PathInput(...) expressions.
         if path_inputs:
             for param_name, pi in path_inputs.items():
-                inputs_dict[param_name] = _format_path_input(pi, project_root)
+                inputs_dict[param_name] = _format_path_input(pi)
         # Add Parameter values as scidb.Parameter(...) expressions.
         if sweeps:
             for param_name, values in sweeps.items():
@@ -421,7 +545,13 @@ def generate_matlab_pipeline_command(
             lines.append(f"addpath('{_escape_matlab_string(d)}');")
         lines.append("")
 
-    lines.extend(_entities_script_lines(entities_script, entities_file))
+    all_step_path_inputs = {
+        param: pi
+        for step in steps
+        for param, pi in (step.get("path_inputs") or {}).items()
+    }
+    lines.extend(_project_root_lines(project_root, all_step_path_inputs))
+    lines.extend(_entities_script_lines(entities_script, entities_file, project_root))
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)
@@ -453,6 +583,7 @@ def generate_matlab_pipeline_command(
             f"pipeline {pipeline_id!r} — nothing to register"
         )
 
+    lines.extend(_unresolvable_var_type_lines(all_var_types))
     if all_var_types:
         lines.append("% Register variable types")
         for vtype in sorted(all_var_types):
@@ -475,7 +606,6 @@ def generate_matlab_pipeline_command(
                 step.get("schema_filter"),
                 step.get("schema_level"),
                 step.get("path_inputs"),
-                project_root,
                 matlab_fn="scidb.for_each",
                 sweeps=step.get("sweeps"),
             )
@@ -508,7 +638,7 @@ def generate_matlab_pipeline_command(
     lines.append("    scidb.close_database(db);")
     lines.append("catch scistack_err__")
     lines.append(
-        "    scidb.Log.error('MATLAB: pipeline run FAILED: %s', scistack_err__.message);"
+        "    scidb.Log.err('MATLAB: pipeline run FAILED: %s', scistack_err__.message);"
     )
     lines.append("    try")
     lines.append("        scidb.close_database(db);")
@@ -522,19 +652,27 @@ def generate_matlab_pipeline_command(
     return "\n".join(lines)
 
 
-def _format_path_input(pi: dict, project_root: str | None = None) -> str:
+def _format_path_input(pi: dict) -> str:
     """Format a PathInput info dict as a MATLAB ``scifor.PathInput(...)`` expression.
 
     The template stored in the layout may already include MATLAB double-quote
     delimiters (e.g. ``"C:\\data\\file.csv"``), or it may be a bare pattern
     string (e.g. ``{subject}/trial_{trial}.mat``). Both forms are handled.
 
-    When ``root_folder`` is not set and the template is a relative path,
-    ``project_root`` is used as the root so MATLAB's CWD (the temp script dir)
-    does not affect resolution.
-    """
-    from pathlib import Path as _Path
+    ``root_folder`` is emitted **only when the declaration has one**. This used
+    to substitute the project root for a rootless declaration with a relative
+    template, so MATLAB's cwd (a temp script dir) wouldn't decide resolution.
+    That fixed resolution by rewriting identity: ``PathInput.to_key()``
+    serializes ``(template, root_folder)`` and DB history carries no name, so
+    ``graph_builder.resolve_path_input_name`` could no longer content-match the
+    run it had just recorded against the declaration that produced it, and the
+    canvas grew an ``__unresolved__`` ghost node next to the real one. It also
+    meant the same PathInput recorded a different key from the GUI than from
+    the user's own MATLAB script.
 
+    Resolution is now pinned separately by ``_project_root_lines`` (see
+    ``scifor.pathinput.set_project_root``), which leaves identity alone.
+    """
     template = pi.get("template", "")
     root_folder = pi.get("root_folder")
 
@@ -544,12 +682,6 @@ def _format_path_input(pi: dict, project_root: str | None = None) -> str:
         matlab_template = template
     else:
         matlab_template = f'"{template}"'
-
-    if not root_folder and project_root:
-        # Check if the bare template (without quotes) is a relative path.
-        bare = template.strip('"')
-        if not _Path(bare).is_absolute():
-            root_folder = project_root
 
     if root_folder:
         return f'scifor.PathInput({matlab_template}, root_folder="{root_folder}")'

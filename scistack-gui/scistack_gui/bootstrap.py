@@ -111,7 +111,7 @@ def open_or_create_project(
             functions_loaded,
             variables_loaded,
         )
-        if config.matlab_functions or config.matlab_variables or config.matlab_sources:
+        if config.has_matlab:
             from scistack_gui import matlab_registry
 
             matlab_result = matlab_registry.load_from_config(config)
@@ -151,7 +151,7 @@ def open_or_create_project(
                 functions_loaded,
                 variables_loaded,
             )
-            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
+            if config.has_matlab:
                 from scistack_gui import matlab_registry
 
                 matlab_result = matlab_registry.load_from_config(config)

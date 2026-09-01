@@ -120,7 +120,29 @@ def update_path_input(
     template is always safe, whereas *replacing* the primary template changes
     what prior runs content-match against. D7's name-history table is what
     keeps that non-destructive.
+
+    An empty template is refused here rather than written: it renders as a
+    declaration ``scidb.entities`` rejects ("missing a 'template' string"),
+    so the write would go through, fail verification, and be rolled back --
+    telling the user their edit "no longer resolves" when the real problem
+    is a blank field. Editing only the root folder of a PathInput whose
+    template box is empty is exactly how that happens.
     """
+    if not (template or "").strip():
+        logger.info(
+            "[path_input_service] Refusing to update %r: empty template "
+            "(root_folder=%r)",
+            name,
+            root_folder,
+        )
+        return {
+            "ok": False,
+            "error": (
+                f"'{name}' needs a path template — a root folder alone is not "
+                f"a PathInput."
+            ),
+        }
+
     from scidb.entities import render_path_input_value
     from scidb.source_edit import render_path_input
 

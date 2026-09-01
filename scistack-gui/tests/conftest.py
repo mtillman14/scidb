@@ -22,6 +22,7 @@ sys.path.insert(0, str(_root / "scistack" / "src"))  # scistack package
 import scistack_gui.db as _gui_db
 from fastapi.testclient import TestClient
 from scidb.database import _local
+from scistack_gui import matlab_registry as _matlab_registry
 from scistack_gui import registry as _registry
 from scistack_gui.app import create_app
 
@@ -86,6 +87,24 @@ def _reset_variable_subclasses() -> None:
     BaseVariable._all_subclasses.update(_baseline_variable_subclasses)
 
 
+def _reset_matlab_registry() -> None:
+    """Drop MATLAB registry state between tests.
+
+    ``matlab_registry`` keeps its own ``_config`` and name dicts, and
+    registers PathInputs/Parameters into the SHARED ``registry`` dicts this
+    fixture already clears. Leaving its ``_config`` behind means any later
+    code path that re-scans (``target_file_service._refresh_registries``
+    now does, so an entity edit no longer deletes MATLAB entities from the
+    registry) re-registers a previous test's tmp_path project.
+    """
+    _matlab_registry._matlab_functions.clear()
+    _matlab_registry._matlab_variables.clear()
+    _matlab_registry._matlab_path_inputs.clear()
+    _matlab_registry._matlab_parameters.clear()
+    _matlab_registry._load_errors.clear()
+    _matlab_registry._config = None
+
+
 @pytest.fixture(autouse=True)
 def clear_db_state():
     """
@@ -113,6 +132,7 @@ def clear_db_state():
     _registry._path_input_sources.clear()
     _registry._config = None
     _registry._module_path = None
+    _reset_matlab_registry()
     from scidb.pipeline import _reset_pipeline_state as _reset_pipelines
 
     _reset_pipelines()
@@ -139,6 +159,7 @@ def clear_db_state():
     _registry._path_input_sources.clear()
     _registry._config = None
     _registry._module_path = None
+    _reset_matlab_registry()
     _reset_pipelines()
 
 

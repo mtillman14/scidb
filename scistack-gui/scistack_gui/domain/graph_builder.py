@@ -633,10 +633,29 @@ def path_input_display(obj) -> dict:
     }
 
 
+def _is_project_root(root_folder: "str | None", project_root) -> bool:
+    """True when *root_folder* names *project_root*.
+
+    A PathInput rooted at the project root is indistinguishable, in what it
+    resolves to, from one with no root at all — see
+    ``resolve_path_input_name`` step 3. Compared as resolved paths so a
+    trailing slash or an unnormalized path does not decide the answer.
+    """
+    if not root_folder or project_root is None:
+        return False
+    from pathlib import Path
+
+    try:
+        return Path(root_folder).resolve() == Path(project_root).resolve()
+    except OSError:  # pragma: no cover - unresolvable path on this machine
+        return str(root_folder) == str(project_root)
+
+
 def resolve_path_input_name(
     observed: dict,
     registry: "dict[str, object]",
     history: "dict[tuple, str] | None" = None,
+    project_root=None,
 ) -> tuple[str, dict]:
     """Match a DB-history-observed ``{"template", "root_folder"}`` against
     the source-scanned PathInput registry by CONTENT (there's no name in
@@ -644,7 +663,7 @@ def resolve_path_input_name(
     root_folder, never the module-level name it's bound to). Returns
     ``(registry_name, display_dict)``.
 
-    Three strategies, in order:
+    Four strategies, in order:
 
     1. **Live registry content-match** — the template a declaration
        currently holds.
@@ -655,7 +674,18 @@ def resolve_path_input_name(
        the ONLY link between a run and a node. The display still comes from
        the CURRENT declaration, so the node shows what source says now while
        keeping its history attached.
-    3. **Unresolved** — a synthetic ``__unresolved__:{template}`` key with a
+    3. **Project-root-rooted match** — a run whose ``root_folder`` is exactly
+       the project root, matched against a declaration that has none. A
+       rootless PathInput resolves against the project root anyway, so the two
+       name the same files; this is the same input recorded two ways.
+       Generated MATLAB commands used to substitute the project root for a
+       missing ``root_folder`` (see ``api.matlab_command._format_path_input``),
+       so every run made that way is on disk under the rooted key. The
+       generator no longer does that, but the recorded rows are permanent —
+       without this step they keep an ``__unresolved__`` ghost node beside
+       the declaration that produced them, forever. Skipped when the caller
+       passes no ``project_root`` — there is then nothing to normalize against.
+    4. **Unresolved** — a synthetic ``__unresolved__:{template}`` key with a
        WARN. Now genuinely rare, and meaning what it was designed to mean:
        the declaration was removed, or renamed *and* re-templated, so there
        is nothing left to attribute it to. The node still renders
@@ -676,6 +706,29 @@ def resolve_path_input_name(
         )
         return historical_name, path_input_display(registry[historical_name])
 
+    if _is_project_root(observed.get("root_folder"), project_root):
+        rootless = (observed["template"], None)
+        for name, obj in registry.items():
+            if rootless in _path_input_content_variants(obj):
+                logger.info(
+                    "[graph_builder] PathInput usage recorded with the project "
+                    "root as its root_folder (template=%r) — attributing to the "
+                    "rootless declaration %r, which resolves to the same files",
+                    observed["template"],
+                    name,
+                )
+                return name, path_input_display(obj)
+        historical_name = (history or {}).get(rootless)
+        if historical_name is not None and historical_name in registry:
+            logger.info(
+                "[graph_builder] PathInput usage recorded with the project root "
+                "as its root_folder matched a PREVIOUS template of %r "
+                "(template=%r)",
+                historical_name,
+                observed["template"],
+            )
+            return historical_name, path_input_display(registry[historical_name])
+
     logger.warning(
         "[graph_builder] PathInput usage with no matching source "
         "declaration: template=%r root_folder=%r — renamed or removed?",
@@ -693,6 +746,7 @@ def convert_scidb_path_inputs(
     scidb_path_inputs: dict,
     path_input_registry: "dict[str, object]",
     path_input_history: "dict[tuple, str] | None" = None,
+    project_root=None,
 ) -> dict[str, dict]:
     """``db.get_aggregated_variants()["path_inputs"]`` (keyed by PARAM NAME
     — raw DB-history extraction, no knowledge of source code) ->
@@ -703,7 +757,9 @@ def convert_scidb_path_inputs(
     ``api/pipeline.py`` and ``execution_service.disconnected_report_entries``
     both need the exact same resolution (registry name, not param name) for
     their hidden-edge-id lookups to line up with what ``build_edges``
-    actually produced.
+    actually produced. That includes ``project_root``: a caller that omits it
+    resolves one PathInput to a different name than a caller that passes it,
+    and the two sides stop lining up.
     """
     result: dict[str, dict] = {}
     for param_name, pi_data in scidb_path_inputs.items():
@@ -711,6 +767,7 @@ def convert_scidb_path_inputs(
             {"template": pi_data["template"], "root_folder": pi_data["root_folder"]},
             path_input_registry,
             path_input_history,
+            project_root,
         )
         entry_functions = {(tuple(f), param_name) for f in pi_data["functions"]}
         existing = result.get(pi_name)
@@ -739,6 +796,7 @@ def aggregate_variants(
     listed_var_names: set[str],
     path_input_registry: "dict[str, object] | None" = None,
     path_input_history: "dict[tuple, str] | None" = None,
+    project_root=None,
 ) -> AggregatedData:
     """Parse DB variants into aggregated data structures.
 
@@ -755,6 +813,9 @@ def aggregate_variants(
             to resolve a historically-recorded PathInput value (template/
             root_folder only, no name) back to its source-declared name via
             content matching (see ``resolve_path_input_name``).
+        project_root: ``registry.get_project_root()`` — lets a run recorded
+            with the project root as its ``root_folder`` attribute to a
+            rootless declaration (``resolve_path_input_name`` step 3).
 
     Returns:
         AggregatedData with all parsed fields.
@@ -789,7 +850,7 @@ def aggregate_variants(
             pi = parse_path_input(type_val)
             if pi is not None:
                 pi_name, display = resolve_path_input_name(
-                    pi, path_input_registry, path_input_history
+                    pi, path_input_registry, path_input_history, project_root
                 )
                 existing = agg.path_inputs.get(pi_name)
                 if existing is None:

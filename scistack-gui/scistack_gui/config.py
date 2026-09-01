@@ -58,6 +58,79 @@ def _normalize(p) -> Path:
     return Path(os.path.normpath(os.path.abspath(str(p))))
 
 
+def _identity_key(p) -> "tuple[int, int] | None":
+    """A value equal for two paths naming the same file on disk, or ``None``
+    when that can't be determined (path missing, stat refused, filesystem
+    reports no usable inode).
+
+    ``(st_dev, st_ino)`` is what ``os.path.samefile`` compares internally;
+    using it directly keeps dedupe linear (one stat per path) instead of
+    quadratic (one samefile per pair).
+    """
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    # Some filesystems report st_ino == 0, meaning "no file id available".
+    if not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _same_path(a, b) -> bool:
+    """Whether *a* and *b* name the same file/directory, despite spelling.
+
+    :func:`_normalize` deliberately preserves the spelling the caller
+    supplied, so a Windows mapped drive and its UNC target (``y:\\proj`` vs
+    ``\\\\server\\share\\proj``) never compare equal as paths. That is
+    correct for *storing* a path and wrong for *comparing* two, and the gap
+    is what let a fresh scistack.toml get seeded with both spellings of one
+    project: every file in it was then discovered, parsed and registered
+    twice (35 "shadows previous definition" warnings, discovery errors
+    doubling 17 -> 36 in one session).
+
+    Falls back to normalized equality when file identity is unavailable, so
+    a path that doesn't exist yet behaves exactly as it did before.
+    """
+    if _normalize(a) == _normalize(b):
+        return True
+    key_a = _identity_key(a)
+    return key_a is not None and key_a == _identity_key(b)
+
+
+def _dedupe_same_paths(paths: list[Path], what: str) -> list[Path]:
+    """Drop paths already present under a different spelling, first wins.
+
+    Applied to every resolved discovery list so that a config which *already*
+    lists one directory twice (as a mapped drive and as its UNC target) is
+    repaired on load — no migration step, and it covers hand-written configs
+    that list a directory and a file inside it.
+    """
+    unique: list[Path] = []
+    seen_norm: set[Path] = set()
+    seen_ids: set[tuple[int, int]] = set()
+    for p in paths:
+        norm = _normalize(p)
+        if norm in seen_norm:
+            continue
+        ident = _identity_key(p)
+        if ident is not None and ident in seen_ids:
+            continue
+        seen_norm.add(norm)
+        if ident is not None:
+            seen_ids.add(ident)
+        unique.append(p)
+    dropped = len(paths) - len(unique)
+    if dropped:
+        logger.info(
+            "[config] Dropped %d duplicate %s (same file via different path "
+            "spellings)",
+            dropped,
+            what,
+        )
+    return unique
+
+
 @dataclass
 class SciStackConfig:
     """Parsed [tool.scistack] configuration."""
@@ -112,7 +185,15 @@ class SciStackConfig:
     Distinct from ``matlab_entities_file`` and NOT merged into it: a
     ``BaseVariable`` subclass is a *type*, and MATLAB requires one public
     classdef per file named after the file, so variables cannot live in the
-    shared entities script."""
+    shared entities script.
+
+    ``None`` is not a refusal to write classdefs: the destination then falls
+    back to :func:`scimatlab.stubs.variable_stub_dir` (a directory beside
+    the entities file), which is what both ``materialize_variable_stubs``
+    and ``+scidb/entities.m`` use, and which ``load_config`` adds to
+    ``matlab_addpath``. This field stays configured-only because
+    :attr:`has_matlab` keys off it — defaulting it would make every
+    Python-only project with an entities file load the MATLAB registry."""
 
     matlab_entities_file: Path | None = None
     """A MATLAB script of ``NAME = scidb.Parameter(...)`` top-level
@@ -133,6 +214,25 @@ class SciStackConfig:
     user. This is the field the GUI's Paths popup writes to (via
     :func:`add_path`) so a single added directory works for MATLAB without
     the user declaring function-vs-variable up front."""
+
+    @property
+    def has_matlab(self) -> bool:
+        """Whether anything here needs ``matlab_registry`` to be loaded.
+
+        One predicate, because every caller that decided this inline
+        (bootstrap, both of server.py's startup paths) tested only
+        ``functions``/``variables``/``sources`` -- so a project declaring
+        its entities *only* in ``[matlab] entities_file`` never got its
+        PathInputs and Parameters scanned at all, and they silently did not
+        exist in the GUI.
+        """
+        return bool(
+            self.matlab_functions
+            or self.matlab_variables
+            or self.matlab_sources
+            or self.matlab_entities_file is not None
+            or self.matlab_variable_dir is not None
+        )
 
 
 def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
@@ -260,6 +360,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         logger.debug(
             "[config] Excluded %d test file(s) from modules discovery", excluded_count
         )
+    modules = _dedupe_same_paths(modules, "module file(s)")
     logger.info("[config] Resolved %d module files total", len(modules))
 
     # --- entities_file (TOML, the write target) ---
@@ -405,6 +506,27 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         addpath_set.add(matlab_variable_dir)
     if matlab_entities_file is not None:
         addpath_set.add(matlab_entities_file.parent)
+    # Where classdef stubs for TOML-declared variables land when no
+    # [matlab] variable_dir is configured. Included only for projects that
+    # have MATLAB code at all -- a Python-only project never needs the
+    # directory, and this must not be folded into the matlab_variable_dir
+    # FIELD, whose non-None-ness is what makes has_matlab true.
+    if entities_file is not None and matlab_variable_dir is None and (
+        matlab_functions or matlab_variables or matlab_sources or matlab_entities_file
+    ):
+        try:
+            from scimatlab.stubs import variable_stub_dir
+
+            stub_dir = variable_stub_dir(project_root)
+        except ImportError:  # scimatlab is optional; MATLAB is unusable without it
+            stub_dir = None
+        if stub_dir is not None:
+            logger.info(
+                "[config] No [matlab] variable_dir; classdef stubs for declared "
+                "variables resolve to %s (added to the MATLAB path)",
+                stub_dir,
+            )
+            addpath_set.add(stub_dir)
     matlab_addpath = sorted(addpath_set)
     logger.debug("[config] MATLAB addpath contains %d directories", len(matlab_addpath))
 
@@ -513,6 +635,7 @@ def _resolve_glob_paths(
             excluded_count,
             label,
         )
+    result = _dedupe_same_paths(result, f"{label} path(s)")
     logger.debug("[config] Resolved %d total paths for %s", len(result), label)
     return result
 
@@ -956,12 +1079,31 @@ def add_path(db_path: Path, new_path: Path) -> Path:
     normalized_new = _normalize(new_path)
     new_str = str(normalized_new)
 
-    existing_modules_resolved = {_resolve_raw_entry(e, project_root) for e in raw_modules}
-    if normalized_new not in existing_modules_resolved:
+    # Identity, not spelling: adding \\server\share\x when y:\x is already
+    # listed must not append a second entry for the same directory (see
+    # _same_path).
+    existing_modules_resolved = [
+        _resolve_raw_entry(e, project_root) for e in raw_modules
+    ]
+    if any(_same_path(normalized_new, e) for e in existing_modules_resolved):
+        logger.info(
+            "[config] add_path: %s is already in modules (possibly under a "
+            "different spelling) — not adding again",
+            new_str,
+        )
+    else:
         raw_modules.append(new_str)
 
-    existing_sources_resolved = {_resolve_raw_entry(e, project_root) for e in raw_sources}
-    if normalized_new not in existing_sources_resolved:
+    existing_sources_resolved = [
+        _resolve_raw_entry(e, project_root) for e in raw_sources
+    ]
+    if any(_same_path(normalized_new, e) for e in existing_sources_resolved):
+        logger.info(
+            "[config] add_path: %s is already in matlab.sources (possibly "
+            "under a different spelling) — not adding again",
+            new_str,
+        )
+    else:
         raw_sources.append(new_str)
 
     content = _render_scistack_toml(
@@ -1003,15 +1145,22 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
     project_root = toml_path.parent
     target = _normalize(path_to_remove)
 
+    # Identity, not spelling, so removing a path spelled as a mapped drive
+    # also removes the UNC-spelled entry for the same directory (and vice
+    # versa) instead of leaving a duplicate behind (see _same_path).
     raw_modules = [
         e for e in section.get("modules", [])
-        if _resolve_raw_entry(e, project_root) != target
+        if not _same_path(_resolve_raw_entry(e, project_root), target)
     ]
     matlab_section = dict(section.get("matlab", {}))
     raw_sources = [
         e for e in matlab_section.get("sources", [])
-        if _resolve_raw_entry(e, project_root) != target
+        if not _same_path(_resolve_raw_entry(e, project_root), target)
     ]
+    removed = (len(section.get("modules", [])) - len(raw_modules)) + (
+        len(matlab_section.get("sources", [])) - len(raw_sources)
+    )
+    logger.info("[config] remove_path: dropping %d entry/entries for %s", removed, target)
 
     content = _render_scistack_toml(
         modules=raw_modules,
@@ -1040,15 +1189,27 @@ def _first_write_seed_roots(db_path: Path, project_root: Path) -> list[str]:
     directory now that it is inferred rather than assumed to be the
     database's -- that is the point of the fix, but it must add a root, not
     silently swap one.
+
+    Identity, not spelling, decides whether those are two roots or one: the
+    database is routinely opened by one spelling (a UNC path) while the
+    project root arrives as another (a mapped drive) for the SAME directory,
+    and seeding both made discovery register every file in the project
+    twice. When they are the same directory the PROJECT ROOT spelling wins —
+    it is the non-UNC one, and the form the rest of the session already uses
+    (entities file, generated MATLAB ``project_root=``, reveal_in_editor).
     """
-    roots = [_normalize(db_path).parent, _normalize(project_root)]
-    seen: set[Path] = set()
-    ordered: list[str] = []
-    for root in roots:
-        if root not in seen:
-            seen.add(root)
-            ordered.append(str(root))
-    return ordered
+    db_dir = _normalize(db_path).parent
+    root = _normalize(project_root)
+    if _same_path(db_dir, root):
+        logger.info(
+            "[config] add_path: database directory %s is the same directory as "
+            "the project root %s — seeding once, keeping the project-root "
+            "spelling",
+            db_dir,
+            root,
+        )
+        return [str(root)]
+    return [str(db_dir), str(root)]
 
 
 def _covered_by_modules(target: Path, raw_modules: list, project_root: Path) -> bool:

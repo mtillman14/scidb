@@ -1114,6 +1114,39 @@ def pathinput_project_root() -> str:
     return str(_find_project_root())
 
 
+def set_pathinput_project_root(root) -> str:
+    """Bridge entry: pin the directory rootless PathInputs resolve against.
+
+    A ``PathInput`` declared with no ``root_folder`` resolves relative paths
+    against scifor's project root, which is found by walking up from the
+    **cwd**. Under MATLAB the cwd is wherever the user's MATLAB is sitting --
+    for a GUI-generated command, a temp script directory -- so the walk finds
+    the wrong project or none at all, and every relative template misses.
+
+    The caller knows the project; the cwd does not. ``+scidb/entities.m``
+    calls this with the project root it was given, and the GUI's generated
+    command emits it in the preamble so the guarantee holds even for a
+    project with no entities file.
+
+    Note this pins *resolution* only -- it does NOT put the root into
+    ``root_folder``, which is part of a PathInput's recorded identity. The
+    GUI used to rewrite ``root_folder`` here instead, which made a run
+    recorded from the GUI un-matchable against its own declaration and grew
+    an ``__unresolved__`` ghost node on the canvas; see
+    ``scifor.pathinput.set_project_root``.
+    """
+    from scidb.log import Log
+    from scifor.pathinput import set_project_root
+
+    resolved = set_project_root(str(root) if root is not None else None)
+    Log.info(
+        "[pathinput] MATLAB pinned the PathInput project root to %s",
+        resolved,
+        layer="matlab",
+    )
+    return str(resolved) if resolved is not None else ""
+
+
 def load_entities(project_start=None) -> dict:
     """The project's TOML entities file, flattened for MATLAB marshaling.
 
@@ -1132,10 +1165,21 @@ def load_entities(project_start=None) -> dict:
     are pre-rendered strings: MATLAB shows them as warnings, and a rejected
     entry must be visible there too, not only in the GUI.
     """
+    from pathlib import Path
+
     from scidb import entities
     from scidb.log import Log
 
     result = entities.load_for_project(project_start)
+
+    # Loading a project's entities is also the moment MATLAB tells Python
+    # which project is running, so pin scifor's PathInput resolution base
+    # here. Any script that calls scidb.entities(PROJECT_ROOT) -- generated
+    # or hand-written -- then resolves a rootless PathInput against that
+    # project instead of MATLAB's cwd, with no second call to remember.
+    root = entities.project_root(project_start)
+    if root is not None:
+        set_pathinput_project_root(root)
 
     def _arms(obj):
         alternatives = getattr(obj, "alternatives", None)
@@ -1164,17 +1208,52 @@ def load_entities(project_start=None) -> dict:
         "path_inputs": path_inputs,
         "errors": [err.describe() for err in result.errors],
     }
-    Log.info(
-        "[entities] MATLAB load: %d variable(s), %d parameter(s), %d path "
-        "input(s), %d rejected, from %s",
-        len(payload["variables"]),
-        len(payload["parameters"]),
-        len(payload["path_inputs"]),
-        len(payload["errors"]),
-        payload["path"],
-        layer="matlab",
-    )
+    if not str(result.path):
+        # ``EntitiesFile(path=Path())`` -- no project config was found from
+        # the starting point, so nothing was loaded. This used to print as
+        # "from ." at INFO, which is only legible if you know it is
+        # str(Path()), and it is exactly what a generated script that
+        # forgot to pass its project root produces.
+        Log.warn(
+            "[entities] MATLAB load found NO entities file: no project config "
+            "in any ancestor of %s (project_start=%r, cwd=%s). Declared "
+            "Parameters/PathInputs will not be in scope; pass the project "
+            "root as scidb.entities(PROJECT_ROOT).",
+            Path(project_start) if project_start is not None else Path.cwd(),
+            project_start,
+            Path.cwd(),
+            layer="matlab",
+        )
+    else:
+        Log.info(
+            "[entities] MATLAB load: %d variable(s), %d parameter(s), %d path "
+            "input(s), %d rejected, from %s",
+            len(payload["variables"]),
+            len(payload["parameters"]),
+            len(payload["path_inputs"]),
+            len(payload["errors"]),
+            payload["path"],
+            layer="matlab",
+        )
     return payload
+
+
+def ensure_variable_classdefs(names, project_start=None) -> dict:
+    """Bridge entry: write MATLAB classdef stubs for declared variables that
+    have none, and report where they went.
+
+    ``+scidb/entities.m`` calls this with the names MATLAB itself could not
+    resolve (``exist(name, 'class') ~= 8``) -- the decision of *which* names
+    need a file is MATLAB's, because MATLAB's path is the only authority on
+    what already resolves. See ``scimatlab.stubs``.
+
+    ``names`` arrives from MATLAB as a cell of char/string; each entry is
+    stringified here so both marshal correctly.
+    """
+    from scimatlab.stubs import write_variable_classdefs
+
+    wanted = [str(n) for n in names] if names is not None else []
+    return write_variable_classdefs(wanted, project_start=project_start)
 
 
 def discover_pathinput_combos(pi, user_metadata=None):

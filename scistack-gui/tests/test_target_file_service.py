@@ -497,3 +497,133 @@ class TestPathInputHistory:
 
         assert pipeline_store.lookup_path_input_name(db, "a.csv", "/data") == "RAW"
         assert pipeline_store.lookup_path_input_name(db, "a.csv") is None
+
+
+# ---------------------------------------------------------------------------
+# The post-write refresh must restore BOTH registries
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshCoversMatlab:
+    """Regression: editing a MATLAB-declared PathInput reported "no longer
+    resolves after the edit" and rolled the (correct) write back.
+
+    ``registry.load_from_config`` CLEARS the shared ``_path_inputs``/
+    ``_parameters`` dicts and repopulates them from Python modules and the
+    TOML entities file only. MATLAB-declared entities live in those same
+    shared dicts but are put there by ``matlab_registry``, so refreshing
+    just the Python side deleted every one of them — and
+    ``update_declaration``'s verification, looking in exactly that registry,
+    concluded the edit had broken the declaration.
+    """
+
+    def _matlab_project(self, tmp_path, body):
+        """A project whose only entity surface is a ``[matlab] entities_file``."""
+        from scistack_gui import matlab_registry
+        from scistack_gui.db import get_db_path
+
+        entities = tmp_path / "scistack_entities.m"
+        entities.write_text(body, encoding="utf-8")
+        (tmp_path / "scistack.toml").write_text(
+            f'[matlab]\nentities_file = "{entities.name}"\n'
+        )
+        _registry._module_path = None
+        config = config_mod.load_config(None, get_db_path())
+        _registry.load_from_config(config)
+        matlab_registry.load_from_config(config)
+        return entities
+
+    def test_editing_a_matlab_path_input_is_not_rolled_back(
+        self, populated_db, tmp_path
+    ):
+        from scistack_gui.services.path_input_service import update_path_input
+
+        entities = self._matlab_project(
+            tmp_path, "delsysEMG = scidb.PathInput('{subject}/emg.csv');\n"
+        )
+        assert _registry.get_path_input("delsysEMG") is not None
+
+        result = update_path_input("delsysEMG", "{subject}/emg.csv", "/data/raw")
+
+        assert result["ok"], result
+        text = entities.read_text()
+        assert "root_folder='/data/raw'" in text
+        assert _registry.get_path_input("delsysEMG").root_folder == Path("/data/raw")
+
+    def test_matlab_entities_survive_a_toml_write(self, populated_db, tmp_path):
+        """Even an edit that never touches MATLAB must leave the MATLAB
+        half of the registry standing — otherwise every MATLAB node
+        disappears from the canvas until the next Refresh Code."""
+        from scistack_gui import matlab_registry
+        from scistack_gui.db import get_db_path
+        from scistack_gui.services.parameter_service import create_parameter
+
+        m_entities = tmp_path / "scistack_entities.m"
+        m_entities.write_text(
+            "delsysEMG = scidb.PathInput('{subject}/emg.csv');\n"
+            "GAIN = scidb.Parameter(3);\n",
+            encoding="utf-8",
+        )
+        toml_entities = tmp_path / "entities.toml"
+        toml_entities.write_text("[parameters]\n")
+        (tmp_path / "scistack.toml").write_text(
+            f'entities_file = "{toml_entities.name}"\n'
+            f'[matlab]\nentities_file = "{m_entities.name}"\n'
+        )
+        _registry._module_path = None
+        config = config_mod.load_config(None, get_db_path())
+        _registry.load_from_config(config)
+        matlab_registry.load_from_config(config)
+
+        assert create_parameter("RATE", [1000])["ok"]
+
+        assert _registry.get_parameters_registry()["RATE"].value == 1000
+        assert _registry.get_path_input("delsysEMG") is not None
+        assert "GAIN" in _registry.get_parameters_registry()
+
+    def test_verify_failure_reports_the_recorded_reason(self, populated_db, tmp_path):
+        """A genuinely invalid write is still refused — but the message now
+        carries the entities loader's own reason instead of a bare "may be
+        invalid" for a file that was rolled back out from under the user."""
+        from scistack_gui.db import get_db_path
+        from scistack_gui.services.target_file_service import update_declaration
+
+        entities = tmp_path / "entities.toml"
+        entities.write_text('[path_inputs]\nRAW = "a.csv"\n')
+        config_mod.set_entities_file(get_db_path(), entities)
+        _registry._module_path = None
+        _registry.load_from_config(config_mod.load_config(None, get_db_path()))
+
+        # An empty template with a root renders {template = "", root_folder =
+        # "/d"}, which scidb.entities rejects as "missing a 'template' string".
+        result = update_declaration(
+            "path_input",
+            "RAW",
+            python_expr="scidb.PathInput('', root_folder='/d')",
+            matlab_expr="scidb.PathInput('', root_folder='/d')",
+            toml_expr='{ template = "", root_folder = "/d" }',
+        )
+
+        assert not result["ok"]
+        assert result["reason"] == "verify_failed"
+        assert "template" in result["error"]
+        # ...and the original declaration is back on disk.
+        assert 'RAW = "a.csv"' in entities.read_text()
+
+    def test_empty_template_is_refused_before_any_write(self, populated_db, tmp_path):
+        """The same case coming from the sidebar: refused up front, so no
+        write-then-roll-back cycle happens at all."""
+        from scistack_gui.db import get_db_path
+        from scistack_gui.services.path_input_service import update_path_input
+
+        entities = tmp_path / "entities.toml"
+        entities.write_text('[path_inputs]\nRAW = "a.csv"\n')
+        config_mod.set_entities_file(get_db_path(), entities)
+        _registry._module_path = None
+        _registry.load_from_config(config_mod.load_config(None, get_db_path()))
+
+        result = update_path_input("RAW", "   ", "/data")
+
+        assert not result["ok"]
+        assert "template" in result["error"]
+        assert 'RAW = "a.csv"' in entities.read_text()

@@ -73,55 +73,71 @@ Easy to confuse, so stated once. Full detail in `entities-toml-format.md`.
 A top-level `entities_file` (TOML, language-neutral) and a `[matlab]
 entities_file` (a MATLAB script) are different keys in different tables.
 
-## Lookup and precedence
+## Which directory is "the project"?
 
-When the server resolves which config file to use (`_locate_pyproject` in `config.py`):
+**One resolver answers this for readers and writers alike:**
+`config.resolve_project_root(project_path, db_path)`. Everything — locating
+the config file, folder-scan discovery, where a new `scistack.toml` and
+`src/scistack_entities.toml` get written — hangs off its answer.
 
-1. **Explicit path given** (`--project path`):
-   - If `path` is a file, use it directly.
-   - If `path` is a directory, look for `pyproject.toml` first, then `scistack.toml`. If neither exists, raise `FileNotFoundError`.
-
-2. **No path given** (auto-search from database location):
-   - Walk upward from the `.duckdb` file's directory.
-   - At each level, check `pyproject.toml` then `scistack.toml`.
-   - Only accept a file if it actually contains a scistack config section (`[tool.scistack]` for pyproject, any content for scistack.toml).
-
-**Key rule**: `pyproject.toml` always wins over `scistack.toml` in the same directory.
-
-The upward walk itself lives in `scifor.discovery.find_project_config`, so
-`config.py` and `scidb.entities` (which has to answer the same "which
-project is this?" question for `scidb.entities.X`) can never disagree about
-the answer.
-
-## Where a NEW config file gets written
-
-Reading finds an existing config. *Writing* one — the first `add_path` or
-`set_entities_file` on a project that has none — needs a project root, and
-the database is routinely **not** in the project: a `.duckdb` usually lives
-in a datasets folder. Writing `scistack.toml` and `src/scistack_entities.toml`
-next to it (the behaviour before 2026-08-31) scattered project files across
-data directories.
-
-`config.infer_project_root(db_path)` resolves it, most to least
+**The project root is the folder the user opened.** Most to least
 authoritative, logging which rule fired:
 
-1. An existing `pyproject.toml`/`scistack.toml` above the database — an
-   established project always wins, so this never relocates one.
+1. An explicit `--project`/`--module` argument — the user naming a project
+   outright. A file means its containing directory.
 2. `--project-root`, i.e. the VS Code workspace folder (passed by
    `extension/src/pythonProcess.ts`).
-3. The server's working directory.
+3. The current working directory (browser/CLI). The extension also spawns
+   the server with `cwd` set to the workspace folder, so rules 2 and 3
+   agree there.
 4. The database's own directory, as a last resort, with a WARNING.
 
-The first write seeds `modules` with **both** the database's directory and
-the project root. Creating a config file switches discovery from folder-scan
-mode (which walks the database's directory) to config-driven, so seeding
-only the new root would silently stop discovering code the folder scan was
-already finding.
+**The database's location does not decide the project** (except as rule 4).
+A `.duckdb` usually lives in a datasets folder that has nothing to do with
+the code.
+
+Then `config.locate_config_at(root)` looks for `pyproject.toml`, then
+`scistack.toml`, **in that directory only**.
+
+**Key rule**: `pyproject.toml` always wins over `scistack.toml` in the same
+directory.
+
+### Why there is no upward walk any more
+
+Until 2026-09-01 there were *two* resolvers: writing used
+`infer_project_root` (which consulted `--project-root`), while reading used
+`_locate_pyproject`, which walked upward from the **database** directory.
+With a database on `C:\Users\...\Datasets` and a project on
+`Y:\LabMembers\...`, that walk could never reach the project — so the GUI
+wrote a `scistack.toml` it was structurally incapable of reading back, then
+folder-scanned the datasets directory and reported `0 .py, 0 .m` forever.
+`add_path` used the same db-rooted lookup to decide "is this the first
+write?", so it also re-seeded from scratch every time, silently discarding
+previously added paths.
+
+Searching upward from the *project* root was considered and rejected: a
+stray `pyproject.toml` in a parent directory — entirely plausible on a
+shared network drive — would capture every project beneath it. The cost is
+that opening a **subfolder** of a packaged repo no longer finds the config
+above it; open the repo root instead. The resolved root is logged on every
+load and returned by `describe_managed_paths` (`project_root`,
+`config_path`), so the Paths popup can show which folder it settled on.
+
+`scifor.discovery.find_project_config` (the upward walk) still exists and is
+still used by `scidb.entities`, which walks from `cwd` — a correct anchor.
+
+### First write
+
+The first `add_path`/`set_entities_file` on a project with no config seeds
+`modules` with **both** the database's directory and the project root.
+Creating a config file switches discovery from folder-scan to config-driven,
+so seeding only the new root would silently stop discovering code the folder
+scan was already finding.
 
 Under pytest, rule 3 would make the repo itself the project root — the GUI
 test suite pins the hint to `tmp_path` in an autouse fixture
-(`scistack-gui/tests/conftest.py::_pin_project_root`) so a test that creates
-a project cannot write into the source tree.
+(`scistack-gui/tests/conftest.py::_pin_project_root`). That pin now governs
+config *reading* and folder-scan discovery too, not just where files land.
 
 ## All fields are optional
 
@@ -202,5 +218,5 @@ Both can be used together. If the same package appears via both `packages` and a
 
 ## Implementation
 
-- **Parser**: `scistack_gui/config.py` — `load_config()`, `_locate_pyproject()`, `_extract_scistack_section()`
+- **Parser**: `scistack_gui/config.py` — `load_config()`, `resolve_project_root()`, `locate_config_at()`, `_extract_scistack_section()`
 - **VS Code pre-check**: `extension/src/projectInit.ts` — `checkProjectConfig()`, `promptForMissingConfig()`

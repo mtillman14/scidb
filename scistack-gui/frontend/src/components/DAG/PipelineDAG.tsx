@@ -108,6 +108,11 @@ export default function PipelineDAG() {
   // the node (dropped nodes start pinned by their top-left corner, since
   // their eventual width/height isn't known until they've rendered once).
   const pendingCenterRef = useRef<Map<string, { x: number; y: number }>>(new Map())
+  // The in-flight create for each pending node, so its re-center waits for it.
+  // Both calls are put_layout on the same node id ~1ms apart, and the backend
+  // handles every RPC on its own thread — fired independently they raced on
+  // the layout file and the create lost, so the node was never persisted.
+  const pendingCreateRef = useRef<Map<string, Promise<unknown>>>(new Map())
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [runFinalized, setRunFinalized] = useState(false)
@@ -220,7 +225,13 @@ export default function PipelineDAG() {
       const newX = center.x - width / 2
       const newY = center.y - height / 2
       setNodes(prev => prev.map(n => n.id === id ? { ...n, position: { x: newX, y: newY } } : n))
-      callBackend('put_layout', { node_id: id, x: newX, y: newY, pipeline_id: currentScope })
+      const sendPosition = () => callBackend('put_layout', { node_id: id, x: newX, y: newY, pipeline_id: currentScope })
+      // Wait for the create so the two writes can't overlap. On a failed
+      // create there is no node to position, so drop this write entirely.
+      const create = pendingCreateRef.current.get(id)
+      pendingCreateRef.current.delete(id)
+      if (create) create.then(sendPosition, () => {})
+      else sendPosition()
     }
   }, [nodes, setNodes, currentScope])
 
@@ -511,7 +522,12 @@ export default function PipelineDAG() {
     })
 
     // Persist so it survives a DAG refresh — created IN the current scope.
-    callBackend('put_layout', { node_id: nodeId, x: position.x, y: position.y, node_type: nodeType, label, pipeline_id: currentScope })
+    // Kept so the re-center write above can chain off it (see pendingCreateRef).
+    const create = callBackend('put_layout', { node_id: nodeId, x: position.x, y: position.y, node_type: nodeType, label, pipeline_id: currentScope })
+    // A node that is never measured never gets its re-center, so nothing
+    // would attach a rejection handler to this promise.
+    create.catch(() => {})
+    pendingCreateRef.current.set(nodeId, create)
   }, [screenToFlowPosition, setNodes, currentScope, bumpGraph])
 
   const onNodeDragStop = useCallback((_: unknown, node: Node) => {

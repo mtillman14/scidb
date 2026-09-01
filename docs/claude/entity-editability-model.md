@@ -301,9 +301,41 @@ different things.
 
 That constraint outlived the format change, and is why a Variable is the
 one kind the TOML file cannot fully own: MATLAB has no runtime class
-creation, so `matlab_registry.materialize_variable_stubs` generates a
-classdef stub per TOML-declared variable into `variable_dir`. The TOML entry
-is the declaration; the stub is generated output.
+creation, so a classdef stub is generated per TOML-declared variable. The
+TOML entry is the declaration; the stub is generated output.
+
+**Who writes the stub, and where.** The writing lives in
+`scimatlab.stubs.write_variable_classdefs` (making a declaration
+referenceable from MATLAB is a MATLAB-wrapper concern, CLAUDE.md NOTE 3);
+`variable_stub_dir` picks `[matlab] variable_dir` when configured and
+`<entities_file.parent>/scistack_variables` otherwise. Two callers, with the
+same rule but different authorities for "does this type already have a
+classdef?":
+
+- `+scidb/entities.m`, at the top of every run — asks MATLAB
+  (`exist(name, 'class')`), writes the ones that fail through
+  `py.scimatlab.bridge.ensure_variable_classdefs`, `addpath`s the directory
+  and `rehash`es. MATLAB's path is the only authority that sees a
+  hand-written classdef sitting somewhere else, and writing a second one
+  would shadow it.
+- `scistack_gui.matlab_registry.materialize_variable_stubs`, at registry
+  load — same rule against the classdefs the registry parsed, and it runs
+  *after* `load_from_sources` so those are all known.
+
+This used to be gated on `[matlab] variable_dir` being configured, and a
+project without one got no classdef and no warning: the run died with
+`Unrecognized function or variable 'RawEMG'` from inside a `for_each` call
+(see `.claude/plan-matlab-variable-classdef-materialization.md`). Two
+related diagnostics exist now — `scidb:entities:noClassdef` from MATLAB when
+a declared variable still does not resolve, and a `% WARNING:` comment plus
+a log line from the command generator when a script is about to call
+`Type()` that neither a classdef nor a declaration accounts for.
+
+Note the GUI reads `entities_file` **only** from the explicit config key,
+while `scidb.entities.entities_path` also accepts the conventional
+`src/scistack_entities.toml` when it exists. A project relying on the
+convention without the key still runs (MATLAB self-heals at run time), but
+its declarations do not appear in the GUI.
 
 ### `scidb.Parameter` in MATLAB
 

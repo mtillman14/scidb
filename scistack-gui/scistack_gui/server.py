@@ -1202,7 +1202,7 @@ def main():
                 f"{len(result['variables'])} variables"
             )
             # Load MATLAB registry if MATLAB config is present.
-            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
+            if config.has_matlab:
                 from scistack_gui import matlab_registry
 
                 _send_progress(
@@ -1293,7 +1293,7 @@ def main():
                 f"Auto-discovered {len(result['functions'])} Python functions, "
                 f"{len(result['variables'])} variables"
             )
-            if config.matlab_functions or config.matlab_variables or config.matlab_sources:
+            if config.has_matlab:
                 from scistack_gui import matlab_registry
 
                 matlab_result = matlab_registry.load_from_config(config)

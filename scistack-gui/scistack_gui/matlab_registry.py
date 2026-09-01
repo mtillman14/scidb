@@ -181,19 +181,27 @@ def load_from_config(config: SciStackConfig) -> dict:
     if config.matlab_entities_file is not None:
         load_entities_script(config.matlab_entities_file)
 
+    # --- Unified sources (folder-scan fallback: no functions/variables
+    # split available, each file classified individually by content) ---
+    if config.matlab_sources:
+        load_from_sources(config.matlab_sources)
+
     # --- TOML-declared variables need real classdef files ---
-    if config.entities_file is not None and config.matlab_variable_dir is not None:
+    # Deliberately LAST: every source of hand-written classdefs has been
+    # parsed by now, so a declared variable that already has one is skipped
+    # instead of being shadowed by a generated stub in a different
+    # directory. No longer gated on ``[matlab] variable_dir`` being
+    # configured -- without a stub the run dies with "Unrecognized function
+    # or variable 'X'" in the middle of a for_each, so the destination
+    # falls back to ``scimatlab.stubs.variable_stub_dir``.
+    if config.entities_file is not None:
         from scidb.entities import load as _load_entities
 
         materialize_variable_stubs(
             list(_load_entities(config.entities_file).variables),
             config.matlab_variable_dir,
+            project_start=config.entities_file,
         )
-
-    # --- Unified sources (folder-scan fallback: no functions/variables
-    # split available, each file classified individually by content) ---
-    if config.matlab_sources:
-        load_from_sources(config.matlab_sources)
 
     logger.info(
         "[matlab_registry] MATLAB registry loading complete - %d functions, "
@@ -211,9 +219,13 @@ def load_from_config(config: SciStackConfig) -> dict:
     }
 
 
-def materialize_variable_stubs(names: list[str], variable_dir: Path) -> list[Path]:
+def materialize_variable_stubs(
+    names: list[str],
+    variable_dir: "Path | None" = None,
+    project_start: "Path | None" = None,
+) -> list[Path]:
     """Write a ``classdef`` stub for each TOML-declared variable that has
-    none yet. Returns the files created.
+    none yet, and register it. Returns the files created.
 
     Why this exists: MATLAB cannot create a class at runtime, and
     ``class(obj)`` is what names the database table -- so unlike a Parameter
@@ -222,40 +234,71 @@ def materialize_variable_stubs(names: list[str], variable_dir: Path) -> list[Pat
     *generated output* that makes the type referenceable as ``StepLength()``
     from MATLAB code, not a second place the variable is declared.
 
+    The *writing* is :func:`scimatlab.stubs.write_variable_classdefs` --
+    scimatlab owns making a declaration referenceable from MATLAB (CLAUDE.md
+    NOTE 3), so a GUI-generated script and a hand-written one materialize
+    byte-identical files from one implementation (``+scidb/entities.m``
+    calls the same code over the bridge). What stays here is the *policy*:
+    which names the GUI already knows a classdef for, and registering the
+    surrogate type for the ones just created.
+
+    ``variable_dir`` is the configured ``[matlab] variable_dir``; when it is
+    ``None`` the destination falls back to
+    :func:`scimatlab.stubs.variable_stub_dir` for *project_start*.
+
+    A name the registry already resolved to a real .m file is skipped: two
+    classdefs for one type on the MATLAB path shadow each other, and the
+    hand-written one is the declaration.
+
     Only ever creates. A stub whose TOML entry later disappears is left
     alone -- deleting generated-but-referenced files is how a pipeline stops
     running mid-session, and the project's ethos is to hide, never delete.
     """
-    created: list[Path] = []
+    try:
+        from scimatlab.stubs import write_variable_classdefs
+    except ImportError as e:
+        # scimatlab is an optional dependency of the GUI. Without it MATLAB
+        # is unusable anyway (no bridge), but say so rather than crashing
+        # the whole registry load.
+        logger.warning(
+            "[matlab_registry] scimatlab not importable (%s); cannot materialize "
+            "classdefs for TOML-declared variables: %s",
+            e,
+            ", ".join(names),
+        )
+        return []
+
+    wanted: list[str] = []
     for name in names:
-        target = variable_dir / f"{name}.m"
-        if target.exists():
+        existing = _matlab_variables.get(name)
+        if existing is not None:
             logger.debug(
-                "[matlab_registry] classdef for TOML variable '%s' already exists "
-                "at %s",
+                "[matlab_registry] TOML variable '%s' already has a classdef at "
+                "%s; not materializing a stub that would shadow it",
                 name,
-                target,
+                existing,
             )
             continue
-        try:
-            variable_dir.mkdir(parents=True, exist_ok=True)
-            target.write_text(
-                f"classdef {name} < scidb.BaseVariable\n"
-                f"    % Declared in the SciStack entities file; this stub exists\n"
-                f"    % because MATLAB requires one classdef file per type.\n"
-                f"end\n",
-                encoding="utf-8",
-            )
-        except OSError as e:
-            logger.warning(
-                "[matlab_registry] Could not write classdef stub for '%s' at %s: "
-                "%s -- the type will not be referenceable from MATLAB",
-                name,
-                target,
-                e,
-            )
-            _record_load_error(str(target), f"Could not write classdef stub: {e}")
-            continue
+        wanted.append(name)
+
+    if not wanted:
+        return []
+
+    result = write_variable_classdefs(
+        wanted, target_dir=variable_dir, project_start=project_start
+    )
+    for message in result["errors"]:
+        logger.warning(
+            "[matlab_registry] %s -- the type will not be referenceable from "
+            "MATLAB",
+            message,
+        )
+        _record_load_error(result["dir"] or "(no stub directory)", message)
+
+    created: list[Path] = []
+    stub_dir = Path(result["dir"]) if result["dir"] else None
+    for name in result["created"]:
+        target = stub_dir / f"{name}.m" if stub_dir is not None else Path(f"{name}.m")
         logger.info(
             "[matlab_registry] Materialized classdef stub for TOML variable "
             "'%s' at %s",
@@ -264,6 +307,14 @@ def materialize_variable_stubs(names: list[str], variable_dir: Path) -> list[Pat
         )
         created.append(target)
         _register_matlab_variable(name, target)
+
+    # A skipped name still has to be registered: the file exists (from an
+    # earlier session), but nothing else in this load path parsed it, so
+    # without this the type is invisible to the GUI until the next scan.
+    for name in result["skipped"]:
+        if name not in _matlab_variables and stub_dir is not None:
+            _register_matlab_variable(name, stub_dir / f"{name}.m")
+
     return created
 
 

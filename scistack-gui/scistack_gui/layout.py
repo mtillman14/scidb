@@ -17,12 +17,83 @@ JSON format (post-migration):
 
 import json
 import logging
+import os
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from scistack_gui import pipeline_store
 from scistack_gui.db import get_db, get_db_path
 
 logger = logging.getLogger(__name__)
+
+# Serializes read-modify-write of the layout document. Every mutator below
+# loads the whole file, edits it and writes it back, so two overlapping
+# mutators mean the later write silently discards the earlier one's edit.
+#
+# This is NOT a Windows-only problem, though that is where it was first
+# caught (a sharing violation, errno 13, on an SMB share). The old _save
+# opened the target with "w", which truncates immediately, so on POSIX the
+# same overlap instead hands a CONCURRENT READER an empty or half-written
+# file: reverting this module and running tests/test_layout_concurrency.py
+# raises JSONDecodeError("Expecting value: line 1 column 1") out of _load,
+# verified on macOS 2026-09-01. Every platform was exposed; only the symptom
+# differed. That is why _load takes this lock too.
+#
+# This overlap is routine, not exotic: server.py runs one thread per RPC,
+# and a single node drop sends TWO put_layout calls ~1ms apart (the create
+# from PipelineDAG's onDrop, then the position-only re-center once React
+# Flow has measured the node). That collision lost three freshly dropped
+# nodes in one two-minute session -- see
+# .claude/plan-layout-write-race-and-duplicate-seed-roots.md.
+#
+# Reentrant because delete_node and write_manual_node call helpers that load
+# the document again inside the critical section.
+#
+# Process-local by decision (2026-09-01): a second GUI backend on the same
+# project would still interleave, and the DuckDB lock would not stop it
+# either (the GUI drops that lock between requests on purpose, db.py:40-46).
+# Not designed around for now; the real fix would be moving positions into
+# DuckDB, finishing the migration this module's docstring describes.
+_layout_lock = threading.RLock()
+
+# Contention is expected and harmless; only a wait long enough to be worth
+# explaining gets promoted out of debug.
+_CONTENTION_LOG_THRESHOLD = 0.05
+
+# The layout file lives next to the database, which in real deployments is a
+# network share. A sync client, an AV scanner or a stale SMB handle can deny
+# access for a moment with no SciStack process involved, so the final rename
+# is retried briefly before giving up.
+_SAVE_RETRY_ATTEMPTS = 5
+_SAVE_RETRY_INTERVAL = 0.05
+
+
+@contextmanager
+def _layout_write(operation: str):
+    """Hold :data:`_layout_lock` for one read-modify-write of the file."""
+    start = time.monotonic()
+    _layout_lock.acquire()
+    waited = time.monotonic() - start
+    try:
+        if waited > _CONTENTION_LOG_THRESHOLD:
+            logger.info(
+                "[layout] %s thread=%d waited=%.4fs for the layout lock",
+                operation,
+                threading.get_ident(),
+                waited,
+            )
+        else:
+            logger.debug(
+                "[layout] %s thread=%d waited=%.4fs",
+                operation,
+                threading.get_ident(),
+                waited,
+            )
+        yield
+    finally:
+        _layout_lock.release()
 
 
 def _layout_path() -> Path:
@@ -39,19 +110,25 @@ def _load() -> dict:
     """
     p = _layout_path()
     logger.debug("[layout] Loading layout file from %s", p)
-    if not p.exists():
-        # Deliberately NOT a hand-maintained duplicate of the defaults set
-        # below (a second "what are the defaults" list next to the
-        # setdefault calls has already drifted out of sync once — missing
-        # path_inputs/sweeps after their removal, and separately missing
-        # "notes" entirely, both silent until a fresh/never-written project
-        # hit this branch). Empty dict + fall through to the same
-        # normalization every other path goes through.
-        logger.debug("[layout] Layout file does not exist, using empty defaults")
-        raw = {}
-    else:
-        with p.open() as f:
-            raw = json.load(f)
+    # The read holds the lock too (reentrantly — mutators call this inside
+    # their own critical section). Windows refuses to replace a file another
+    # handle has open, so an unsynchronized reader would make a concurrent
+    # save burn its retries for no reason. Only the file access needs
+    # guarding; everything below it is in-memory.
+    with _layout_lock:
+        if not p.exists():
+            # Deliberately NOT a hand-maintained duplicate of the defaults set
+            # below (a second "what are the defaults" list next to the
+            # setdefault calls has already drifted out of sync once — missing
+            # path_inputs/sweeps after their removal, and separately missing
+            # "notes" entirely, both silent until a fresh/never-written project
+            # hit this branch). Empty dict + fall through to the same
+            # normalization every other path goes through.
+            logger.debug("[layout] Layout file does not exist, using empty defaults")
+            raw = {}
+        else:
+            with p.open() as f:
+                raw = json.load(f)
     logger.debug("[layout] Loaded layout file with %d top-level keys", len(raw))
     # Migrate legacy flat format: { "node_id": {"x":..,"y":..}, ... }
     if raw and "positions" not in raw:
@@ -131,7 +208,52 @@ def _positions_all(data: dict) -> dict:
     return merged
 
 
+def _replace_with_retry(tmp: Path, target: Path) -> None:
+    """``os.replace(tmp, target)``, retrying transient permission denials."""
+    last: PermissionError | None = None
+    for attempt in range(1, _SAVE_RETRY_ATTEMPTS + 1):
+        try:
+            os.replace(tmp, target)
+            if attempt > 1:
+                logger.info(
+                    "[layout] save succeeded on attempt %d/%d",
+                    attempt,
+                    _SAVE_RETRY_ATTEMPTS,
+                )
+            return
+        except PermissionError as exc:
+            last = exc
+            logger.warning(
+                "[layout] save retry %d/%d after %s: %s",
+                attempt,
+                _SAVE_RETRY_ATTEMPTS,
+                type(exc).__name__,
+                exc,
+            )
+            if attempt < _SAVE_RETRY_ATTEMPTS:
+                time.sleep(_SAVE_RETRY_INTERVAL)
+    logger.error(
+        "[layout] save FAILED for %s after %d attempts: %s",
+        target,
+        _SAVE_RETRY_ATTEMPTS,
+        last,
+    )
+    assert last is not None  # only reachable via the except branch
+    raise last
+
+
 def _save(data: dict) -> None:
+    """Write the layout document atomically.
+
+    ``json.dump`` straight into the target truncated it in place, so a write
+    that failed partway (or a process killed mid-write) left an unparseable
+    layout file -- every position lost, not just the one being written.
+    Serialize into a sibling temp file and ``os.replace`` it in, so a reader
+    sees either the old document or the new one and never a partial one.
+
+    The temp name carries pid + thread id so concurrent writers never share
+    one, whether or not they share :data:`_layout_lock`.
+    """
     p = _layout_path()
     logger.debug("[layout] Saving layout file to %s", p)
     logger.debug(
@@ -139,8 +261,15 @@ def _save(data: dict) -> None:
         len(data.get("positions", {})),
         len(data.get("constants", [])),
     )
-    with p.open("w") as f:
-        json.dump(data, f, indent=2)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with tmp.open("w") as f:
+            json.dump(data, f, indent=2)
+        _replace_with_retry(tmp, p)
+    finally:
+        # A failed dump or an exhausted retry must not leave the temp behind
+        # (a successful replace already moved it, hence missing_ok).
+        tmp.unlink(missing_ok=True)
     logger.debug("[layout] Layout file saved successfully")
 
 
@@ -155,20 +284,22 @@ def read_positions_by_scope() -> dict:
 
 def drop_scope_positions(pipeline_id: str) -> None:
     """Remove a deleted scope's position map (scope teardown)."""
-    data = _load()
-    if data["positions"].pop(pipeline_id, None) is not None:
-        _save(data)
+    with _layout_write("drop_scope_positions"):
+        data = _load()
+        if data["positions"].pop(pipeline_id, None) is not None:
+            _save(data)
 
 
 def drop_node_positions(node_id: str) -> None:
     """Remove one node's position from every scope (position only — no
     manual-node/hide side effects, unlike delete_node)."""
-    data = _load()
-    changed = False
-    for scope in data["positions"].values():
-        changed = scope.pop(node_id, None) is not None or changed
-    if changed:
-        _save(data)
+    with _layout_write("drop_node_positions"):
+        data = _load()
+        changed = False
+        for scope in data["positions"].values():
+            changed = scope.pop(node_id, None) is not None or changed
+        if changed:
+            _save(data)
 
 
 def move_node_position(
@@ -196,18 +327,19 @@ def move_node_position(
     the destination scope); it defaults to ``node_id`` for manual nodes,
     which carry no scope in their id at all.
     """
-    data = _load()
-    pos = None
-    for scope in data["positions"].values():
-        found = scope.pop(node_id, None)
-        if found is not None:
-            pos = found
-            break
-    node_id = new_node_id or node_id
-    if pos is None:
-        pos = {"x": default_x, "y": default_y}
-    _scope_positions(data, new_pipeline_id)[node_id] = pos
-    _save(data)
+    with _layout_write("move_node_position"):
+        data = _load()
+        pos = None
+        for scope in data["positions"].values():
+            found = scope.pop(node_id, None)
+            if found is not None:
+                pos = found
+                break
+        node_id = new_node_id or node_id
+        if pos is None:
+            pos = {"x": default_x, "y": default_y}
+        _scope_positions(data, new_pipeline_id)[node_id] = pos
+        _save(data)
     logger.info(
         "[layout] move_node_position: %r -> scope %r (%.1f, %.1f)",
         node_id, new_pipeline_id, pos["x"], pos["y"],
@@ -245,10 +377,11 @@ def write_node_position(
         y,
         pipeline_id,
     )
-    data = _load()
-    logger.info("[layout] Writing position to JSON")
-    _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
-    _save(data)
+    with _layout_write("write_node_position"):
+        data = _load()
+        logger.info("[layout] Writing position to JSON")
+        _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
+        _save(data)
     logger.info("[layout] Node position written successfully")
 
 
@@ -261,6 +394,15 @@ def write_manual_node(
     pipeline_id: str = pipeline_store.ROOT_PIPELINE_ID,
 ) -> None:
     # Position goes to JSON; structural info goes to DB.
+    #
+    # The DB write goes FIRST, and that order is load-bearing: the structural
+    # row is what makes the node exist, while the position is cosmetic. When
+    # the JSON write ran first and raised (a concurrent writer's sharing
+    # violation on the share), it took the whole function down before the DB
+    # write, so the node was never created at all and vanished on the next
+    # DAG refresh -- the user re-dropped the same node three times in one
+    # session. A node at a default position is recoverable; a node that was
+    # never created is not.
     logger.info(
         "[layout] write_manual_node called (node_id=%r, type=%r, label=%r, x=%.1f, y=%.1f, scope=%r)",
         node_id,
@@ -270,10 +412,6 @@ def write_manual_node(
         y,
         pipeline_id,
     )
-    logger.info("[layout] Writing position to JSON")
-    data = _load()
-    _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
-    _save(data)
     logger.info("[layout] Writing node metadata to DuckDB")
     db = get_db()
     pipeline_store.write_manual_node(db, node_id, node_type, label, pipeline_id)
@@ -314,6 +452,11 @@ def write_manual_node(
             canonical_id = f"{prefix}{label}"
             pipeline_store.unhide_node(db, canonical_id, pipeline_id)
             logger.debug("[layout] Unhid canonical node %r", canonical_id)
+    logger.info("[layout] Writing position to JSON")
+    with _layout_write("write_manual_node"):
+        data = _load()
+        _scope_positions(data, pipeline_id)[node_id] = {"x": x, "y": y}
+        _save(data)
     logger.info("[layout] Manual node written successfully")
 
 
@@ -346,10 +489,11 @@ def delete_node(node_id: str) -> None:
     positions_by_scope = read_positions_by_scope()
     scope_id = node_scope(node_id, manual_nodes, positions_by_scope)
     logger.info("[layout] Removing position from JSON")
-    data = _load()
-    for scope in data["positions"].values():
-        scope.pop(node_id, None)
-    _save(data)
+    with _layout_write("delete_node"):
+        data = _load()
+        for scope in data["positions"].values():
+            scope.pop(node_id, None)
+        _save(data)
     logger.info("[layout] Deleting node metadata from DuckDB")
     pipeline_store.delete_node(db, node_id)
     # Hide DB-derived nodes so they don't reappear from list_pipeline_variants().
@@ -393,18 +537,20 @@ def read_all_constant_names() -> list[str]:
 
 
 def write_constant(name: str) -> None:
-    data = _load()
-    if name not in data["constants"]:
-        data["constants"].append(name)
-    _save(data)
+    with _layout_write("write_constant"):
+        data = _load()
+        if name not in data["constants"]:
+            data["constants"].append(name)
+        _save(data)
 
 
 def delete_parameter_from_palette(name: str) -> None:
     """Remove a name from the layout.json palette list. Distinct from
     layout_service.delete_parameter, which hides the NODE."""
-    data = _load()
-    data["constants"] = [c for c in data["constants"] if c != name]
-    _save(data)
+    with _layout_write("delete_parameter_from_palette"):
+        data = _load()
+        data["constants"] = [c for c in data["constants"] if c != name]
+        _save(data)
 
 
 def read_notes() -> dict[str, str]:
@@ -421,13 +567,14 @@ def write_note(key: str, text: str) -> None:
     entirely, so the file doesn't accumulate empty-string notes.
     """
     logger.info("[layout] write_note called (key=%r, len(text)=%d)", key, len(text))
-    data = _load()
-    stripped = text.strip()
-    if stripped:
-        data["notes"][key] = text
-    else:
-        data["notes"].pop(key, None)
-    _save(data)
+    with _layout_write("write_note"):
+        data = _load()
+        stripped = text.strip()
+        if stripped:
+            data["notes"][key] = text
+        else:
+            data["notes"].pop(key, None)
+        _save(data)
     logger.debug("[layout] Note written successfully (key=%r)", key)
 
 
@@ -476,11 +623,12 @@ def graduate_manual_node(old_id: str, new_id: str) -> None:
     """Transfer position from a manual node to a DB-derived node ID and
     remove the manual entry. Scope-aware: the new id stays on whichever
     canvas the old node was placed on."""
-    data = _load()
-    for scope in data["positions"].values():
-        old_pos = scope.get(old_id)
-        if old_pos and new_id not in scope:
-            scope[new_id] = old_pos
-        scope.pop(old_id, None)
-    _save(data)
+    with _layout_write("graduate_manual_node"):
+        data = _load()
+        for scope in data["positions"].values():
+            old_pos = scope.get(old_id)
+            if old_pos and new_id not in scope:
+                scope[new_id] = old_pos
+            scope.pop(old_id, None)
+        _save(data)
     pipeline_store.graduate_manual_node(get_db(), old_id, new_id)

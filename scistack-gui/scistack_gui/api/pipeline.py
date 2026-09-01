@@ -441,6 +441,7 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         scidb_agg["path_inputs"],
         path_input_registry,
         _ps.path_input_history_index(db),
+        registry.get_project_root(),
     )
     gb.seed_undiscovered_path_inputs(agg.path_inputs, path_input_registry)
 

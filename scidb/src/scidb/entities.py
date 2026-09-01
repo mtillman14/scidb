@@ -433,6 +433,28 @@ def _name_error(name: str, result: EntitiesFile) -> "str | None":
 # ---------------------------------------------------------------------------
 
 
+def _project_config(start: "Path | str | None") -> "Path | None":
+    """The ``scistack.toml``/``pyproject.toml`` governing *start* (default:
+    cwd), or ``None`` -- with the one debug log both callers below want."""
+    config = find_project_config(Path(start) if start is not None else Path.cwd())
+    if config is None:
+        Log.debug("[entities] No project config found from %s", start or Path.cwd())
+    return config
+
+
+def project_root(start: "Path | str | None" = None) -> "Path | None":
+    """The root of the project containing *start* (default: cwd) -- the
+    directory holding its ``scistack.toml``/``pyproject.toml``, or ``None``
+    when *start* is not inside a project.
+
+    Shared so callers that need the root but not the entities file (the
+    MATLAB bridge pinning ``scifor``'s PathInput resolution base) don't
+    re-derive "the config file's parent" for themselves.
+    """
+    config = _project_config(start)
+    return config.parent if config is not None else None
+
+
 def entities_path(start: "Path | str | None" = None) -> "Path | None":
     """The entities file for the project containing *start* (default: cwd).
 
@@ -441,9 +463,8 @@ def entities_path(start: "Path | str | None" = None) -> "Path | None":
     already exists** -- guessing a path that doesn't would report a
     missing-file error against a file the user never asked for.
     """
-    config = find_project_config(Path(start) if start is not None else Path.cwd())
+    config = _project_config(start)
     if config is None:
-        Log.debug("[entities] No project config found from %s", start or Path.cwd())
         return None
 
     root = config.parent

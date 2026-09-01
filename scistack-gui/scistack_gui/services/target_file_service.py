@@ -156,9 +156,12 @@ def ensure_scidb_import(target_file: Path) -> None:
 def append_and_refresh(line: str, target_file: Path) -> "dict | None":
     """Ensure the required import is present, write *line* to *target_file*,
     and refresh the registry. Returns an error dict on failure, or ``None``
-    on success. Shared by every append-only entity-creation service."""
-    from scistack_gui import registry
+    on success. Shared by every append-only entity-creation service.
 
+    Refreshes through :func:`_refresh_registries` rather than calling
+    ``registry.refresh_all`` itself: this used to be a second, Python-only
+    copy of that sequence, which dropped every MATLAB-registered entity from
+    the shared registry on each create."""
     try:
         ensure_scidb_import(target_file)
         with open(target_file, "a") as f:
@@ -166,16 +169,9 @@ def append_and_refresh(line: str, target_file: Path) -> "dict | None":
     except OSError as e:
         return {"ok": False, "error": f"Failed to write to module file: {e}"}
 
-    try:
-        if registry._config is not None:
-            registry.refresh_all()
-        else:
-            registry.refresh_module()
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": f"Definition was written but refresh failed: {e}",
-        }
+    error = _refresh_registries()
+    if error is not None:
+        return {"ok": False, "error": error}
     return None
 
 
@@ -495,10 +491,7 @@ def update_declaration(
 
     refresh_error = _refresh_registries()
     if refresh_error is None and not _resolves_as_any_kind(name):
-        refresh_error = (
-            f"'{name}' no longer resolves after the edit — the new value may "
-            f"be invalid."
-        )
+        refresh_error = _verify_failure_reason(name)
 
     if refresh_error is not None:
         # Never leave a file the scanner can no longer read: put the original
@@ -669,8 +662,22 @@ def _invalidate_bytecode(path: Path) -> None:
 
 
 def _refresh_registries() -> "str | None":
-    """Re-scan after a write. Returns an error string, or ``None``."""
-    from scistack_gui import registry
+    """Re-scan after a write. Returns an error string, or ``None``.
+
+    **Both** registries, Python then MATLAB -- the same order bootstrap and
+    ``api/project._refresh_registries`` use. The MATLAB half is not
+    optional: ``registry.load_from_config`` CLEARS the shared
+    ``_path_inputs``/``_parameters`` dicts and repopulates them from Python
+    modules and the TOML entities file only, while every MATLAB-declared
+    PathInput/Parameter is registered into those same shared dicts by
+    ``matlab_registry`` (see its ``_matlab_path_inputs`` docstring).
+    Refreshing only the Python side therefore *deleted* every MATLAB entity
+    from the registry on every entity write -- and for an edit to a
+    MATLAB-declared PathInput that meant :func:`update_declaration`'s
+    post-write verification found nothing, reported "no longer resolves
+    after the edit", and rolled a perfectly good write back.
+    """
+    from scistack_gui import matlab_registry, registry
 
     try:
         if registry._config is not None:
@@ -679,4 +686,44 @@ def _refresh_registries() -> "str | None":
             registry.refresh_module()
     except Exception as e:
         return f"Definition was written but refresh failed: {e}"
+
+    # No-op (with its own warning) when no MATLAB config was ever loaded, so
+    # a pure-Python project pays nothing for this.
+    try:
+        matlab_registry.refresh_all()
+    except Exception as e:
+        return f"Definition was written but the MATLAB refresh failed: {e}"
     return None
+
+
+def _verify_failure_reason(name: str) -> str:
+    """Why *name* did not come back after a refresh, as specifically as the
+    registries can say.
+
+    The bare "may be invalid" message this replaces was the only thing the
+    user saw for a write that was then rolled back -- so the evidence for
+    *why* was destroyed along with the file. Load errors are recorded per
+    source by both registries (``entities.EntityError.describe`` carries the
+    entry name and line), so anything mentioning this name is the real
+    reason and belongs in front of the user.
+    """
+    from scistack_gui import matlab_registry, registry
+
+    reasons = [
+        f"{err['source']}: {err['error']}"
+        for err in (*registry.get_load_errors(), *matlab_registry.get_load_errors())
+        if name in err.get("error", "")
+    ]
+    detail = f" Reported: {'; '.join(reasons)}" if reasons else ""
+    logger.warning(
+        "[target_file_service] '%s' is absent from every registry after the "
+        "refresh. Known path inputs: %s. Known parameters: %s. Load errors: %s",
+        name,
+        sorted(registry.get_path_inputs_registry()),
+        sorted(registry.get_parameters_registry()),
+        [*registry.get_load_errors(), *matlab_registry.get_load_errors()],
+    )
+    return (
+        f"'{name}' no longer resolves after the edit — the new value may be "
+        f"invalid, so the file was restored.{detail}"
+    )
