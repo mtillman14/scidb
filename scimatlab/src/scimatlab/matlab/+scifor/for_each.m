@@ -536,6 +536,10 @@ function varargout = for_each(fn, inputs, varargin)
     inputs_str = format_inputs(inputs, input_names, data_idx);
     scifor.Log.info('inputs: %s', inputs_str);
 
+    % --- Positional-binding preflight ---
+    warn_on_arity_mismatch(fn, fn_name, input_names, ...
+        numel(fieldnames(opts.share_limits)));
+
     % --- Detailed config: metadata actual values ---
     for mk2 = 1:numel(meta_keys)
         if ~startsWith(meta_keys(mk2), "__")
@@ -2654,6 +2658,47 @@ function [mn, mx] = numeric_extent(t, data_cols)
             end
         end
     end
+end
+
+
+function warn_on_arity_mismatch(fn, fn_name, input_names, n_limit_args)
+%WARN_ON_ARITY_MISMATCH  Warn when the inputs struct cannot fill FN's
+%   arguments one-for-one.
+%
+%   MATLAB has no keyword arguments, so this function binds the inputs struct
+%   to FN's arguments strictly BY FIELD ORDER (`call_args = loaded` below,
+%   built from `fieldnames(inputs)`). The field NAMES never reach FN. A struct
+%   with the wrong number of fields therefore does not error here and does not
+%   error in MATLAB — it just calls FN with every argument after the first
+%   discrepancy shifted onto the wrong parameter, and the user finds out via
+%   whatever type error that eventually causes deep inside their own code (on
+%   2026-09-02, `fieldnames()` on a sampling frequency that had landed in a
+%   parameter expecting loaded data).
+%
+%   Advisory, never a refusal: a function may legitimately branch on `nargin`
+%   and be called with fewer arguments than it declares. Skipped entirely for
+%   varargin (`nargin(fn) < 0` => any count is valid) and for handles MATLAB
+%   cannot introspect.
+%
+%   N_LIMIT_ARGS is the number of trailing `<input>_limits` arguments
+%   share_limits will append (see BUILD_LIMIT_ARGS) — those are declared by FN
+%   but never appear as struct fields, so they are not a discrepancy.
+    try
+        cap = nargin(fn);
+    catch
+        return;  % anonymous or unresolvable handle — nothing to compare to
+    end
+    if cap < 0 || (numel(input_names) + n_limit_args) == cap
+        return;
+    end
+    scifor.Log.warn(['%s: the inputs struct has %d field(s) [%s] but the ' ...
+        'function declares %d argument(s). Inputs bind to arguments BY ' ...
+        'POSITION (field names are not used), so argument %d onward will ' ...
+        'receive a value meant for a different parameter, or none at all. ' ...
+        'Check that every parameter is wired and that the struct is built ' ...
+        'in signature order.'], ...
+        fn_name, numel(input_names), strjoin(string(input_names'), ', '), ...
+        cap, min(numel(input_names), cap) + 1);
 end
 
 

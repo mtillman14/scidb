@@ -248,6 +248,170 @@ def unresolvable_var_type_warning(var_types) -> "str | None":
     return detail
 
 
+def _matlab_signature_params(function_name: str) -> list[str]:
+    """The MATLAB function's declared input parameter names, in signature
+    order — or ``[]`` when this project has no parsed signature for it.
+
+    Load-bearing for correctness, not for display. MATLAB has no keyword
+    arguments, so ``+scifor/for_each.m`` binds the inputs struct to the
+    function's arguments **by field order**::
+
+        input_names = fieldnames(inputs);   % for_each.m
+        ...
+        call_args = loaded;                 % same order
+        result = {fn(call_args{:})};
+
+    The field NAMES are documentation; only their ORDER reaches the function.
+    See :func:`_order_inputs_by_signature`.
+    """
+    try:
+        from scistack_gui import matlab_registry
+    except ImportError:  # pragma: no cover - GUI always has this
+        return []
+    try:
+        if not matlab_registry.is_matlab_function(function_name):
+            return []
+        return list(matlab_registry.get_matlab_function(function_name).params)
+    except Exception as e:  # pragma: no cover - registry shape is stable
+        logger.warning(
+            "generate_matlab_command: could not read %s's signature (%s) — "
+            "inputs will be emitted in collection order, which MATLAB binds "
+            "positionally",
+            function_name,
+            e,
+        )
+        return []
+
+
+def _order_inputs_by_signature(
+    function_name: str, inputs_dict: dict[str, str]
+) -> dict[str, str]:
+    """*inputs_dict* reordered to the MATLAB function's parameter order.
+
+    The single place the emitted ``struct(...)`` field order is decided, for
+    both the template branch and :func:`_for_each_call_lines`.
+
+    Without this the struct came out in COLLECTION order — variables, then
+    PathInputs, then Parameters, then constants, each in canvas-edge order —
+    and ``for_each`` fed those to the function positionally. On 2026-09-02
+    ``filterDelsys(loaded_data, config, Fs)`` was called with the sampling
+    frequency in ``loaded_data`` and nothing in ``Fs``, because the two
+    Parameter edges happened to resolve before the variable edge. Nothing on
+    either side can detect that: MATLAB sees three well-typed positional
+    arguments, so the failure surfaces (if at all) as a type error deep inside
+    the user's function.
+
+    Unknown signature -> insertion order is kept unchanged; the function may
+    live only on MATLAB's own path, and reordering on a guess would be worse
+    than leaving what the caller assembled.
+
+    Params the signature does not name are appended after the known ones —
+    they would shift every argument if interleaved, and they are warned about
+    rather than dropped, since the registry's parse is not the authority on
+    what MATLAB will accept.
+    """
+    params = _matlab_signature_params(function_name)
+    if not params:
+        logger.info(
+            "generate_matlab_command: no parsed signature for %s — emitting "
+            "inputs in collection order %s (MATLAB binds these positionally)",
+            function_name,
+            list(inputs_dict),
+        )
+        return dict(inputs_dict)
+
+    ordered = {p: inputs_dict[p] for p in params if p in inputs_dict}
+    extra = [k for k in inputs_dict if k not in ordered]
+    for k in extra:
+        ordered[k] = inputs_dict[k]
+
+    if extra:
+        logger.warning(
+            "generate_matlab_command: %s: input(s) %s are not parameters of "
+            "the parsed signature (%s) — appended last, but they will bind to "
+            "whatever positional arguments follow",
+            function_name,
+            extra,
+            params,
+        )
+
+    # A signature param left unbound BEFORE the last bound one is a gap, and a
+    # gap shifts every argument after it onto the wrong parameter. A trailing
+    # unbound param is legal MATLAB (the function can branch on nargin), so the
+    # two are reported at different volumes.
+    bound_positions = [i for i, p in enumerate(params) if p in ordered]
+    last_bound = max(bound_positions) if bound_positions else -1
+    gaps = [p for i, p in enumerate(params) if i < last_bound and p not in ordered]
+    trailing = [p for i, p in enumerate(params) if i > last_bound and p not in ordered]
+    if gaps:
+        logger.warning(
+            "generate_matlab_command: %s: parameter(s) %s have no wiring, but "
+            "later parameter(s) do — MATLAB binds by position, so every "
+            "argument after the gap will receive the WRONG value. Connect them "
+            "on the canvas. Emitting %s for signature %s",
+            function_name,
+            gaps,
+            list(ordered),
+            params,
+        )
+    elif trailing:
+        logger.info(
+            "generate_matlab_command: %s: trailing parameter(s) %s left unbound "
+            "— the function must default them via nargin",
+            function_name,
+            trailing,
+        )
+
+    logger.info(
+        "generate_matlab_command: %s: inputs bound positionally as %s "
+        "(signature %s)",
+        function_name,
+        [f"{i + 1}:{p}" for i, p in enumerate(ordered)],
+        params,
+    )
+    return ordered
+
+
+def _format_variable_input(type_names) -> str:
+    """A variable binding as the MATLAB expression ``for_each`` loads from:
+    ``RawEMG()`` for one type, ``scifor.EachOf(A(), B())`` for several
+    (mirrors ``execution_service.build_run_inputs``, which builds ``EachOf``
+    for the same multi-type binding on the Python side)."""
+    names = [type_names] if isinstance(type_names, str) else list(type_names)
+    if len(names) == 1:
+        return f"{names[0]}()"
+    return "scifor.EachOf(" + ", ".join(f"{n}()" for n in names) + ")"
+
+
+def _variable_input_items(variable_inputs: "dict | None"):
+    """``(param_name, matlab_expression)`` pairs for a ``variable_inputs`` map.
+
+    A binding with no type names is skipped rather than emitted: it would
+    become ``scifor.EachOf()``, which errors at construction, and there is no
+    value to bind anyway. Skipping shifts the argument it would have filled —
+    :func:`_order_inputs_by_signature` reports that as a gap.
+    """
+    for param, ref in (variable_inputs or {}).items():
+        names = [ref] if isinstance(ref, str) else [n for n in ref if n]
+        if not names:
+            logger.warning(
+                "generate_matlab_command: variable binding for parameter %r "
+                "names no type — leaving it unbound",
+                param,
+            )
+            continue
+        yield param, _format_variable_input(names)
+
+
+def _variable_input_type_names(variable_inputs: "dict | None") -> list[str]:
+    """Flat list of class names referenced by a ``variable_inputs`` map — for
+    the unresolvable-classdef preflight, which needs names, not expressions."""
+    names: list[str] = []
+    for ref in (variable_inputs or {}).values():
+        names.extend([ref] if isinstance(ref, str) else list(ref))
+    return names
+
+
 def generate_matlab_command(
     function_name: str,
     db_path: str,
@@ -263,6 +427,7 @@ def generate_matlab_command(
     project_root: str | None = None,
     entities_script: str | None = None,
     entities_file: str | None = None,
+    variable_inputs: dict[str, "str | list[str]"] | None = None,
 ) -> str:
     """Generate a complete MATLAB script to run a pipeline function.
 
@@ -296,6 +461,17 @@ def generate_matlab_command(
         execution time), so unlike ``path_inputs`` this only ever comes
         from the registry via manual-edge wiring, never DB variants — see
         ``matlab_command_service``'s collection logic.
+    variable_inputs
+        Optional ``{param_name: type_name | [type_names]}`` for the canvas's
+        VARIABLE bindings — the third binding kind alongside ``path_inputs``
+        and ``sweeps``, and the one this generator used to have no source for
+        at all. A function with DB history got its variables from each
+        variant's ``input_types``; one that had never run got none, and its
+        variable-fed parameters were simply absent from the emitted struct
+        (see ``_order_inputs_by_signature`` for what MATLAB then does with the
+        arguments that remain). Supplied for both cases now, as the live
+        overlay on top of recorded ``input_types`` — the same role
+        edge-resolved ``path_inputs`` already played.
 
     Returns
     -------
@@ -332,21 +508,31 @@ def generate_matlab_command(
     lines.append("")
 
     if not variants:
-        # No variant info — generate a template, but include any known path
-        # inputs/sweeps and output types inferred from manual edges.
+        # No variant info — generate a template from the canvas wiring alone:
+        # variable/PathInput/Parameter bindings and edge-inferred output types.
+        # This branch is the FIRST run of a function, so the wiring is the only
+        # source there is; a binding kind missing here is silently missing from
+        # the call (see _order_inputs_by_signature).
         template_inputs: dict[str, str] = {}
+        for p, expr in _variable_input_items(variable_inputs):
+            template_inputs[p] = expr
         if path_inputs:
             for p, pi in path_inputs.items():
                 template_inputs[p] = _format_path_input(pi)
         if sweeps:
             for p, values in sweeps.items():
                 template_inputs[p] = _format_sweep(values)
+        template_inputs = _order_inputs_by_signature(function_name, template_inputs)
         inputs_str = (
             _format_matlab_struct(template_inputs) if template_inputs else "struct()"
         )
+        lines.extend(
+            _unresolvable_var_type_lines(
+                list(output_types or []) + _variable_input_type_names(variable_inputs)
+            )
+        )
         if output_types:
             outputs_str = _format_matlab_cell([f"{t}()" for t in output_types])
-            lines.extend(_unresolvable_var_type_lines(output_types))
         else:
             outputs_str = "{}"
             logger.warning(
@@ -377,6 +563,7 @@ def generate_matlab_command(
 
     # Register variable types
     all_var_types = _collect_var_types(variants)
+    all_var_types |= set(_variable_input_type_names(variable_inputs))
     lines.extend(_unresolvable_var_type_lines(all_var_types))
     if all_var_types:
         lines.append("% Register variable types")
@@ -399,6 +586,7 @@ def generate_matlab_command(
             path_inputs,
             matlab_fn="scihist.for_each",
             sweeps=sweeps,
+            variable_inputs=variable_inputs,
         )
     )
 
@@ -504,11 +692,18 @@ def _for_each_call_lines(
     matlab_fn: str = "scihist.for_each",
     indent: str = "    ",
     sweeps: dict[str, list] | None = None,
+    variable_inputs: dict[str, "str | list[str]"] | None = None,
 ) -> list[str]:
     """One (indented) ``<matlab_fn>(@function_name, ...)`` block per grouped
     (inputs, constants) entry — the call body shared between a single
     function's ready-to-paste command and one node's step registration
     inside a whole-pipeline script (``generate_matlab_pipeline_command``).
+
+    The assembled struct is ordered by the function's parsed MATLAB signature
+    before it is formatted: ``for_each`` binds these fields to arguments
+    positionally, so collection order (variables, PathInputs, Parameters,
+    constants — each in canvas-edge order) is not a safe order to emit. See
+    :func:`_order_inputs_by_signature`.
     """
     from scistack_gui.api.pipeline import _parse_path_input
 
@@ -524,6 +719,11 @@ def _for_each_call_lines(
             for param_name, type_name in input_types.items():
                 if _parse_path_input(str(type_name)) is None:
                     inputs_dict[param_name] = f"{type_name}()"
+        # Overlay the canvas's current variable wiring on top of whatever
+        # history recorded — same live-overlay rule as path_inputs below, and
+        # the only source at all for a param the DB variant never carried.
+        for param_name, expr in _variable_input_items(variable_inputs):
+            inputs_dict[param_name] = expr
         # Add path inputs as scifor.PathInput(...) expressions.
         if path_inputs:
             for param_name, pi in path_inputs.items():
@@ -536,6 +736,7 @@ def _for_each_call_lines(
         for k, val in constants.items():
             inputs_dict[k] = _format_matlab_value(val)
 
+        inputs_dict = _order_inputs_by_signature(function_name, inputs_dict)
         inputs_str = _format_matlab_struct(inputs_dict)
         outputs_str = (
             _format_matlab_cell([f"{t}()" for t in output_types_list])
@@ -594,7 +795,8 @@ def generate_matlab_pipeline_command(
         ``build_backend_pipeline``). Each entry:
         ``{"function_name": str, "variants": list[dict] | None,
         "schema_filter": dict | None, "schema_level": list[str] | None,
-        "path_inputs": dict | None}``. A step with no resolvable variants
+        "path_inputs": dict | None, "sweeps": dict | None,
+        "variable_inputs": dict | None}``. A step with no resolvable variants
         (nothing derivable — never run and no output wiring) is skipped
         with a comment, mirroring the disconnected-wiring skip convention
         in ``code_export_service`` — not an error, since the rest of the
@@ -708,6 +910,7 @@ def generate_matlab_pipeline_command(
                 step.get("path_inputs"),
                 matlab_fn="scidb.for_each",
                 sweeps=step.get("sweeps"),
+                variable_inputs=step.get("variable_inputs"),
             )
         )
     for comment in skip_comments:

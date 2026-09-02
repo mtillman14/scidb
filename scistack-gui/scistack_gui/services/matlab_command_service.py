@@ -168,6 +168,30 @@ def _collect_sweep_params(
     }
 
 
+def _collect_variable_inputs(
+    function_name: str, manual_edges: list[dict], manual_nodes: dict
+) -> dict[str, list[str]]:
+    """``{param_name: [variable type names]}`` for every Variable node wired
+    into *function_name*.
+
+    The third binding kind, and the one this module had no collector for. A
+    function with DB history got its variable inputs from each variant's
+    ``input_types``, which hid the gap; a function that had never run got
+    ``path_inputs`` and ``sweeps`` only, and every variable-fed parameter was
+    silently missing from the emitted ``for_each`` struct — which MATLAB then
+    filled by shifting the remaining arguments up (2026-09-02:
+    ``filterDelsys(loaded_data, config, Fs)`` ran with the sampling frequency
+    in ``loaded_data`` and nothing in ``Fs``).
+
+    Reads the same ``ResolvedEdges`` the PathInput and Parameter collectors
+    read, so all three kinds now come from one scan of the wiring — the
+    Python run path (``execution_service.build_run_inputs``) has always
+    consumed all three from that dict.
+    """
+    resolved = _resolve_matlab_wiring(function_name, manual_edges, manual_nodes)
+    return dict(resolved.input_types)
+
+
 def _collect_edge_path_inputs(
     function_name: str, saved_pis: dict, manual_edges: list[dict], manual_nodes: dict
 ) -> dict[str, dict]:
@@ -261,6 +285,13 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         function_name, saved_sweeps, manual_edges, manual_nodes
     )
 
+    # Collect Variable mappings — the live overlay for functions with DB
+    # history, and the ONLY source for one that has never run (see
+    # _collect_variable_inputs).
+    variable_inputs = _collect_variable_inputs(
+        function_name, manual_edges, manual_nodes
+    )
+
     # Infer output types from manual edges when no DB variants exist.
     # Always prefer edge inference over params-supplied output_types for
     # functions with no DB history — the node's output_types field may contain
@@ -310,11 +341,14 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
 
     logger.info(
         "generate_matlab_command: fn=%s, total_variants=%d, fn_variants=%d, "
-        "path_input_params=%d, output_types=%s, project_root=%s",
+        "path_input_params=%d, sweep_params=%s, variable_inputs=%s, "
+        "output_types=%s, project_root=%s",
         function_name,
         len(all_variants),
         len(fn_variants),
         len(path_input_params),
+        sorted(sweep_params),
+        variable_inputs,
         output_types,
         project_root,
     )
@@ -334,6 +368,7 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
         project_root=project_root,
         entities_script=_entities_script(),
         entities_file=_entities_file(),
+        variable_inputs=variable_inputs if variable_inputs else None,
     )
     logger.info(
         "generate_matlab_command: fn=%s, command_length=%d", function_name, len(cmd)
@@ -348,11 +383,16 @@ def generate_matlab_command(function_name: str, db, params: dict) -> dict:
     # mixing an unrelated diagnostic into it makes both unreadable.
     from scistack_gui.api.matlab_command import (
         _collect_var_types,
+        _variable_input_type_names,
         unresolvable_var_type_warning,
     )
 
-    checked = set(output_types or []) | _collect_var_types(
-        fn_variants if fn_variants else (params.get("variants") or [])
+    checked = (
+        set(output_types or [])
+        | set(_variable_input_type_names(variable_inputs))
+        | _collect_var_types(
+            fn_variants if fn_variants else (params.get("variants") or [])
+        )
     )
     diagnostics = [d for d in [unresolvable_var_type_warning(checked)] if d]
     return {"command": cmd, "diagnostics": diagnostics}
@@ -533,6 +573,9 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
         sweep_params = _collect_sweep_params(
             fn_label, saved_sweeps, manual_edges, manual_nodes
         )
+        step_variable_inputs = _collect_variable_inputs(
+            fn_label, manual_edges, manual_nodes
+        )
 
         steps.append(
             {
@@ -542,6 +585,9 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
                 "schema_level": params.get("schema_level"),
                 "path_inputs": path_input_params if path_input_params else None,
                 "sweeps": sweep_params if sweep_params else None,
+                "variable_inputs": (
+                    step_variable_inputs if step_variable_inputs else None
+                ),
             }
         )
 
@@ -585,12 +631,16 @@ def generate_matlab_pipeline_command(pipeline_id: str, db, params: dict) -> dict
     # Python steps its callers and tests expect.
     from scistack_gui.api.matlab_command import (
         _collect_var_types,
+        _variable_input_type_names,
         unresolvable_var_type_warning,
     )
 
     pipeline_var_types: set[str] = set()
     for step in steps:
         pipeline_var_types |= _collect_var_types(step.get("variants") or [])
+        pipeline_var_types |= set(
+            _variable_input_type_names(step.get("variable_inputs"))
+        )
     diagnostics = [
         d for d in [unresolvable_var_type_warning(pipeline_var_types)] if d
     ]

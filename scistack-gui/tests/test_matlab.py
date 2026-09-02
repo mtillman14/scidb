@@ -3029,3 +3029,234 @@ class TestPathInputNeverRegisteredAsVariable:
             for line in cmd.splitlines():
                 if "scidb.register_variable(" in line:
                     assert "__type" not in line, f"{label}: {line}"
+
+
+class TestCollectVariableInputs:
+    """The third binding kind. ``_collect_edge_path_inputs`` and
+    ``_collect_sweep_params`` were the only two collectors this module had, so
+    a parameter fed by a VARIABLE node had no source at all until the function
+    acquired DB history — see ``_collect_variable_inputs``."""
+
+    def _edge(self, source, target, target_handle):
+        return {"source": source, "target": target, "targetHandle": target_handle}
+
+    def test_wires_variable_to_the_param_its_handle_names(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_variable_inputs,
+        )
+
+        edges = [self._edge("var__RawEMG", "fn__filterDelsys", "in__loaded_data")]
+        assert _collect_variable_inputs("filterDelsys", edges, {}) == {
+            "loaded_data": ["RawEMG"]
+        }
+
+    def test_class_name_may_differ_from_the_param(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_variable_inputs,
+        )
+
+        edges = [self._edge("var__RawEMG", "fn__filterDelsys", "in__signal_in")]
+        assert _collect_variable_inputs("filterDelsys", edges, {}) == {
+            "signal_in": ["RawEMG"]
+        }
+
+    def test_placement_qualified_endpoints_are_recognised(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_variable_inputs,
+        )
+
+        edges = [
+            self._edge(
+                "var__RawEMG::main",
+                "fn__filterDelsys__5zhd42::main",
+                "in__loaded_data",
+            )
+        ]
+        assert _collect_variable_inputs("filterDelsys", edges, {}) == {
+            "loaded_data": ["RawEMG"]
+        }
+
+    def test_ignores_edges_for_other_functions(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_variable_inputs,
+        )
+
+        edges = [self._edge("var__RawEMG", "fn__other_fn", "in__loaded_data")]
+        assert _collect_variable_inputs("filterDelsys", edges, {}) == {}
+
+    def test_excludes_pathinput_and_parameter_sources(self):
+        """Those have their own collectors and their own MATLAB expressions;
+        emitting them as ``Name()`` would be a parse error."""
+        from scistack_gui.services.matlab_command_service import (
+            _collect_variable_inputs,
+        )
+
+        edges = [
+            self._edge("pathInput__emg_file", "fn__filterDelsys", "in__filepath"),
+            self._edge("param__delsys_config", "fn__filterDelsys", "in__config"),
+        ]
+        assert _collect_variable_inputs("filterDelsys", edges, {}) == {}
+
+    def test_two_variables_on_one_handle_is_eachof(self):
+        from scistack_gui.services.matlab_command_service import (
+            _collect_variable_inputs,
+        )
+
+        edges = [
+            self._edge("var__RawEMG", "fn__filterDelsys", "in__loaded_data"),
+            self._edge("var__RawEMG2", "fn__filterDelsys", "in__loaded_data"),
+        ]
+        assert _collect_variable_inputs("filterDelsys", edges, {}) == {
+            "loaded_data": ["RawEMG", "RawEMG2"]
+        }
+
+
+class TestMatlabInputsBindPositionally:
+    """MATLAB has no keyword arguments: ``+scifor/for_each.m`` does
+    ``input_names = fieldnames(inputs)`` and then ``fn(call_args{:})``, so the
+    emitted struct's FIELD ORDER *is* the argument order.
+
+    Regression for 2026-09-02: ``filterDelsys(loaded_data, config, Fs)`` was
+    wired to RawEMG + two Parameters and ran as ``filterDelsys(2000, config)``
+    — the variable was never collected (see TestCollectVariableInputs) and the
+    two Parameters that were collected went in edge order.
+    """
+
+    SIGNATURE = ["loaded_data", "config", "Fs"]
+
+    @pytest.fixture
+    def registered_fn(self):
+        from scistack_gui import matlab_registry
+        from scistack_gui.matlab_parser import MatlabFunctionInfo
+
+        before = dict(matlab_registry._matlab_functions)
+        matlab_registry._matlab_functions["filterDelsys"] = MatlabFunctionInfo(
+            name="filterDelsys",
+            file_path=None,
+            params=list(self.SIGNATURE),
+            source_hash="0" * 64,
+            n_outputs=1,
+            output_names=["filtered_data"],
+        )
+        yield
+        matlab_registry._matlab_functions.clear()
+        matlab_registry._matlab_functions.update(before)
+
+    @staticmethod
+    def _struct_fields(cmd):
+        """Field names of the generated ``struct(...)``, in emitted order."""
+        import re
+
+        line = next(ln for ln in cmd.splitlines() if "struct(" in ln)
+        return re.findall(r"'(\w+)',", line[line.index("struct(") :])
+
+    def test_template_branch_emits_every_binding_in_signature_order(
+        self, registered_fn
+    ):
+        """The exact failing case: no DB history, one variable + two
+        Parameters, drawn on the canvas in the wrong order."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filterDelsys",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[],
+            output_types=["FilteredEMG"],
+            # Collection order deliberately ≠ signature order.
+            sweeps={"Fs": [2000], "config": ["cfg"]},
+            variable_inputs={"loaded_data": ["RawEMG"]},
+        )
+
+        assert self._struct_fields(cmd) == self.SIGNATURE
+        assert "RawEMG()" in cmd, "the variable input was dropped entirely"
+
+    def test_variants_branch_orders_by_signature_too(self, registered_fn):
+        """The bug was a branch flip once before (see
+        TestPathInputNeverRegisteredAsVariable) — assert both branches."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filterDelsys",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[
+                {
+                    "input_types": {"loaded_data": "RawEMG"},
+                    "output_type": "FilteredEMG",
+                    "constants": {"Fs": 2000},
+                    "record_count": 1,
+                }
+            ],
+            sweeps={"config": ["cfg"]},
+        )
+
+        assert self._struct_fields(cmd) == self.SIGNATURE
+
+    def test_unknown_signature_keeps_insertion_order(self):
+        """No parsed signature — the function may live only on MATLAB's own
+        path, and reordering on a guess is worse than emitting what the
+        caller assembled."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="not_in_the_registry",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[],
+            output_types=["Out"],
+            sweeps={"b": [1], "a": [2]},
+        )
+
+        assert self._struct_fields(cmd) == ["b", "a"]
+
+    def test_param_outside_the_signature_is_appended_not_interleaved(
+        self, registered_fn
+    ):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filterDelsys",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[],
+            output_types=["FilteredEMG"],
+            sweeps={"mystery": [1], "config": ["cfg"]},
+            variable_inputs={"loaded_data": ["RawEMG"]},
+        )
+
+        assert self._struct_fields(cmd) == ["loaded_data", "config", "mystery"]
+
+    def test_gap_before_a_bound_param_is_warned_about(self, registered_fn, caplog):
+        """The unfixable half: if ``loaded_data`` is simply not wired, no
+        ordering can save the call, so it must be loud."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        with caplog.at_level(logging.WARNING, logger="scistack_gui.api.matlab_command"):
+            generate_matlab_command(
+                function_name="filterDelsys",
+                db_path="/db.duckdb",
+                schema_keys=["pass"],
+                variants=[],
+                output_types=["FilteredEMG"],
+                sweeps={"Fs": [2000], "config": ["cfg"]},
+            )
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "loaded_data" in m and "WRONG value" in m for m in messages
+        ), f"an unwired leading parameter must be warned about; got {messages}"
+
+    def test_multi_type_variable_binding_becomes_eachof(self, registered_fn):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filterDelsys",
+            db_path="/db.duckdb",
+            schema_keys=["pass"],
+            variants=[],
+            output_types=["FilteredEMG"],
+            variable_inputs={"loaded_data": ["RawEMG", "RawEMG2"]},
+        )
+
+        assert "scifor.EachOf(RawEMG(), RawEMG2())" in cmd
