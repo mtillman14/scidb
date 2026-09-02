@@ -782,7 +782,9 @@ def dispatch(args: argparse.Namespace) -> int:
             raise CLIError(f"Database not found: {db_path} (from {source})")
         # Same convention as configure_database: scidb.log next to the db file.
         if Log.get_path() is None:
-            Log.set_path(str(Path(db_path).parent / "scidb.log"))
+            from scidb.log import attach_log_file
+
+            attach_log_file(db_path)
         mode = "write" if write_handler else "read-only"
         Log.info(f"scidb cli: db={db_path} (resolved via {source}, {mode})")
         if args.verbose:

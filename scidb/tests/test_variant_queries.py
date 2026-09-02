@@ -199,6 +199,74 @@ class TestGetAggregatedVariants:
         assert "FilteredSignal" in all_outputs
         assert "ProcessedSignal" in all_outputs
 
+    def test_variants_carry_output_num(self, db):
+        """Each variant reports which slot of the fn signature produced it.
+
+        Regression: get_aggregated_variants() used to build its variant dicts
+        without output_num even though list_pipeline_variants() supplied it.
+        The GUI reads this to map a MATLAB fn's declared output names onto
+        variable types; with it missing, every MATLAB fn fell back to a
+        hand-drawn manual edge and the fn->output edge vanished without one.
+        """
+        _seed_raw(db)
+
+        for_each(
+            multi_output_filter,
+            inputs={"signal": RawSignal, "low_hz": 20},
+            outputs=[FilteredSignal, ProcessedSignal],
+            subject=[1, 2],
+            session=["A", "B"],
+        )
+
+        result = db.get_aggregated_variants()
+
+        slot_by_type = {}
+        for fkey, fn_data in result["functions"].items():
+            if fkey[0] != "multi_output_filter":
+                continue
+            for variant in fn_data["variants"]:
+                slot_by_type[variant["output_type"]] = variant["output_num"]
+
+        # outputs=[FilteredSignal, ProcessedSignal] -> slots 0 and 1.
+        assert slot_by_type == {"FilteredSignal": 0, "ProcessedSignal": 1}
+
+    def test_aggregation_preserves_variant_query_output_num(self, db):
+        """The aggregation must not drop fields list_pipeline_variants() supplies.
+
+        Stated as a contract between the two APIs rather than as fixed values,
+        so it keeps holding as the pipeline shape changes.
+        """
+        _seed_raw(db)
+
+        for_each(
+            multi_output_filter,
+            inputs={"signal": RawSignal, "low_hz": 20},
+            outputs=[FilteredSignal, ProcessedSignal],
+            subject=[1, 2],
+            session=["A", "B"],
+        )
+        for_each(
+            compute_stats,
+            inputs={"signal": FilteredSignal, "window_size": 5},
+            outputs=[Stats],
+            subject=[1, 2],
+            session=["A", "B"],
+        )
+
+        from_query = {
+            (v["function_name"], v["output_type"], v["output_num"])
+            for v in db.list_pipeline_variants()
+        }
+        from_aggregation = {
+            (fkey[0], variant["output_type"], variant["output_num"])
+            for fkey, fn_data in db.get_aggregated_variants()["functions"].items()
+            for variant in fn_data["variants"]
+        }
+
+        assert from_aggregation == from_query
+        # Guard against the assertion passing because both sides are all-None.
+        assert all(onum is not None for _, _, onum in from_aggregation)
+
     def test_variable_record_counts(self, db):
         """Variables section includes record counts."""
         _seed_raw(db, subjects=(1, 2), sessions=("A", "B"))

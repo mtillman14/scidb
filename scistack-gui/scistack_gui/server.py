@@ -992,6 +992,33 @@ def _summarize_params(params: dict, max_len: int = 120) -> str:
     return s[:max_len] + "..." if len(s) > max_len else s
 
 
+def _summarize_result(result, max_len: int = 160) -> "str | None":
+    """Compact size summary of an RPC result, or ``None`` if there is
+    nothing worth counting.
+
+    Sized so a read RPC's answer is legible at INFO: ``list[3]`` for a bare
+    list, ``nodes[3], edges[0]`` for a dict of collections. This exists
+    because an empty list is a *silent* failure — the sidebar's PathInput
+    list rendered empty while the canvas (fed by ``get_pipeline``, an
+    independent RPC over the same registry) showed three nodes, and the log
+    could not say whether ``get_path_inputs`` had even been called, let
+    alone what it returned. Counts on the way out settle that in one line.
+    """
+    if isinstance(result, list):
+        return f"list[{len(result)}]"
+    if isinstance(result, dict):
+        parts = [
+            f"{k}[{len(v)}]"
+            for k, v in result.items()
+            if isinstance(v, (list, dict, set, tuple))
+        ]
+        if not parts:
+            return None
+        s = ", ".join(parts)
+        return s[:max_len] + "..." if len(s) > max_len else s
+    return None
+
+
 # JSON-RPC error code for "the DuckDB file is open in another process".
 # Distinct from the catch-all -32000 so the extension can treat it as the
 # transient, self-explanatory condition it is rather than a crash.
@@ -1062,7 +1089,19 @@ def _handle_request(req: dict) -> None:
             acquired = True
             result = handler(params)
             elapsed_ms = (time.monotonic() - t0) * 1000
-            Log.debug(f"RPC << {method} OK ({elapsed_ms:.1f}ms)")
+            # Read RPCs answer at INFO with what they actually returned; a
+            # list that came back empty is otherwise invisible in the log
+            # (see _summarize_result). Everything else stays at DEBUG so
+            # writes and per-frame chatter don't flood the file.
+            counts = (
+                _summarize_result(result)
+                if method.startswith(("get_", "list_"))
+                else None
+            )
+            if counts is not None:
+                Log.info(f"RPC << {method} -> {counts} ({elapsed_ms:.1f}ms)")
+            else:
+                Log.debug(f"RPC << {method} OK ({elapsed_ms:.1f}ms)")
             _answer(lambda: _respond(req_id, result))
         except DatabaseLockedError as locked:
             elapsed_ms = (time.monotonic() - t0) * 1000
@@ -1179,6 +1218,24 @@ def main():
             )
         )
         sys.exit(1)
+
+    # Open the log file BEFORE any discovery runs. configure_database()
+    # attaches the same sink further down, but that is after the registry
+    # scan below — which is the single most diagnostically valuable part of
+    # startup (it decides which functions, variables and PathInputs exist,
+    # and it is where load errors are produced). Everything it logged used
+    # to reach stderr only, so scidb.log began mid-startup at
+    # "configure_database:" and a question like "why is this PathInput
+    # missing?" had no record to answer it. attach_log_file is idempotent,
+    # so the later configure_database() call is a no-op.
+    from scidb.log import attach_log_file
+
+    attach_log_file(db_path)
+    logger.info(
+        "[startup] log file attached: db=%s create_new=%s — discovery follows",
+        db_path,
+        create_new,
+    )
 
     # Import user code first (same order as __main__.py) so that
     # configure_database() can auto-register the user's variable classes.

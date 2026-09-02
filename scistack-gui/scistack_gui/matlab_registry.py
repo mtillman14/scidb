@@ -331,14 +331,19 @@ def materialize_variable_stubs(
             target,
         )
         created.append(target)
-        _register_matlab_variable(name, target)
+        _register_matlab_variable(name, target, declared_by=project_start)
 
     # A skipped name still has to be registered: the file exists (from an
     # earlier session), but nothing else in this load path parsed it, so
     # without this the type is invisible to the GUI until the next scan.
+    # Attributed to the TOML for the same reason a freshly-created one is:
+    # a stub written by a previous session is no more a declaration than one
+    # written a millisecond ago.
     for name in result["skipped"]:
         if name not in _matlab_variables and stub_dir is not None:
-            _register_matlab_variable(name, stub_dir / f"{name}.m")
+            _register_matlab_variable(
+                name, stub_dir / f"{name}.m", declared_by=project_start
+            )
 
     return created
 
@@ -567,15 +572,38 @@ def register_builtin_function(info: MatlabFunctionInfo) -> None:
     _register_matlab_function(info)
 
 
+def _matlab_project_root() -> "Path | None":
+    """The project root to judge definition precedence against.
+
+    Prefers this registry's own config so a MATLAB-only load still has a root,
+    and falls back to the Python registry's — the two are loaded from the same
+    ``SciStackConfig``, so they agree whenever both are set.
+    """
+    from scistack_gui import registry
+
+    return getattr(_config, "project_root", None) or registry.get_project_root()
+
+
 def _register_matlab_function(info: MatlabFunctionInfo) -> None:
-    """Register a single parsed MATLAB function, warning on name collisions."""
-    if info.name in _matlab_functions:
-        logger.warning(
-            "[matlab_registry] MATLAB function '%s' from %s shadows previous definition from %s",
-            info.name,
-            info.file_path,
-            _matlab_functions[info.name].file_path,
-        )
+    """Register a single parsed MATLAB function, applying project-over-library
+    precedence (see ``registry.resolve_definition_shadowing``)."""
+    from scistack_gui import registry
+
+    existing = _matlab_functions.get(info.name)
+    # A builtin/toolbox reference has no backing file. "<builtin>" is not an
+    # absolute path, so it tiers as "unknown" and keeps the old last-one-wins
+    # behaviour rather than being mistaken for a library.
+    def _src(fn_info) -> str:
+        return str(fn_info.file_path) if fn_info.file_path is not None else "<builtin>"
+
+    if not registry.resolve_definition_shadowing(
+        info.name,
+        incoming=_src(info),
+        existing=_src(existing) if existing is not None else None,
+        project_root=_matlab_project_root(),
+        kind="MATLAB function",
+    ):
+        return
     _matlab_functions[info.name] = info
     logger.info(
         "[matlab_registry] Registered MATLAB function: %s (%s)",
@@ -584,9 +612,22 @@ def _register_matlab_function(info: MatlabFunctionInfo) -> None:
     )
 
 
-def _register_matlab_variable(var_name: str, path: Path) -> None:
+def _register_matlab_variable(
+    var_name: str, path: Path, *, declared_by: "Path | None" = None
+) -> None:
     """Register a single MATLAB BaseVariable classdef and create its Python
-    surrogate so the DAG builder can reference it."""
+    surrogate so the DAG builder can reference it.
+
+    *declared_by* names the file that *declares* the variable when that is not
+    ``path`` itself -- i.e. the entities TOML whose entry caused
+    :func:`materialize_variable_stubs` to generate this classdef. A generated
+    stub is output of that declaration, not a second declaration of its own
+    (see materialize_variable_stubs' docstring), so it must be attributed to
+    the TOML: attributing it to its own path made the scan that wrote the stub
+    then warn that the variable was declared in two places, and left
+    ``_variable_sources`` pointing at the .m file, where a narrow
+    ``reload_entities_file`` prune of the TOML source could no longer find it.
+    """
     # Store the path as-is (already absolute & normalized by
     # config._normalize). Calling .resolve() here would undo that
     # by canonicalizing mapped drives → UNC on Windows.
@@ -604,7 +645,16 @@ def _register_matlab_variable(var_name: str, path: Path) -> None:
         # exactly the way the Python half was -- see registry._variable_sources.
         from scistack_gui import registry
 
-        registry._register_variable(var_name, source=str(path))
+        if declared_by is not None:
+            logger.debug(
+                "[matlab_registry] Attributing generated classdef %s to its "
+                "declaring entities file %s",
+                path,
+                declared_by,
+            )
+        registry._register_variable(
+            var_name, source=str(declared_by if declared_by is not None else path)
+        )
         logger.info(
             "[matlab_registry] Registered MATLAB variable: %s (%s)", var_name, path
         )

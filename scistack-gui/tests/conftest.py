@@ -130,6 +130,11 @@ def clear_db_state():
     _registry._parameter_sources.clear()
     _registry._path_inputs.clear()
     _registry._path_input_sources.clear()
+    # Every sibling *_sources dict above is cleared; this one was not, so a
+    # variable attributed in one test stayed attributed in the next and could
+    # make an unrelated registration look like a second declaration of the
+    # same name (registry._register_variable's shadowing warning).
+    _registry._variable_sources.clear()
     _registry._config = None
     _registry._module_path = None
     _reset_matlab_registry()
@@ -157,6 +162,11 @@ def clear_db_state():
     _registry._parameter_sources.clear()
     _registry._path_inputs.clear()
     _registry._path_input_sources.clear()
+    # Every sibling *_sources dict above is cleared; this one was not, so a
+    # variable attributed in one test stayed attributed in the next and could
+    # make an unrelated registration look like a second declaration of the
+    # same name (registry._register_variable's shadowing warning).
+    _registry._variable_sources.clear()
     _registry._config = None
     _registry._module_path = None
     _reset_matlab_registry()

@@ -322,6 +322,101 @@ class TestLockConflictReporting:
         assert db_mod._db_refcount == 1
 
 
+class TestLockContentionIsLoggedAsOneEpisode:
+    """One 2.8s wait used to emit 66 lines (33 WARN/INFO pairs) and never
+    state how long it took — 44% of the 2026-09-01 log was noise of this
+    shape. The window must still be visible at default level, though: that it
+    was invisible is what made a MATLAB-held database look like a GUI hang.
+    """
+
+    @staticmethod
+    def _lock_until(db_mod, real_reopen, clears_after):
+        """A reopen that raises a lock conflict for the first N attempts."""
+        attempts = []
+
+        def _reopen():
+            attempts.append(1)
+            if len(attempts) < clears_after:
+                raise OSError(
+                    "IO Error: Could not set lock on file: Conflicting lock "
+                    "is held in MATLAB (PID 7).\n"
+                )
+            real_reopen()
+
+        db_mod._db.reopen = _reopen
+        return attempts
+
+    def _prepare(self, db_path):
+        import scistack_gui.db as db_mod
+        from scistack_gui.db import init_db
+
+        init_db(db_path)
+        real_reopen = db_mod._db._duck.reopen
+        db_mod._db._duck.close()
+        db_mod._db_open = False
+        return db_mod, real_reopen
+
+    def test_one_warning_and_one_summary_for_a_multi_attempt_wait(
+        self, db_path, caplog, monkeypatch
+    ):
+        import logging
+
+        from scistack_gui.db import acquire_db_connection
+
+        db_mod, real_reopen = self._prepare(db_path)
+        monkeypatch.setattr(db_mod, "ACQUIRE_RETRY_INTERVAL", 0.0)
+        self._lock_until(db_mod, real_reopen, clears_after=6)
+
+        with caplog.at_level(logging.INFO, logger="scistack_gui.db"):
+            acquire_db_connection(timeout=5)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1, "every blocked attempt warned again"
+        assert "reopen blocked" in warnings[0].getMessage()
+
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        summaries = [r for r in infos if "acquired after" in r.getMessage()]
+        assert len(summaries) == 1
+        # The count is the point: it is what says how bad the contention was.
+        assert "6 attempt(s)" in summaries[0].getMessage()
+        assert "MATLAB" in summaries[0].getMessage()
+
+        # Per-attempt chatter must not come back at default level.
+        assert not [r for r in infos if "retrying in" in r.getMessage()]
+
+    def test_uncontended_acquire_logs_no_summary(self, db_path, caplog):
+        """The summary marks an episode; with nothing to wait for there is no
+        episode, and a quiet path must stay quiet."""
+        import logging
+
+        from scistack_gui.db import acquire_db_connection
+
+        db_mod, real_reopen = self._prepare(db_path)
+        self._lock_until(db_mod, real_reopen, clears_after=1)
+
+        with caplog.at_level(logging.INFO, logger="scistack_gui.db"):
+            acquire_db_connection(timeout=5)
+
+        assert "acquired after" not in caplog.text
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_giving_up_still_warns_and_raises(self, db_path, caplog):
+        """Demoting the retry chatter must not quiet the failure itself."""
+        import logging
+
+        from scistack_gui.db import DatabaseLockedError, acquire_db_connection
+
+        db_mod, real_reopen = self._prepare(db_path)
+        self._lock_until(db_mod, real_reopen, clears_after=99)
+
+        with caplog.at_level(logging.INFO, logger="scistack_gui.db"):
+            with pytest.raises(DatabaseLockedError):
+                acquire_db_connection(timeout=0)
+
+        assert "giving up after" in caplog.text
+        assert "acquired after" not in caplog.text
+
+
 class TestRequestAlwaysGetsAResponse:
     """``_handle_request`` is a thread target: an exception escaping it
     strands the extension's pending promise forever. Every path must emit

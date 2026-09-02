@@ -18,6 +18,7 @@ import importlib.util
 import inspect
 import io
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -923,16 +924,111 @@ def get_project_root() -> "Path | None":
     return getattr(_config, "project_root", None)
 
 
-def _register_function(name: str, fn, *, source: str) -> None:
-    """Register a single function, warning on name collisions."""
-    existing_source = _function_sources.get(name)
-    if existing_source is not None and existing_source != source:
-        logger.warning(
-            "[registry] Function '%s' from %s shadows previous definition from %s",
+def _source_tier(source: str, project_root: "Path | None") -> str:
+    """``"project"``, ``"external"``, or ``"unknown"`` for a definition source.
+
+    Only an absolute filesystem path can be placed relative to the project.
+    Everything else -- ``package:pkg.mod``, ``entrypoint:name``,
+    ``<unknown>``, a builtin with no backing file -- is ``"unknown"``, and
+    deliberately so: a packaged project's OWN code is scanned as
+    ``package:...`` (config.load_config folds ``src/{name}/`` into
+    ``config.packages``), so treating an unplaceable source as external would
+    let a real library outrank the project's own function.
+    """
+    if project_root is None:
+        return "unknown"
+    candidate = Path(source)
+    if not candidate.is_absolute():
+        return "unknown"
+    try:
+        if candidate.is_relative_to(project_root):
+            return "project"
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return "unknown"
+
+    # A mapped drive and its UNC target are the same directory spelled two
+    # ways (and a symlinked project dir is the POSIX equivalent), so the
+    # containment check above can miss a file that IS in the project --
+    # config._same_path exists for exactly this class of bug. Canonicalize
+    # both and retry. Resolving is wrong for *storing* a path, which is why
+    # config._normalize preserves spelling and matlab_registry stores paths
+    # as-is; it is exactly right for *comparing* two.
+    try:
+        real_candidate = Path(os.path.realpath(candidate))
+        real_root = Path(os.path.realpath(project_root))
+    except OSError:  # pragma: no cover - defensive
+        return "external"
+    return "project" if real_candidate.is_relative_to(real_root) else "external"
+
+
+def resolve_definition_shadowing(
+    name: str,
+    *,
+    incoming: str,
+    existing: "str | None",
+    project_root: "Path | None",
+    kind: str = "Function",
+) -> bool:
+    """Whether *incoming* should replace *existing* as the definition of *name*.
+
+    Precedence is stated, not accidental: **a definition inside the project
+    beats one outside it**, in either scan order. Before this, registration
+    was an unconditional overwrite, so a shared code library that happened to
+    be walked after the project silently won -- editing your own copy of the
+    function then did nothing, and the only trace was one WARN line.
+
+    Same-tier collisions (two project files, or two libraries) keep the old
+    last-one-wins behaviour, because there the choice really is arbitrary --
+    that is the case worth a warning. Shared by the Python and MATLAB
+    registries so the rule cannot drift between them.
+    """
+    if existing is None or existing == incoming:
+        return True
+
+    incoming_tier = _source_tier(incoming, project_root)
+    existing_tier = _source_tier(existing, project_root)
+
+    if incoming_tier == "external" and existing_tier == "project":
+        logger.info(
+            "[registry] %s '%s' from %s ignored -- the project's own definition "
+            "at %s takes precedence",
+            kind,
             name,
-            source,
-            existing_source,
+            incoming,
+            existing,
         )
+        return False
+    if incoming_tier == "project" and existing_tier == "external":
+        logger.info(
+            "[registry] %s '%s' from %s takes precedence over the definition "
+            "outside the project at %s",
+            kind,
+            name,
+            incoming,
+            existing,
+        )
+        return True
+
+    logger.warning(
+        "[registry] %s '%s' from %s shadows previous definition from %s "
+        "(neither is more specific to the project; the last one scanned wins)",
+        kind,
+        name,
+        incoming,
+        existing,
+    )
+    return True
+
+
+def _register_function(name: str, fn, *, source: str) -> None:
+    """Register a single function, applying project-over-library precedence."""
+    if not resolve_definition_shadowing(
+        name,
+        incoming=source,
+        existing=_function_sources.get(name),
+        project_root=get_project_root(),
+    ):
+        return
     _functions[name] = fn
     _function_sources[name] = source
     logger.debug("[registry] Registered function: %s from %s", name, source)

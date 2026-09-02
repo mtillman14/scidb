@@ -60,3 +60,69 @@ def test_per_record_internals_absent_at_default_level(db, tmp_path):
     assert "[content_hash]" not in log_text
     # But the one-line save outcome (INFO) is present.
     assert "save_variable(_ShimVar): saved -> record_id=" in log_text
+
+
+# -- early attach -----------------------------------------------------------
+#
+# The file sink used to be opened only by configure_database(), i.e. after a
+# caller had already done work worth logging. The GUI server's whole startup
+# discovery pass (the registry scan that decides which functions, variables
+# and PathInputs exist) landed on stderr only, so scidb.log began mid-startup
+# and could not answer "why is this PathInput missing?". attach_log_file lets
+# a caller open the sink first; configure_database must then leave it alone.
+
+
+def test_log_path_for_is_beside_the_database(tmp_path):
+    from scidb.log import log_path_for
+
+    assert log_path_for(tmp_path / "proj.duckdb") == tmp_path / "scidb.log"
+
+
+def test_attach_log_file_opens_the_sink_before_any_database(tmp_path):
+    from scidb.log import attach_log_file
+
+    try:
+        path = attach_log_file(tmp_path / "not_created_yet.duckdb")
+        assert path == tmp_path / "scidb.log"
+        assert real_log.get_path() == str(path)
+        real_log.info("before configure_database")
+        assert "before configure_database" in path.read_text(encoding="utf-8")
+    finally:
+        real_log.set_path(None)
+
+
+def test_attach_log_file_is_idempotent(tmp_path):
+    """Re-attaching the same path must keep the SAME handler.
+
+    configure_database() calls this after the GUI server already has, and a
+    tear-down/reopen there would drop buffered output and churn the file.
+    """
+    from scidb.log import attach_log_file
+
+    try:
+        attach_log_file(tmp_path / "proj.duckdb")
+        handler = real_log._file_handler
+        attach_log_file(tmp_path / "proj.duckdb")
+        assert real_log._file_handler is handler
+    finally:
+        real_log.set_path(None)
+
+
+def test_configure_database_keeps_an_already_attached_sink(tmp_path):
+    """The early-attached file keeps receiving records after DB setup."""
+    from scidb.log import attach_log_file
+
+    db_path = tmp_path / "proj.duckdb"
+    log_path = attach_log_file(db_path)
+    real_log.info("discovery ran before the database existed")
+    handler = real_log._file_handler
+
+    db = scidb.configure_database(str(db_path), ["subject"])
+    try:
+        assert real_log._file_handler is handler
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "discovery ran before the database existed" in log_text
+        assert "configure_database:" in log_text
+    finally:
+        db.close()
+        real_log.set_path(None)

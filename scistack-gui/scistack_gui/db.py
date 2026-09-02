@@ -162,18 +162,26 @@ def acquire_db_connection(timeout: float = ACQUIRE_RETRY_TIMEOUT) -> None:
 
     A lock conflict is retried for up to ``timeout`` seconds before being
     raised as :class:`DatabaseLockedError`; any other failure is raised
-    immediately. Every attempt is logged — this window used to be entirely
-    invisible, which is how a MATLAB-held database turned into an
-    unexplained GUI hang (see .claude/plan-matlab-run-hang-fix.md).
+    immediately.
+
+    Contention is logged as one *episode*, not one line per attempt: the
+    first blocked attempt warns, the rest are DEBUG, and a successful acquire
+    after any wait logs a single INFO summary. Per-attempt logging made a
+    single 2.8s wait emit 66 lines (33 WARN/INFO pairs) in the 2026-09-01
+    session while never stating the one thing worth knowing — how long it
+    actually took. The window must stay visible at default level, though: it
+    being invisible is how a MATLAB-held database turned into an unexplained
+    GUI hang (see .claude/plan-matlab-run-hang-fix.md).
     """
     global _db_open, _db_refcount
-    deadline = time.monotonic() + max(0.0, timeout)
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout)
     attempt = 0
+    last_holder: "str | None" = None
     while True:
         attempt += 1
         try:
             _try_acquire_db_connection(attempt)
-            return
         except DatabaseLockedError as locked:
             remaining = deadline - time.monotonic()
             if not locked.retryable:
@@ -194,15 +202,30 @@ def acquire_db_connection(timeout: float = ACQUIRE_RETRY_TIMEOUT) -> None:
                     locked.db_path,
                 )
                 raise
-            logger.info(
+            last_holder = locked.holder or "another process"
+            logger.debug(
                 "[db] acquire_db_connection: locked by %s%s, retrying in %.2fs "
                 "(%.1fs left)",
-                locked.holder or "another process",
+                last_holder,
                 f" (PID {locked.pid})" if locked.pid else "",
                 ACQUIRE_RETRY_INTERVAL,
                 remaining,
             )
             time.sleep(min(ACQUIRE_RETRY_INTERVAL, remaining))
+            continue
+        if attempt > 1:
+            # Closes the episode opened by the first blocked attempt's WARN.
+            # With the per-attempt lines at DEBUG this is the only thing a
+            # default-level log has to answer "was there contention, and how
+            # bad was it?" — so it carries the elapsed time and the count.
+            logger.info(
+                "[db] acquire_db_connection: acquired after %.1fs and %d "
+                "attempt(s) — %s had the lock",
+                time.monotonic() - started,
+                attempt,
+                last_holder or "another process",
+            )
+        return
 
 
 def _try_acquire_db_connection(attempt: int) -> None:
@@ -239,7 +262,13 @@ def _try_acquire_db_connection(attempt: int) -> None:
             except Exception as exc:
                 locked = _as_locked_error(exc)
                 if locked is not None:
-                    logger.warning(
+                    # The first blocked attempt announces the contention at
+                    # WARN so it stays visible at default level; the rest are
+                    # DEBUG, and acquire_db_connection's INFO summary reports
+                    # how the episode ended. Warning on every attempt buried
+                    # the rest of the log — see its docstring.
+                    logger.log(
+                        logging.WARNING if attempt == 1 else logging.DEBUG,
                         "[db] acquire_db_connection: reopen blocked by a "
                         "conflicting lock (refcount stays at %d): %s",
                         _db_refcount,

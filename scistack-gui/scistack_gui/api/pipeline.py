@@ -360,6 +360,55 @@ def _compute_run_states(
     return result
 
 
+def _matlab_param_to_class_from_db(
+    aggregated_functions: dict,
+    matlab_functions: set,
+    matlab_output_order: dict,
+) -> dict[str, dict[str, str]]:
+    """``{fn_name: {output_param_name: class_name}}`` derived from DB variants.
+
+    Maps each variant's ``output_num`` (its slot in the fn signature) onto the
+    fn's declared output name. This is the DB-derived half of
+    ``matlab_param_to_class``; ``infer_manual_fn_param_to_class`` supplies the
+    manual-edge half. When BOTH come up empty the fn node renders handle
+    ``out__{param}`` while build_edges points its edge at ``out__{Class}``, and
+    React Flow silently drops an edge whose sourceHandle does not exist — the
+    fn appears disconnected from an output variable that run_state marks green.
+    """
+    from_db: dict[str, dict[str, str]] = {}
+    for (fn_name, _call_id), fn_data in aggregated_functions.items():
+        if fn_name not in matlab_functions:
+            continue
+        for variant in fn_data.get("variants", []):
+            onum = variant.get("output_num")
+            out_type = variant.get("output_type")
+            if onum is None or out_type is None:
+                # A variant with no output_num contributes nothing here, so the
+                # manual-edge fallback becomes load-bearing. Say so — this is
+                # what surfaced get_aggregated_variants() dropping output_num.
+                logger.info(
+                    "[pipeline] matlab_param_to_class: fn=%s output_type=%r has "
+                    "output_num=%r — DB source contributes nothing for this variant",
+                    fn_name,
+                    out_type,
+                    onum,
+                )
+                continue
+            names = matlab_output_order.get(fn_name) or []
+            if 0 <= int(onum) < len(names):
+                from_db.setdefault(fn_name, {})[names[int(onum)]] = out_type
+            else:
+                logger.info(
+                    "[pipeline] matlab_param_to_class: fn=%s output_num=%s is out of "
+                    "range for its %d declared output name(s) %s — DB source skipped",
+                    fn_name,
+                    onum,
+                    len(names),
+                    names,
+                )
+    return from_db
+
+
 def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     """
     Build nodes and edges from list_pipeline_variants() and list_variables(),
@@ -565,52 +614,17 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         name: _mr.get_matlab_function(name).output_names for name in matlab_functions
     }
 
-    # Build matlab_param_to_class from DB variants' __output_num (written by
-    # _build_lineage_version_keys) and, as a fallback for ungraduated fns with
-    # no DB history yet, from persisted manual edges.
-    matlab_param_to_class: dict[str, dict[str, str]] = {}
-    # Collect all variants from the aggregated data
-    all_variants = []
-    for (fn_name, call_id), fn_data in scidb_agg["functions"].items():
-        for v in fn_data.get("variants", []):
-            # Add function_name to variant dict for compatibility
-            variant = {"function_name": fn_name, **v}
-            all_variants.append(variant)
-
+    # Build matlab_param_to_class from DB variants' output_num and, as a
+    # fallback for ungraduated fns with no DB history yet, from persisted
+    # manual edges.
     # Source 1: DB variants' output_num → the fn's signature output name.
-    from_db: dict[str, dict[str, str]] = {}
-    for v in all_variants:
-        fn = v.get("function_name")
-        if fn not in matlab_functions:
-            continue
-        onum = v.get("output_num")
-        out_type = v.get("output_type")
-        if onum is None or out_type is None:
-            # A variant with no output_num contributes nothing here, so the
-            # manual-edge fallback below becomes load-bearing. Say so: when
-            # BOTH sources come up empty the fn node and its output edge
-            # disagree on the handle name and the edge silently vanishes.
-            logger.info(
-                "[pipeline] matlab_param_to_class: fn=%s output_type=%r has "
-                "output_num=%r — DB source contributes nothing for this variant",
-                fn,
-                out_type,
-                onum,
-            )
-            continue
-        names = matlab_output_order.get(fn) or []
-        if 0 <= int(onum) < len(names):
-            matlab_param_to_class.setdefault(fn, {})[names[int(onum)]] = out_type
-            from_db.setdefault(fn, {})[names[int(onum)]] = out_type
-        else:
-            logger.info(
-                "[pipeline] matlab_param_to_class: fn=%s output_num=%s is out of "
-                "range for its %d declared output name(s) %s — DB source skipped",
-                fn,
-                onum,
-                len(names),
-                names,
-            )
+    from_db = _matlab_param_to_class_from_db(
+        scidb_agg["functions"], matlab_functions, matlab_output_order
+    )
+    matlab_param_to_class: dict[str, dict[str, str]] = {
+        fn: dict(mapping) for fn, mapping in from_db.items()
+    }
+
     from scistack_gui.domain.edge_resolver import infer_manual_fn_param_to_class
     from scistack_gui.domain.graph_builder import fn_node_id
 

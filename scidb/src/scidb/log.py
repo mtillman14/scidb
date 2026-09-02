@@ -15,6 +15,36 @@ code calls ``py.scistacklog.Log.*`` (see ``+scidb/Log.m`` and ``+scifor/Log.m``)
 See the ``scistacklog`` package for the implementation and format docs.
 """
 
+from pathlib import Path
+
 from scistacklog import LAYERS, Log
 
-__all__ = ["Log", "LAYERS"]
+__all__ = ["Log", "LAYERS", "log_path_for", "attach_log_file"]
+
+
+def log_path_for(db_path) -> Path:
+    """The log file that belongs to *db_path*: ``scidb.log`` beside it.
+
+    One definition of the convention, so every caller that needs the path
+    before (or without) ``configure_database`` agrees with it.
+    """
+    return Path(db_path).parent / "scidb.log"
+
+
+def attach_log_file(db_path) -> Path:
+    """Point the file sink at :func:`log_path_for` and return that path.
+
+    Idempotent: re-attaching the same path is a no-op, so a caller may
+    attach early (before any work worth logging) without
+    ``configure_database`` later tearing the handler down and reopening it.
+
+    Attaching early is the point of this helper. Anything logged before the
+    first call goes to stderr only, which is how the GUI's whole startup
+    discovery pass — the registry scan that decides which functions,
+    variables and PathInputs exist — used to be missing from ``scidb.log``.
+    """
+    log_path = log_path_for(db_path)
+    if Log.get_path() == str(log_path):
+        return log_path
+    Log.set_path(str(log_path))
+    return log_path

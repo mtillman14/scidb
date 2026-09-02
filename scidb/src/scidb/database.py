@@ -534,11 +534,12 @@ def configure_database(
     except ImportError:
         pass
 
-    # Set log file path next to the database file
-    from .log import Log
+    # Set log file path next to the database file (a no-op if a caller —
+    # e.g. the GUI server, which attaches before its startup discovery pass
+    # — already pointed the sink here).
+    from .log import Log, attach_log_file
 
-    log_path = Path(dataset_db_path).parent / "scidb.log"
-    Log.set_path(str(log_path))
+    attach_log_file(dataset_db_path)
     # Run-context header: makes every log file self-describing (which
     # versions produced it) when debugging an archived log or a colleague's.
     Log.info(
@@ -3673,7 +3674,15 @@ class DatabaseManager:
                             "outputs": [var_type1, var_type2],
                             "constants": {param: [val1, val2]},
                             "variant_count": int,
-                            "variants": [variant_dicts],
+                            "variants": [
+                                {
+                                    "input_types": {param: type_name},
+                                    "constants": {param: value},
+                                    "output_type": str,
+                                    "output_num": int | None,
+                                    "record_count": int,
+                                }
+                            ],
                         }
                     }
 
@@ -3806,12 +3815,18 @@ class DatabaseManager:
                 if val not in functions[fkey]["constants"][k]:
                     functions[fkey]["constants"][k].append(val)
 
-            # Track variant
+            # Track variant. output_num must be carried through: it is the only
+            # thing that tells the GUI which slot of the fn signature produced
+            # this output, and for MATLAB fns it is the sole DB-derived source
+            # for the fn->output edge (see api/pipeline.py matlab_param_to_class).
+            # Dropping it here silently forced that edge to depend on a
+            # hand-drawn manual edge instead.
             functions[fkey]["variants"].append(
                 {
                     "input_types": inputs,
                     "constants": constants,
                     "output_type": out,
+                    "output_num": v.get("output_num"),
                     "record_count": count,
                 }
             )

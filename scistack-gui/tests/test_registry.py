@@ -2,6 +2,7 @@
 Tests for scistack_gui.registry — function and variable-class registry.
 """
 
+import logging
 import types
 
 import pytest
@@ -994,3 +995,148 @@ class TestMatlabClassificationCache:
         assert matlab_registry.get_matlab_function("editedFn").params == ["y"], (
             "reload_source served a cached classification of the pre-edit file"
         )
+
+
+class TestDefinitionPrecedence:
+    """A definition inside the project beats one outside it, in either order.
+
+    Registration used to be an unconditional overwrite, so a shared code
+    library walked after the project silently won: editing your own copy of
+    the function did nothing, and the only trace was one WARN line among
+    hundreds. The rule is now stated rather than emergent from scan order.
+    """
+
+    @staticmethod
+    def _resolve(incoming, existing, root, **kw):
+        return registry.resolve_definition_shadowing(
+            "fn", incoming=str(incoming), existing=str(existing), project_root=root, **kw
+        )
+
+    def test_library_does_not_override_the_project(self, tmp_path, caplog):
+        project, library = tmp_path / "proj", tmp_path / "libs"
+
+        with caplog.at_level(logging.INFO):
+            keep = self._resolve(library / "f.m", project / "f.m", project)
+
+        assert keep is False
+        assert "takes precedence" in caplog.text
+
+    def test_project_overrides_a_library_registered_first(self, tmp_path, caplog):
+        """The mirror image — the rule must not depend on which arrived first."""
+        project, library = tmp_path / "proj", tmp_path / "libs"
+
+        with caplog.at_level(logging.INFO):
+            keep = self._resolve(project / "f.py", library / "f.py", project)
+
+        assert keep is True
+        assert "takes precedence" in caplog.text
+
+    def test_same_tier_collision_still_warns(self, tmp_path, caplog):
+        """Two files inside the project: the choice really is arbitrary, so
+        this is the case that keeps the warning."""
+        project = tmp_path / "proj"
+
+        with caplog.at_level(logging.WARNING):
+            keep = self._resolve(project / "b.py", project / "a.py", project)
+
+        assert keep is True
+        assert "shadows previous definition" in caplog.text
+
+    def test_non_path_sources_keep_last_one_wins(self, tmp_path, caplog):
+        """A packaged project's own code is scanned as ``package:pkg.mod``.
+
+        Those sources cannot be placed relative to the root, so they must tier
+        as unknown — treating them as external would let a real library
+        outrank the project's own function.
+        """
+        with caplog.at_level(logging.WARNING):
+            keep = self._resolve("package:myproj.core", "package:vendor.util", tmp_path)
+
+        assert keep is True
+        assert "shadows previous definition" in caplog.text
+
+    def test_no_project_root_keeps_last_one_wins(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING):
+            keep = self._resolve(tmp_path / "b.py", tmp_path / "a.py", None)
+
+        assert keep is True
+        assert "shadows previous definition" in caplog.text
+
+    def test_reregistering_the_same_source_is_silent(self, tmp_path, caplog):
+        with caplog.at_level(logging.INFO):
+            keep = self._resolve(tmp_path / "a.py", tmp_path / "a.py", tmp_path)
+
+        assert keep is True
+        assert "shadows previous definition" not in caplog.text
+        assert "takes precedence" not in caplog.text
+
+    def test_no_previous_definition_is_silent(self, tmp_path, caplog):
+        with caplog.at_level(logging.INFO):
+            keep = registry.resolve_definition_shadowing(
+                "fn",
+                incoming=str(tmp_path / "a.py"),
+                existing=None,
+                project_root=tmp_path,
+            )
+
+        assert keep is True
+        assert "shadows previous definition" not in caplog.text
+        assert "takes precedence" not in caplog.text
+
+    def test_project_file_reached_by_another_spelling_is_still_the_project(
+        self, tmp_path
+    ):
+        """A mapped drive and its UNC target are one directory spelled twice.
+
+        ``_normalize`` preserves the caller's spelling, so plain containment
+        misses it and the project's own file would tier as external. Windows
+        mapped drives don't exist here, so a symlink stands in — file identity
+        treats both aliases the same.
+        """
+        real = tmp_path / "project"
+        (real / "src").mkdir(parents=True)
+        (real / "src" / "f.py").write_text("", encoding="utf-8")
+        alias = tmp_path / "project_alias"
+        try:
+            alias.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform
+            pytest.skip(f"cannot create a directory symlink here: {exc}")
+
+        # Root known by one spelling, the scanned file by the other.
+        assert registry._source_tier(str(real / "src" / "f.py"), alias) == "project"
+
+
+class TestRegisterFunctionPrecedence:
+    """The same rule, exercised through the real registration entry point."""
+
+    @staticmethod
+    def _root(monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            registry, "_config", types.SimpleNamespace(project_root=tmp_path / "proj")
+        )
+
+    def test_project_wins_regardless_of_registration_order(
+        self, monkeypatch, tmp_path
+    ):
+        self._root(monkeypatch, tmp_path)
+        project_src = str(tmp_path / "proj" / "analysis.py")
+        library_src = str(tmp_path / "libs" / "analysis.py")
+
+        def project_fn():
+            return "project"
+
+        def library_fn():
+            return "library"
+
+        registry._register_function("analyze", project_fn, source=project_src)
+        registry._register_function("analyze", library_fn, source=library_src)
+        assert registry._functions["analyze"] is project_fn
+        assert registry._function_sources["analyze"] == project_src
+
+        registry._functions.clear()
+        registry._function_sources.clear()
+
+        registry._register_function("analyze", library_fn, source=library_src)
+        registry._register_function("analyze", project_fn, source=project_src)
+        assert registry._functions["analyze"] is project_fn
+        assert registry._function_sources["analyze"] == project_src

@@ -2,6 +2,7 @@
 Tests for MATLAB support: parser, registry, and command generation.
 """
 
+import logging
 import textwrap
 from pathlib import Path
 
@@ -2015,6 +2016,88 @@ class TestMatlabFnProxyHash:
         assert proxy.hash == expected
 
 
+class TestMatlabParamToClassFromDb:
+    """The DB-derived half of ``matlab_param_to_class``.
+
+    Regression: ``get_aggregated_variants()`` built its variant dicts without
+    ``output_num`` even though ``list_pipeline_variants()`` supplied it, so
+    this source was empty for EVERY MATLAB fn and the fn->output edge silently
+    depended on a hand-drawn manual edge. See
+    ``test_variant_queries.py::test_aggregation_preserves_variant_query_output_num``
+    for the scidb half of the contract.
+    """
+
+    @staticmethod
+    def _agg(*variants, fn="loadDelsysEMGOneFile", call_id="5f0b6fe9"):
+        return {(fn, call_id): {"variants": list(variants)}}
+
+    def test_output_num_maps_to_declared_output_name(self):
+        from scistack_gui.api.pipeline import _matlab_param_to_class_from_db
+
+        result = _matlab_param_to_class_from_db(
+            self._agg({"output_type": "RawEMG", "output_num": 0}),
+            {"loadDelsysEMGOneFile"},
+            {"loadDelsysEMGOneFile": ("loaded_data",)},
+        )
+
+        assert result == {"loadDelsysEMGOneFile": {"loaded_data": "RawEMG"}}
+
+    def test_each_slot_maps_to_its_own_output_name(self):
+        from scistack_gui.api.pipeline import _matlab_param_to_class_from_db
+
+        result = _matlab_param_to_class_from_db(
+            self._agg(
+                {"output_type": "RawEMG", "output_num": 0},
+                {"output_type": "Cycles", "output_num": 1},
+            ),
+            {"loadDelsysEMGOneFile"},
+            {"loadDelsysEMGOneFile": ("loaded_data", "cycles")},
+        )
+
+        assert result == {
+            "loadDelsysEMGOneFile": {"loaded_data": "RawEMG", "cycles": "Cycles"}
+        }
+
+    def test_missing_output_num_contributes_nothing(self, caplog):
+        """The pre-fix behaviour, kept deliberately: fall through to the
+        manual-edge source rather than guessing a slot."""
+        from scistack_gui.api.pipeline import _matlab_param_to_class_from_db
+
+        with caplog.at_level(logging.INFO):
+            result = _matlab_param_to_class_from_db(
+                self._agg({"output_type": "RawEMG", "output_num": None}),
+                {"loadDelsysEMGOneFile"},
+                {"loadDelsysEMGOneFile": ("loaded_data",)},
+            )
+
+        assert result == {}
+        assert "DB source contributes nothing" in caplog.text
+
+    def test_out_of_range_output_num_is_skipped(self, caplog):
+        from scistack_gui.api.pipeline import _matlab_param_to_class_from_db
+
+        with caplog.at_level(logging.INFO):
+            result = _matlab_param_to_class_from_db(
+                self._agg({"output_type": "RawEMG", "output_num": 7}),
+                {"loadDelsysEMGOneFile"},
+                {"loadDelsysEMGOneFile": ("loaded_data",)},
+            )
+
+        assert result == {}
+        assert "out of range" in caplog.text
+
+    def test_non_matlab_functions_are_ignored(self):
+        from scistack_gui.api.pipeline import _matlab_param_to_class_from_db
+
+        result = _matlab_param_to_class_from_db(
+            self._agg({"output_type": "Filtered", "output_num": 0}, fn="python_fn"),
+            {"loadDelsysEMGOneFile"},
+            {"loadDelsysEMGOneFile": ("loaded_data",)},
+        )
+
+        assert result == {}
+
+
 class TestGenerateMatlabPipelineCommand:
     """generate_matlab_pipeline_command (whole-pipeline MATLAB execution,
     plan-matlab-pipeline-execution.md Stage 1)."""
@@ -2481,6 +2564,180 @@ class TestMaterializeVariableStubs:
         expected = tmp_path / "src" / DEFAULT_STUB_DIRNAME / "RawEMG.m"
         assert created == [expected]
         assert "classdef RawEMG < scidb.BaseVariable" in expected.read_text()
+
+
+class TestMatlabFunctionPrecedence:
+    """From the 2026-09-01 log: after a shared code-libraries folder was added,
+    the library's ``plot_EMG_timeseries_SPM`` overwrote the project's own copy
+    purely because it was walked second. Editing the project file then did
+    nothing, and the only trace was a single WARN among hundreds of lines.
+    """
+
+    @staticmethod
+    def _info(name, path):
+        from scistack_gui.matlab_parser import MatlabFunctionInfo
+
+        return MatlabFunctionInfo(
+            name=name, file_path=path, params=[], source_hash="0" * 64
+        )
+
+    @staticmethod
+    def _configure(monkeypatch, root):
+        import types
+
+        from scistack_gui import matlab_registry
+
+        monkeypatch.setattr(
+            matlab_registry, "_config", types.SimpleNamespace(project_root=root)
+        )
+
+    def test_project_wins_regardless_of_scan_order(self, monkeypatch, tmp_path):
+        from scistack_gui import matlab_registry
+
+        root = tmp_path / "proj"
+        project = root / "src" / "plot_EMG_timeseries_SPM.m"
+        library = tmp_path / "libs" / "table-spm" / "plot_EMG_timeseries_SPM.m"
+        self._configure(monkeypatch, root)
+
+        for first, second in (
+            (project, library),  # project scanned first — the log's order
+            (library, project),  # and the reverse, to pin order-independence
+        ):
+            matlab_registry._matlab_functions.clear()
+            matlab_registry._register_matlab_function(
+                self._info("plot_EMG_timeseries_SPM", first)
+            )
+            matlab_registry._register_matlab_function(
+                self._info("plot_EMG_timeseries_SPM", second)
+            )
+
+            winner = matlab_registry._matlab_functions["plot_EMG_timeseries_SPM"]
+            assert winner.file_path == project, (
+                f"library won when scanned as {'second' if second is library else 'first'}"
+            )
+
+    def test_two_library_definitions_still_warn(self, monkeypatch, tmp_path, caplog):
+        """``energy_tkeo`` in the log: two copies inside the same libraries
+        tree. Neither is more specific to the project, so the choice really is
+        arbitrary and the warning stays."""
+        from scistack_gui import matlab_registry
+
+        root = tmp_path / "proj"
+        self._configure(monkeypatch, root)
+
+        with caplog.at_level(logging.WARNING):
+            matlab_registry._register_matlab_function(
+                self._info("energy_tkeo", tmp_path / "libs" / "a" / "energy_tkeo.m")
+            )
+            matlab_registry._register_matlab_function(
+                self._info("energy_tkeo", tmp_path / "libs" / "b" / "energy_tkeo.m")
+            )
+
+        assert "shadows previous definition" in caplog.text
+        assert (
+            matlab_registry._matlab_functions["energy_tkeo"].file_path
+            == tmp_path / "libs" / "b" / "energy_tkeo.m"
+        )
+
+    def test_builtin_reference_keeps_last_one_wins(self, monkeypatch, tmp_path):
+        """A builtin has no backing file, so there is no tier to compare and
+        the old behaviour must be preserved — replay_persisted_builtins relies
+        on it."""
+        from scistack_gui import matlab_registry
+
+        root = tmp_path / "proj"
+        self._configure(monkeypatch, root)
+
+        matlab_registry._register_matlab_function(
+            self._info("mean", root / "src" / "mean.m")
+        )
+        matlab_registry._register_matlab_function(self._info("mean", None))
+
+        assert matlab_registry._matlab_functions["mean"].file_path is None
+
+
+class TestGeneratedStubAttribution:
+    """A generated classdef is output of the TOML declaration, not a rival to it.
+
+    Regression: materialize_variable_stubs wrote the stub and then attributed
+    it to its own .m path, so the very same scan warned that the variable was
+    "declared in more than one place" and resolved the tie in favour of the
+    file it had just generated — with the tie-break being directory scan order.
+    It also left registry._variable_sources pointing at the .m file, where
+    reload_entities_file's prune of the TOML source could no longer find it.
+    """
+
+    @staticmethod
+    def _project(tmp_path):
+        entities = tmp_path / "scistack_entities.toml"
+        entities.write_text('variables = ["RawEMG"]\n', encoding="utf-8")
+        return entities, tmp_path / "scistack_matlab_variables"
+
+    def test_generated_stub_is_attributed_to_its_declaring_toml(
+        self, tmp_path, caplog
+    ):
+        from scistack_gui import registry
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        entities, stub_dir = self._project(tmp_path)
+        # What registry._load_entities_file already did with the TOML by the
+        # time the MATLAB half of the scan runs.
+        registry._register_variable("RawEMG", source=str(entities))
+
+        with caplog.at_level(logging.DEBUG):
+            materialize_variable_stubs(["RawEMG"], stub_dir, project_start=entities)
+
+        assert "declared in more than one place" not in caplog.text
+        assert registry._variable_sources["RawEMG"] == str(entities)
+        # The warning is gone, but the linkage must still be observable.
+        assert "Attributing generated classdef" in caplog.text
+
+    def test_second_scan_over_an_existing_stub_is_still_the_tomls(
+        self, tmp_path, caplog
+    ):
+        """The first scan creates the stub; the second finds it on disk and
+        takes the ``skipped`` branch. Both must attribute to the TOML — a stub
+        written by a previous session is no more a declaration than a fresh one.
+        """
+        from scistack_gui import matlab_registry, registry
+        from scistack_gui.matlab_registry import materialize_variable_stubs
+
+        entities, stub_dir = self._project(tmp_path)
+        registry._register_variable("RawEMG", source=str(entities))
+        materialize_variable_stubs(["RawEMG"], stub_dir, project_start=entities)
+
+        # A fresh scan: registries start empty, but the stub file persists.
+        matlab_registry._matlab_variables.clear()
+        registry._variable_sources.clear()
+        registry._register_variable("RawEMG", source=str(entities))
+
+        with caplog.at_level(logging.DEBUG):
+            created = materialize_variable_stubs(
+                ["RawEMG"], stub_dir, project_start=entities
+            )
+
+        assert created == []
+        assert "declared in more than one place" not in caplog.text
+        assert registry._variable_sources["RawEMG"] == str(entities)
+
+    def test_two_independent_declarations_still_warn(self, tmp_path, caplog):
+        """The warning must keep firing for what it was written for: a
+        hand-written classdef AND a TOML entry really are two declarations."""
+        from scistack_gui import matlab_registry, registry
+
+        entities, _ = self._project(tmp_path)
+        handwritten = tmp_path / "src" / "RawEMG.m"
+        handwritten.parent.mkdir()
+        handwritten.write_text("classdef RawEMG < scidb.BaseVariable\nend\n")
+
+        registry._register_variable("RawEMG", source=str(entities))
+
+        with caplog.at_level(logging.WARNING):
+            # What the classdef-file scan does — no declared_by, because that
+            # file genuinely is its own declaration.
+            matlab_registry._register_matlab_variable("RawEMG", handwritten)
+
+        assert "declared in more than one place" in caplog.text
 
 
 class TestUnresolvableVarTypePreflight:
