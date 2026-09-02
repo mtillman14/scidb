@@ -1483,6 +1483,68 @@ class TestFormatPathInput:
         assert "scidb.Parameter(10, 20)" in cmd
         assert "scifor.PathInput" in cmd
 
+    def test_never_run_function_still_iterates_the_schema(self):
+        """The no-variants (first run) branch must emit schema kwargs.
+
+        Regression: it emitted ``for_each(@fn, inputs, outputs);`` with no
+        iterables at all, so for_each collapsed to one combo and handed the
+        function every loaded record at once as a single table. It only looked
+        fine for functions whose PathInput template carries a {key}
+        placeholder, because discovery then supplied the iterable.
+        """
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filter_emg",
+            db_path="/data/exp.duckdb",
+            schema_keys=["pass", "cycle"],
+            variable_inputs={"loaded_data": "RawEMG"},
+            output_types=["FilteredEMG"],
+        )
+        assert "'pass', []" in cmd
+        assert "'cycle', []" in cmd
+
+    def test_never_run_function_honors_schema_level(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filter_emg",
+            db_path="/data/exp.duckdb",
+            schema_keys=["pass", "cycle"],
+            schema_level=["pass"],
+            variable_inputs={"loaded_data": "RawEMG"},
+            output_types=["FilteredEMG"],
+        )
+        assert "'pass', []" in cmd
+        assert "'cycle'" not in cmd
+
+    def test_never_run_function_applies_schema_filter(self):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filter_emg",
+            db_path="/data/exp.duckdb",
+            schema_keys=["pass"],
+            schema_filter={"pass": [1, 2]},
+            variable_inputs={"loaded_data": "RawEMG"},
+            output_types=["FilteredEMG"],
+        )
+        assert "'pass', [1 2]" in cmd
+
+    def test_no_schema_keys_emits_no_trailing_comma(self):
+        """A schema-less project must still produce a syntactically valid
+        call — the kwargs block is optional, not empty."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="filter_emg",
+            db_path="/data/exp.duckdb",
+            schema_keys=[],
+            output_types=["FilteredEMG"],
+        )
+        assert "{FilteredEMG()});" in cmd
+        assert ", ...\n        );" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # _format_sweep tests
@@ -1504,6 +1566,84 @@ class TestFormatSweep:
         from scistack_gui.api.matlab_command import _format_sweep
 
         assert _format_sweep([42]) == "scidb.Parameter(42)"
+
+    def test_dict_value_renders_as_struct_not_a_quoted_repr(self):
+        """A dict-valued Parameter (``CONFIG = { a = 1 }`` under
+        ``[parameters]``) must reach MATLAB as a struct.
+
+        Regression: everything that was not a scalar or a flat list fell
+        through to ``str(val)`` in quotes, so the function received a char
+        array holding a Python repr.
+        """
+        from scistack_gui.api.matlab_command import _format_sweep
+
+        out = _format_sweep([{"order": 4, "cutoff": [10, 400]}])
+        assert out == "scidb.Parameter(struct('order', 4, 'cutoff', [10, 400]))"
+        assert "'{" not in out
+
+
+# ---------------------------------------------------------------------------
+# _format_matlab_value tests
+#
+# Every case here is pinned against what +scidb/+internal/from_python.m
+# produces for the same value, because the SAME declaration reaches MATLAB
+# both ways: inlined into a generated script, and through scidb.entities().
+# ---------------------------------------------------------------------------
+
+
+class TestFormatMatlabValue:
+    def test_nested_dict_becomes_nested_struct(self):
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value({"FILTER": {"ORDER": 4}, "VAF": 0.9}) == (
+            "struct('FILTER', struct('ORDER', 4), 'VAF', 0.9)"
+        )
+
+    def test_empty_dict(self):
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value({}) == "struct()"
+
+    def test_string_list_is_a_string_array_not_concatenated_chars(self):
+        """``['HAM', 'RF']`` emitted as ``['HAM', 'RF']`` is the single char
+        array ``'HAMRF'`` in MATLAB — square brackets concatenate."""
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value(["HAM", "RF"]) == '["HAM", "RF"]'
+
+    def test_numeric_and_bool_lists(self):
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value([10, 400]) == "[10, 400]"
+        assert _format_matlab_value([True, False]) == "[true, false]"
+
+    def test_mixed_list_is_a_cell(self):
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value([1, "a"]) == "{1, 'a'}"
+
+    def test_cell_valued_field_is_double_wrapped(self):
+        """``struct('a', {1, 'x'})`` builds a 1x2 STRUCT ARRAY, not a scalar
+        struct with a cell field. The extra brace layer is what makes it a
+        cell field."""
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value({"a": [1, "x"]}) == "struct('a', {{1, 'x'}})"
+
+    def test_none_is_empty_brackets(self):
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value(None) == "[]"
+        assert _format_matlab_value([]) == "[]"
+
+    def test_keys_are_sanitized_like_makeValidName(self):
+        """Mirrors pydict_to_struct's matlab.lang.makeValidName, so the two
+        routes into MATLAB agree on field names."""
+        from scistack_gui.api.matlab_command import _format_matlab_value
+
+        assert _format_matlab_value({"my key": 1}) == "struct('myKey', 1)"
+        assert _format_matlab_value({"2bad": 1}) == "struct('x2bad', 1)"
+        assert _format_matlab_value({"a-b": 1}) == "struct('a_b', 1)"
 
 
 # ---------------------------------------------------------------------------

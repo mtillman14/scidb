@@ -97,6 +97,7 @@ def for_each(
     _progress_fn: "Callable[[dict], None] | None" = None,
     _cancel_check: "Callable[[], bool] | None" = None,
     _path_input_resolver: "Callable[['PathInput', dict], Any] | None" = None,
+    _mapping_inputs: "dict[str, list[str]] | None" = None,
     **metadata_iterables: list[Any],
 ) -> "pd.DataFrame | None":
     """
@@ -148,6 +149,18 @@ def for_each(
                  override for per-combo PathInput resolution. Used by DB
                  wrappers that need schema-key-type-aware resolution;
                  defaults to plain ``pathinput.load(**metadata)``.
+        _mapping_inputs: Optional ``{input_name: [data column names]}``
+                 declaring that the named input's rows are records of a
+                 *mapping-valued* variable — each row is one dict, spread one
+                 column per key — rather than the rows of a table. A single
+                 row of such an input is handed to the function as that dict
+                 (a struct, from MATLAB), not as a one-row frame. This cannot
+                 be inferred here: "one row, N data columns" is also exactly
+                 what a genuine table-valued variable looks like, so the
+                 caller that knows the storage layout has to say so (scidb's
+                 ``_resolve_mapping_inputs`` / ``DatabaseManager
+                 .mapping_data_columns``). Ignored for an input passed
+                 through ``as_table`` or with a column selection.
         **metadata_iterables: Iterables of metadata values to combine.
 
     Returns:
@@ -193,6 +206,7 @@ def for_each(
                 _progress_fn=_progress_fn,
                 _cancel_check=_cancel_check,
                 _path_input_resolver=_path_input_resolver,
+                _mapping_inputs=_mapping_inputs,
                 **metadata_iterables,
             )
             if result is not None:
@@ -764,7 +778,12 @@ def for_each(
                     continue
                 wants_table = param_name in as_table_set
                 filtered_inputs[param_name] = _prepare_input(
-                    var_spec, metadata, full_schema_keys, wants_table, where
+                    var_spec,
+                    metadata,
+                    full_schema_keys,
+                    wants_table,
+                    where,
+                    mapping_cols=(_mapping_inputs or {}).get(param_name),
                 )
             except Exception as e:
                 _record_iteration_failure(
@@ -1479,6 +1498,7 @@ def _extract_data(
     df: "pd.DataFrame",
     schema_keys: list[str],
     as_table: bool,
+    mapping_cols: "list[str] | None" = None,
 ) -> Any:
     """Extract data from a filtered DataFrame.
 
@@ -1486,10 +1506,28 @@ def _extract_data(
     not internal ``__``-prefixed schema columns such as scidb's ``__rid_*``
     record-id discriminators).
     Otherwise: drop schema key columns; if 1 row + 1 data col -> extract scalar.
+
+    ``mapping_cols`` (see ``for_each``'s ``_mapping_inputs``) says the rows are
+    dict records spread one column per key. A single row is then rebuilt into
+    that dict, which is the value the caller saved. Without it a dict-valued
+    variable came back as a one-row frame, because the 1-row unwrap below only
+    fires for a *single* data column and a dict has as many columns as keys.
     """
     if as_table:
         internal = [c for c in df.columns if c in schema_keys and c.startswith("__")]
         return df.drop(columns=internal) if internal else df
+
+    if mapping_cols and len(df) == 1:
+        present = [c for c in mapping_cols if c in df.columns]
+        if present:
+            Log.debug(
+                f"_extract_data: rebuilding dict-valued record from "
+                f"{len(present)} column(s)",
+                layer="scifor",
+            )
+            return {c: df[c].iloc[0] for c in present}
+        # Fall through: the selection/rename upstream left none of the declared
+        # columns, so treat it as an ordinary frame rather than an empty dict.
 
     data_cols = [c for c in df.columns if c not in schema_keys]
     if len(df) == 1 and len(data_cols) == 1:
@@ -1513,8 +1551,14 @@ def _prepare_input(
     schema_keys: list[str],
     as_table: bool,
     where=None,
+    mapping_cols: "list[str] | None" = None,
 ) -> Any:
-    """Prepare a single data input for the current combo."""
+    """Prepare a single data input for the current combo.
+
+    ``mapping_cols`` marks the input as dict-valued (see ``for_each``'s
+    ``_mapping_inputs``); it only reaches ``_extract_data``, so a column
+    selection or ``as_table`` still wins.
+    """
     if isinstance(var_spec, Merge):
         return _prepare_merge(var_spec, metadata, schema_keys, where)
 
@@ -1563,7 +1607,7 @@ def _prepare_input(
             return filtered[keep]
         return _apply_column_selection(filtered, cols)
 
-    return _extract_data(filtered, schema_keys, as_table)
+    return _extract_data(filtered, schema_keys, as_table, mapping_cols=mapping_cols)
 
 
 def _resolve_data_spec(

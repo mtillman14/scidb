@@ -22,9 +22,41 @@ saving a MATLAB value and loading it back should produce the identical type and 
 | `datetime` | ISO 8601 string | VARCHAR | Exact (if format matches) |
 | `cell` array | `py.list` (recursive) | varies | Exact per element |
 | `table` | `pandas.DataFrame` | multi-column DuckDB or custom | See per-column rules below |
-| Scalar `struct` | `py.dict` (recursive) | JSON | Exact |
+| Scalar `struct` | `py.dict` (recursive) | one DuckDB column per field (`multi_column`), or JSON when `nested` | Exact — but see below |
 | Struct array | `py.list` of `py.dict` | JSON list | Loads back as cell array of structs (not struct array) |
 | `categorical` | converted to `string` before save | VARCHAR | Loads back as `string`, not `categorical` |
+
+### Scalar struct: exact, but the shape depends on WHO loads it
+
+A flat scalar struct is stored `multi_column` — one DuckDB column per field —
+not as JSON. Two loaders read that back differently, and only one of them used
+to give a struct:
+
+| Loader | Result |
+|---|---|
+| `Type().load(...)`, single record | struct (`sciduckdb._load_record` rebuilds the dict) |
+| `for_each` input, `nested` struct | struct (routes through `_load_as_df_via_iterator`, which keeps the dict in one column) |
+| `for_each` input, flat struct | **was a 1×N table**; now a struct |
+
+The last row is the one that was inconsistent. `for_each` loads inputs through
+the *spread* layout, which deliberately puts each field in its own column so
+that `Type("col")` column selection, `ColName`, `Merge`, `as_table=true`,
+`share_limits` and `for_columns` all work on them. The cost is that one struct
+record then looks exactly like a one-row table, and `extract_data` only unwraps
+a single row when there is a *single* data column — a struct has as many
+columns as fields, so it fell through and the function got a table whose field
+accesses returned `1×1` cells.
+
+The columns cannot simply be collapsed at load time without breaking every
+feature listed above, so the reassembly happens per combo, after column
+selection has had its chance: scidb marks the input via
+`DatabaseManager.mapping_data_columns` → `_resolve_mapping_inputs` →
+`for_each_prepare`'s `mapping_inputs` → `+scifor/for_each.m`'s
+`'_mapping_inputs'`. scifor cannot infer the mark — "one row, N data columns"
+is also exactly what a genuine table-valued variable looks like. A field that
+loaded alongside other records comes back with its saved orientation (`N×1`,
+not the `1×N` row that `try_stack_numeric`'s matrix stacking would otherwise
+leave). `as_table` and column selection still win.
 
 ## Table Column Handling (to_python.m → pandas DataFrame)
 

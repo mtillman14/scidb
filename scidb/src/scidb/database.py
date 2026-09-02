@@ -2792,6 +2792,61 @@ class DatabaseManager:
                 meta_df = meta_df.drop(columns=["__record_id"], errors="ignore")
             return meta_df.reset_index(drop=True)
 
+    def get_dtype_meta(self, variable_name: str) -> "dict | None":
+        """The stored ``dtype`` metadata for a variable type, or ``None``.
+
+        ``dtype_meta`` records how sciduckdb laid the value out on disk —
+        ``mode`` (``single_column`` / ``multi_column`` / ``dataframe``),
+        the per-column type map, and the ``nested`` / ``custom`` flags. It is
+        the only record of the fact that a variable's rows are the fields of
+        one dict rather than the columns of one table, which is a distinction
+        the loaded DataFrame cannot express on its own.
+
+        Read-only accessor; the same query is inlined at three other call
+        sites that predate it.
+        """
+        rows = self._duck._fetchall(
+            "SELECT dtype FROM _variables WHERE variable_name = ?",
+            [variable_name],
+        )
+        if not rows:
+            return None
+        return json.loads(rows[0][0])
+
+    def mapping_data_columns(self, variable_class) -> "list[str] | None":
+        """Column names to reassemble into a dict for a dict-valued variable.
+
+        Returns the ordered dict keys when *variable_class* stores in
+        ``multi_column`` mode (one DuckDB column per dict key), otherwise
+        ``None``.
+
+        Why callers need it: ``load_all_as_df(layout="spread")`` deliberately
+        spreads those keys across top-level columns, because column selection
+        (``Type("col")``), ``ColName``, ``Merge``, ``as_table=True``,
+        ``share_limits`` and ``for_columns`` all operate on them. The cost is
+        that a single record then looks exactly like a one-row table, and the
+        per-combo extraction in scifor has no way to tell the two apart —
+        so a struct saved from MATLAB (or a dict from Python) came back as a
+        1-row table. Compare ``_load_record``'s single-record path, which does
+        rebuild the dict, and ``_load_as_df_via_iterator``, which keeps a
+        ``nested`` dict in a single column: both already round-trip.
+
+        ``nested`` and ``custom`` layouts are excluded — they never reach the
+        spreading fast path (``load_all_as_df`` routes them to the iterator,
+        which already returns the value whole).
+        """
+        name = getattr(variable_class, "__name__", None)
+        if not name:
+            return None
+        dtype_meta = self.get_dtype_meta(name)
+        if not dtype_meta:
+            return None
+        if dtype_meta.get("custom") or dtype_meta.get("nested"):
+            return None
+        if dtype_meta.get("mode") != "multi_column":
+            return None
+        return list(dtype_meta.get("columns", {}).keys()) or None
+
     def load_all_as_df(
         self,
         variable_class: type[BaseVariable],

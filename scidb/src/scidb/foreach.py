@@ -189,6 +189,10 @@ class _ForEachState:
     # Combos removed by the pre-combo hook (skip_computed): already up to
     # date, so they never reach scifor. Folded into the run-summary log line.
     skip_computed_count: int = 0
+    # {param_name: [data column names]} for inputs whose records are dicts
+    # stored one column per key. scifor rebuilds the mapping per combo; see
+    # _resolve_mapping_inputs.
+    mapping_inputs: Any = None  # dict | None
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +698,7 @@ def for_each(
             _progress_fn=_tracking_progress_fn,
             _cancel_check=_cancel_check,
             _path_input_resolver=_path_input_resolver,
+            _mapping_inputs=state.mapping_inputs,
             **state.extended_metadata_iterables,
         )
 
@@ -1459,11 +1464,48 @@ def _for_each_prepare(
                 )
                 + " from disk (the database had none)"
             )
+        # A key nothing could fill is DROPPED as long as some other key still
+        # has values, rather than left as an empty list that zeroes the
+        # Cartesian product in Step 12 and silently turns the whole run into
+        # "0 combos". This is the same decision PathInput discovery already
+        # makes for a key a static template can never supply (Step 3's
+        # comment) — applied to the database source, which had no equivalent.
+        #
+        # It matters because a caller iterating a schema level asks for EVERY
+        # key with `key=[]` ("all levels"): a two-key schema [pass, cycle]
+        # whose records are all saved at pass level has no cycle values at
+        # all, so `pass=[], cycle=[]` meant zero iterations even though `pass`
+        # resolved to three. Not iterating a key you have no values for is a
+        # coarser iteration, not an empty one.
+        #
+        # When NOTHING resolved, the empty lists stay and the run really is 0
+        # iterations — an empty database should not silently become a single
+        # data-less call.
+        def _has_values(v) -> bool:
+            try:
+                return len(v) > 0
+            except TypeError:
+                return v is not None  # a bare scalar is one value
+
+        _any_resolved = any(
+            _has_values(v)
+            for k, v in metadata_iterables.items()
+            if k not in _still_empty
+        )
         for key in _still_empty:
-            Log.warn(
-                f"no values found for '{key}': the database has none and "
-                f"PathInput discovery could not supply any, 0 iterations"
-            )
+            if _any_resolved:
+                del metadata_iterables[key]
+                Log.info(
+                    f"no values found for '{key}': the database has none and "
+                    f"PathInput discovery could not supply any — dropping it "
+                    f"from the iteration (other keys still have values, so "
+                    f"this is a coarser iteration, not zero iterations)"
+                )
+            else:
+                Log.warn(
+                    f"no values found for '{key}': the database has none and "
+                    f"PathInput discovery could not supply any, 0 iterations"
+                )
 
     # Step 4: Propagate schema keys to scifor so distribute and DataFrame detection work
     Log.debug("propagating schema keys to scifor")
@@ -1713,6 +1755,7 @@ def _for_each_prepare(
     Log.debug(
         f"loaded {df_count} DataFrame input(s), {len(loaded_inputs) - df_count} other(s)"
     )
+    mapping_inputs = _resolve_mapping_inputs(inputs, loaded_inputs, db)
 
     # --- Step 11: Variant tracking: build rid→bp mapping and __rid_{param} discriminator columns ---
     from itertools import product as _iproduct
@@ -2648,6 +2691,7 @@ def _for_each_prepare(
         current_schema_keys=current_schema_keys,
         path_extra_keys=_path_placeholder_names or None,
         skip_computed_count=_skip_computed_count,
+        mapping_inputs=mapping_inputs or None,
     )
 
 
@@ -2905,6 +2949,78 @@ def _convert_inputs(
             Log.debug(f"input '{param_name}': constant {type(var_spec).__name__}")
     total_elapsed = time.perf_counter() - total_t0
     Log.info(f"loaded {len(result)} inputs in {total_elapsed:.3f}s")
+    return result
+
+
+def _resolve_mapping_inputs(
+    inputs: dict[str, Any],
+    loaded_inputs: dict[str, Any],
+    db: Any | None,
+) -> dict[str, list[str]]:
+    """``{param_name: [data column names]}`` for dict-valued variable inputs.
+
+    A variable whose records are dicts is stored one DuckDB column per key
+    (``multi_column``) and loaded in the spread layout, so a single record is
+    indistinguishable from a one-row table by the time scifor extracts it per
+    combo. scifor cannot infer the difference — "one row, N data columns" is
+    also exactly what a genuine DataFrame-mode variable looks like — so scidb,
+    which owns the storage mode, states it and scifor honors it.
+
+    See ``DatabaseManager.mapping_data_columns`` for why the columns are
+    spread in the first place and cannot simply be collapsed at load time.
+
+    Only bare variable types and ``Fixed``-wrapped ones are marked.
+    ``ColumnSelection`` is deliberately excluded (the caller asked for
+    specific columns and gets them), as is ``Merge`` (its frame interleaves
+    columns from several types, so no single dict describes a row).
+    """
+    import pandas as pd
+
+    resolved_db = db
+    if resolved_db is None:
+        try:
+            from scidb.database import get_database
+
+            resolved_db = get_database()
+        except Exception:
+            return {}
+    if resolved_db is None or not hasattr(resolved_db, "mapping_data_columns"):
+        return {}
+
+    result: dict[str, list[str]] = {}
+    for param_name, var_spec in inputs.items():
+        # Only a bulk-loaded frame can be reassembled here; a PerComboLoader
+        # returns whatever load() gives it, which is already the dict.
+        loaded = loaded_inputs.get(param_name)
+        if isinstance(loaded, Fixed):
+            loaded = loaded.data  # Fixed re-wraps the loaded frame
+        if not isinstance(loaded, pd.DataFrame):
+            continue
+        candidate = var_spec
+        if isinstance(candidate, Fixed):
+            candidate = candidate.data
+        if isinstance(candidate, (Merge, ColumnSelection, ColName)):
+            continue
+        if not hasattr(candidate, "load"):
+            continue
+        try:
+            cols = resolved_db.mapping_data_columns(candidate)
+        except Exception as exc:  # a missing/garbled dtype row must not fail the run
+            Log.debug(
+                f"input '{param_name}': mapping_data_columns raised "
+                f"{type(exc).__name__}: {exc} — not marked as dict-valued"
+            )
+            continue
+        if cols:
+            result[param_name] = cols
+
+    if result:
+        Log.info(
+            "dict-valued input(s) will be rebuilt per combo: "
+            + ", ".join(
+                f"'{name}' ({len(cols)} key(s))" for name, cols in sorted(result.items())
+            )
+        )
     return result
 
 

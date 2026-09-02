@@ -857,6 +857,12 @@ def for_each_prepare(
         "path_param": endpoint_path_param or "",
         "as_table_effective": as_table_arg,
         "resolved_path_outputs": resolved_path_outputs,
+        # {param_name: [data column names]} for inputs whose records are
+        # MATLAB structs, stored one DuckDB column per field. MATLAB's
+        # +scifor/for_each.m rebuilds the struct per combo; without this the
+        # spread columns reach the user function as a 1xN table and every
+        # field access yields a 1x1 cell. See scidb._resolve_mapping_inputs.
+        "mapping_inputs": {k: list(v) for k, v in (state.mapping_inputs or {}).items()},
     }
 
 

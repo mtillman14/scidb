@@ -1680,3 +1680,137 @@ def test_restore_schema_column_dtypes_duplicate_labels():
     # (int 1 -> float64 is a lossless cast).
     assert list(out.columns) == ["session", "subject", "session", "value"]
     assert out["subject"].dtype == pd.api.types.pandas_dtype("float64")
+
+
+# ---------------------------------------------------------------------------
+# _mapping_inputs: dict-valued records
+# ---------------------------------------------------------------------------
+
+
+def test_mapping_input_single_row_is_delivered_as_a_dict():
+    """A dict-valued variable is stored one column per key and loaded spread,
+    so a single record is indistinguishable from a one-row table by the time
+    it reaches extraction. Marked via _mapping_inputs, it is rebuilt.
+
+    Regression: the 1-row unwrap only fires for a SINGLE data column, and a
+    dict has as many columns as keys, so the function received a 1xN frame
+    and every key access returned a Series instead of the saved value.
+    """
+    set_schema(["pass"])
+    df = pd.DataFrame(
+        {
+            "pass": [1, 2, 3],
+            "RHAM": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+            "RVL": [[7.0], [8.0], [9.0]],
+        }
+    )
+    received = []
+
+    def fn(emg):
+        received.append(emg)
+        return 0.0
+
+    for_each(
+        fn,
+        inputs={"emg": df},
+        _mapping_inputs={"emg": ["RHAM", "RVL"]},
+        **{"pass": [1, 2, 3]},
+    )
+
+    assert len(received) == 3
+    assert all(isinstance(r, dict) for r in received)
+    assert [sorted(r) for r in received] == [["RHAM", "RVL"]] * 3
+    assert received[0]["RHAM"] == [1.0, 2.0]
+    assert received[2]["RVL"] == [9.0]
+
+
+def test_mapping_input_multi_row_slice_stays_a_frame():
+    """A coarser iteration level has no single dict to give, so the frame is
+    still the honest answer."""
+    set_schema(["pass", "cycle"])
+    df = pd.DataFrame(
+        {
+            "pass": [1, 1, 2],
+            "cycle": [1, 2, 1],
+            "RHAM": [1.0, 2.0, 3.0],
+            "RVL": [4.0, 5.0, 6.0],
+        }
+    )
+    received = []
+
+    for_each(
+        lambda emg: received.append(emg) or 0.0,
+        inputs={"emg": df},
+        _mapping_inputs={"emg": ["RHAM", "RVL"]},
+        **{"pass": [1]},
+    )
+
+    assert len(received) == 1
+    assert isinstance(received[0], pd.DataFrame)
+    assert len(received[0]) == 2
+
+
+def test_mapping_input_ignored_under_as_table():
+    """as_table is an explicit request for the frame and still wins."""
+    set_schema(["pass"])
+    df = pd.DataFrame({"pass": [1], "RHAM": [1.0], "RVL": [2.0]})
+    received = []
+
+    for_each(
+        lambda emg: received.append(emg) or 0.0,
+        inputs={"emg": df},
+        as_table=True,
+        _mapping_inputs={"emg": ["RHAM", "RVL"]},
+        **{"pass": [1]},
+    )
+
+    assert isinstance(received[0], pd.DataFrame)
+
+
+def test_mapping_input_ignored_under_column_selection():
+    """Asking for specific columns is more specific than the mapping mark."""
+    set_schema(["pass"])
+    df = pd.DataFrame({"pass": [1], "RHAM": [1.0], "RVL": [2.0]})
+    received = []
+
+    for_each(
+        lambda emg: received.append(emg) or 0.0,
+        inputs={"emg": ColumnSelection(df, ["RHAM"])},
+        _mapping_inputs={"emg": ["RHAM", "RVL"]},
+        **{"pass": [1]},
+    )
+
+    assert not isinstance(received[0], dict)
+
+
+def test_unmarked_multi_column_input_is_unchanged():
+    """Without the mark, a genuine table-valued variable keeps its frame —
+    the reason this cannot be inferred from shape alone."""
+    set_schema(["pass"])
+    df = pd.DataFrame({"pass": [1], "a": [1.0], "b": [2.0]})
+    received = []
+
+    for_each(
+        lambda tbl: received.append(tbl) or 0.0,
+        inputs={"tbl": df},
+        **{"pass": [1]},
+    )
+
+    assert isinstance(received[0], pd.DataFrame)
+
+
+def test_mapping_input_falls_back_when_no_declared_column_survives():
+    """A stale/renamed column list degrades to the previous behavior rather
+    than handing the function an empty struct."""
+    set_schema(["pass"])
+    df = pd.DataFrame({"pass": [1], "a": [1.0], "b": [2.0]})
+    received = []
+
+    for_each(
+        lambda tbl: received.append(tbl) or 0.0,
+        inputs={"tbl": df},
+        _mapping_inputs={"tbl": ["gone", "also_gone"]},
+        **{"pass": [1]},
+    )
+
+    assert not isinstance(received[0], dict)

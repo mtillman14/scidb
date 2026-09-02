@@ -540,11 +540,31 @@ def generate_matlab_command(
                 "outputs will be empty, saves will be skipped",
                 function_name,
             )
+        # Schema kwargs matter MORE here, not less. This branch is the FIRST
+        # run of a function, so there is no DB history to iterate from; without
+        # 'key', [] for each schema key, for_each has no iterables at all,
+        # collapses to a single combo, and hands the function every loaded
+        # record at once as one table instead of calling it per combo. That is
+        # only invisible for a function whose PathInput template contains a
+        # {key} placeholder, because PathInput discovery then supplies the
+        # iterable — which is exactly why this went unnoticed until a
+        # never-run function consumed a DB variable instead of a file.
+        # See .claude/plan-matlab-struct-and-iteration-26-09-02.md defect 2.
+        template_schema_str = _format_schema_kwargs(
+            schema_level if schema_level else schema_keys,
+            schema_filter,
+            {},
+            function_name,
+        )
         lines.append("try")
         lines.append("    % Run (fill in inputs/outputs)")
         lines.append(f"    scihist.for_each(@{function_name}, ...")
         lines.append(f"        {inputs_str}, ...")
-        lines.append(f"        {outputs_str});")
+        if template_schema_str:
+            lines.append(f"        {outputs_str}, ...")
+            lines.append(f"        {template_schema_str});")
+        else:
+            lines.append(f"        {outputs_str});")
         lines.append("    scidb.close_database(db);")
         lines.append("catch scistack_err__")
         lines.append(
@@ -996,8 +1016,21 @@ def _format_sweep(values: list) -> str:
     expression (mirrors ``_format_path_input``'s role for PathInput).
 
     ``isa(x, 'scifor.EachOf')`` covers a Parameter for free, so ``for_each``
-    fans it out with no special handling -- see ``+scidb/Parameter.m``."""
+    fans it out with no special handling -- see ``+scidb/Parameter.m``.
+
+    A dict-valued Parameter (``CONFIG = { fld1 = 1 }`` under ``[parameters]``)
+    is logged: it renders to a nested ``struct(...)`` literal, and when one of
+    these silently degraded to a quoted Python repr there was nothing in the
+    log to see it by."""
     items = ", ".join(_format_matlab_value(v) for v in values)
+    n_struct = sum(1 for v in values if isinstance(v, dict))
+    if n_struct:
+        logger.info(
+            "_format_sweep: %d of %d Parameter value(s) rendered as MATLAB "
+            "struct literals",
+            n_struct,
+            len(values),
+        )
     return f"scidb.Parameter({items})"
 
 
@@ -1090,8 +1123,66 @@ def _format_pyenv_preamble(python_executable: str) -> list[str]:
     ]
 
 
+def _matlab_field_name(key: str) -> str:
+    """Sanitize a dict key into a MATLAB struct field name.
+
+    Mirrors ``matlab.lang.makeValidName``, which is what
+    ``+scidb/+internal/pydict_to_struct.m`` applies to the same keys when a
+    Parameter arrives through ``scidb.entities()`` instead of as an inlined
+    literal. The two routes must agree: the same TOML declaration reaches
+    MATLAB one way from a generated script and the other way from a
+    hand-written one, and a field named differently between them is a
+    pipeline that works from the prompt and fails from the GUI.
+
+    Documented ``makeValidName`` behavior, in order: delete whitespace and
+    capitalize the following character, replace remaining invalid characters
+    with ``_``, prefix ``x`` when the first character is not a letter, then
+    truncate to ``namelengthmax`` (63).
+    """
+    out: list[str] = []
+    capitalize_next = False
+    for ch in key:
+        if ch.isspace():
+            capitalize_next = True
+            continue
+        if ch.isalnum() and ch.isascii() or ch == "_":
+            out.append(ch.upper() if capitalize_next else ch)
+        else:
+            out.append("_")
+        capitalize_next = False
+    name = "".join(out)
+    if not name:
+        name = "x"
+    if not name[0].isalpha():
+        name = "x" + name
+    return name[:63]
+
+
 def _format_matlab_value(val) -> str:
-    """Format a Python value as a MATLAB literal."""
+    """Format a Python value as a MATLAB literal.
+
+    The mapping mirrors ``+scidb/+internal/from_python.m`` so that a value
+    inlined into a generated script is byte-identical in MATLAB to the same
+    value loaded through ``scidb.entities()``:
+
+    ==========================  ===========================================
+    Python                      MATLAB
+    ==========================  ===========================================
+    ``dict``                    ``struct('k', v, ...)`` (recursive)
+    all-string ``list``         ``["a", "b"]`` string array
+    all-numeric/bool ``list``   ``[1, 2]`` numeric/logical array
+    mixed or nested ``list``    ``{...}`` cell array
+    ``None``                    ``[]``
+    ==========================  ===========================================
+
+    Before this, everything that was not a scalar or a flat list fell through
+    to ``str(val)`` wrapped in quotes, so a dict-valued Parameter declared in
+    ``scistack_entities.toml`` reached the user's function as a char array
+    holding a Python repr (see docs/claude/entities-toml-format.md rule 2 —
+    an inline table under ``[parameters]`` *is* the value).
+    """
+    if val is None:
+        return "[]"
     if isinstance(val, bool):
         return "true" if val else "false"
     if isinstance(val, int):
@@ -1100,10 +1191,56 @@ def _format_matlab_value(val) -> str:
         return str(val)
     if isinstance(val, str):
         return f"'{_escape_matlab_string(val)}'"
+    if isinstance(val, dict):
+        return _format_matlab_struct_literal(val)
     if isinstance(val, (list, tuple)):
-        elements = [_format_matlab_value(v) for v in val]
-        return f"[{', '.join(elements)}]"
+        return _format_matlab_list(list(val))
     return f"'{_escape_matlab_string(str(val))}'"
+
+
+def _format_matlab_list(items: list) -> str:
+    """Format a Python list as the MATLAB container ``from_python.m`` produces.
+
+    A list of strings becomes a string array (``from_python.m``'s all-string
+    collapse), a list of numbers or bools becomes a numeric/logical array, and
+    anything heterogeneous or nested becomes a cell array. Emitting ``[...]``
+    unconditionally — the old behavior — silently concatenated a list of
+    strings: ``['HAM', 'RF']`` is the single char array ``'HAMRF'`` in MATLAB.
+    """
+    if not items:
+        return "[]"
+    if all(isinstance(v, str) for v in items):
+        return "[" + ", ".join(f'"{_escape_matlab_double_quoted(v)}"' for v in items) + "]"
+    if all(isinstance(v, bool) for v in items):
+        return "[" + ", ".join("true" if v else "false" for v in items) + "]"
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in items):
+        return "[" + ", ".join(str(v) for v in items) + "]"
+    return "{" + ", ".join(_format_matlab_value(v) for v in items) + "}"
+
+
+def _format_matlab_struct_literal(mapping: dict) -> str:
+    """Format a Python dict as a scalar MATLAB ``struct(...)`` literal.
+
+    The trap this exists to avoid: ``struct('a', {1, 2})`` does not build a
+    scalar struct with a cell field, it builds a **1x2 struct array** — MATLAB
+    treats a cell value as the per-element list. Every cell-valued field is
+    therefore wrapped one extra level (``struct('a', {{1, 2}})``), which is the
+    documented way to store a cell in a struct field.
+    """
+    if not mapping:
+        return "struct()"
+    pairs = []
+    for key, value in mapping.items():
+        rendered = _format_matlab_value(value)
+        if rendered.startswith("{"):
+            rendered = "{" + rendered + "}"
+        pairs.append(f"'{_matlab_field_name(str(key))}', {rendered}")
+    return f"struct({', '.join(pairs)})"
+
+
+def _escape_matlab_double_quoted(s: str) -> str:
+    """Escape a MATLAB double-quoted string literal (``"`` doubles itself)."""
+    return s.replace('"', '""')
 
 
 def _format_matlab_struct(inputs_dict: dict[str, str]) -> str:

@@ -324,6 +324,43 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         % leave as user-supplied on any conversion surprise
     end
 
+    % Inputs whose records are structs, stored one DuckDB column per field
+    % (sciduckdb multi_column mode). Python resolves this from the stored
+    % dtype metadata -- MATLAB cannot tell a struct record apart from a
+    % one-row table once the spread columns arrive, so scidb states it and
+    % the scifor loop rebuilds the struct per combo. See
+    % scidb._resolve_mapping_inputs / DatabaseManager.mapping_data_columns.
+    mapping_inputs = struct();
+    try
+        py_mi = prep{'mapping_inputs'};
+        mi_keys = cell(py.list(py_mi.keys()));
+        for mi = 1:numel(mi_keys)
+            k_mi = char(mi_keys{mi});
+            col_cells = cell(py.list(py_mi{k_mi}));
+            cols = strings(1, numel(col_cells));
+            for ci_mi = 1:numel(col_cells)
+                cols(ci_mi) = string(char(col_cells{ci_mi}));
+            end
+            mapping_inputs.(k_mi) = cols;
+        end
+    catch mi_err
+        % An older bridge without the key, or a conversion surprise: fall
+        % back to the previous (table) delivery rather than failing the run.
+        scidb.Log.debug('for_each: mapping_inputs unavailable (%s)', mi_err.message);
+        mapping_inputs = struct();
+    end
+    if ~isempty(fieldnames(mapping_inputs))
+        mi_names = fieldnames(mapping_inputs);
+        mi_parts = cell(1, numel(mi_names));
+        for mi = 1:numel(mi_names)
+            mi_parts{mi} = sprintf('%s (%d field(s))', mi_names{mi}, ...
+                numel(mapping_inputs.(mi_names{mi})));
+        end
+        scidb.Log.info(sprintf( ...
+            'struct-valued input(s) rebuilt per combo: %s', ...
+            strjoin(mi_parts, ', ')));
+    end
+
     % Pre-resolved PathOutput paths, aligned with full_combos (Python
     % resolves branch_param placeholders whose dotted names cannot cross
     % as MATLAB struct fields; {ColName} stays for the for_columns loop).
@@ -460,6 +497,10 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     if ~isempty(as_table_eff)
         scifor_opts{end+1} = 'as_table';
         scifor_opts{end+1} = as_table_eff;
+    end
+    if ~isempty(fieldnames(mapping_inputs))
+        scifor_opts{end+1} = '_mapping_inputs';
+        scifor_opts{end+1} = mapping_inputs;
     end
     if opts.distribute
         scifor_opts{end+1} = 'distribute';

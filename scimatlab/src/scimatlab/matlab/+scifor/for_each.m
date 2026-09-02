@@ -49,6 +49,16 @@ function varargout = for_each(fn, inputs, varargin)
 %                       (one per output). Defaults to {'output'} for each.
 %       _all_combos   - Pre-built cell array of combo structs (from DB
 %                       wrappers that pre-filter). Bypasses cartesian_product.
+%       _mapping_inputs - struct: input name -> string array of data column
+%                       names, declaring that the input's rows are STRUCT
+%                       records spread one column per field rather than the
+%                       rows of a table. A single row is then handed to fn as
+%                       that struct. This cannot be inferred here -- "one row,
+%                       N data columns" is also exactly what a genuine
+%                       table-valued variable looks like -- so scidb, which
+%                       knows the storage layout, states it (see
+%                       +scidb/for_each.m). Ignored for an input passed
+%                       through as_table or with a column selection.
 %       (any other)   - Metadata iterables (numeric or string arrays)
 %
 %   Returns:
@@ -775,8 +785,14 @@ function varargout = for_each(fn, inputs, varargin)
 
             wants_table = ~isempty(as_table_set) && ismember(string(input_names{p}), as_table_set);
 
+            if isfield(opts.mapping_inputs, input_names{p})
+                mapping_cols = opts.mapping_inputs.(input_names{p});
+            else
+                mapping_cols = string.empty;
+            end
+
             try
-                loaded{p} = prepare_input(var_spec, metadata, effective_keys, wants_table, where_filter);
+                loaded{p} = prepare_input(var_spec, metadata, effective_keys, wants_table, where_filter, mapping_cols);
             catch err
                 [failure_reasons, failure_order] = record_iteration_failure( ...
                     failure_reasons, failure_order, err, metadata_str, ...
@@ -1032,8 +1048,16 @@ end
 % Input preparation per combo
 % =========================================================================
 
-function result = prepare_input(var_spec, metadata, schema_keys, as_table, where_filter)
+function result = prepare_input(var_spec, metadata, schema_keys, as_table, where_filter, mapping_cols)
 %PREPARE_INPUT  Prepare a single data input for the current combo.
+%
+%   MAPPING_COLS (optional) is a string array of data column names declaring
+%   that this input's rows are struct records spread one column per field.
+%   It only reaches extract_data, so a column selection or as_table wins.
+
+    if nargin < 6
+        mapping_cols = string.empty;
+    end
 
     % Merge
     if isa(var_spec, 'scifor.Merge')
@@ -1088,7 +1112,7 @@ function result = prepare_input(var_spec, metadata, schema_keys, as_table, where
     end
 
     % Extract data (drop schema cols, extract scalar if 1 row + 1 data col)
-    result = extract_data(filtered, schema_keys, as_table);
+    result = extract_data(filtered, schema_keys, as_table, mapping_cols);
 end
 
 
@@ -1308,16 +1332,58 @@ function tf = is_per_combo_table(tbl, schema_keys)
 end
 
 
-function result = extract_data(tbl, schema_keys, as_table)
+function result = extract_data(tbl, schema_keys, as_table, mapping_cols)
 %EXTRACT_DATA  Extract data from a filtered table.
 %   If as_table: return full table (including schema columns).
 %   Otherwise: drop schema key columns that are all-identical (constant
 %   within this combo), keep schema keys that still vary. If the result
 %   has one data column and one row, extract the scalar value. If multiple
 %   columns remain, return as a table.
+%
+%   MAPPING_COLS (optional, see +scidb/for_each.m's mapping_inputs) says the
+%   rows are struct records spread one column per field. A single row is then
+%   rebuilt into that struct -- the value that was saved. Without it a
+%   struct-valued variable came back as a 1xN table, because the one-row
+%   unwrap below only fires for a SINGLE data column and a struct has as many
+%   columns as fields; every field access then yielded a 1x1 cell.
+    if nargin < 4
+        mapping_cols = string.empty;
+    end
     if as_table
         result = tbl;
         return;
+    end
+
+    if ~isempty(mapping_cols) && height(tbl) == 1
+        present = mapping_cols(ismember(mapping_cols, ...
+            string(tbl.Properties.VariableNames)));
+        if ~isempty(present)
+            result = struct();
+            for mi = 1:numel(present)
+                col = char(present(mi));
+                val = tbl.(col);
+                if iscell(val)
+                    val = val{1};
+                elseif isnumeric(val) && isrow(val) && ~isscalar(val)
+                    % Same shape hazard the single-column branch below
+                    % documents: when several records were loaded together,
+                    % from_python's try_stack_numeric stacks their vectors as
+                    % ROWS of a matrix, so filtering to one row yields 1xN
+                    % where the saved value was Nx1. Coerce to a column so a
+                    % field holds the same shape it was saved with,
+                    % regardless of how many records shared the load.
+                    val = val(:);
+                end
+                % The column name is already a valid MATLAB identifier (it
+                % came from a struct field on the way in), but a Python-saved
+                % dict key need not be -- makeValidName mirrors what
+                % scidb.internal.pydict_to_struct does with the same keys.
+                result.(matlab.lang.makeValidName(col)) = val;
+            end
+            return;
+        end
+        % Fall through: nothing upstream left any of the declared columns, so
+        % treat it as an ordinary table rather than returning an empty struct.
     end
 
     % Drop schema key columns that are all-identical in the filtered rows
@@ -2188,6 +2254,9 @@ function [meta_args, opts] = split_options(varargin)
     opts.resolved_path_outputs = struct();
     opts.share_limits = struct();
     opts.schema_keys = string.empty;
+    opts.mapping_inputs = struct();  % {param -> string array of data column
+                                     % names} for struct-valued records; see
+                                     % extract_data
 
     meta_args = {};
     i = 1;
@@ -2249,6 +2318,15 @@ function [meta_args, opts] = split_options(varargin)
                     continue;
                 case "_pathinput_loader"
                     opts.pathinput_loader = varargin{i+1};
+                    i = i + 2;
+                    continue;
+                case "_mapping_inputs"
+                    % {param -> string array of data column names} declaring
+                    % that the input's rows are struct records spread one
+                    % column per field, not the rows of a table. scifor
+                    % cannot infer this (a 1xN table looks identical), so
+                    % scidb states it -- see +scidb/for_each.m.
+                    opts.mapping_inputs = varargin{i+1};
                     i = i + 2;
                     continue;
                 case "_resolved_path_outputs"
