@@ -702,20 +702,24 @@ class TestSweeps:
         by_name = {s["name"]: s for s in client.get("/api/parameters").json()}
         assert by_name["window_seconds"]["values"] == [10, 20, 30]
 
-    def test_create_without_values_scaffolds_placeholder(self, client_with_variable_file):
-        """The sidebar's "New parameter sweep" form only collects a name —
-        it never sends `values` (see EditTab.tsx's commitSweepDraft). This
-        used to 422/error with "A Sweep needs at least one value" and, worse,
-        the frontend swallowed that failure silently. Creating with no
-        values must succeed with a placeholder, mirroring how
-        create_path_input already scaffolds an empty template."""
+    def test_create_without_values_leaves_it_unvalued(self, client_with_variable_file):
+        """The sidebar's "New parameter" form only collects a name — it
+        never sends `values` (see EditTab.tsx's commitSweepDraft). This used
+        to 422/error with "A Sweep needs at least one value" and, worse, the
+        frontend swallowed that failure silently. Creating with no values
+        must succeed and leave the Parameter with NO values — a legal,
+        declared state at rest (see parameter_service.create_parameter). It
+        used to scaffold a placeholder `0`, which became indistinguishable
+        from a real declared value once written: it showed as a checked
+        value on the node, fed for_each, and stamped `0` into any records
+        produced before the user noticed."""
         client = client_with_variable_file
         r = client.post("/api/parameters", json={"name": "window_seconds"})
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
         by_name = {s["name"]: s for s in client.get("/api/parameters").json()}
-        assert by_name["window_seconds"]["values"] == [0]
+        assert by_name["window_seconds"]["values"] == []
 
     def test_delete_sweep_hides_node_but_keeps_source_declaration(
         self, client_with_variable_file

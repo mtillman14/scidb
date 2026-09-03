@@ -174,6 +174,133 @@ class TestNarrowReloadPrunes:
         assert "entities file" in error.lower()
 
 
+class TestRefreshParameterSource:
+    """layout_service.refresh_parameter_source is the standalone,
+    user-triggered counterpart to reload_entities_file: it exists so a
+    Parameter's canvas/sidebar context menu can pull in a hand-edited value
+    (e.g. a dict/struct too complex for the sidebar's add-value form)
+    without paying for refresh_module()'s reimport-everything cost — see
+    docs/claude/entity-editability-model.md."""
+
+    def test_success_picks_up_a_hand_edit_and_stays_narrow(self, project, counters):
+        from scistack_gui.services.layout_service import refresh_parameter_source
+
+        _, config = project
+        config.entities_file.write_text(
+            "variables = []\n\n[parameters]\nSAMPLING_RATE_HZ = 2000\n",
+            encoding="utf-8",
+        )
+
+        result = refresh_parameter_source("SAMPLING_RATE_HZ")
+
+        assert result == {"ok": True}
+        assert _registry.get_parameters_registry()["SAMPLING_RATE_HZ"].value == 2000
+        assert counters["modules"] == 0, "refresh_parameter_source re-imported Python modules"
+        assert counters["matlab"] == 0, "refresh_parameter_source re-parsed MATLAB sources"
+
+    def test_success_broadcasts_dag_updated(self, project, monkeypatch):
+        from scistack_gui.services import layout_service
+
+        _, config = project
+        config.entities_file.write_text(
+            "variables = []\n\n[parameters]\nSAMPLING_RATE_HZ = 2000\n",
+            encoding="utf-8",
+        )
+        pushed = []
+        monkeypatch.setattr(
+            "scistack_gui.api.ws.push_message", lambda msg: pushed.append(msg)
+        )
+
+        layout_service.refresh_parameter_source("SAMPLING_RATE_HZ")
+
+        assert pushed == [{"type": "dag_updated"}]
+
+    def test_failure_when_no_entities_file_configured_does_not_broadcast(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "scistack.toml").write_text("modules = []\n", encoding="utf-8")
+        from scistack_gui.config import load_config
+        from scistack_gui.services import layout_service
+
+        config = load_config(tmp_path, tmp_path / "test.duckdb")
+        _registry.load_from_config(config)
+        pushed = []
+        monkeypatch.setattr(
+            "scistack_gui.api.ws.push_message", lambda msg: pushed.append(msg)
+        )
+
+        result = layout_service.refresh_parameter_source("SAMPLING_RATE_HZ")
+
+        assert result["ok"] is False
+        assert "entities file" in result["error"].lower()
+        assert pushed == []
+
+    def test_name_is_logged_only_not_used_to_scope_the_reload(self, project):
+        """The reload is whole-file, so a stale unrelated Parameter picks up
+        its current value too -- refresh_parameter_source's *name* argument
+        is attribution for logging, not a filter."""
+        from scistack_gui.services.target_file_service import write_entity
+        from scistack_gui.services.layout_service import refresh_parameter_source
+
+        _, config = project
+        write_entity(config.entities_file, section="parameters", name="A", rendered="1")
+        write_entity(config.entities_file, section="parameters", name="B", rendered="2")
+        config.entities_file.write_text(
+            "variables = []\n\n[parameters]\nA = 1\nB = 99\n", encoding="utf-8"
+        )
+
+        refresh_parameter_source("A")
+
+        assert _registry.get_parameters_registry()["B"].value == 99
+
+
+class TestGetParametersSourceLocation:
+    """get_parameters() feeds the sidebar's Parameter rows the same
+    source_file/source_line/declared_in_entities_file fields
+    build_parameter_nodes puts on the canvas node (graph_builder's
+    is_declared_in_entities_file is the single comparison shared by both)."""
+
+    def test_entities_file_declared_parameter_is_refreshable(self, project):
+        from scistack_gui.services.target_file_service import write_entity
+        from scistack_gui.services.layout_service import get_parameters
+
+        _, config = project
+        write_entity(
+            config.entities_file, section="parameters", name="HZ", rendered="10"
+        )
+
+        entry = next(p for p in get_parameters() if p["name"] == "HZ")
+        assert entry["source_file"] == str(config.entities_file)
+        assert entry["source_line"] is not None
+        assert entry["declared_in_entities_file"] is True
+
+    def test_legacy_module_declared_parameter_is_not_refreshable(self, tmp_path):
+        (tmp_path / "scistack.toml").write_text(
+            'modules = ["src/consts.py"]\n'
+            'entities_file = "src/scistack_entities.toml"\n',
+            encoding="utf-8",
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "consts.py").write_text(
+            "from scidb import Parameter\nHZ = Parameter(10)\n", encoding="utf-8"
+        )
+        (src / "scistack_entities.toml").write_text("variables = []\n", encoding="utf-8")
+
+        from scidb import entities
+
+        entities.clear_cache()
+        from scistack_gui.config import load_config
+        from scistack_gui.services.layout_service import get_parameters
+
+        config = load_config(tmp_path, tmp_path / "test.duckdb")
+        _registry.load_from_config(config)
+
+        entry = next(p for p in get_parameters() if p["name"] == "HZ")
+        assert entry["source_file"] == str(src / "consts.py")
+        assert entry["declared_in_entities_file"] is False
+
+
 class TestDispatch:
     def test_toml_target_routes_to_the_narrow_entities_reload(self, project, monkeypatch):
         from scistack_gui.services import target_file_service

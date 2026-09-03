@@ -399,13 +399,18 @@ class TestUpdateDeclaration:
         assert not result["ok"]
         assert "NOPE" in result["error"]
 
-    def test_empty_parameter_is_rejected(self, populated_db, tmp_path):
+    def test_empty_parameter_is_accepted(self, populated_db, tmp_path):
+        """A Parameter's value set may be empty at any time, not only at
+        creation -- removing the last value is allowed, not blocked (see
+        parameter_service.update_parameter). Anything wired to it fails
+        loudly at for_each expansion instead."""
         from scistack_gui.services.parameter_service import update_parameter
 
         entities = self._project(tmp_path, "[parameters]\nW = 1\n")
         result = update_parameter("W", [])
-        assert not result["ok"]
-        assert "W = 1" in entities.read_text()
+        assert result["ok"], result
+        assert "W = []" in entities.read_text()
+        assert _registry.get_parameters_registry()["W"].values == []
 
     def test_no_op_write_is_reported_as_unchanged(self, populated_db, tmp_path):
         from scistack_gui.services.parameter_service import update_parameter

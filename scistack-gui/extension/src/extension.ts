@@ -9,7 +9,6 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { PythonProcess } from './pythonProcess';
 import { DagPanel } from './dagPanel';
-import { checkProjectConfig, promptForMissingConfig } from './projectInit';
 import {
   diagnoseStartupFailure,
   probeInterpreter,
@@ -27,11 +26,14 @@ let dbWatcherDebounce: ReturnType<typeof setTimeout> | null = null;
 // (e.g. after editing scistack_gui source code) without re-prompting the user.
 interface LastStartArgs {
   dbPath: string;
-  modulePath?: string;
-  projectPath?: string;
   schemaKeys?: string[];
 }
 let lastStartArgs: LastStartArgs | null = null;
+
+// The "no workspace folder open" warning is shown once per session: it is
+// advice about how the window is set up, not about this particular start,
+// and "Restart Python Process" is hit repeatedly while iterating on code.
+let warnedNoWorkspaceFolder = false;
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('SciStack');
@@ -55,6 +57,7 @@ export function activate(context: vscode.ExtensionContext) {
           canSelectMany: false,
           filters: { 'DuckDB Database': ['duckdb'] },
           title: 'Select SciStack Database',
+          defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
         });
         if (!dbUris || dbUris.length === 0) return;
         dbPath = dbUris[0].fsPath;
@@ -65,6 +68,7 @@ export function activate(context: vscode.ExtensionContext) {
           canSelectMany: false,
           title: 'Select folder for new SciStack database',
           openLabel: 'Select Folder',
+          defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
         });
         if (!folderUris || folderUris.length === 0) return;
         const folderPath = folderUris[0].fsPath;
@@ -99,53 +103,10 @@ export function activate(context: vscode.ExtensionContext) {
         schemaKeys = keysInput.split(',').map((s) => s.trim()).filter(Boolean);
       }
 
-      // Select pipeline source: project, single file, or none
-      const sourceChoice = await vscode.window.showQuickPick(
-        [
-          'Select a project (pyproject.toml)',
-          'Select a single pipeline module (.py)',
-          'No module',
-        ],
-        { placeHolder: 'How should SciStack discover your pipeline code?' }
-      );
-      if (!sourceChoice) return;
-
-      let modulePath: string | undefined;
-      let projectPath: string | undefined;
-
-      if (sourceChoice === 'Select a project (pyproject.toml)') {
-        const projectUris = await vscode.window.showOpenDialog({
-          canSelectFiles: true,
-          canSelectFolders: true,
-          canSelectMany: false,
-          filters: { 'TOML': ['toml'] },
-          title: 'Select pyproject.toml or project directory',
-        });
-        if (projectUris && projectUris.length > 0) {
-          const selectedPath = projectUris[0].fsPath;
-          const configStatus = checkProjectConfig(selectedPath);
-          if (configStatus === 'no_config_file') {
-            const result = await promptForMissingConfig(selectedPath, outputChannel);
-            if (result === undefined) return;  // user cancelled
-            projectPath = result;
-          } else {
-            projectPath = selectedPath;
-          }
-        }
-      } else if (sourceChoice === 'Select a single pipeline module (.py)') {
-        const moduleUris = await vscode.window.showOpenDialog({
-          canSelectFiles: true,
-          canSelectFolders: false,
-          canSelectMany: false,
-          filters: { 'Python': ['py'] },
-          title: 'Select Pipeline Module',
-        });
-        if (moduleUris && moduleUris.length > 0) {
-          modulePath = moduleUris[0].fsPath;
-        }
-      }
-
-      await startPipeline(context, dbPath, modulePath, projectPath, schemaKeys);
+      // No "how should SciStack discover your code?" step: pipeline code is
+      // discovered from the workspace folder once the database is open (see
+      // startPipeline's warnIfNoWorkspaceFolder and serverArgs.ts).
+      await startPipeline(context, dbPath, schemaKeys);
     }
   );
 
@@ -163,8 +124,6 @@ export function activate(context: vscode.ExtensionContext) {
         await startPipeline(
           context,
           lastStartArgs.dbPath,
-          lastStartArgs.modulePath,
-          lastStartArgs.projectPath,
           // Don't re-pass schemaKeys: the DB already exists on restart.
           undefined,
         );
@@ -181,18 +140,16 @@ export function activate(context: vscode.ExtensionContext) {
 async function startPipeline(
   context: vscode.ExtensionContext,
   dbPath: string,
-  modulePath?: string,
-  projectPath?: string,
   schemaKeys?: string[],
 ) {
   // Remember args so "Restart Python" can respawn without re-prompting.
   // Preserve the prior schemaKeys if this call didn't supply them (e.g. restart).
   lastStartArgs = {
     dbPath,
-    modulePath,
-    projectPath,
     schemaKeys: schemaKeys ?? lastStartArgs?.schemaKeys,
   };
+
+  warnIfNoWorkspaceFolder();
 
   // Kill existing process if any
   if (pythonProcess) {
@@ -215,11 +172,12 @@ async function startPipeline(
   outputChannel.appendLine(`Starting SciStack server...`);
   outputChannel.appendLine(`  Python: ${pythonPath} (from ${interpreterSource})`);
   outputChannel.appendLine(`  DB: ${dbPath}`);
-  if (projectPath) outputChannel.appendLine(`  Project: ${projectPath}`);
-  if (modulePath) outputChannel.appendLine(`  Module: ${modulePath}`);
+  outputChannel.appendLine(
+    `  Project root: ${workspaceFolderPath() ?? '(none — server will fall back, see above)'}`
+  );
   if (schemaKeys) outputChannel.appendLine(`  Schema keys: [${schemaKeys.join(', ')}] (new DB)`);
 
-  pythonProcess = new PythonProcess(pythonPath, dbPath, modulePath, outputChannel, schemaKeys, projectPath);
+  pythonProcess = new PythonProcess(pythonPath, dbPath, outputChannel, schemaKeys);
 
   try {
     const cfg = vscode.workspace.getConfiguration('scistack');
@@ -285,6 +243,36 @@ async function startPipeline(
   statusItem.text = `$(database) SciStack: ${dbPath.split('/').pop()}`;
   statusItem.tooltip = dbPath;
   statusItem.show();
+}
+
+function workspaceFolderPath(): string | undefined {
+  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+/**
+ * Warn when there is no folder open in this VS Code window.
+ *
+ * The extension no longer asks the user to point at a project or module up
+ * front; the server auto-discovers pipeline code from the project root, and
+ * with no `--project` that root is the workspace folder
+ * (`config.resolve_project_root` rule 2). With no folder open, rule 3 takes
+ * over and the root becomes the extension host's working directory — almost
+ * never where the user's code lives, so discovery comes back empty. That is
+ * the one case the removed picker used to cover, so name it explicitly
+ * rather than leaving an empty canvas unexplained.
+ */
+function warnIfNoWorkspaceFolder() {
+  if (workspaceFolderPath()) return;
+
+  const message =
+    'SciStack: no folder is open in this window, so there is no project to ' +
+    'discover pipeline code from. Open your project folder and run ' +
+    '"SciStack: Open Pipeline" again, or add paths from the Paths popup.';
+  outputChannel.appendLine(message);
+  if (!warnedNoWorkspaceFolder) {
+    warnedNoWorkspaceFolder = true;
+    vscode.window.showWarningMessage(message);
+  }
 }
 
 /**

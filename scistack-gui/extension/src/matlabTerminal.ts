@@ -11,10 +11,39 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 /**
+ * Local wall-clock stamp as `yyyy-mm-dd HH:MM:SS.mmm`.
+ *
+ * Deliberately local time, not `toISOString()` (which is UTC): this stamp
+ * exists to be subtracted from the generated script's own `script_start`
+ * line and from scidb.log's timestamps, and both of those are local. A UTC
+ * stamp would silently read as an hours-long dispatch.
+ */
+function formatStamp(d: Date): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.` +
+    `${p(d.getMilliseconds(), 3)}`
+  );
+}
+
+/**
  * Check whether the MathWorks MATLAB extension is installed.
  */
 export function isMatlabExtensionAvailable(): boolean {
   return vscode.extensions.getExtension('MathWorks.language-matlab') !== undefined;
+}
+
+/**
+ * Whether a MATLAB terminal already exists in this VS Code session.
+ *
+ * A rough proxy for "MATLAB is connected" — the MathWorks extension has no
+ * public API for actual readiness. Used by matlabConnectionGate.ts to tell
+ * a genuine first-time "Run" click (which only starts MATLAB) apart from a
+ * click after MATLAB is already up.
+ */
+export function isMatlabTerminalOpen(): boolean {
+  return vscode.window.terminals.some(t => t.name === 'MATLAB');
 }
 
 /**
@@ -43,18 +72,35 @@ export async function runInMatlabTerminal(
   }
 
   try {
+    // Dispatch timing. A short MATLAB run spent ~4.4s between the GUI
+    // emitting the script and MATLAB's first scidb log line; none of that
+    // window was attributable, because nothing on either side timestamped
+    // it. These three deltas split the VS Code half (write / open command
+    // window / sendText), and the wall-clock stamp on the sendText line
+    // pairs with the generated script's own `[SciStack][timing]
+    // script_start` stamp to measure everything in between — MATLAB
+    // picking up the pseudoterminal input and parsing the script — which
+    // neither side can see alone.
+    const t0 = Date.now();
+
     // Stable filename (overwritten each invocation) so we don't clutter
     // the temp dir. `run` evaluates the script in the caller's workspace,
     // so variables defined in the script remain visible after it returns.
     const scriptPath = path.join(os.tmpdir(), 'scistack_run.m');
     fs.writeFileSync(scriptPath, command, 'utf-8');
+    const tWritten = Date.now();
     outputChannel?.appendLine(
-      `runInMatlabTerminal: wrote ${command.length}-char script to ${scriptPath}`,
+      `runInMatlabTerminal: wrote ${command.length}-char script to ${scriptPath} ` +
+        `[timing] write=${tWritten - t0}ms`,
     );
 
     // The MathWorks extension provides this command to open the MATLAB
     // command window as an integrated terminal.
     await vscode.commands.executeCommand('matlab.openCommandWindow');
+    const tOpened = Date.now();
+    outputChannel?.appendLine(
+      `runInMatlabTerminal: [timing] openCommandWindow=${tOpened - tWritten}ms`,
+    );
 
     // Find the MATLAB terminal (created by the MathWorks extension).
     const terminal = vscode.window.terminals.find(t => t.name === 'MATLAB');
@@ -72,6 +118,11 @@ export async function runInMatlabTerminal(
     outputChannel?.appendLine(`runInMatlabTerminal: sendText ${runLine}`);
     terminal.sendText(runLine);
     terminal.show();
+    const tSent = Date.now();
+    outputChannel?.appendLine(
+      `runInMatlabTerminal: [timing] sendText=${tSent - tOpened}ms, ` +
+        `dispatch_total=${tSent - t0}ms, sent_at=${formatStamp(new Date(tSent))}`,
+    );
     return true;
   } catch (err) {
     outputChannel?.appendLine(`Failed to send to MATLAB terminal: ${err}`);

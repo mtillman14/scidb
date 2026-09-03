@@ -14,6 +14,11 @@
  * removing one of those is a no-op against source, so the row has no
  * remove button.
  *
+ * Removing the LAST declared value is allowed. A Parameter with no values is
+ * a real state — it is what "New parameter" creates, since that form collects
+ * only a name — and anything wired to an empty one fails loudly at run rather
+ * than running with a value nobody chose.
+ *
  * A refused write is SHOWN, never silently reverted — see useSourceEdit for
  * why that matters.
  *
@@ -23,6 +28,15 @@
  * start/end plus a step size or a target number of steps. Generation is
  * purely a frontend concern — the backend only ever receives the final flat
  * list, through the same `update_parameter` every other control here uses.
+ *
+ * What "Replace values" additionally sends is a `group`, and that is the
+ * whole of how a generated set is told apart from values added one at a time:
+ * the button IS the signal. The backend records it as display state (never in
+ * source, so the declaration stays a flat list in all three languages) and
+ * ships the set back as ONE row with a compact label, which both this panel
+ * and the canvas node render — the same string, computed once, in
+ * `graph_builder.render_value_group_label`. Individually added values are
+ * untouched by any of this and render exactly as they always have.
  */
 
 import { useMemo, useState } from 'react'
@@ -38,9 +52,16 @@ interface Props {
 type GenMode = 'list' | 'range'
 type RangeKind = 'step' | 'count'
 
-/** The values source currently declares, in node order. */
+/** The values source currently declares, in node order.
+ *
+ *  A generated row stands for its `members`, not for its own label — the
+ *  label (`0:2:20 — 11 values`) is display text and must never be written
+ *  back to source as a value. Flattening here is what lets every write below
+ *  keep sending the plain flat list the backend has always received. */
 function declaredValues(values: ParameterValue[]): string[] {
-  return values.filter(v => v.is_current_source_value).map(v => v.value)
+  return values
+    .filter(v => v.is_current_source_value)
+    .flatMap(v => (v.kind === 'generated' ? v.members ?? [] : [v.value]))
 }
 
 /** `"20"` -> 20, `"abc"` -> `"abc"` — the panel's inputs are text, but a
@@ -93,12 +114,19 @@ export default function ParameterSettingsPanel({ label, values }: Props) {
   const declared = declaredValues(values)
 
   // --- Generate section ---
+  // Seeded from the generation that produced the values currently on screen,
+  // when there was one: reopening Generate should show the range you last
+  // applied, not 0/10/1 again.
+  const genSpec = values.find(v => v.kind === 'generated')?.spec
+  const isRangeSpec = genSpec?.step !== undefined
   const [genOpen, setGenOpen] = useState(false)
-  const [genMode, setGenMode] = useState<GenMode>('list')
+  const [genMode, setGenMode] = useState<GenMode>(isRangeSpec ? 'range' : 'list')
   const [listDraft, setListDraft] = useState(declared.join(', '))
-  const [start, setStart] = useState('0')
-  const [end, setEnd] = useState('10')
-  const [third, setThird] = useState('1')
+  const [start, setStart] = useState(isRangeSpec ? String(genSpec!.start) : '0')
+  const [end, setEnd] = useState(isRangeSpec ? String(genSpec!.end) : '10')
+  const [third, setThird] = useState(isRangeSpec ? String(genSpec!.step) : '1')
+  // Always 'step': a stored spec records the step it worked out to, whether
+  // the user originally asked for a step size or a number of steps.
   const [rangeKind, setRangeKind] = useState<RangeKind>('step')
 
   // No re-seeding effect: Sidebar remounts this panel per node (key={id}),
@@ -123,20 +151,46 @@ export default function ParameterSettingsPanel({ label, values }: Props) {
     if (await write([...declared, v])) setDraft('')
   }
 
-  const removeValue = async (value: string) => {
-    const next = declared.filter(d => d !== value)
-    if (next.length === 0) {
-      // Mirrors the backend guard, but locally so the user gets the reason
-      // before a round-trip that would refuse it anyway.
-      clearError()
-      return
-    }
-    await write(next)
+  /** Remove one value, or — for a generated row — the whole set it stands
+   *  for. Emptying a Parameter completely is allowed: declared-with-no-value
+   *  is a legal state, and anything wired to it then fails loudly at run
+   *  rather than running with a value nobody chose. */
+  const removeValue = async (v: ParameterValue) => {
+    const gone = new Set(v.kind === 'generated' ? v.members ?? [] : [v.value])
+    await write(declared.filter(d => !gone.has(d)))
   }
 
   const applyGenerated = async () => {
     if (preview.length === 0) return
-    await submit('update_parameter', { name: label, values: preview })
+    // The `group` is the ONLY thing marking these values as one set — same
+    // endpoint, same flat list of values, different button. `addValue` above
+    // deliberately sends none.
+    await submit('update_parameter', {
+      name: label,
+      values: preview,
+      group: {
+        kind: genMode === 'range' ? 'range' : 'list',
+        spec:
+          genMode === 'range'
+            ? {
+                start: Number(start),
+                // The LAST GENERATED VALUE, not the typed end: 0/7/step 2
+                // produces 0,2,4,6, and a label reading "0:2:7" would name
+                // a value that is not in the set.
+                end: preview.length ? preview[preview.length - 1] : Number(end),
+                // The label states a step, so a count-mode range reports the
+                // step it worked out to — "0:2:20" is what the values ARE,
+                // whichever way the user asked for them.
+                step:
+                  rangeKind === 'step'
+                    ? Number(third)
+                    : preview.length > 1
+                    ? clean(preview[1] - preview[0])
+                    : 0,
+              }
+            : { members: preview },
+      },
+    })
   }
 
   return (
@@ -152,19 +206,26 @@ export default function ParameterSettingsPanel({ label, values }: Props) {
 
         {values.map((v, i) => {
           const isDeclared = !!v.is_current_source_value
+          const isGroup = v.kind === 'generated'
           return (
             <div key={i} style={styles.valueRow}>
-              <span style={styles.valuePill}>{v.value}</span>
+              <span style={isGroup ? styles.groupPill : styles.valuePill}>
+                {v.value}
+              </span>
               {v.record_count > 0 && (
                 <span style={styles.recCount}>{v.record_count} rec</span>
               )}
               {!isDeclared && <span style={styles.historyTag}>history</span>}
-              {isDeclared && declared.length > 1 && (
+              {isDeclared && (
                 <button
                   style={styles.removeBtn}
-                  onClick={() => removeValue(v.value)}
+                  onClick={() => removeValue(v)}
                   disabled={saving}
-                  title="Remove from the declaration in source"
+                  title={
+                    isGroup
+                      ? 'Remove the whole generated set from the declaration in source'
+                      : 'Remove from the declaration in source'
+                  }
                 >
                   ×
                 </button>
@@ -379,6 +440,18 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#1e3a2f',
     borderRadius: 3,
     padding: '2px 6px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: '#b2ded9',
+  },
+  // A generated set reads as one thing, so it gets its own pill: same family,
+  // dashed edge to say "this stands for several values".
+  groupPill: {
+    flex: 1,
+    background: '#1e3a2f',
+    border: '1px dashed #2a9d8f',
+    borderRadius: 3,
+    padding: '1px 6px',
     fontFamily: 'monospace',
     fontSize: 11,
     color: '#b2ded9',

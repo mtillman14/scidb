@@ -690,11 +690,18 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
     # Constants and Sweeps are ONE node kind (Parameters, D6) — built
     # together so a Parameter never changes node type or id when a second
     # value turns its declaration from a Constant into a Sweep.
+    entities_file = (
+        str(registry._config.entities_file)
+        if registry._config is not None and registry._config.entities_file is not None
+        else None
+    )
     nodes += gb.build_parameter_nodes(
         agg.const_counts,
         pending_constants,
         source_parameters,
         hidden_const_values,
+        _ps.get_parameter_value_groups(db),
+        entities_file,
     )
     const_node_count = len(nodes) - var_node_count
     nodes += gb.build_path_input_nodes(agg.path_inputs)
@@ -1280,6 +1287,27 @@ def unhide_parameter_value(
     from scistack_gui.services.layout_service import unhide_parameter_value as _unhide
 
     return _unhide(db, name, value, pipeline_id)
+
+
+class ParameterGroupChecked(BaseModel):
+    values: list[str] = []
+    checked: bool = True
+
+
+@router.post("/parameters/{name}/group_checked")
+def set_parameter_group_checked(
+    name: str,
+    body: ParameterGroupChecked,
+    pipeline_id: str = "main",
+    db: DatabaseManager = Depends(get_db),
+):
+    """Check/uncheck every member of a generated value set in one call —
+    the per-value route above would be one request per value."""
+    from scistack_gui.services.layout_service import (
+        set_parameter_group_checked as _set,
+    )
+
+    return _set(db, name, body.values, body.checked, pipeline_id)
 
 
 @router.get("/parameters/hidden_values")

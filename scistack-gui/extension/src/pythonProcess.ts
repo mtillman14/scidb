@@ -2,7 +2,8 @@
  * PythonProcess — manages the child Python JSON-RPC server.
  *
  * Responsibilities:
- *   - Spawns `python -m scistack_gui.server --db <path> [--module <path>] [--project <path>]`
+ *   - Spawns `python -m scistack_gui.server --db <path> [--project-root <path>]`
+ *     (argv built by `serverArgs.buildServerArgs`)
  *   - Parses newline-delimited JSON-RPC from stdout
  *   - Routes responses (have `id`) back to pending request promises
  *   - Routes notifications (no `id`) to registered listeners
@@ -13,6 +14,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import * as vscode from 'vscode';
+import { buildServerArgs } from './serverArgs';
 
 type NotificationHandler = (method: string, params: Record<string, unknown>) => void;
 
@@ -52,29 +54,11 @@ export class PythonProcess {
   constructor(
     readonly pythonPath: string,
     dbPath: string,
-    modulePath: string | undefined,
     private outputChannel: vscode.OutputChannel,
     schemaKeys?: string[],
-    projectPath?: string,
   ) {
-    const args = ['-m', 'scistack_gui.server', '--db', dbPath];
-    if (projectPath) {
-      args.push('--project', projectPath);
-    } else if (modulePath) {
-      args.push('--module', modulePath);
-    }
-    if (schemaKeys && schemaKeys.length > 0) {
-      args.push('--schema-keys', schemaKeys.join(','));
-    }
-
-    // The workspace folder is what the user thinks of as "the project", and
-    // it is the server's only way to know: a .duckdb usually lives in a
-    // datasets folder, so without this a new scistack.toml + entities file
-    // would be written next to the data instead of in the project.
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-      args.push('--project-root', workspaceFolder.uri.fsPath);
-    }
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const args = buildServerArgs({ dbPath, schemaKeys, projectRoot: workspaceFolder });
     this.args = args;
 
     this.outputChannel.appendLine(`Spawning: ${pythonPath} ${args.join(' ')}`);
@@ -104,7 +88,7 @@ export class PythonProcess {
     this.proc = spawn(pythonPath, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
-      cwd: workspaceFolder?.uri.fsPath,
+      cwd: workspaceFolder,
     });
 
     this.closed = new Promise((resolve) => {

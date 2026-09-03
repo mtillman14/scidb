@@ -711,6 +711,179 @@ class TestBuildParameterNodes:
         assert values[0]["is_current_source_value"] is True
 
 
+class TestParameterNodeSourceLocation:
+    """source_file/source_line/declared_in_entities_file power the canvas
+    context menu's "Refresh from file" / "Open source" actions (see
+    docs/claude/entity-editability-model.md and PipelineDAG.tsx's
+    onNodeContextMenu)."""
+
+    def test_declared_in_entities_file_when_source_matches(self):
+        p = Parameter(5)
+        p.source_file = "/proj/src/scistack_entities.toml"
+        p.source_line = 12
+        nodes = build_parameter_nodes(
+            {},
+            pending_constants={},
+            source_parameters={"hz": p},
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+        data = nodes[0]["data"]
+        assert data["source_file"] == "/proj/src/scistack_entities.toml"
+        assert data["source_line"] == 12
+        assert data["declared_in_entities_file"] is True
+
+    def test_not_declared_in_entities_file_when_source_is_a_legacy_module(self):
+        # Legacy .py-declared Parameter: source_file points elsewhere, so a
+        # reload of the entities file wouldn't change this value — the GUI
+        # must not offer "Refresh from file" for it.
+        p = Parameter(5)
+        p.source_file = "/proj/src/params.py"
+        p.source_line = 42
+        nodes = build_parameter_nodes(
+            {},
+            pending_constants={},
+            source_parameters={"hz": p},
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+        data = nodes[0]["data"]
+        assert data["source_file"] == "/proj/src/params.py"
+        assert data["source_line"] == 42
+        assert data["declared_in_entities_file"] is False
+
+    def test_no_entities_file_configured_is_never_declared_in_it(self):
+        p = Parameter(5)
+        p.source_file = "/proj/src/scistack_entities.toml"
+        p.source_line = 12
+        nodes = build_parameter_nodes(
+            {}, pending_constants={}, source_parameters={"hz": p}, entities_file=None
+        )
+        assert nodes[0]["data"]["declared_in_entities_file"] is False
+
+    def test_db_only_value_with_no_current_source_gets_no_location(self):
+        # A const with DB history but no matching entry in source_parameters
+        # (declaration was removed / never in this scan) -- see
+        # build_parameter_nodes' own "DB is the record of what actually
+        # ran" comment for why the node still exists.
+        nodes = build_parameter_nodes(
+            {"hz": {"10": 3}},
+            pending_constants={},
+            source_parameters={},
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+        data = nodes[0]["data"]
+        assert data["source_file"] is None
+        assert data["source_line"] is None
+        assert data["declared_in_entities_file"] is False
+
+
+class TestGeneratedValueGroups:
+    """Values written in one go by the panel's "Replace values" collapse to
+    ONE row with a compact label and one checkbox. Values added individually
+    are untouched by any of this — that is the whole point of the split."""
+
+    RANGE = {
+        "kind": "range",
+        "spec": {"start": 0, "end": 6, "step": 2},
+        "values": ["0", "2", "4", "6"],
+    }
+
+    def test_collapses_to_one_row_with_a_label(self):
+        nodes = build_parameter_nodes(
+            {},
+            pending_constants={},
+            source_parameters={"hz": Parameter(0, 2, 4, 6)},
+            value_groups={"hz": self.RANGE},
+        )
+        values = nodes[0]["data"]["values"]
+        assert len(values) == 1
+        assert values[0]["kind"] == "generated"
+        assert values[0]["value"] == "0:2:6 — 4 values"
+        assert values[0]["members"] == ["0", "2", "4", "6"]
+        assert values[0]["is_current_source_value"] is True
+
+    def test_record_counts_are_summed_across_members(self):
+        nodes = build_parameter_nodes(
+            {"hz": {"0": 3, "2": 4, "4": 0, "6": 1}},
+            pending_constants={},
+            source_parameters={"hz": Parameter(0, 2, 4, 6)},
+            value_groups={"hz": self.RANGE},
+        )
+        assert nodes[0]["data"]["values"][0]["record_count"] == 8
+
+    def test_one_hidden_member_unchecks_the_whole_set(self):
+        nodes = build_parameter_nodes(
+            {},
+            pending_constants={},
+            source_parameters={"hz": Parameter(0, 2, 4, 6)},
+            hidden_values={"hz": {"4"}},
+            value_groups={"hz": self.RANGE},
+        )
+        assert nodes[0]["data"]["values"][0]["checked"] is False
+
+    def test_individually_added_value_stays_its_own_row(self):
+        """Adding a value after generating leaves the set intact: one group
+        row, plus the extra value rendered exactly as it always was."""
+        nodes = build_parameter_nodes(
+            {},
+            pending_constants={},
+            source_parameters={"hz": Parameter(0, 2, 4, 6, 99)},
+            value_groups={"hz": self.RANGE},
+        )
+        values = nodes[0]["data"]["values"]
+        assert len(values) == 2
+        assert values[0]["kind"] == "generated"
+        assert values[1] == {
+            "value": "99",
+            "record_count": 0,
+            "checked": True,
+            "is_current_source_value": True,
+        }
+
+    def test_stale_group_is_ignored_and_every_value_renders_individually(self):
+        """A member removed from source (a hand edit, or the panel's ×)
+        makes the grouping stale. Source is the truth for which values
+        exist, so the group must never mask a value that is really
+        declared — or keep claiming one that is not."""
+        nodes = build_parameter_nodes(
+            {},
+            pending_constants={},
+            source_parameters={"hz": Parameter(0, 2, 6)},  # "4" is gone
+            value_groups={"hz": self.RANGE},
+        )
+        values = nodes[0]["data"]["values"]
+        assert [v["value"] for v in values] == ["0", "2", "6"]
+        assert all("kind" not in v for v in values)
+
+    def test_no_group_leaves_values_exactly_as_before(self):
+        with_group = build_parameter_nodes(
+            {"hz": {"10": 3}}, pending_constants={}, value_groups={}
+        )
+        without = build_parameter_nodes({"hz": {"10": 3}}, pending_constants={})
+        assert with_group == without
+
+    def test_list_generation_label_shows_members(self):
+        from scistack_gui.domain.graph_builder import render_value_group_label
+
+        assert (
+            render_value_group_label("list", {"members": [1, 2, 5, 10]}, 4)
+            == "1, 2, 5, 10"
+        )
+
+    def test_long_list_label_truncates_with_a_count(self):
+        from scistack_gui.domain.graph_builder import render_value_group_label
+
+        label = render_value_group_label("list", {"members": list(range(12))}, 12)
+        assert label == "0, 1, 2, 3, 4, 5 — 12 values"
+
+    def test_whole_floats_render_without_a_trailing_zero(self):
+        from scistack_gui.domain.graph_builder import render_value_group_label
+
+        label = render_value_group_label(
+            "range", {"start": 0.0, "end": 20.0, "step": 2.0}, 11
+        )
+        assert label == "0:2:20 — 11 values"
+
+
 class TestParameterMerge:
     """One Parameter class, one node kind (D6). A Parameter keeps its id,
     type and position whatever its value count -- adding a value is adding

@@ -16,7 +16,8 @@ from __future__ import annotations
 import json
 
 import numpy as np
-from scidb import BaseVariable
+import pytest
+from scidb import BaseVariable, Parameter
 
 from scistack_gui import pipeline_store
 from scistack_gui.db import get_db
@@ -112,6 +113,56 @@ class TestNeverRunComboHiddenConstantValue:
 
         pipeline_store.hide_parameter_value(db, "low_hz", "20")
         assert derive_target_for_node(db, "mf_bp2") == []
+
+
+class TestUnvaluedParameter:
+    """A Parameter declared but not yet given a value. Both paths that could
+    swallow it silently now refuse it instead."""
+
+    def test_inference_skips_it_rather_than_contributing_an_empty_axis(self):
+        """_inferred_targets takes the Cartesian PRODUCT of these lists, so
+        one empty list yields ZERO targets — the node would report "nothing
+        derivable", which is both the wrong diagnosis and a silent one.
+        Left out, the target is still built and the run reaches
+        build_run_inputs, which raises naming the parameter."""
+        from scistack_gui.services.execution_service import _infer_wired_constants
+
+        inferred = _infer_wired_constants(
+            {"low_hz": "low_hz"},
+            {},
+            {"low_hz": Parameter()},
+            log_context="'bandpass_filter'",
+        )
+        assert inferred == {}
+
+    def test_declared_values_are_still_used_when_present(self):
+        """The guard must not swallow the ordinary case it sits next to."""
+        from scistack_gui.services.execution_service import _infer_wired_constants
+
+        inferred = _infer_wired_constants(
+            {"low_hz": "low_hz"},
+            {},
+            {"low_hz": Parameter(20, 30)},
+            log_context="'bandpass_filter'",
+        )
+        assert inferred == {"low_hz": [20, 30]}
+
+    def test_build_run_inputs_refuses_to_bind_it(self, populated_db, monkeypatch):
+        """Bound as-is it is a zero-length EachOf axis: for_each would
+        iterate zero times, write no records and report success."""
+        from scistack_gui import registry
+        from scistack_gui.domain.edge_resolver import BINDING_PARAMETER
+        from scistack_gui.services.execution_service import build_run_inputs
+
+        monkeypatch.setitem(registry._parameters, "low_hz", Parameter())
+        target = {
+            "constants": {},
+            "bindings": {"low_hz": {"kind": BINDING_PARAMETER, "ref": "low_hz"}},
+        }
+        with pytest.raises(ValueError, match="has no value yet") as excinfo:
+            build_run_inputs(target, "bandpass_filter", populated_db)
+        # Names the DECLARED parameter the user sees on the canvas.
+        assert "'low_hz'" in str(excinfo.value)
 
 
 class TestDbHistoryPathInputBinding:

@@ -10,6 +10,8 @@
   "include": [
     "src/startupDiagnostics.ts",
     "src/matlabRunTracker.ts",
+    "src/serverArgs.ts",
+    "src/matlabConnectionGate.ts",
     "src/*.test.ts"
   ]
 }

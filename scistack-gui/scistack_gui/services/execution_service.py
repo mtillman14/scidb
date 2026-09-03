@@ -45,7 +45,10 @@ def _infer_wired_constants(
     different call site — see ``derive_target_for_node``'s docstring for
     the full rationale); then the Parameter's source-declared value(s). A
     parameter with none of the above is dropped from the returned dict
-    (logged at WARNING).
+    (logged at WARNING) — including one that IS declared but has no values
+    yet, which must be dropped rather than contributing an empty list, since
+    ``_inferred_targets`` products these together and one empty list yields
+    zero targets.
 
     *parameter_params* is ``{param_name: declared_name}`` straight from the
     wiring (``ResolvedEdges.parameter_params``, the Parameter view over its
@@ -104,7 +107,10 @@ def _infer_wired_constants(
                 )
         if typed_vals:
             inferred[param_name] = typed_vals
-        elif decl_name in constants_registry:
+        # `.values` and not the Parameter itself: `bool(Parameter())` raises
+        # (there is no single value to be truthy about), so testing the
+        # object here would take the run down instead of falling through.
+        elif decl_name in constants_registry and constants_registry[decl_name].values:
             # EVERY declared value, not just the first: a Parameter with
             # several values is a fan-out, and silently taking one would
             # turn a multi-combo run into a single one.
@@ -118,6 +124,20 @@ def _infer_wired_constants(
                 decl_name,
                 no_values_phrase,
                 declared,
+            )
+        elif decl_name in constants_registry:
+            # Declared, but with no values yet. It must NOT enter `inferred`:
+            # `_inferred_targets` takes the Cartesian product of these lists,
+            # so a single empty one yields ZERO targets and the node reports
+            # "nothing derivable" — the wrong diagnosis, and a silent one.
+            # Left out, the target is still built and the run reaches
+            # `build_run_inputs`, which raises naming the parameter.
+            logger.warning(
+                "[execution] %s: parameter '%s' (declared '%s') is wired but "
+                "has no value yet — give it at least one value",
+                log_context,
+                param_name,
+                decl_name,
             )
         else:
             logger.warning(
@@ -980,6 +1000,18 @@ def build_run_inputs(target: dict, function_name: str, db=None) -> dict:
                     ref,
                 )
                 continue
+            if not p.values:
+                # Declared but never given a value. Raising is the whole
+                # point: bound as-is it is a zero-length EachOf axis, so
+                # for_each would iterate zero times, write no records and
+                # report success. (for_each refuses it too — this one gets
+                # in first so the message can name the DECLARED parameter
+                # the user sees on the canvas, not the signature param.)
+                raise ValueError(
+                    f"parameter '{ref}' has no value yet, so '{function_name}' "
+                    f"has nothing to run -- give it at least one value on its "
+                    f"node."
+                )
             # Hidden values are keyed by the PARAMETER NODE's declared name
             # (the checkbox writes that name), not the signature param it feeds.
             inputs[param] = _apply_hidden_values(

@@ -111,13 +111,68 @@ class TestRestEndpoints:
         assert body["line"] == 3
         assert "scidb.Parameter(7" in other.read_text()
 
-    def test_empty_sweep_is_rejected(self, client, tmp_path):
+    def test_empty_values_are_accepted(self, client, tmp_path):
+        """A Parameter's value set may be empty at any time, not only at
+        creation -- removing the last value is allowed, not blocked (see
+        parameter_service.update_parameter). Anything wired to it fails
+        loudly at for_each expansion instead."""
         entities = _project(tmp_path, "import scidb\n\nW = scidb.Parameter(1)\n")
 
         resp = client.put("/api/parameters/W", json={"values": []})
 
-        assert not resp.json()["ok"]
-        assert "scidb.Parameter(1)" in entities.read_text()
+        assert resp.json()["ok"], resp.json()
+        assert "scidb.Parameter(description=''" in entities.read_text()
+
+
+def _toml_project(tmp_path, toml_text):
+    """Like ``_project`` above, but for the current writable format
+    (``entities_file`` is TOML since 2026-09-01 — see
+    docs/claude/entity-editability-model.md). ``_project`` still exercises
+    the legacy ``.py`` surface for its own tests; this is a separate helper
+    so that surface's behavior can't leak into TOML-format coverage."""
+    from scistack_gui.db import get_db_path
+
+    entities = tmp_path / "scistack_entities.toml"
+    entities.write_text(toml_text, encoding="utf-8")
+    config_mod.set_entities_file(get_db_path(), entities)
+    _registry._module_path = None
+    _registry.load_from_config(config_mod.load_config(None, get_db_path()))
+    return entities
+
+
+class TestRefreshParameterSourceEndpoint:
+    """POST /parameters/{name}/refresh-source — the standalone trigger for
+    registry.reload_entities_file(), so a Parameter's context menu can pull
+    in a value hand-edited directly in the TOML file."""
+
+    def test_picks_up_a_hand_edit(self, client, tmp_path):
+        entities = _toml_project(
+            tmp_path, "variables = []\n\n[parameters]\nHZ = 10\n"
+        )
+        entities.write_text("variables = []\n\n[parameters]\nHZ = 20\n", encoding="utf-8")
+
+        resp = client.post("/api/parameters/HZ/refresh-source")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert _registry.get_parameters_registry()["HZ"].value == 20
+
+    def test_name_in_the_url_does_not_scope_the_reload(self, client, tmp_path):
+        """*name* is REST-consistency + logging only — the reload is
+        whole-file, matching layout_service.refresh_parameter_source's own
+        contract (test_narrow_reload.py's
+        TestRefreshParameterSource.test_name_is_logged_only_...)."""
+        entities = _toml_project(
+            tmp_path, "variables = []\n\n[parameters]\nA = 1\nB = 2\n"
+        )
+        entities.write_text(
+            "variables = []\n\n[parameters]\nA = 1\nB = 99\n", encoding="utf-8"
+        )
+
+        resp = client.post("/api/parameters/A/refresh-source")
+
+        assert resp.json() == {"ok": True}
+        assert _registry.get_parameters_registry()["B"].value == 99
 
 
 class TestTransportParity:
@@ -126,8 +181,22 @@ class TestTransportParity:
     def test_handlers_are_registered(self):
         from scistack_gui.server import METHODS
 
-        for method in ("update_parameter", "update_path_input"):
+        for method in ("update_parameter", "update_path_input", "refresh_parameter_source"):
             assert method in METHODS, f"{method} missing from the JSON-RPC table"
+
+    def test_refresh_parameter_source_rpc_accepts_the_rest_param_name(self, tmp_path, populated_db):
+        """REST puts the name in the URL path; RPC takes it from
+        params['name'] — the same shape every other single-name parameter
+        route in this codebase already uses (create/update/delete_parameter)."""
+        from scistack_gui.server import METHODS
+
+        entities = _toml_project(tmp_path, "variables = []\n\n[parameters]\nHZ = 10\n")
+        entities.write_text("variables = []\n\n[parameters]\nHZ = 20\n", encoding="utf-8")
+
+        result = METHODS["refresh_parameter_source"]({"name": "HZ"})
+
+        assert result == {"ok": True}
+        assert _registry.get_parameters_registry()["HZ"].value == 20
 
     def test_json_rpc_handlers_accept_the_rest_param_names(self, tmp_path, populated_db):
         """The params the frontend sends must satisfy both transports. Driving

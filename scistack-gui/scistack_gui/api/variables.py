@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from scidb.database import DatabaseManager
 
-from scistack_gui.api import ws
 from scistack_gui.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -271,13 +270,24 @@ async def create_variable(req: CreateVariableRequest) -> dict:
     source of truth also used by the JSON-RPC (VS Code extension) path in
     server.py -- so validation/target-file/MATLAB-fallback behavior can't
     drift between the two transports.
+
+    Deliberately does NOT broadcast ``dag_updated``: a freshly declared type
+    has no DB records yet, so it cannot appear as a canvas node (variable
+    nodes come from ``list_variables``, not from the type registry — see
+    ``graph_builder.build_variable_nodes``), and nothing in the frontend
+    renders a per-node "declared" state that a broadcast would need to
+    refresh (the undeclared case is only ever surfaced at the run boundary,
+    see ``layout_service.write_manual_node``). Broadcasting here used to
+    force every connected client through a full pipeline refetch+relayout
+    plus registry/path-input/parameter/hidden-pipeline refetches for a
+    change the canvas can't show — the same "rebuild for nothing" cost the
+    position-only-write guard in ``api/pipeline.py`` exists to avoid. The
+    caller updates its own sidebar registry state directly instead, same as
+    ``create_parameter``/``create_path_input`` already do.
     """
     from scistack_gui.services.variable_service import create_variable as _create
 
     name = req.name.strip()
     logger.info("create_variable request: name=%r docstring=%r", name, req.docstring)
 
-    result = _create(name, req.docstring)
-    if result.get("ok"):
-        await ws.broadcast({"type": "dag_updated"})
-    return result
+    return _create(name, req.docstring)

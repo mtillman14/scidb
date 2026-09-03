@@ -33,12 +33,15 @@ import '@xyflow/react/dist/style.css'
 
 import VariableNode from './VariableNode'
 import FunctionNode from './FunctionNode'
-import ParameterNode from './ParameterNode'
+import ParameterNode, { type ParameterNodeData } from './ParameterNode'
 import PathInputNode from './PathInputNode'
 import PipelineNode, { type PipelineNodeData } from './PipelineNode'
 import RunsDock from '../RunsDock'
+import { SourceLocationDialog } from '../SourceLocationDialog'
+import type { SourceLocation } from '../SourceLocationDialog'
+import { formatLocation } from '../Sidebar/useSourceEdit'
 import { applyDagreLayout } from '../../layout'
-import { callBackend } from '../../api'
+import { callBackend, isVSCodeMode } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useSelectedNode } from '../../context/SelectedNodeContext'
 import { useSidebarSelection } from '../../context/SidebarSelectionContext'
@@ -59,7 +62,7 @@ const nodeTypes = {
 interface ContextMenuState {
   x: number
   y: number
-  nodeType: 'functionNode' | 'variableNode'
+  nodeType: 'functionNode' | 'variableNode' | 'parameterNode'
   fnLabel?: string
   varType?: string
   // Which single direction this variable node's type plays in the
@@ -71,6 +74,10 @@ interface ContextMenuState {
   // ever real for a given type in a given scope, so only one toggle is
   // offered — never both.
   portDirection?: 'input' | 'output'
+  paramLabel?: string
+  paramSourceFile?: string | null
+  paramSourceLine?: number | null
+  paramDeclaredInEntitiesFile?: boolean
 }
 
 interface HiddenPorts {
@@ -115,6 +122,7 @@ export default function PipelineDAG() {
   const pendingCreateRef = useRef<Map<string, Promise<unknown>>>(new Map())
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [sourceLoc, setSourceLoc] = useState<SourceLocation | null>(null)
   const [runFinalized, setRunFinalized] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [extractDraft, setExtractDraft] = useState<{ open: boolean; name: string; error: string }>(
@@ -366,8 +374,10 @@ export default function PipelineDAG() {
   // Right-click a variable node, OUTSIDE root scope → "Show/Hide outside
   // pipeline" (to-do #9) — root is never itself a pipeline node anywhere,
   // so hiding its ports would be a no-op.
+  // Right-click a Parameter node → "Refresh from file" / "Open source",
+  // when its declaration location is known (see ParameterNodeData).
   const onNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
-    if (node.type !== 'functionNode' && node.type !== 'variableNode') return
+    if (node.type !== 'functionNode' && node.type !== 'variableNode' && node.type !== 'parameterNode') return
     if (node.type === 'variableNode' && currentScope === 'main') return
     e.preventDefault()
     // Menu coordinates are relative to the canvas wrapper (position: relative).
@@ -375,6 +385,17 @@ export default function PipelineDAG() {
     const base = { x: e.clientX - (bounds?.left ?? 0), y: e.clientY - (bounds?.top ?? 0) }
     if (node.type === 'functionNode') {
       setContextMenu({ ...base, nodeType: 'functionNode', fnLabel: (node.data as { label: string }).label })
+    } else if (node.type === 'parameterNode') {
+      const d = node.data as unknown as ParameterNodeData
+      if (!d.source_file) return  // nothing declared to open or refresh
+      setContextMenu({
+        ...base,
+        nodeType: 'parameterNode',
+        paramLabel: d.label,
+        paramSourceFile: d.source_file,
+        paramSourceLine: d.source_line,
+        paramDeclaredInEntitiesFile: d.declared_in_entities_file,
+      })
     } else {
       // Classify from THIS scope's own edges (already scope-filtered by
       // the backend, so any edge touching this node id is in-scope): an
@@ -404,6 +425,38 @@ export default function PipelineDAG() {
     })
     setContextMenu(null)
   }, [contextMenu, currentScope, breadcrumb, requestPlan])
+
+  // Re-reads the entities file only (registry.reload_entities_file — a
+  // single TOML parse) so an externally hand-edited value (e.g. a
+  // dict/struct too complex for the sidebar's add-value form) shows up
+  // without the ~16.5s full "Refresh Code" rescan. No local optimistic
+  // update: the backend broadcasts dag_updated on success, same as
+  // hide/unhide, and the canvas refetches from there.
+  const handleRefreshParameterSource = useCallback(() => {
+    const name = contextMenu?.paramLabel
+    setContextMenu(null)
+    if (!name) return
+    callBackend('refresh_parameter_source', { name })
+      .then(res => {
+        const r = res as { ok: boolean; error?: string }
+        if (!r.ok) window.alert(`Could not refresh '${name}' from file: ${r.error ?? 'unknown error'}`)
+      })
+      .catch(err => window.alert(`Could not refresh '${name}' from file: ${(err as Error).message}`))
+  }, [contextMenu])
+
+  // Location is already on the node's data (unlike functions, no RPC
+  // round-trip needed to look it up — see ParameterNodeData).
+  const handleOpenParameterSource = useCallback(() => {
+    const { paramLabel, paramSourceFile, paramSourceLine } = contextMenu ?? {}
+    setContextMenu(null)
+    if (!paramLabel || !paramSourceFile) return
+    if (isVSCodeMode) {
+      callBackend('reveal_in_editor', { file: paramSourceFile, line: paramSourceLine })
+        .catch(err => window.alert(`Failed to open source: ${(err as Error).message}`))
+    } else {
+      setSourceLoc({ name: paramLabel, file: paramSourceFile, line: paramSourceLine ?? 0 })
+    }
+  }, [contextMenu])
 
   // Toggle one direction's port for the right-clicked variable type — the
   // internal node itself is never hidden, only its outward-facing dot on
@@ -804,6 +857,21 @@ export default function PipelineDAG() {
           </div>
         )
       })()}
+      {contextMenu && contextMenu.nodeType === 'parameterNode' && contextMenu.paramSourceFile && (
+        <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
+          {contextMenu.paramDeclaredInEntitiesFile && (
+            <button style={styles.contextMenuItem} onClick={handleRefreshParameterSource} type="button">
+              🔄 Refresh from file
+            </button>
+          )}
+          <button style={styles.contextMenuItem} onClick={handleOpenParameterSource} type="button">
+            📝 Open source ({formatLocation({ file: contextMenu.paramSourceFile, line: contextMenu.paramSourceLine ?? null })})
+          </button>
+        </div>
+      )}
+      {sourceLoc && (
+        <SourceLocationDialog location={sourceLoc} onClose={() => setSourceLoc(null)} />
+      )}
     </div>
   )
 }

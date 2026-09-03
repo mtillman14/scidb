@@ -131,6 +131,87 @@ class TestHiddenParameterValues:
         ]
 
 
+class TestBulkHiddenParameterValues:
+    """The generated-set checkbox toggles every member at once, so it must
+    do it in one statement rather than one call per value."""
+
+    def test_hide_many_in_one_call(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_parameter_values(db, "low_hz", ["10", "20", "30"])
+        assert {
+            r["value"] for r in pipeline_store.list_hidden_parameter_values(db)
+        } == {"10", "20", "30"}
+
+    def test_unhide_many_leaves_others_hidden(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_parameter_values(db, "low_hz", ["10", "20", "30"])
+        pipeline_store.hide_parameter_value(db, "other", "99")
+        pipeline_store.unhide_parameter_values(db, "low_hz", ["10", "30"])
+        remaining = {
+            (r["const_name"], r["value"])
+            for r in pipeline_store.list_hidden_parameter_values(db)
+        }
+        assert remaining == {("low_hz", "20"), ("other", "99")}
+
+    def test_empty_list_is_a_noop(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_parameter_values(db, "low_hz", [])
+        pipeline_store.unhide_parameter_values(db, "low_hz", [])
+        assert pipeline_store.list_hidden_parameter_values(db) == []
+
+    def test_bulk_hide_is_idempotent(self, populated_db):
+        db = populated_db
+        pipeline_store.hide_parameter_values(db, "low_hz", ["10", "20"])
+        pipeline_store.hide_parameter_values(db, "low_hz", ["10", "20"])
+        assert len(pipeline_store.list_hidden_parameter_values(db)) == 2
+
+
+class TestParameterValueGroups:
+    """Which values came from the Generate section. GUI display state, kept
+    out of source so the declaration stays a flat list in every language."""
+
+    def test_round_trip(self, populated_db):
+        db = populated_db
+        pipeline_store.set_parameter_value_group(
+            db,
+            "low_hz",
+            kind="range",
+            spec={"start": 0, "end": 6, "step": 2},
+            values=["0", "2", "4", "6"],
+        )
+        groups = pipeline_store.get_parameter_value_groups(db)
+        assert groups["low_hz"]["kind"] == "range"
+        assert groups["low_hz"]["spec"] == {"start": 0, "end": 6, "step": 2}
+        assert groups["low_hz"]["values"] == ["0", "2", "4", "6"]
+
+    def test_one_group_per_parameter(self, populated_db):
+        db = populated_db
+        pipeline_store.set_parameter_value_group(
+            db, "low_hz", kind="range", spec={}, values=["1"]
+        )
+        pipeline_store.set_parameter_value_group(
+            db, "low_hz", kind="list", spec={"members": [7, 8]}, values=["7", "8"]
+        )
+        groups = pipeline_store.get_parameter_value_groups(db)
+        assert len(groups) == 1
+        assert groups["low_hz"]["kind"] == "list"
+        assert groups["low_hz"]["values"] == ["7", "8"]
+
+    def test_clear_removes_only_that_parameter(self, populated_db):
+        db = populated_db
+        pipeline_store.set_parameter_value_group(
+            db, "a", kind="list", spec={}, values=["1"]
+        )
+        pipeline_store.set_parameter_value_group(
+            db, "b", kind="list", spec={}, values=["2"]
+        )
+        pipeline_store.clear_parameter_value_group(db, "a")
+        assert list(pipeline_store.get_parameter_value_groups(db)) == ["b"]
+
+    def test_empty_by_default(self, populated_db):
+        assert pipeline_store.get_parameter_value_groups(populated_db) == {}
+
+
 class TestHiddenEdges:
     """hide_edge/unhide_edge never delete data -- they're a completely
     separate table from hidden NODES (hiding an edge keeps the node on

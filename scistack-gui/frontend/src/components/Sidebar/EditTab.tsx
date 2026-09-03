@@ -20,11 +20,14 @@
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { callBackend } from '../../api'
+import { callBackend, isVSCodeMode } from '../../api'
 import { useBackendMessage } from '../../hooks/useBackendMessage'
 import { useScope } from '../../context/ScopeContext'
 import { useSidebarSelection } from '../../context/SidebarSelectionContext'
 import type { SidebarItemKind, SidebarSelectedItem } from '../../context/SidebarSelectionContext'
+import { SourceLocationDialog } from '../SourceLocationDialog'
+import type { SourceLocation } from '../SourceLocationDialog'
+import { formatLocation } from './useSourceEdit'
 
 interface LoadError {
   source: string
@@ -48,6 +51,13 @@ interface HiddenPipelineInfo {
   pipeline_id: string
   name: string
   is_hypothesis: boolean
+}
+
+interface ParameterListItem {
+  name: string
+  source_file?: string | null
+  source_line?: number | null
+  declared_in_entities_file?: boolean
 }
 
 interface TabDef {
@@ -83,7 +93,9 @@ export default function EditTab() {
   // It's still fully visible, per-module, in 📁 Paths → Discovered Code
   // (components/Sidebar/ProjectConfigPanel.tsx) for when it's worth digging into.
   const [discoveryError, setDiscoveryError] = useState('')
-  const [parameters, setParameters] = useState<string[]>([])
+  const [parameters, setParameters] = useState<ParameterListItem[]>([])
+  const [paramContextMenu, setParamContextMenu] = useState<{ x: number; y: number; item: ParameterListItem } | null>(null)
+  const [paramSourceLoc, setParamSourceLoc] = useState<SourceLocation | null>(null)
   const [addingConst, setAddingConst] = useState(false)
   const [constDraft, setConstDraft] = useState('')
   const constInputRef = useRef<HTMLInputElement>(null)
@@ -203,8 +215,7 @@ export default function EditTab() {
   function fetchParameters() {
     callBackend('get_parameters')
       .then((items) => {
-        const arr = items as Array<{ name: string }>
-        setParameters(arr.map(i => i.name))
+        setParameters(items as ParameterListItem[])
       })
       .catch(err => {
         console.error(err)
@@ -271,6 +282,10 @@ export default function EditTab() {
       .then(data => {
         const d = data as { ok?: boolean; error?: string }
         if (d.ok) {
+          // No dag_updated broadcast follows this (see api/variables.py) —
+          // a bare type declaration can't change the canvas, so refresh
+          // just this panel's own registry rather than waiting on one.
+          fetchRegistry()
           setVarDraft('')
           setAddingVar(false)
           setVarError('')
@@ -413,6 +428,40 @@ export default function EditTab() {
 
   const selectListItem = (kind: SidebarItemKind, name: string, displayLabel?: string) => {
     setSelectedItem({ kind, name, displayLabel })
+  }
+
+  // Right-click a Parameter row → "Refresh from file" / "Open source",
+  // mirroring PipelineDAG.tsx's canvas context menu for the same node type
+  // (see docs/claude/entity-editability-model.md — same actions, second
+  // surface). Positioned viewport-fixed rather than canvas-relative, since
+  // this list has no bounding-box math to do.
+  const openParamContextMenu = (e: React.MouseEvent, item: ParameterListItem) => {
+    e.preventDefault()
+    setParamContextMenu({ x: e.clientX, y: e.clientY, item })
+  }
+
+  const handleRefreshParamFromSidebar = () => {
+    const name = paramContextMenu?.item.name
+    setParamContextMenu(null)
+    if (!name) return
+    callBackend('refresh_parameter_source', { name })
+      .then(res => {
+        const r = res as { ok: boolean; error?: string }
+        if (!r.ok) window.alert(`Could not refresh '${name}' from file: ${r.error ?? 'unknown error'}`)
+      })
+      .catch(err => window.alert(`Could not refresh '${name}' from file: ${(err as Error).message}`))
+  }
+
+  const handleOpenParamSourceFromSidebar = () => {
+    const item = paramContextMenu?.item
+    setParamContextMenu(null)
+    if (!item?.source_file) return
+    if (isVSCodeMode) {
+      callBackend('reveal_in_editor', { file: item.source_file, line: item.source_line })
+        .catch(err => window.alert(`Failed to open source: ${(err as Error).message}`))
+    } else {
+      setParamSourceLoc({ name: item.name, file: item.source_file, line: item.source_line ?? 0 })
+    }
   }
 
   return (
@@ -677,12 +726,13 @@ export default function EditTab() {
                 makes. Both lists are unioned and de-duplicated by name. */}
             {parameters.map(c => (
               <DragItem
-                key={c}
-                label={c}
+                key={c.name}
+                label={c.name}
                 color="#2a9d8f"
-                selected={selectedItem?.kind === 'parameter' && selectedItem.name === c}
-                onDragStart={e => onDragStart(e, 'parameterNode', c)}
-                onClick={() => selectListItem('parameter', c)}
+                selected={selectedItem?.kind === 'parameter' && selectedItem.name === c.name}
+                onDragStart={e => onDragStart(e, 'parameterNode', c.name)}
+                onClick={() => selectListItem('parameter', c.name)}
+                onContextMenu={c.source_file ? (e) => openParamContextMenu(e, c) : undefined}
               />
             ))}
             {addingConst && (
@@ -748,6 +798,28 @@ export default function EditTab() {
           onNoteSaved={(key, text) => setNotes(prev => ({ ...prev, [key]: text }))}
           onClose={() => setSelectedItem(null)}
         />
+      )}
+      {paramContextMenu && (
+        <>
+          {/* Transparent full-viewport backdrop: EditTab has no other
+              click-away infra, unlike PipelineDAG's onPaneClick. */}
+          <div style={styles.contextMenuBackdrop} onClick={() => setParamContextMenu(null)} onContextMenu={e => { e.preventDefault(); setParamContextMenu(null) }} />
+          <div style={{ ...styles.contextMenu, left: paramContextMenu.x, top: paramContextMenu.y }}>
+            {paramContextMenu.item.declared_in_entities_file && (
+              <button style={styles.contextMenuItem} onClick={handleRefreshParamFromSidebar} type="button">
+                🔄 Refresh from file
+              </button>
+            )}
+            {paramContextMenu.item.source_file && (
+              <button style={styles.contextMenuItem} onClick={handleOpenParamSourceFromSidebar} type="button">
+                📝 Open source ({formatLocation({ file: paramContextMenu.item.source_file, line: paramContextMenu.item.source_line ?? null })})
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      {paramSourceLoc && (
+        <SourceLocationDialog location={paramSourceLoc} onClose={() => setParamSourceLoc(null)} />
       )}
     </div>
   )
@@ -873,18 +945,21 @@ function DragItem({
   selected,
   onDragStart,
   onClick,
+  onContextMenu,
 }: {
   label: string
   color: string
   selected?: boolean
   onDragStart: (e: React.DragEvent) => void
   onClick?: () => void
+  onContextMenu?: (e: React.MouseEvent) => void
 }) {
   return (
     <div
       draggable
       onDragStart={onDragStart}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       style={{ ...styles.item, borderLeftColor: color, ...(selected ? styles.itemSelected : {}) }}
     >
       {label}
@@ -898,6 +973,35 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     height: '100%',
     overflow: 'hidden',
+  },
+  contextMenuBackdrop: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 999,
+    background: 'transparent',
+  },
+  contextMenu: {
+    // Fixed, not absolute: coordinates come from clientX/clientY (viewport),
+    // unlike PipelineDAG's canvas-relative menu.
+    position: 'fixed',
+    zIndex: 1000,
+    background: '#1a1a2e',
+    border: '1px solid #3a3a5a',
+    borderRadius: 4,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+    overflow: 'hidden',
+  },
+  contextMenuItem: {
+    display: 'block',
+    width: '100%',
+    padding: '6px 14px',
+    background: 'transparent',
+    color: '#eee',
+    border: 'none',
+    fontSize: 12,
+    textAlign: 'left',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
   tabStrip: {
     display: 'flex',

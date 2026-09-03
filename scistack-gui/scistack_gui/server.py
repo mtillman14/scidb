@@ -519,6 +519,19 @@ def _h_unhide_parameter_value(params):
     )
 
 
+def _h_set_parameter_group_checked(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.layout_service import set_parameter_group_checked
+
+    return set_parameter_group_checked(
+        get_db(),
+        params["name"],
+        params["values"],
+        params["checked"],
+        params.get("pipeline_id", "main"),
+    )
+
+
 def _h_list_hidden_parameter_values(params):
     from scistack_gui.db import get_db
     from scistack_gui.services.layout_service import get_hidden_constant_values
@@ -536,7 +549,10 @@ def _h_update_parameter(params):
     from scistack_gui.services.layout_service import update_parameter
 
     return update_parameter(
-        params["name"], params["values"], params.get("description", "")
+        params["name"],
+        params["values"],
+        params.get("description", ""),
+        params.get("group"),
     )
 
 
@@ -544,6 +560,12 @@ def _h_delete_parameter(params):
     from scistack_gui.services.layout_service import delete_parameter
 
     return delete_parameter(params["name"])
+
+
+def _h_refresh_parameter_source(params):
+    from scistack_gui.services.layout_service import refresh_parameter_source
+
+    return refresh_parameter_source(params.get("name"))
 
 
 def _h_create_path_input(params):
@@ -701,17 +723,16 @@ def _h_create_builtin_function(params):
 
 
 def _h_create_variable(params):
-    from scistack_gui.notify import notify
     from scistack_gui.services.variable_service import create_variable
 
-    result = create_variable(
+    # No dag_updated notify: a bare type declaration has no DB records yet,
+    # so it can't appear as a canvas node — see api/variables.py's
+    # create_variable for the full reasoning (same fix, both transports).
+    return create_variable(
         params.get("name", ""),
         params.get("docstring"),
         params.get("language", "python"),
     )
-    if result.get("ok"):
-        notify("dag_updated", {})
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -915,10 +936,12 @@ METHODS = {
     "list_hidden_combos": _h_list_hidden_combos,
     "hide_parameter_value": _h_hide_parameter_value,
     "unhide_parameter_value": _h_unhide_parameter_value,
+    "set_parameter_group_checked": _h_set_parameter_group_checked,
     "list_hidden_parameter_values": _h_list_hidden_parameter_values,
     "create_parameter": _h_create_parameter,
     "update_parameter": _h_update_parameter,
     "delete_parameter": _h_delete_parameter,
+    "refresh_parameter_source": _h_refresh_parameter_source,
     "create_path_input": _h_create_path_input,
     "update_path_input": _h_update_path_input,
     "delete_path_input": _h_delete_path_input,

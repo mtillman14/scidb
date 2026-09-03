@@ -292,14 +292,31 @@ def get_parameters() -> list[dict]:
     """Source-scanned — see docs/claude/code-discovery-categories.md.
 
     ``values`` is always a list, whatever the count: a Parameter holding one
-    value is not a different shape from one holding several (D6)."""
-    from scistack_gui import registry
+    value is not a different shape from one holding several (D6).
 
+    ``source_file``/``source_line``/``declared_in_entities_file`` mirror what
+    ``graph_builder.build_parameter_nodes`` puts on the canvas node's
+    ``data`` — the sidebar list is the other surface that needs to offer
+    "refresh from file" / "open source" (see ``is_declared_in_entities_file``,
+    the single comparison shared by both)."""
+    from scistack_gui import registry
+    from scistack_gui.domain.graph_builder import is_declared_in_entities_file
+
+    entities_file = (
+        str(registry._config.entities_file)
+        if registry._config is not None and registry._config.entities_file is not None
+        else None
+    )
     return [
         {
             "name": name,
             "values": list(p.values),
             "description": p.description,
+            "source_file": getattr(p, "source_file", None),
+            "source_line": getattr(p, "source_line", None),
+            "declared_in_entities_file": is_declared_in_entities_file(
+                getattr(p, "source_file", None), entities_file
+            ),
         }
         for name, p in registry.get_parameters_registry().items()
     ]
@@ -315,7 +332,7 @@ def create_parameter(name: str, values: "list | None" = None) -> dict:
 
 
 def update_parameter(
-    name: str, values: list, description: str = ""
+    name: str, values: list, description: str = "", group: "dict | None" = None
 ) -> dict:
     """Rewrite an existing Parameter's declaration in source.
 
@@ -325,11 +342,14 @@ def update_parameter(
     ``docs/claude/entity-editability-model.md``.
 
     Range generation (start/end/step) stays a frontend concern — this always
-    receives the final, already-computed flat list.
+    receives the final, already-computed flat list. *group* is how the panel
+    says that list came from the Generate section rather than one "Add value"
+    at a time, so the set can render as a single checkable row; it carries no
+    values of its own and never affects what is written to source.
     """
     from scistack_gui.services.parameter_service import update_parameter as _update
 
-    result = _update(name, values, description)
+    result = _update(name, values, description, group)
     if result.get("ok"):
         _notify_dag_updated()
     return result
@@ -565,6 +585,33 @@ def hide_parameter_value(
     return {"ok": True}
 
 
+def refresh_parameter_source(name: "str | None" = None) -> dict:
+    """Re-read the TOML entities file and re-register everything it
+    declares, without paying for a full ``refresh_module()``/``refresh_all()``
+    (re-imports every module, re-parses every MATLAB source -- ~16.5s on a
+    real project). ``registry.reload_entities_file()`` is a single TOML
+    parse -- see its docstring for the measured cost comparison.
+
+    *name* is the Parameter whose context menu triggered this; it is only
+    logged, never used to scope the reload. The reload is whole-file, so
+    every entities-file-declared Parameter picks up its current value as a
+    side effect, not just the one clicked -- there is no per-key TOML read
+    to scope down to, and the whole-file parse is already sub-second."""
+    from scistack_gui import registry
+
+    logger.info(
+        "[layout_service] refresh_parameter_source called (name=%r)", name
+    )
+    error = registry.reload_entities_file()
+    if error:
+        logger.warning(
+            "[layout_service] refresh_parameter_source failed: %s", error
+        )
+        return {"ok": False, "error": error}
+    _notify_dag_updated()
+    return {"ok": True}
+
+
 def unhide_parameter_value(
     db, const_name: str, value: str, pipeline_id: str = "main"
 ) -> dict:
@@ -578,6 +625,35 @@ def unhide_parameter_value(
         pipeline_id,
     )
     pipeline_store.unhide_parameter_value(db, const_name, value, pipeline_id)
+    _notify_dag_updated()
+    return {"ok": True}
+
+
+def set_parameter_group_checked(
+    db, const_name: str, values: list, checked: bool, pipeline_id: str = "main"
+) -> dict:
+    """Check or uncheck a whole generated value set at once.
+
+    The set is the unit the user toggles on the node, so this hides or
+    unhides every member in ONE statement rather than one call per value —
+    a 50-value range is the same N+1 shape as
+    ``project_batched_provenance_hot_paths``.
+    """
+    from scistack_gui import pipeline_store
+
+    members = [str(v) for v in values]
+    logger.info(
+        "[layout_service] set_parameter_group_checked called (const_name=%r, "
+        "%d value(s), checked=%r, pipeline_id=%r)",
+        const_name,
+        len(members),
+        checked,
+        pipeline_id,
+    )
+    if checked:
+        pipeline_store.unhide_parameter_values(db, const_name, members, pipeline_id)
+    else:
+        pipeline_store.hide_parameter_values(db, const_name, members, pipeline_id)
     _notify_dag_updated()
     return {"ok": True}
 

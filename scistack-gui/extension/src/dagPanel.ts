@@ -11,8 +11,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { PythonProcess } from './pythonProcess';
-import { runInMatlabTerminal } from './matlabTerminal';
+import { runInMatlabTerminal, isMatlabExtensionAvailable, isMatlabTerminalOpen } from './matlabTerminal';
 import { MatlabRunTracker } from './matlabRunTracker';
+import { needsMatlabConnectionPrompt } from './matlabConnectionGate';
 
 const DEBUG_SESSION_NAME = 'Attach to scistack-gui server';
 
@@ -253,6 +254,37 @@ export class DagPanel {
   }
 
   /**
+   * Gate a MATLAB Run click on MATLAB actually being connected — see
+   * matlabConnectionGate.ts. Returns true if the caller must stop and
+   * report the click as connect-only (cancelled) instead of generating and
+   * dispatching a command.
+   *
+   * Interim fix for problem P2 in plan-matlab-terminal-run-tracking.md:
+   * this only catches the cold-start case (no MATLAB terminal yet). A real
+   * run that fails after MATLAB is already connected still reports success
+   * — that needs the deferred Stage 2 fix (MATLAB-written run markers).
+   */
+  private async gateOnMatlabConnection(): Promise<boolean> {
+    if (!needsMatlabConnectionPrompt(isMatlabExtensionAvailable(), isMatlabTerminalOpen())) {
+      return false;
+    }
+    const choice = await vscode.window.showInformationMessage(
+      'MATLAB is not connected to VS Code yet. Connect now, then click Run again once MATLAB is ready.',
+      'Connect',
+      'Cancel',
+    );
+    if (choice === 'Connect') {
+      await vscode.commands.executeCommand('matlab.openCommandWindow');
+      this.outputChannel.appendLine(
+        'gateOnMatlabConnection: opened the MATLAB command window — connecting, not dispatching a run',
+      );
+    } else {
+      this.outputChannel.appendLine('gateOnMatlabConnection: user declined to connect');
+    }
+    return true;
+  }
+
+  /**
    * Stage 4 fallback ladder for an already-generated MATLAB command:
    * MathWorks terminal (Tier 2 — real breakpoint debugging) -> standalone
    * sidecar (Tier 3 — Python-driven, real run_output/run_done via the
@@ -330,13 +362,19 @@ export class DagPanel {
     this.outputChannel.appendLine(
       `handleMatlabRun: requesting generate_matlab_command for ${functionName ?? '<?>'}`,
     );
-    const finish = (success: boolean) => {
+    const finish = (success: boolean, cancelled = false) => {
       this.matlabRuns.end(runId);
       this.panel.webview.postMessage({
         method: 'run_done',
-        params: { run_id: runId, success, duration_ms: 0, cancelled: false },
+        params: { run_id: runId, success, duration_ms: 0, cancelled },
       });
     };
+
+    if (await this.gateOnMatlabConnection()) {
+      finish(false, true);
+      return;
+    }
+
     this.beginMatlabRun(runId);
     try {
       const result = await this.pythonProcess.request(
@@ -412,13 +450,19 @@ export class DagPanel {
         params: { run_id: runId, text },
       });
     };
-    const finish = (success: boolean) => {
+    const finish = (success: boolean, cancelled = false) => {
       this.matlabRuns.end(runId);
       this.panel.webview.postMessage({
         method: 'run_done',
-        params: { run_id: runId, success, duration_ms: 0, cancelled: false },
+        params: { run_id: runId, success, duration_ms: 0, cancelled },
       });
     };
+
+    if (await this.gateOnMatlabConnection()) {
+      emit('MATLAB is not connected yet — connect, then click Run again once it is ready.\n');
+      finish(false, true);
+      return;
+    }
 
     this.beginMatlabRun(runId);
     try {

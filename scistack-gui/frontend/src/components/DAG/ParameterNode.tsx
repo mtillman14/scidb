@@ -22,6 +22,18 @@
  * `data` and all three are surfaced by ParameterSettingsPanel; on the node
  * they were noise on what should read as a short list of values.
  *
+ * Values written in one go by the sidebar's Generate section arrive as a
+ * SINGLE row with `kind: 'generated'`, whose `value` is a compact label
+ * (`0:2:20 — 11 values`) rendered backend-side in
+ * `graph_builder.render_value_group_label` — so the canvas and the sidebar
+ * show the identical string rather than two implementations of it. Its one
+ * checkbox toggles every member at once. Values added individually keep the
+ * plain per-value rows they have always had.
+ *
+ * A Parameter with no values at all is a real, declared state (it is what
+ * "New parameter" creates), so the node says "no value yet" rather than
+ * rendering as an empty box.
+ *
  * State management: checked state lives inside each value object in the
  * node's `data`, seeded from the backend on every graph fetch
  * (build_parameter_nodes). Toggling updates local state immediately
@@ -42,11 +54,33 @@ export interface ParameterValue {
   record_count: number
   checked: boolean
   is_current_source_value?: boolean
+  /** Present only on a row that stands for a whole GENERATED set (written in
+   *  one go by the panel's "Replace values"). `value` is then the compact
+   *  label the backend rendered — `0:2:20 — 11 values` — and `members` are
+   *  the individual values it stands for. Absent on every value added one at
+   *  a time, which is what keeps those rendering exactly as they always have. */
+  kind?: 'generated'
+  members?: string[]
+  /** The generation that produced the set — `{start, end, step}` for a range,
+   *  `{members}` for a pasted list. Unused on the canvas; the sidebar re-seeds
+   *  its Generate inputs from it. */
+  spec?: { start?: number; end?: number; step?: number; members?: (number | string)[] }
 }
 
 export interface ParameterNodeData {
   label: string
   values: ParameterValue[]
+  /** Where this Parameter is declared, if known — powers the canvas
+   *  context menu's "Refresh from file" / "Open source" actions
+   *  (PipelineDAG.tsx). Absent for a DB-only value with no current
+   *  declaration. */
+  source_file?: string | null
+  source_line?: number | null
+  /** True only when source_file is the configured writable entities file —
+   *  re-reading it can actually change this Parameter's value, so this
+   *  gates "Refresh from file" (a legacy .py/.m declaration is read-only
+   *  and a reload of the entities file wouldn't touch it). */
+  declared_in_entities_file?: boolean
 }
 
 interface Props {
@@ -68,16 +102,33 @@ export default function ParameterNode({ id, data }: Props) {
       )
       return { ...node, data: { ...node.data, values } }
     }))
+    if (target.kind === 'generated') {
+      // The set is the unit: one call hides or unhides every member, rather
+      // than one request per value in a range that may hold dozens.
+      callBackend('set_parameter_group_checked', {
+        name: data.label,
+        values: target.members ?? [],
+        checked: nextChecked,
+      }).catch(console.error)
+      return
+    }
     const method = nextChecked ? 'unhide_parameter_value' : 'hide_parameter_value'
     callBackend(method, { name: data.label, value: target.value }).catch(console.error)
   }, [id, data.label, data.values, setNodes])
 
-  const showCheckboxes = data.values.length > 1
+  // A lone generated row still needs its checkbox — it stands for many values,
+  // so "only one row" does not mean "nothing to exclude".
+  const showCheckboxes =
+    data.values.length > 1 || data.values.some(v => v.kind === 'generated')
 
   return (
     <div style={styles.container}>
       <Handle type="source" position={Position.Right} />
       <div style={styles.label}>{data.label}</div>
+
+      {data.values.length === 0 && (
+        <div style={styles.noValue}>no value yet</div>
+      )}
 
       {data.values.length > 0 && (
         <div style={styles.listbox}>
@@ -148,6 +199,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: '#b2ded9',
     fontFamily: 'monospace',
+  },
+  noValue: {
+    fontSize: 10,
+    color: '#5a7f78',
+    fontStyle: 'italic',
+    textAlign: 'center',
   },
   valueLabelUnchecked: {
     fontSize: 11,

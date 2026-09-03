@@ -34,16 +34,34 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var path4 = __toESM(require("path"));
-var vscode5 = __toESM(require("vscode"));
+var path3 = __toESM(require("path"));
+var vscode4 = __toESM(require("vscode"));
 
 // src/pythonProcess.ts
 var import_child_process = require("child_process");
 var readline = __toESM(require("readline"));
 var vscode = __toESM(require("vscode"));
+
+// src/serverArgs.ts
+function buildServerArgs({
+  dbPath,
+  schemaKeys,
+  projectRoot
+}) {
+  const args = ["-m", "scistack_gui.server", "--db", dbPath];
+  if (schemaKeys && schemaKeys.length > 0) {
+    args.push("--schema-keys", schemaKeys.join(","));
+  }
+  if (projectRoot) {
+    args.push("--project-root", projectRoot);
+  }
+  return args;
+}
+
+// src/pythonProcess.ts
 var STDERR_TAIL_LINES = 200;
 var PythonProcess = class {
-  constructor(pythonPath, dbPath, modulePath, outputChannel2, schemaKeys, projectPath) {
+  constructor(pythonPath, dbPath, outputChannel2, schemaKeys) {
     this.pythonPath = pythonPath;
     this.outputChannel = outputChannel2;
     this.nextId = 1;
@@ -56,19 +74,8 @@ var PythonProcess = class {
     /** Ring of recent stderr lines, so a failed start can report why. */
     this.stderrTail = [];
     this.exitCode = null;
-    const args = ["-m", "scistack_gui.server", "--db", dbPath];
-    if (projectPath) {
-      args.push("--project", projectPath);
-    } else if (modulePath) {
-      args.push("--module", modulePath);
-    }
-    if (schemaKeys && schemaKeys.length > 0) {
-      args.push("--schema-keys", schemaKeys.join(","));
-    }
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-      args.push("--project-root", workspaceFolder.uri.fsPath);
-    }
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const args = buildServerArgs({ dbPath, schemaKeys, projectRoot: workspaceFolder });
     this.args = args;
     this.outputChannel.appendLine(`Spawning: ${pythonPath} ${args.join(" ")}`);
     const cfg = vscode.workspace.getConfiguration("scistack");
@@ -85,7 +92,7 @@ var PythonProcess = class {
     this.proc = (0, import_child_process.spawn)(pythonPath, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv,
-      cwd: workspaceFolder?.uri.fsPath
+      cwd: workspaceFolder
     });
     this.closed = new Promise((resolve) => {
       this.proc.on("close", () => resolve());
@@ -205,13 +212,15 @@ var PythonProcess = class {
     return new Promise((resolve, reject) => {
       const settle = (fn) => {
         const pending = this.pending.get(id);
-        if (pending?.timer) clearTimeout(pending.timer);
+        if (pending?.timer)
+          clearTimeout(pending.timer);
         this.pending.delete(id);
         fn();
       };
       const timer = timeoutMs > 0 ? setTimeout(() => {
         const pending = this.pending.get(id);
-        if (!pending) return;
+        if (!pending)
+          return;
         const elapsed = Date.now() - pending.startedAt;
         this.outputChannel.appendLine(
           `RPC timeout: ${method} (id=${id}) got no response in ${elapsed}ms. The Python server may have dropped the request \u2014 check the stderr above for a traceback.`
@@ -231,7 +240,8 @@ var PythonProcess = class {
       this.proc.stdin?.write(msg + "\n", (err) => {
         if (err) {
           const pending = this.pending.get(id);
-          if (pending) pending.reject(err);
+          if (pending)
+            pending.reject(err);
         }
       });
     });
@@ -323,20 +333,33 @@ var fs = __toESM(require("fs"));
 var os = __toESM(require("os"));
 var path = __toESM(require("path"));
 var vscode2 = __toESM(require("vscode"));
+function formatStamp(d) {
+  const p = (n, w = 2) => String(n).padStart(w, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
 function isMatlabExtensionAvailable() {
   return vscode2.extensions.getExtension("MathWorks.language-matlab") !== void 0;
+}
+function isMatlabTerminalOpen() {
+  return vscode2.window.terminals.some((t) => t.name === "MATLAB");
 }
 async function runInMatlabTerminal(command, outputChannel2) {
   if (!isMatlabExtensionAvailable()) {
     return false;
   }
   try {
+    const t0 = Date.now();
     const scriptPath = path.join(os.tmpdir(), "scistack_run.m");
     fs.writeFileSync(scriptPath, command, "utf-8");
+    const tWritten = Date.now();
     outputChannel2?.appendLine(
-      `runInMatlabTerminal: wrote ${command.length}-char script to ${scriptPath}`
+      `runInMatlabTerminal: wrote ${command.length}-char script to ${scriptPath} [timing] write=${tWritten - t0}ms`
     );
     await vscode2.commands.executeCommand("matlab.openCommandWindow");
+    const tOpened = Date.now();
+    outputChannel2?.appendLine(
+      `runInMatlabTerminal: [timing] openCommandWindow=${tOpened - tWritten}ms`
+    );
     const terminal = vscode2.window.terminals.find((t) => t.name === "MATLAB");
     if (!terminal) {
       outputChannel2?.appendLine(
@@ -349,6 +372,10 @@ async function runInMatlabTerminal(command, outputChannel2) {
     outputChannel2?.appendLine(`runInMatlabTerminal: sendText ${runLine}`);
     terminal.sendText(runLine);
     terminal.show();
+    const tSent = Date.now();
+    outputChannel2?.appendLine(
+      `runInMatlabTerminal: [timing] sendText=${tSent - tOpened}ms, dispatch_total=${tSent - t0}ms, sent_at=${formatStamp(new Date(tSent))}`
+    );
     return true;
   } catch (err) {
     outputChannel2?.appendLine(`Failed to send to MATLAB terminal: ${err}`);
@@ -373,7 +400,8 @@ var MatlabRunTracker = class {
    * run, and fires the finished callbacks once the last one clears.
    */
   end(runId) {
-    if (!runId) return false;
+    if (!runId)
+      return false;
     const wasTracked = this.inFlight.delete(runId);
     if (wasTracked && this.inFlight.size === 0) {
       this.finishedCallbacks.forEach((cb) => cb());
@@ -401,7 +429,8 @@ var MatlabRunTracker = class {
    * withheld change — a MATLAB run that wrote nothing costs no re-fetch.
    */
   takeDeferredRefresh() {
-    if (!this.refreshPending) return false;
+    if (!this.refreshPending)
+      return false;
     this.refreshPending = false;
     return true;
   }
@@ -410,6 +439,11 @@ var MatlabRunTracker = class {
     this.finishedCallbacks.push(callback);
   }
 };
+
+// src/matlabConnectionGate.ts
+function needsMatlabConnectionPrompt(matlabExtensionAvailable, matlabTerminalAlreadyOpen) {
+  return matlabExtensionAvailable && !matlabTerminalAlreadyOpen;
+}
 
 // src/dagPanel.ts
 var DEBUG_SESSION_NAME = "Attach to scistack-gui server";
@@ -537,7 +571,8 @@ var DagPanel = class {
     );
     this.panel.onDidDispose(() => {
       this.disposables.forEach((d) => d.dispose());
-      for (const cb of this.disposeCallbacks) cb();
+      for (const cb of this.disposeCallbacks)
+        cb();
     }, null, this.disposables);
   }
   /**
@@ -554,7 +589,8 @@ var DagPanel = class {
   async revealInEditor(params) {
     const { file, line } = params;
     this.outputChannel.appendLine(`reveal_in_editor: file=${file} line=${line}`);
-    if (!file) return { ok: false, error: "No file path provided." };
+    if (!file)
+      return { ok: false, error: "No file path provided." };
     const uri = this.buildFileUri(file);
     this.outputChannel.appendLine(`reveal_in_editor: resolved uri=${uri.toString()}`);
     let doc;
@@ -603,6 +639,36 @@ var DagPanel = class {
       }
     }
     return vscode3.Uri.file(file);
+  }
+  /**
+   * Gate a MATLAB Run click on MATLAB actually being connected — see
+   * matlabConnectionGate.ts. Returns true if the caller must stop and
+   * report the click as connect-only (cancelled) instead of generating and
+   * dispatching a command.
+   *
+   * Interim fix for problem P2 in plan-matlab-terminal-run-tracking.md:
+   * this only catches the cold-start case (no MATLAB terminal yet). A real
+   * run that fails after MATLAB is already connected still reports success
+   * — that needs the deferred Stage 2 fix (MATLAB-written run markers).
+   */
+  async gateOnMatlabConnection() {
+    if (!needsMatlabConnectionPrompt(isMatlabExtensionAvailable(), isMatlabTerminalOpen())) {
+      return false;
+    }
+    const choice = await vscode3.window.showInformationMessage(
+      "MATLAB is not connected to VS Code yet. Connect now, then click Run again once MATLAB is ready.",
+      "Connect",
+      "Cancel"
+    );
+    if (choice === "Connect") {
+      await vscode3.commands.executeCommand("matlab.openCommandWindow");
+      this.outputChannel.appendLine(
+        "gateOnMatlabConnection: opened the MATLAB command window \u2014 connecting, not dispatching a run"
+      );
+    } else {
+      this.outputChannel.appendLine("gateOnMatlabConnection: user declined to connect");
+    }
+    return true;
   }
   /**
    * Stage 4 fallback ladder for an already-generated MATLAB command:
@@ -672,13 +738,17 @@ var DagPanel = class {
     this.outputChannel.appendLine(
       `handleMatlabRun: requesting generate_matlab_command for ${functionName ?? "<?>"}`
     );
-    const finish = (success) => {
+    const finish = (success, cancelled = false) => {
       this.matlabRuns.end(runId);
       this.panel.webview.postMessage({
         method: "run_done",
-        params: { run_id: runId, success, duration_ms: 0, cancelled: false }
+        params: { run_id: runId, success, duration_ms: 0, cancelled }
       });
     };
+    if (await this.gateOnMatlabConnection()) {
+      finish(false, true);
+      return;
+    }
     this.beginMatlabRun(runId);
     try {
       const result = await this.pythonProcess.request(
@@ -740,13 +810,18 @@ var DagPanel = class {
         params: { run_id: runId, text }
       });
     };
-    const finish = (success) => {
+    const finish = (success, cancelled = false) => {
       this.matlabRuns.end(runId);
       this.panel.webview.postMessage({
         method: "run_done",
-        params: { run_id: runId, success, duration_ms: 0, cancelled: false }
+        params: { run_id: runId, success, duration_ms: 0, cancelled }
       });
     };
+    if (await this.gateOnMatlabConnection()) {
+      emit("MATLAB is not connected yet \u2014 connect, then click Run again once it is ready.\n");
+      finish(false, true);
+      return;
+    }
     this.beginMatlabRun(runId);
     try {
       const result = await this.pythonProcess.request(
@@ -798,8 +873,10 @@ var DagPanel = class {
    */
   async ensureDebugAttached() {
     const cfg = vscode3.workspace.getConfiguration("scistack");
-    if (!cfg.get("debug", false)) return;
-    if (this.debugSession) return;
+    if (!cfg.get("debug", false))
+      return;
+    if (this.debugSession)
+      return;
     const existing = this.findExistingDebugSession();
     if (existing) {
       this.debugSession = existing;
@@ -834,7 +911,8 @@ var DagPanel = class {
   }
   findExistingDebugSession() {
     const active = vscode3.debug.activeDebugSession;
-    if (active && active.name === DEBUG_SESSION_NAME) return active;
+    if (active && active.name === DEBUG_SESSION_NAME)
+      return active;
     return void 0;
   }
   /**
@@ -898,73 +976,6 @@ function getNonce() {
   return text;
 }
 
-// src/projectInit.ts
-var fs2 = __toESM(require("fs"));
-var path3 = __toESM(require("path"));
-var vscode4 = __toESM(require("vscode"));
-function checkProjectConfig(dirPath) {
-  const resolved = fs2.statSync(dirPath, { throwIfNoEntry: false });
-  if (!resolved) {
-    return "ready";
-  }
-  const dir = resolved.isFile() ? path3.dirname(dirPath) : dirPath;
-  if (fs2.existsSync(path3.join(dir, "pyproject.toml")) || fs2.existsSync(path3.join(dir, "scistack.toml"))) {
-    return "ready";
-  }
-  return "no_config_file";
-}
-function createScistackToml(dirPath) {
-  const filePath = path3.join(dirPath, "scistack.toml");
-  const content = `# SciStack project configuration
-# See documentation for all available options.
-
-# Python pipeline modules (relative paths)
-# modules = ["pipelines/my_pipeline.py"]
-
-# Pip-installed packages to scan for pipeline functions
-# packages = ["my_scistack_plugin"]
-
-# Auto-discover scistack.plugins entry points (default: true)
-# auto_discover = true
-
-# TOML file the GUI writes new Variable/Parameter/PathInput declarations to
-# entities_file = "src/scistack_entities.toml"
-
-# [matlab]
-# functions = ["src/"]
-# variables = ["src/vars/"]
-# variable_dir = "src/vars/"
-`;
-  fs2.writeFileSync(filePath, content, "utf-8");
-  return filePath;
-}
-async function promptForMissingConfig(dirPath, outputChannel2) {
-  const createOption = "Create scistack.toml";
-  const continueOption = "Continue anyway";
-  const choice = await vscode4.window.showWarningMessage(
-    `No pyproject.toml or scistack.toml found in "${path3.basename(
-      dirPath
-    )}". The server needs a config file to discover pipeline code.`,
-    { modal: true },
-    createOption,
-    continueOption
-  );
-  if (choice === createOption) {
-    const filePath = createScistackToml(dirPath);
-    outputChannel2.appendLine(`Created ${filePath}`);
-    const doc = await vscode4.workspace.openTextDocument(filePath);
-    await vscode4.window.showTextDocument(doc);
-    return dirPath;
-  }
-  if (choice === continueOption) {
-    outputChannel2.appendLine(
-      "Continuing without config file \u2014 server will use defaults if possible."
-    );
-    return dirPath;
-  }
-  return void 0;
-}
-
 // src/startupDiagnostics.ts
 var import_child_process2 = require("child_process");
 var REQUIRED_MODULES = ["scistack_gui", "scidb", "scifor", "duckdb"];
@@ -994,7 +1005,8 @@ function probeInterpreter(pythonPath, timeoutMs = 1e4) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (probe) => {
-      if (settled) return;
+      if (settled)
+        return;
       settled = true;
       clearTimeout(timer);
       resolve(probe);
@@ -1030,10 +1042,12 @@ function probeInterpreter(pythonPath, timeoutMs = 1e4) {
 function parseProbeOutput(stdout) {
   const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].startsWith("{")) continue;
+    if (!lines[i].startsWith("{"))
+      continue;
     try {
       const info = JSON.parse(lines[i]);
-      if (info.modules) return { ok: true, ...info };
+      if (info.modules)
+        return { ok: true, ...info };
     } catch {
     }
   }
@@ -1064,11 +1078,16 @@ function diagnoseStartupFailure(ctx) {
   const detailLines = [
     `Interpreter (configured): ${python}`
   ];
-  if (ctx.interpreterSource) detailLines.push(`Interpreter source: ${ctx.interpreterSource}`);
-  if (probe?.executable) detailLines.push(`Interpreter (sys.executable): ${probe.executable}`);
-  if (probe?.prefix) detailLines.push(`Environment (sys.prefix): ${probe.prefix}`);
-  if (probe?.version) detailLines.push(`Python version: ${probe.version}`);
-  if (ctx.args) detailLines.push(`Command: ${python} ${ctx.args.join(" ")}`);
+  if (ctx.interpreterSource)
+    detailLines.push(`Interpreter source: ${ctx.interpreterSource}`);
+  if (probe?.executable)
+    detailLines.push(`Interpreter (sys.executable): ${probe.executable}`);
+  if (probe?.prefix)
+    detailLines.push(`Environment (sys.prefix): ${probe.prefix}`);
+  if (probe?.version)
+    detailLines.push(`Python version: ${probe.version}`);
+  if (ctx.args)
+    detailLines.push(`Command: ${python} ${ctx.args.join(" ")}`);
   if (ctx.exitCode !== void 0 && ctx.exitCode !== null) {
     detailLines.push(`Exit code: ${ctx.exitCode}`);
   }
@@ -1076,7 +1095,8 @@ function diagnoseStartupFailure(ctx) {
     detailLines.push("Packages:");
     for (const name of REQUIRED_MODULES) {
       const mod = probe.modules[name];
-      if (!mod) continue;
+      if (!mod)
+        continue;
       const status = mod.found ? `found${mod.location ? ` at ${mod.location}` : ""}` : `NOT FOUND${mod.error ? ` (${mod.error})` : ""}`;
       detailLines.push(`  - ${name}: ${status}`);
     }
@@ -1084,10 +1104,12 @@ function diagnoseStartupFailure(ctx) {
   if (probe && !probe.ok && probe.spawnError) {
     detailLines.push(`Interpreter probe failed: ${probe.spawnError}`);
   }
-  if (probe?.raw) detailLines.push(`Probe output: ${probe.raw}`);
+  if (probe?.raw)
+    detailLines.push(`Probe output: ${probe.raw}`);
   detailLines.push(`Failure: ${ctx.errorMessage}`);
   const tail = stderrTail(stderr, 20);
-  if (tail) detailLines.push("Server stderr (tail):", tail);
+  if (tail)
+    detailLines.push("Server stderr (tail):", tail);
   const detail = detailLines.join("\n");
   const finish = (kind, message, actions, installCommand) => ({ kind, message, detail, actions, installCommand });
   const unrunnable = isUnrunnable(ctx.errorMessage) || probe !== void 0 && !probe.ok && isUnrunnable(`${probe.spawnError ?? ""}
@@ -1150,54 +1172,62 @@ var outputChannel;
 var dbWatcher = null;
 var dbWatcherDebounce = null;
 var lastStartArgs = null;
+var warnedNoWorkspaceFolder = false;
 function activate(context) {
-  outputChannel = vscode5.window.createOutputChannel("SciStack");
-  const openPipeline = vscode5.commands.registerCommand(
+  outputChannel = vscode4.window.createOutputChannel("SciStack");
+  const openPipeline = vscode4.commands.registerCommand(
     "scistack.openPipeline",
     async () => {
-      const dbChoice = await vscode5.window.showQuickPick(
+      const dbChoice = await vscode4.window.showQuickPick(
         ["Open existing database", "Create new database"],
         { placeHolder: "SciStack: Open or create a .duckdb file?" }
       );
-      if (!dbChoice) return;
+      if (!dbChoice)
+        return;
       let dbPath;
       let schemaKeys;
       if (dbChoice === "Open existing database") {
-        const dbUris = await vscode5.window.showOpenDialog({
+        const dbUris = await vscode4.window.showOpenDialog({
           canSelectFiles: true,
           canSelectFolders: false,
           canSelectMany: false,
           filters: { "DuckDB Database": ["duckdb"] },
-          title: "Select SciStack Database"
+          title: "Select SciStack Database",
+          defaultUri: vscode4.workspace.workspaceFolders?.[0]?.uri
         });
-        if (!dbUris || dbUris.length === 0) return;
+        if (!dbUris || dbUris.length === 0)
+          return;
         dbPath = dbUris[0].fsPath;
       } else {
-        const folderUris = await vscode5.window.showOpenDialog({
+        const folderUris = await vscode4.window.showOpenDialog({
           canSelectFiles: false,
           canSelectFolders: true,
           canSelectMany: false,
           title: "Select folder for new SciStack database",
-          openLabel: "Select Folder"
+          openLabel: "Select Folder",
+          defaultUri: vscode4.workspace.workspaceFolders?.[0]?.uri
         });
-        if (!folderUris || folderUris.length === 0) return;
+        if (!folderUris || folderUris.length === 0)
+          return;
         const folderPath = folderUris[0].fsPath;
-        const nameInput = await vscode5.window.showInputBox({
+        const nameInput = await vscode4.window.showInputBox({
           prompt: "Database filename",
           placeHolder: "e.g. my_pipeline.duckdb",
           validateInput: (v) => {
             const trimmed = v.trim();
-            if (!trimmed) return "Provide a filename";
+            if (!trimmed)
+              return "Provide a filename";
             if (trimmed.includes("/") || trimmed.includes("\\")) {
               return "Filename must not contain path separators";
             }
             return null;
           }
         });
-        if (!nameInput) return;
+        if (!nameInput)
+          return;
         const fileName = nameInput.trim().endsWith(".duckdb") ? nameInput.trim() : `${nameInput.trim()}.duckdb`;
-        dbPath = path4.join(folderPath, fileName);
-        const keysInput = await vscode5.window.showInputBox({
+        dbPath = path3.join(folderPath, fileName);
+        const keysInput = await vscode4.window.showInputBox({
           prompt: "Schema keys (comma-separated, top-down)",
           placeHolder: "e.g. subject, session",
           validateInput: (v) => {
@@ -1205,59 +1235,18 @@ function activate(context) {
             return parts.length === 0 ? "Provide at least one schema key" : null;
           }
         });
-        if (!keysInput) return;
+        if (!keysInput)
+          return;
         schemaKeys = keysInput.split(",").map((s) => s.trim()).filter(Boolean);
       }
-      const sourceChoice = await vscode5.window.showQuickPick(
-        [
-          "Select a project (pyproject.toml)",
-          "Select a single pipeline module (.py)",
-          "No module"
-        ],
-        { placeHolder: "How should SciStack discover your pipeline code?" }
-      );
-      if (!sourceChoice) return;
-      let modulePath;
-      let projectPath;
-      if (sourceChoice === "Select a project (pyproject.toml)") {
-        const projectUris = await vscode5.window.showOpenDialog({
-          canSelectFiles: true,
-          canSelectFolders: true,
-          canSelectMany: false,
-          filters: { "TOML": ["toml"] },
-          title: "Select pyproject.toml or project directory"
-        });
-        if (projectUris && projectUris.length > 0) {
-          const selectedPath = projectUris[0].fsPath;
-          const configStatus = checkProjectConfig(selectedPath);
-          if (configStatus === "no_config_file") {
-            const result = await promptForMissingConfig(selectedPath, outputChannel);
-            if (result === void 0) return;
-            projectPath = result;
-          } else {
-            projectPath = selectedPath;
-          }
-        }
-      } else if (sourceChoice === "Select a single pipeline module (.py)") {
-        const moduleUris = await vscode5.window.showOpenDialog({
-          canSelectFiles: true,
-          canSelectFolders: false,
-          canSelectMany: false,
-          filters: { "Python": ["py"] },
-          title: "Select Pipeline Module"
-        });
-        if (moduleUris && moduleUris.length > 0) {
-          modulePath = moduleUris[0].fsPath;
-        }
-      }
-      await startPipeline(context, dbPath, modulePath, projectPath, schemaKeys);
+      await startPipeline(context, dbPath, schemaKeys);
     }
   );
-  const restartPython = vscode5.commands.registerCommand(
+  const restartPython = vscode4.commands.registerCommand(
     "scistack.restartPython",
     async () => {
       if (!lastStartArgs) {
-        vscode5.window.showWarningMessage(
+        vscode4.window.showWarningMessage(
           'SciStack: No pipeline has been opened yet \u2014 run "SciStack: Open Pipeline" first.'
         );
         return;
@@ -1267,33 +1256,30 @@ function activate(context) {
         await startPipeline(
           context,
           lastStartArgs.dbPath,
-          lastStartArgs.modulePath,
-          lastStartArgs.projectPath,
           // Don't re-pass schemaKeys: the DB already exists on restart.
           void 0
         );
-        vscode5.window.showInformationMessage("SciStack: Python process restarted.");
+        vscode4.window.showInformationMessage("SciStack: Python process restarted.");
       } catch (err) {
-        vscode5.window.showErrorMessage(`SciStack: Restart failed \u2014 ${err}`);
+        vscode4.window.showErrorMessage(`SciStack: Restart failed \u2014 ${err}`);
       }
     }
   );
   context.subscriptions.push(openPipeline, restartPython, outputChannel);
 }
-async function startPipeline(context, dbPath, modulePath, projectPath, schemaKeys) {
+async function startPipeline(context, dbPath, schemaKeys) {
   lastStartArgs = {
     dbPath,
-    modulePath,
-    projectPath,
     schemaKeys: schemaKeys ?? lastStartArgs?.schemaKeys
   };
+  warnIfNoWorkspaceFolder();
   if (pythonProcess) {
     pythonProcess.kill();
     pythonProcess = null;
   }
   const interpreter = await resolvePythonPath();
   if (!interpreter) {
-    vscode5.window.showErrorMessage(
+    vscode4.window.showErrorMessage(
       "SciStack: Could not find a Python interpreter. Install the Python extension or set scistack.pythonPath in settings."
     );
     return;
@@ -1302,12 +1288,14 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
   outputChannel.appendLine(`Starting SciStack server...`);
   outputChannel.appendLine(`  Python: ${pythonPath} (from ${interpreterSource})`);
   outputChannel.appendLine(`  DB: ${dbPath}`);
-  if (projectPath) outputChannel.appendLine(`  Project: ${projectPath}`);
-  if (modulePath) outputChannel.appendLine(`  Module: ${modulePath}`);
-  if (schemaKeys) outputChannel.appendLine(`  Schema keys: [${schemaKeys.join(", ")}] (new DB)`);
-  pythonProcess = new PythonProcess(pythonPath, dbPath, modulePath, outputChannel, schemaKeys, projectPath);
+  outputChannel.appendLine(
+    `  Project root: ${workspaceFolderPath() ?? "(none \u2014 server will fall back, see above)"}`
+  );
+  if (schemaKeys)
+    outputChannel.appendLine(`  Schema keys: [${schemaKeys.join(", ")}] (new DB)`);
+  pythonProcess = new PythonProcess(pythonPath, dbPath, outputChannel, schemaKeys);
   try {
-    const cfg = vscode5.workspace.getConfiguration("scistack");
+    const cfg = vscode4.workspace.getConfiguration("scistack");
     const startupTimeoutMs = cfg.get("startupTimeoutMs", 6e4);
     const readyParams = await pythonProcess.waitForReady(startupTimeoutMs);
     outputChannel.appendLine(
@@ -1345,13 +1333,26 @@ async function startPipeline(context, dbPath, modulePath, projectPath, schemaKey
     }
   });
   setupDbWatcher(dbPath);
-  const statusItem = vscode5.window.createStatusBarItem(
-    vscode5.StatusBarAlignment.Left,
+  const statusItem = vscode4.window.createStatusBarItem(
+    vscode4.StatusBarAlignment.Left,
     100
   );
   statusItem.text = `$(database) SciStack: ${dbPath.split("/").pop()}`;
   statusItem.tooltip = dbPath;
   statusItem.show();
+}
+function workspaceFolderPath() {
+  return vscode4.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+function warnIfNoWorkspaceFolder() {
+  if (workspaceFolderPath())
+    return;
+  const message = 'SciStack: no folder is open in this window, so there is no project to discover pipeline code from. Open your project folder and run "SciStack: Open Pipeline" again, or add paths from the Paths popup.';
+  outputChannel.appendLine(message);
+  if (!warnedNoWorkspaceFolder) {
+    warnedNoWorkspaceFolder = true;
+    vscode4.window.showWarningMessage(message);
+  }
 }
 async function reportStartupFailure(failed, interpreterSource, err) {
   const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1385,26 +1386,27 @@ var ACTION_LABELS = {
 };
 async function showDiagnosisMessage(diagnosis) {
   const labels = diagnosis.actions.map((a) => ACTION_LABELS[a]);
-  const picked = await vscode5.window.showErrorMessage(diagnosis.message, ...labels);
-  if (!picked) return;
+  const picked = await vscode4.window.showErrorMessage(diagnosis.message, ...labels);
+  if (!picked)
+    return;
   const action = diagnosis.actions.find((a) => ACTION_LABELS[a] === picked);
   switch (action) {
     case "showOutput":
       outputChannel.show(true);
       break;
     case "selectInterpreter":
-      await vscode5.commands.executeCommand("python.setInterpreter");
+      await vscode4.commands.executeCommand("python.setInterpreter");
       break;
     case "openSettings":
-      await vscode5.commands.executeCommand(
+      await vscode4.commands.executeCommand(
         "workbench.action.openSettings",
         "scistack.pythonPath"
       );
       break;
     case "copyInstallCommand":
       if (diagnosis.installCommand) {
-        await vscode5.env.clipboard.writeText(diagnosis.installCommand);
-        vscode5.window.showInformationMessage(
+        await vscode4.env.clipboard.writeText(diagnosis.installCommand);
+        vscode4.window.showInformationMessage(
           `SciStack: copied to clipboard \u2014 ${diagnosis.installCommand}`
         );
       }
@@ -1412,12 +1414,14 @@ async function showDiagnosisMessage(diagnosis) {
   }
 }
 async function resolvePythonPath() {
-  const config = vscode5.workspace.getConfiguration("scistack");
+  const config = vscode4.workspace.getConfiguration("scistack");
   const configured = config.get("pythonPath");
-  if (configured) return { path: configured, source: "scistack.pythonPath setting" };
-  const pythonExt = vscode5.extensions.getExtension("ms-python.python");
+  if (configured)
+    return { path: configured, source: "scistack.pythonPath setting" };
+  const pythonExt = vscode4.extensions.getExtension("ms-python.python");
   if (pythonExt) {
-    if (!pythonExt.isActive) await pythonExt.activate();
+    if (!pythonExt.isActive)
+      await pythonExt.activate();
     const api = pythonExt.exports;
     if (api?.environments?.getActiveEnvironmentPath) {
       const envPath = api.environments.getActiveEnvironmentPath();
@@ -1429,8 +1433,10 @@ async function resolvePythonPath() {
   return { path: "python3", source: "PATH fallback (no Python extension interpreter)" };
 }
 function flushDeferredDagRefresh() {
-  if (!dagPanel) return;
-  if (!dagPanel.matlabRuns.takeDeferredRefresh()) return;
+  if (!dagPanel)
+    return;
+  if (!dagPanel.matlabRuns.takeDeferredRefresh())
+    return;
   outputChannel.appendLine(
     "MATLAB run finished \u2014 applying the deferred DAG refresh"
   );
@@ -1445,17 +1451,18 @@ function setupDbWatcher(dbPath) {
     clearTimeout(dbWatcherDebounce);
     dbWatcherDebounce = null;
   }
-  const dbDir = path4.dirname(dbPath);
-  const dbBase = path4.basename(dbPath);
-  const pattern = new vscode5.RelativePattern(dbDir, dbBase + "*");
-  dbWatcher = vscode5.workspace.createFileSystemWatcher(pattern);
+  const dbDir = path3.dirname(dbPath);
+  const dbBase = path3.basename(dbPath);
+  const pattern = new vscode4.RelativePattern(dbDir, dbBase + "*");
+  dbWatcher = vscode4.workspace.createFileSystemWatcher(pattern);
   const onDbChange = () => {
     if (dbWatcherDebounce) {
       clearTimeout(dbWatcherDebounce);
     }
     dbWatcherDebounce = setTimeout(() => {
       dbWatcherDebounce = null;
-      if (!dagPanel) return;
+      if (!dagPanel)
+        return;
       if (!dagPanel.matlabRuns.noteDbChange()) {
         outputChannel.appendLine(
           "DuckDB file changed while MATLAB owns the database \u2014 deferring DAG refresh until the run finishes"

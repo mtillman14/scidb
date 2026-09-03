@@ -12,6 +12,130 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Preamble timing instrumentation
+#
+# Measured from a real session's scidb.log: a short MATLAB run spent ~4.4s
+# between the GUI emitting this script and MATLAB's FIRST scidb log line, then
+# ~0.43s of logged scidb work. Everything in that first window — VS Code
+# writing/dispatching the temp script, MATLAB parsing it, the pyenv preamble,
+# the addpath block — was unlogged, so it could not be attributed to any one
+# cause. These lines split it up.
+#
+# `script_start` is a wall-clock stamp in scidb.log's own format
+# (`yyyy-mm-dd HH:MM:SS.FFF`) so it can be diffed directly against the
+# extension's `runInMatlabTerminal` timestamps — that difference IS the
+# dispatch latency, which nothing else can observe.
+#
+# Per-section lines use `fprintf` because the early ones run before Python
+# (and therefore scidb.Log) is reachable; the consolidated summary goes
+# through scidb.Log.info in the same `[timing] name: TOTAL=…s (phase=…s)`
+# shape scistacklog's Log.timer emits, so it greps out of scidb.log next to
+# for_each's existing timing lines.
+# ---------------------------------------------------------------------------
+
+
+def _timing_init_lines() -> list[str]:
+    """Start the script clock and stamp the wall clock.
+
+    Names no section variable: a script that emits no pyenv preamble must
+    contain no mention of pyenv at all (pinned by
+    ``test_pyenv_preamble_omitted_when_none``), and the same reasoning holds
+    for every other optional section. Each section's variable is created by
+    the section itself — see :class:`_PreambleTiming`.
+    """
+    return [
+        "% --- preamble timing --------------------------------------------",
+        "% Wall-clock stamp first: the gap between the GUI dispatching this",
+        "% script and this line is otherwise invisible in every log we keep.",
+        "scistack_script_t0__ = tic;",
+        "fprintf('[SciStack][timing] script_start %s\\n', "
+        "datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF'));",
+        "",
+    ]
+
+
+class _PreambleTiming:
+    """Times the generated script's preamble, section by section.
+
+    Tracks which sections were actually emitted, so the summary and the
+    closing ``clear`` name only those. A script generated without a pyenv
+    preamble (``python_executable=None`` — the non-GUI callers) must not so
+    much as mention pyenv: reporting ``pyenv=0.000s`` for a section that does
+    not exist reads as "ran and was free" rather than "wasn't there", and it
+    reintroduces the very word the omitted-preamble contract says will be
+    absent.
+
+    One instance per generated script; ``section`` must be called for every
+    section before ``summary_lines``.
+    """
+
+    def __init__(self) -> None:
+        self._emitted: list[tuple[str, str]] = []  # (variable, label)
+
+    def section(self, body: list[str], var: str, label: str) -> list[str]:
+        """``body`` wrapped in tic/toc, recording its duration into ``var``.
+
+        An empty body emits nothing and records nothing.
+        """
+        if not body:
+            return []
+        self._emitted.append((var, label))
+        return [
+            "scistack_section_t0__ = tic;",
+            *body,
+            f"{var} = toc(scistack_section_t0__);",
+            f"fprintf('[SciStack][timing] {label} %.3fs\\n', {var});",
+            "",
+        ]
+
+    def summary_lines(self) -> list[str]:
+        """One consolidated preamble line, emitted through scidb.Log.
+
+        Placed after configure_database — the first point where both Python
+        and the +scidb package are guaranteed reachable — and before the
+        first for_each, so the summary lands in scidb.log immediately ahead
+        of ``for_each_prepare returned in …``. Mirrors the
+        ``[timing] name: TOTAL=…s (phase=…s, …)`` shape scistacklog's
+        Log.timer emits, so one grep finds both.
+        """
+        if not self._emitted:
+            return [
+                "scidb.Log.info('[timing] matlab_preamble: TOTAL=%.3fs', ...",
+                "    toc(scistack_script_t0__));",
+                "",
+            ]
+        phases = ", ".join(f"{label}=%.3fs" for _, label in self._emitted)
+        args = ", ".join(var for var, _ in self._emitted)
+        return [
+            "% Consolidated preamble timing (mirrors Log.timer's [timing] shape).",
+            f"scidb.Log.info('[timing] matlab_preamble: TOTAL=%.3fs ({phases})', ...",
+            f"    toc(scistack_script_t0__), {args});",
+            "",
+        ]
+
+    def total_lines(self) -> list[str]:
+        """Whole-script total, then clear the instrumentation's variables.
+
+        Emitted after the try/catch block, so it is reached on the success
+        path only — the catch rethrows, and a failed run's duration is not a
+        measurement worth recording. ``run(...)`` evaluates in the caller's
+        workspace, so the temporaries are cleared rather than left sitting
+        next to the user's own variables.
+        """
+        temps = ["scistack_script_t0__"]
+        if self._emitted:
+            temps.append("scistack_section_t0__")
+            temps.extend(var for var, _ in self._emitted)
+        return [
+            "fprintf('[SciStack][timing] script_total %.3fs\\n', "
+            "toc(scistack_script_t0__));",
+            "scidb.Log.info('[timing] matlab_script: TOTAL=%.3fs', "
+            "toc(scistack_script_t0__));",
+            "clear " + " ".join(temps) + ";",
+        ]
+
+
 def _entities_script_lines(
     entities_script: "str | None",
     entities_file: "str | None" = None,
@@ -387,9 +511,12 @@ def _variable_input_items(variable_inputs: "dict | None"):
     """``(param_name, matlab_expression)`` pairs for a ``variable_inputs`` map.
 
     A binding with no type names is skipped rather than emitted: it would
-    become ``scifor.EachOf()``, which errors at construction, and there is no
-    value to bind anyway. Skipping shifts the argument it would have filled —
-    :func:`_order_inputs_by_signature` reports that as a gap.
+    become ``scifor.EachOf()``, an axis with nothing to expand, and there is
+    no value to bind anyway. Skipping shifts the argument it would have
+    filled — :func:`_order_inputs_by_signature` reports that as a gap.
+    (Constructing an empty ``EachOf`` is legal now, since that is what a
+    value-less ``Parameter`` is; it is ``for_each`` expansion that refuses
+    one, which would be a failure at run time rather than here.)
     """
     for param, ref in (variable_inputs or {}).items():
         names = [ref] if isinstance(ref, str) else [n for n in ref if n]
@@ -482,30 +609,50 @@ def generate_matlab_command(
     lines.append(f"%% SciStack: Run {function_name}")
     lines.append("% Generated by SciStack GUI — paste into MATLAB Command Window")
     lines.append("")
+    timing = _PreambleTiming()
+    lines.extend(_timing_init_lines())
 
     # pyenv preamble — must come before any py.* call (i.e. before
     # scihist.configure_database, which internally calls py.scidb.*).
-    if python_executable:
-        lines.extend(_format_pyenv_preamble(python_executable))
-        lines.append("")
+    pyenv_lines = (
+        _format_pyenv_preamble(python_executable) if python_executable else []
+    )
+    lines.extend(timing.section(pyenv_lines, "scistack_t_pyenv__", "pyenv_preamble"))
 
     # addpath entries
-    if addpath_dirs:
-        for d in addpath_dirs:
-            lines.append(f"addpath('{_escape_matlab_string(d)}');")
-        lines.append("")
+    addpath_lines = [
+        f"addpath('{_escape_matlab_string(d)}');" for d in (addpath_dirs or [])
+    ]
+    lines.extend(timing.section(addpath_lines, "scistack_t_addpath__", "addpath"))
 
-    lines.extend(_project_root_lines(project_root, path_inputs))
-    lines.extend(_entities_script_lines(entities_script, entities_file, project_root))
+    lines.extend(
+        timing.section(
+            _project_root_lines(project_root, path_inputs),
+            "scistack_t_project_root__",
+            "project_root",
+        )
+    )
+    lines.extend(
+        timing.section(
+            _entities_script_lines(entities_script, entities_file, project_root),
+            "scistack_t_entities__",
+            "entities",
+        )
+    )
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)
-    lines.append("% Configure database (skip if already configured)")
-    lines.append(
-        f"db = scihist.configure_database('{_escape_matlab_string(db_path)}', "
-        f"{schema_keys_str});"
+    lines.extend(
+        timing.section(
+            [
+                "% Configure database (skip if already configured)",
+                f"db = scihist.configure_database("
+                f"'{_escape_matlab_string(db_path)}', {schema_keys_str});",
+            ],
+            "scistack_t_configure_db__",
+            "configure_database",
+        )
     )
-    lines.append("")
 
     if not variants:
         # No variant info — generate a template from the canvas wiring alone:
@@ -521,7 +668,7 @@ def generate_matlab_command(
                 template_inputs[p] = _format_path_input(pi)
         if sweeps:
             for p, values in sweeps.items():
-                template_inputs[p] = _format_sweep(values)
+                template_inputs[p] = _format_sweep(values, p)
         template_inputs = _order_inputs_by_signature(function_name, template_inputs)
         inputs_str = (
             _format_matlab_struct(template_inputs) if template_inputs else "struct()"
@@ -556,6 +703,7 @@ def generate_matlab_command(
             {},
             function_name,
         )
+        lines.extend(timing.summary_lines())
         lines.append("try")
         lines.append("    % Run (fill in inputs/outputs)")
         lines.append(f"    scihist.for_each(@{function_name}, ...")
@@ -579,17 +727,23 @@ def generate_matlab_command(
         lines.append("    end")
         lines.append("    rethrow(scistack_err__);")
         lines.append("end")
+        lines.extend(timing.total_lines())
         return "\n".join(lines)
 
     # Register variable types
     all_var_types = _collect_var_types(variants)
     all_var_types |= set(_variable_input_type_names(variable_inputs))
     lines.extend(_unresolvable_var_type_lines(all_var_types))
+    register_lines: list[str] = []
     if all_var_types:
-        lines.append("% Register variable types")
+        register_lines.append("% Register variable types")
         for vtype in sorted(all_var_types):
-            lines.append(f"scidb.register_variable({vtype}());")
-        lines.append("")
+            register_lines.append(f"scidb.register_variable({vtype}());")
+    lines.extend(
+        timing.section(register_lines, "scistack_t_register__", "register_variables")
+    )
+
+    lines.extend(timing.summary_lines())
 
     # Wrap all for_each calls in a try/catch so db.close() always runs,
     # even if the run errors out or is interrupted.
@@ -624,6 +778,7 @@ def generate_matlab_command(
     lines.append("    end")
     lines.append("    rethrow(scistack_err__);")
     lines.append("end")
+    lines.extend(timing.total_lines())
     return "\n".join(lines)
 
 
@@ -751,7 +906,7 @@ def _for_each_call_lines(
         # Add Parameter values as scidb.Parameter(...) expressions.
         if sweeps:
             for param_name, values in sweeps.items():
-                inputs_dict[param_name] = _format_sweep(values)
+                inputs_dict[param_name] = _format_sweep(values, param_name)
         # Add constants as scalar values
         for k, val in constants.items():
             inputs_dict[k] = _format_matlab_value(val)
@@ -855,34 +1010,54 @@ def generate_matlab_pipeline_command(
     lines.append(f"%% SciStack: Run pipeline {pipeline_id}")
     lines.append("% Generated by SciStack GUI — paste into MATLAB Command Window")
     lines.append("")
+    timing = _PreambleTiming()
+    lines.extend(_timing_init_lines())
 
     # pyenv preamble — must come before any py.* call.
-    if python_executable:
-        lines.extend(_format_pyenv_preamble(python_executable))
-        lines.append("")
+    pyenv_lines = (
+        _format_pyenv_preamble(python_executable) if python_executable else []
+    )
+    lines.extend(timing.section(pyenv_lines, "scistack_t_pyenv__", "pyenv_preamble"))
 
     # addpath entries
-    if addpath_dirs:
-        for d in addpath_dirs:
-            lines.append(f"addpath('{_escape_matlab_string(d)}');")
-        lines.append("")
+    addpath_lines = [
+        f"addpath('{_escape_matlab_string(d)}');" for d in (addpath_dirs or [])
+    ]
+    lines.extend(timing.section(addpath_lines, "scistack_t_addpath__", "addpath"))
 
     all_step_path_inputs = {
         param: pi
         for step in steps
         for param, pi in (step.get("path_inputs") or {}).items()
     }
-    lines.extend(_project_root_lines(project_root, all_step_path_inputs))
-    lines.extend(_entities_script_lines(entities_script, entities_file, project_root))
+    lines.extend(
+        timing.section(
+            _project_root_lines(project_root, all_step_path_inputs),
+            "scistack_t_project_root__",
+            "project_root",
+        )
+    )
+    lines.extend(
+        timing.section(
+            _entities_script_lines(entities_script, entities_file, project_root),
+            "scistack_t_entities__",
+            "entities",
+        )
+    )
 
     # Configure database
     schema_keys_str = _format_matlab_string_array(schema_keys)
-    lines.append("% Configure database (skip if already configured)")
-    lines.append(
-        f"db = scihist.configure_database('{_escape_matlab_string(db_path)}', "
-        f"{schema_keys_str});"
+    lines.extend(
+        timing.section(
+            [
+                "% Configure database (skip if already configured)",
+                f"db = scihist.configure_database("
+                f"'{_escape_matlab_string(db_path)}', {schema_keys_str});",
+            ],
+            "scistack_t_configure_db__",
+            "configure_database",
+        )
     )
-    lines.append("")
 
     all_var_types: set[str] = set()
     resolved_steps: list[tuple[str, list[dict], dict]] = []
@@ -906,11 +1081,16 @@ def generate_matlab_pipeline_command(
         )
 
     lines.extend(_unresolvable_var_type_lines(all_var_types))
+    register_lines: list[str] = []
     if all_var_types:
-        lines.append("% Register variable types")
+        register_lines.append("% Register variable types")
         for vtype in sorted(all_var_types):
-            lines.append(f"scidb.register_variable({vtype}());")
-        lines.append("")
+            register_lines.append(f"scidb.register_variable({vtype}());")
+    lines.extend(
+        timing.section(register_lines, "scistack_t_register__", "register_variables")
+    )
+
+    lines.extend(timing.summary_lines())
 
     lines.append(f"pipe = scidb.Pipeline('{_escape_matlab_string(pipeline_id)}');")
     lines.append("")
@@ -972,6 +1152,7 @@ def generate_matlab_pipeline_command(
     lines.append("    end")
     lines.append("    rethrow(scistack_err__);")
     lines.append("end")
+    lines.extend(timing.total_lines())
     return "\n".join(lines)
 
 
@@ -1011,17 +1192,31 @@ def _format_path_input(pi: dict) -> str:
     return f"scifor.PathInput({matlab_template})"
 
 
-def _format_sweep(values: list) -> str:
+def _format_sweep(values: list, param_name: str = "") -> str:
     """Format a Parameter's value list as a MATLAB ``scidb.Parameter(...)``
     expression (mirrors ``_format_path_input``'s role for PathInput).
 
     ``isa(x, 'scifor.EachOf')`` covers a Parameter for free, so ``for_each``
     fans it out with no special handling -- see ``+scidb/Parameter.m``.
 
+    An EMPTY *values* raises rather than emitting ``scidb.Parameter()``. That
+    expression is perfectly constructible in MATLAB (a Parameter with no value
+    yet is a legal object), so the script would generate, run, expand a
+    zero-length axis and write nothing -- failing in the terminal, a long way
+    from the click that caused it. The Python run path refuses the same state
+    in ``execution_service.build_run_inputs``; this is the MATLAB route's copy
+    of that refusal, at generation time.
+
     A dict-valued Parameter (``CONFIG = { fld1 = 1 }`` under ``[parameters]``)
     is logged: it renders to a nested ``struct(...)`` literal, and when one of
     these silently degraded to a quoted Python repr there was nothing in the
     log to see it by."""
+    if not values:
+        label = f"'{param_name}'" if param_name else "a wired Parameter"
+        raise ValueError(
+            f"parameter {label} has no value yet, so there is nothing to run "
+            f"-- give it at least one value on its node."
+        )
     items = ", ".join(_format_matlab_value(v) for v in values)
     n_struct = sum(1 for v in values if isinstance(v, dict))
     if n_struct:

@@ -28,6 +28,10 @@ class ParameterCreate(BaseModel):
 class ParameterUpdate(BaseModel):
     values: list[float | int | str | bool] = []
     description: str = ""
+    # {"kind": "range"|"list", "spec": {...}} when these values were written
+    # in one go by the panel's Generate section; absent for a value added one
+    # at a time. Display grouping only — never written to source.
+    group: dict | None = None
 
 
 class PathInputCreate(BaseModel):
@@ -127,8 +131,9 @@ def get_parameters() -> list[dict]:
 def post_parameter(body: ParameterCreate):
     """Create a Parameter. ``values`` is the final, already-computed flat
     list -- range generation (start/end/step) is a frontend concern. Empty
-    scaffolds a placeholder, matching the 'New parameter' form, which only
-    collects a name."""
+    creates a Parameter with NO values, matching the 'New parameter' form,
+    which only collects a name; it used to scaffold a placeholder ``0``,
+    which is indistinguishable from a declared value once written."""
     from scistack_gui.services.layout_service import create_parameter
 
     return create_parameter(body.name, body.values)
@@ -144,12 +149,15 @@ def put_parameter(name: str, body: ParameterUpdate):
     Returns ``{"ok": False, "reason": "read_only", "file", "line"}`` when the
     Parameter is declared outside the configured entities file, so the
     frontend can render "declared in foo.py:42" rather than a generic hint.
-    An empty ``values`` is rejected: emptying a Parameter would silently drop
-    every variant it produces.
+    An empty ``values`` is accepted -- a Parameter's value set may be empty at
+    any time, not only at creation -- and anything wired to it then fails
+    loudly at run rather than running with an invented value.
+
+    ``group`` marks the list as one generated set, for display only.
     """
     from scistack_gui.services.layout_service import update_parameter
 
-    return update_parameter(name, body.values, body.description)
+    return update_parameter(name, body.values, body.description, body.group)
 
 
 @router.delete("/parameters/{name}")
@@ -158,6 +166,18 @@ def delete_parameter(name: str, pipeline_id: str = "main"):
     from scistack_gui.services.layout_service import delete_parameter as _del
 
     return _del(name, pipeline_id)
+
+
+@router.post("/parameters/{name}/refresh-source")
+def refresh_parameter_source(name: str):
+    """Re-read the entities file so an externally hand-edited value (e.g. a
+    dict/struct too complex for the sidebar's add-value form) shows up
+    without the full "Refresh Code" rescan. *name* scopes nothing server-side
+    (the reload is whole-file) — it is here for REST-consistency with the
+    other single-name parameter routes above and for logging only."""
+    from scistack_gui.services.layout_service import refresh_parameter_source as _refresh
+
+    return _refresh(name)
 
 
 @router.get("/path-inputs")

@@ -168,6 +168,7 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     list_hidden_combos:     { path: (p) => `/api/functions/${encodeURIComponent(p.function_name as string)}/hidden_combos` },
     hide_parameter_value:   { path: (p) => `/api/parameters/${encodeURIComponent(p.name as string)}/hidden_values/${encodeURIComponent(p.value as string)}`, method: 'POST' },
     unhide_parameter_value: { path: (p) => `/api/parameters/${encodeURIComponent(p.name as string)}/hidden_values/${encodeURIComponent(p.value as string)}`, method: 'DELETE' },
+    set_parameter_group_checked: { path: (p) => `/api/parameters/${encodeURIComponent(p.name as string)}/group_checked`, method: 'POST', body: true },
     list_hidden_parameter_values: { path: '/api/parameters/hidden_values' },
     create_parameter:       { path: '/api/parameters', method: 'POST', body: true },
     // Entity edits write straight to source (docs/claude/entity-editability-model.md).
@@ -176,6 +177,7 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     // browser and only breaks the VS Code extension.
     update_parameter:       { path: (p) => `/api/parameters/${encodeURIComponent(p.name as string)}`, method: 'PUT', body: true },
     delete_parameter:       { path: (p) => `/api/parameters/${encodeURIComponent(p.name as string)}`, method: 'DELETE' },
+    refresh_parameter_source: { path: (p) => `/api/parameters/${encodeURIComponent(p.name as string)}/refresh-source`, method: 'POST' },
     create_path_input:      { path: '/api/path-inputs', method: 'POST', body: true },
     update_path_input:      { path: (p) => `/api/path-inputs/${encodeURIComponent(p.name as string)}`, method: 'PUT', body: true },
     delete_path_input:      { path: (p) => `/api/path-inputs/${encodeURIComponent(p.name as string)}`, method: 'DELETE' },

@@ -1467,6 +1467,26 @@ class TestFormatPathInput:
         )
         assert "scidb.Parameter(10, 20, 30)" in cmd
 
+    def test_generate_matlab_command_refuses_a_parameter_with_no_values(self):
+        """``scidb.Parameter()`` is perfectly constructible in MATLAB — a
+        Parameter with no value yet is a legal object — so emitting it would
+        produce a script that runs, expands a zero-length axis and writes
+        nothing, failing in the terminal a long way from the click that
+        caused it. Refuse at generation time, like the Python run path does
+        in execution_service.build_run_inputs."""
+        import pytest
+
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        with pytest.raises(ValueError, match="has no value yet") as excinfo:
+            generate_matlab_command(
+                function_name="bandpass_filter",
+                db_path="/data/exp.duckdb",
+                schema_keys=["subject"],
+                sweeps={"low_hz": []},
+            )
+        assert "'low_hz'" in str(excinfo.value)
+
     def test_generate_matlab_command_sweep_and_path_input_together(self):
         from scistack_gui.api.matlab_command import generate_matlab_command
 
@@ -2477,6 +2497,174 @@ class TestGenerateMatlabPipelineCommand:
         assert cmd.count("scidb.for_each") == 1
         assert "@bandpass_filter" in cmd
         assert "@load_csv" not in cmd
+
+
+class TestPreambleTimingInstrumentation:
+    """The generated script must time its own preamble.
+
+    A short MATLAB run measured ~4.4s between the GUI emitting the script and
+    MATLAB's first scidb log line, against ~0.43s of logged scidb work — and
+    nothing in that window was attributable, because neither side timestamped
+    it. These assertions pin the instrumentation that closes the gap; they are
+    about observability, not formatting, so they check the pieces a later
+    optimization has to be able to measure against.
+    """
+
+    def _variant_cmd(self, **kwargs):
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        defaults = dict(
+            function_name="bandpass_filter",
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+            variants=[
+                {
+                    "input_types": {"signal": "RawSignal"},
+                    "output_type": "FilteredSignal",
+                    "constants": {},
+                }
+            ],
+        )
+        defaults.update(kwargs)
+        return generate_matlab_command(**defaults)
+
+    def test_wall_clock_stamp_is_first_executable_line(self):
+        """The stamp pairs with the extension's own sendText timestamp; it
+        must precede every section so the dispatch gap is fully covered."""
+        cmd = self._variant_cmd(python_executable="/venv/bin/python")
+
+        assert "[SciStack][timing] script_start" in cmd
+        assert "datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF')" in cmd
+        assert cmd.index("script_start") < cmd.index("scistack_pyenv_target__")
+
+    def test_each_emitted_section_is_timed(self):
+        cmd = self._variant_cmd(
+            python_executable="/venv/bin/python",
+            addpath_dirs=["/matlab/lib"],
+            project_root="/proj",
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+
+        for label in (
+            "pyenv_preamble",
+            "addpath",
+            "project_root",
+            "entities",
+            "configure_database",
+            "register_variables",
+        ):
+            assert f"[SciStack][timing] {label} %.3fs" in cmd
+
+    def test_absent_sections_emit_no_timing_line(self):
+        """A section that wasn't generated must not appear as a 0.000s phase
+        line — that reads as "ran and was free" rather than "didn't run"."""
+        cmd = self._variant_cmd()
+
+        assert "[SciStack][timing] addpath %.3fs" not in cmd
+        assert "[SciStack][timing] pyenv_preamble %.3fs" not in cmd
+        assert "[SciStack][timing] configure_database %.3fs" in cmd
+
+    def test_summary_names_only_the_sections_that_ran(self):
+        """The summary must not report phases the script never emitted.
+
+        `pyenv=0.000s` for a script with no pyenv preamble reads as "ran and
+        was free" rather than "wasn't there" — and it would put the word back
+        into a script whose contract (test_pyenv_preamble_omitted_when_none)
+        is that no pyenv code is emitted at all. Every variable the summary
+        reads is therefore assigned by its own section, upstream of it.
+        """
+        cmd = self._variant_cmd()  # no python_executable, no addpath
+
+        assert "pyenv" not in cmd
+        assert "addpath" not in cmd
+        # What did run is still named, and assigned before the summary reads it.
+        assert "configure_database=%.3fs" in cmd
+        assert cmd.index("scistack_t_configure_db__ = toc(") < cmd.index(
+            "[timing] matlab_preamble"
+        )
+
+    def test_summary_includes_every_emitted_section(self):
+        cmd = self._variant_cmd(
+            python_executable="/venv/bin/python",
+            addpath_dirs=["/matlab/lib"],
+            project_root="/proj",
+            entities_file="/proj/src/scistack_entities.toml",
+        )
+
+        summary = next(
+            line for line in cmd.splitlines() if "[timing] matlab_preamble" in line
+        )
+        for label in (
+            "pyenv_preamble",
+            "addpath",
+            "project_root",
+            "entities",
+            "configure_database",
+            "register_variables",
+        ):
+            assert f"{label}=%.3fs" in summary
+
+    def test_consolidated_summary_precedes_the_run(self):
+        """Emitted after configure_database (first point where both Python
+        and +scidb are reachable) and before for_each, so it lands in
+        scidb.log immediately ahead of `for_each_prepare returned in …`."""
+        cmd = self._variant_cmd()
+
+        assert "scidb.Log.info('[timing] matlab_preamble: TOTAL=%.3fs" in cmd
+        assert cmd.index("matlab_preamble") < cmd.index("scihist.for_each")
+
+    def test_total_is_emitted_after_the_try_block_and_clears_temporaries(self):
+        """`run(...)` evaluates in the caller's workspace, so the script's own
+        temporaries must not be left next to the user's variables."""
+        cmd = self._variant_cmd()
+
+        assert cmd.index("[timing] matlab_script: TOTAL=") > cmd.index(
+            "rethrow(scistack_err__);"
+        )
+        assert "clear scistack_script_t0__ scistack_section_t0__" in cmd
+        assert cmd.rstrip().endswith(";")
+
+    def test_template_branch_is_instrumented_too(self):
+        """The never-run-function branch returns early — it needs its own
+        summary and total, or first runs are the ones left unmeasured."""
+        from scistack_gui.api.matlab_command import generate_matlab_command
+
+        cmd = generate_matlab_command(
+            function_name="brand_new",
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+        )
+
+        assert "[SciStack][timing] script_start" in cmd
+        assert "[timing] matlab_preamble" in cmd
+        assert "[timing] matlab_script: TOTAL=" in cmd
+
+    def test_pipeline_command_is_instrumented(self):
+        from scistack_gui.api.matlab_command import generate_matlab_pipeline_command
+
+        cmd = generate_matlab_pipeline_command(
+            pipeline_id="gait",
+            steps=[
+                {
+                    "function_name": "load_csv",
+                    "variants": [
+                        {
+                            "input_types": {},
+                            "output_type": "RawSignal",
+                            "constants": {},
+                        }
+                    ],
+                }
+            ],
+            db_path="/data/exp.duckdb",
+            schema_keys=["subject"],
+            addpath_dirs=["/matlab/lib"],
+        )
+
+        assert "[SciStack][timing] script_start" in cmd
+        assert "[SciStack][timing] addpath %.3fs" in cmd
+        assert cmd.index("[timing] matlab_preamble") < cmd.index("pipe.run_all(")
+        assert "[timing] matlab_script: TOTAL=" in cmd
 
 
 class TestFindSciMatlabMatlabDir:

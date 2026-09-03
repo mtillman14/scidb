@@ -149,6 +149,41 @@ def _ensure_tables(db) -> None:
             PRIMARY KEY (pipeline_id, const_name, value)
         )
     """)
+    # Values written in one go by ParameterSettingsPanel's Generate section
+    # ("Replace values"), as opposed to added one at a time ("Add value").
+    # Purely a DISPLAY grouping: the set collapses to a single compact row,
+    # with one checkbox, in both the sidebar list and the canvas node.
+    #
+    # It lives here rather than in source because source is the flat list of
+    # values in three languages, and grouping is not something a pipeline
+    # means -- keeping it out of the declaration is what leaves
+    # render_parameter/render_parameter_value/render_matlab_parameter,
+    # version_keys and MATLAB parity untouched by this feature (CLAUDE.md
+    # NOTE 3: only the GUI concern lives in the GUI layer).
+    #
+    # ONE group per Parameter: "Replace values" replaces every value, so a
+    # generation always defines the whole set. Values added afterwards sit
+    # alongside it as ordinary rows, which is why param_name is the PK.
+    #
+    # ``member_values`` holds the members as RENDERED STRINGS -- the same
+    # form build_parameter_nodes puts on a node and
+    # _pipeline_hidden_constant_values stores -- so membership, hidden state
+    # and history rows all key alike. (Named ``member_values`` and not
+    # ``values`` because VALUES is a SQL keyword and would need quoting at
+    # every reference.) ``spec`` is kept as well as the members so the
+    # compact repr can be rendered from the generation itself, and so
+    # reopening Generate can re-seed its start/end/step inputs.
+    #
+    # Not scoped by pipeline_id: what a Parameter's values ARE does not vary
+    # by scope, the same reasoning as _pipeline_path_input_history below.
+    _duck(db)._execute("""
+        CREATE TABLE IF NOT EXISTS _pipeline_parameter_value_groups (
+            param_name    VARCHAR PRIMARY KEY,
+            kind          VARCHAR NOT NULL,
+            spec          VARCHAR NOT NULL DEFAULT '{}',
+            member_values VARCHAR NOT NULL DEFAULT '[]'
+        )
+    """)
     # Templates a PathInput has been declared with and the GUI has since
     # overwritten. Append-only, never deleted.
     #
@@ -1210,6 +1245,51 @@ def unhide_parameter_value(
     )
 
 
+def hide_parameter_values(
+    db, const_name: str, values: "list[str]", pipeline_id: str = ROOT_PIPELINE_ID
+) -> None:
+    """Hide several values of one Parameter in a single statement.
+
+    The bulk form exists for the generated-set checkbox, which toggles every
+    member of a range at once: one round-trip instead of one per value
+    (``project_batched_provenance_hot_paths`` — a 50-value range is exactly
+    the N+1 shape that memory is about).
+    """
+    if not values:
+        return
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_hidden_constant_values "
+        "(pipeline_id, const_name, value) VALUES "
+        + ", ".join(["(?, ?, ?)"] * len(values))
+        + " ON CONFLICT DO NOTHING",
+        [x for v in values for x in (pipeline_id, const_name, v)],
+    )
+    logger.info(
+        "[pipeline_store] hid %d value(s) of parameter %r", len(values), const_name
+    )
+
+
+def unhide_parameter_values(
+    db, const_name: str, values: "list[str]", pipeline_id: str = ROOT_PIPELINE_ID
+) -> None:
+    """Restore several hidden values of one Parameter in a single statement.
+    Bulk counterpart to :func:`hide_parameter_values`."""
+    if not values:
+        return
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_hidden_constant_values "
+        "WHERE pipeline_id = ? AND const_name = ? AND value IN ("
+        + ", ".join(["?"] * len(values))
+        + ")",
+        [pipeline_id, const_name, *values],
+    )
+    logger.info(
+        "[pipeline_store] unhid %d value(s) of parameter %r", len(values), const_name
+    )
+
+
 def list_hidden_parameter_values(
     db, pipeline_id: "str | None" = ROOT_PIPELINE_ID
 ) -> list[dict]:
@@ -1230,6 +1310,74 @@ def list_hidden_parameter_values(
             [pipeline_id],
         )
     return [{"const_name": const_name, "value": value} for const_name, value in rows]
+
+
+# ---------------------------------------------------------------------------
+# Generated value sets — see _pipeline_parameter_value_groups above.
+# ---------------------------------------------------------------------------
+
+
+def set_parameter_value_group(
+    db, param_name: str, *, kind: str, spec: dict, values: "list[str]"
+) -> None:
+    """Record *values* as one generated set for *param_name*, replacing any
+    previous one (one group per Parameter — see the table comment)."""
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "INSERT INTO _pipeline_parameter_value_groups "
+        "(param_name, kind, spec, member_values) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (param_name) DO UPDATE SET "
+        "kind = excluded.kind, spec = excluded.spec, "
+        "member_values = excluded.member_values",
+        [param_name, kind, json.dumps(spec), json.dumps(list(values))],
+    )
+    logger.debug(
+        "[pipeline_store] recorded generated set for %r: kind=%s, %d member(s)",
+        param_name,
+        kind,
+        len(values),
+    )
+
+
+def clear_parameter_value_group(db, param_name: str) -> None:
+    """Forget the generated set for *param_name*, if any. The values
+    themselves live in source and are untouched — only the grouping goes."""
+    _ensure_tables(db)
+    _duck(db)._execute(
+        "DELETE FROM _pipeline_parameter_value_groups WHERE param_name = ?",
+        [param_name],
+    )
+
+
+def get_parameter_value_groups(db) -> dict:
+    """``{param_name: {"kind", "spec", "values"}}`` for every recorded
+    generated set.
+
+    A row whose JSON no longer parses is skipped with a warning rather than
+    raised: the grouping is cosmetic, and a corrupt one must not be able to
+    take down the whole graph build.
+    """
+    _ensure_tables(db)
+    rows = _duck(db)._fetchall(
+        "SELECT param_name, kind, spec, member_values "
+        "FROM _pipeline_parameter_value_groups"
+    )
+    out: dict = {}
+    for param_name, kind, spec, member_values in rows:
+        try:
+            out[param_name] = {
+                "kind": kind,
+                "spec": json.loads(spec),
+                "values": list(json.loads(member_values)),
+            }
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                "[pipeline_store] unreadable value group for %r (%s) — the "
+                "values still render individually",
+                param_name,
+                e,
+            )
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -823,6 +823,11 @@ class TestWiringMutationBroadcasts:
 
         messages: list[dict] = []
         monkeypatch.setattr(ws_mod, "push_message", lambda msg: messages.append(msg))
+
+        async def _fake_broadcast(msg):
+            messages.append(msg)
+
+        monkeypatch.setattr(ws_mod, "broadcast", _fake_broadcast)
         return messages
 
     def _dag_updates(self, messages):
@@ -880,6 +885,23 @@ class TestWiringMutationBroadcasts:
         captured.clear()
         client.delete("/api/edges/manual__bcast_e1")
         assert len(self._dag_updates(captured)) == 1
+
+    def test_variable_creation_does_not_broadcast(
+        self, client_with_variable_file, captured
+    ):
+        """A freshly declared type has no DB records yet, so it cannot
+        appear as a canvas node (variable nodes come from list_variables,
+        not the type registry — see graph_builder.build_variable_nodes).
+        Broadcasting here used to force every connected client through a
+        full pipeline refetch+relayout for a change the canvas can't show
+        (user-found 2026-09-03: "creating a variable forced a whole
+        codebase refresh"). The sidebar updates its own registry state
+        directly instead, same as create_parameter/create_path_input."""
+        resp = client_with_variable_file.post(
+            "/api/variables/create", json={"name": "BcastNewVar"}
+        )
+        assert resp.json()["ok"] is True
+        assert self._dag_updates(captured) == []
 
 
 # ---------------------------------------------------------------------------

@@ -57,24 +57,26 @@ class TestCreateParameterWrite:
         assert result["ok"] is True, result.get("error")
         content = module_file.read_text()
         assert "import scidb" in content
-        assert "CUTOFF_HZ = scidb.Parameter(0, description='')" in content
+        assert "CUTOFF_HZ = scidb.Parameter(description='')" in content
 
         registered = _registry.get_parameters_registry()
         assert "CUTOFF_HZ" in registered
-        assert registered["CUTOFF_HZ"].value == 0
+        assert registered["CUTOFF_HZ"].values == []
 
-    def test_default_value_is_placeholder_zero(self, tmp_path):
-        """The GUI's 'New parameter' form only collects a name, so a
-        placeholder is scaffolded rather than erroring — the user fills in
-        the real value(s) afterward. Contrast update_parameter, where an
-        empty list IS rejected."""
+    def test_no_values_writes_no_value_not_a_placeholder(self, tmp_path):
+        """The GUI's 'New parameter' form only collects a name, so the
+        Parameter is created with NO values. It used to scaffold a
+        placeholder 0, which is indistinguishable from a declared value once
+        written: it showed as a checked value on the node, fed for_each, and
+        any run started before the user noticed stamped 0 into records."""
         module_file = tmp_path / "entities.py"
         module_file.write_text("import scidb\n")
         _registry._module_path = module_file
 
         result = create_parameter("PLACEHOLDER")
         assert result["ok"] is True, result.get("error")
-        assert _registry.get_parameters_registry()["PLACEHOLDER"].value == 0
+        assert "0" not in module_file.read_text()
+        assert _registry.get_parameters_registry()["PLACEHOLDER"].values == []
 
     def test_explicit_value_and_description(self, tmp_path):
         module_file = tmp_path / "entities.py"
@@ -122,12 +124,28 @@ class TestCreateParameterWrite:
         assert "already exists" in result["error"]
 
 
-class TestUpdateParameterRejectsEmpty:
-    def test_empty_values_rejected(self, tmp_path):
-        """Unlike create, emptying an EXISTING Parameter would silently drop
-        every variant it produces."""
+class TestUpdateParameterAcceptsEmpty:
+    """A Parameter's value set may be empty at ANY time, not only at
+    creation — so removing the last value is allowed rather than blocked.
+    Anything wired to the now-empty Parameter fails loudly at run
+    (execution_service.build_run_inputs) instead of running with a value
+    nobody chose."""
+
+    def setup_method(self):
+        _reset_registry_state()
+
+    def teardown_method(self):
+        _reset_registry_state()
+
+    def test_last_value_can_be_removed(self, tmp_path):
         from scistack_gui.services.parameter_service import update_parameter
 
-        result = update_parameter("ANY_NAME", [])
-        assert result["ok"] is False
-        assert "at least one value" in result["error"]
+        module_file = tmp_path / "entities.py"
+        module_file.write_text("import scidb\n")
+        _registry._module_path = module_file
+        assert create_parameter("CUTOFF_HZ", [30])["ok"]
+
+        result = update_parameter("CUTOFF_HZ", [])
+        assert result["ok"] is True, result.get("error")
+        assert "CUTOFF_HZ = scidb.Parameter(description='')" in module_file.read_text()
+        assert _registry.get_parameters_registry()["CUTOFF_HZ"].values == []

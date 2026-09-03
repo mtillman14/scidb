@@ -1125,11 +1125,132 @@ def build_variable_nodes(
     return nodes
 
 
+def render_value_group_label(kind: str, spec: dict, count: int) -> str:
+    """The compact label for a generated value set — ``0:2:20 — 11 values``.
+
+    Rendered HERE, backend-side, and shipped in the node's ``data``, because
+    both surfaces that show it (``ParameterNode`` on the canvas and
+    ``ParameterSettingsPanel`` in the sidebar, which receives the node's
+    ``values`` as a prop) then render the identical string by construction.
+    Two frontend implementations of "the same repr" would only have to agree
+    by convention.
+
+    Range sets use colon notation, which reads natively to the MATLAB half
+    of this project. A pasted list has no range to state, so it shows its
+    first few members and the count.
+    """
+    if kind == "range":
+        start, step, end = spec.get("start"), spec.get("step"), spec.get("end")
+        if start is not None and step is not None and end is not None:
+            span = f"{_trim_number(start)}:{_trim_number(step)}:{_trim_number(end)}"
+            return f"{span} — {count} values"
+    members = [str(m) for m in (spec.get("members") or [])]
+    if members:
+        shown = ", ".join(members[:6])
+        return f"{shown} — {count} values" if len(members) > 6 else shown
+    return f"{count} values"
+
+
+def _trim_number(n) -> str:
+    """``2.0`` -> ``2``, ``0.5`` -> ``0.5`` — a generated range is usually
+    whole, and ``0.0:2.0:20.0`` reads worse than ``0:2:20``."""
+    if isinstance(n, float) and n.is_integer():
+        return str(int(n))
+    return str(n)
+
+
+def _collapse_value_group(
+    const_name: str,
+    values: list[dict],
+    group: "dict | None",
+    declared: set,
+) -> list[dict]:
+    """Fold *group*'s members into a single row, or leave *values* alone.
+
+    A group survives only while it still describes what source declares: if
+    any member has left the declaration (a hand edit to the entities file, a
+    removal in the panel), the grouping is stale and every value renders
+    individually. Reconciliation is a READ-side check on purpose — source is
+    the truth for which values exist, and a stale group must never be able
+    to hide a value that is really declared.
+
+    Rows outside the group (values added individually afterwards, and DB
+    history rows) keep their existing shape untouched, which is what keeps
+    their presentation identical to before this feature.
+    """
+    if not group:
+        return values
+    members = [str(m) for m in group.get("values", [])]
+    if not members:
+        return values
+    missing = [m for m in members if m not in declared]
+    if missing:
+        logger.info(
+            "[graph_builder] parameter %r: ignoring a stale generated set — "
+            "%d of its %d value(s) are no longer declared in source (%s)",
+            const_name,
+            len(missing),
+            len(members),
+            missing,
+        )
+        return values
+
+    member_set = set(members)
+    grouped = [v for v in values if v["value"] in member_set]
+    if not grouped:
+        return values
+    rest = [v for v in values if v["value"] not in member_set]
+
+    row = {
+        "kind": "generated",
+        "value": render_value_group_label(
+            group.get("kind", "list"), group.get("spec") or {}, len(members)
+        ),
+        "members": members,
+        # Shipped so the panel's Generate section can re-seed its inputs with
+        # the generation that produced what is on screen, instead of its
+        # hardcoded 0/10/1 defaults.
+        "spec": group.get("spec") or {},
+        "record_count": sum(v["record_count"] for v in grouped),
+        # Unchecked as soon as ANY member is hidden: the set is the unit the
+        # user toggles, so "partly excluded" is not a state its one checkbox
+        # can represent. No tri-state — the only way to reach a mixed set is
+        # to hide members individually before generating, and the next toggle
+        # resolves it either way.
+        "checked": all(v["checked"] for v in grouped),
+        "is_current_source_value": all(
+            v.get("is_current_source_value", False) for v in grouped
+        ),
+    }
+    logger.debug(
+        "[graph_builder] parameter %r: %d value(s) collapsed into one "
+        "generated row (%s)",
+        const_name,
+        len(grouped),
+        row["value"],
+    )
+    # The group leads, individually added values follow — the set was written
+    # first, in one action, and the rest were appended to it.
+    return [row, *rest]
+
+
+def is_declared_in_entities_file(
+    source_file: "str | None", entities_file: "str | None"
+) -> bool:
+    """Whether *source_file* (a Parameter's ``source_file``) is the
+    configured writable entities file -- the single comparison behind both
+    the canvas node's and the sidebar row's "declared in entities file"
+    flag, kept in one place so the two never drift."""
+    return source_file is not None and entities_file is not None and source_file == entities_file
+
+
 def build_parameter_nodes(
     const_counts: dict[str, dict],
     pending_constants: dict[str, set[str]],
     source_parameters: "dict[str, object] | None" = None,
     hidden_values: "dict[str, set[str]] | None" = None,
+    value_groups: "dict[str, dict] | None" = None,
+    entities_file: "str | None" = None,
 ) -> list[dict]:
     """Build React Flow **Parameter** nodes.
 
@@ -1154,9 +1275,23 @@ def build_parameter_nodes(
     so ``ParameterNode.tsx``'s checkbox reflects PERSISTED state instead of
     a hardcoded true. Applies to every value, whether the Parameter holds
     one or many.
+
+    value_groups: ``{param_name: {"kind", "spec", "values"}}`` from
+    ``pipeline_store.get_parameter_value_groups`` — values written in one go
+    by the panel's "Replace values" button. Each group collapses into ONE
+    row carrying ``kind: "generated"``, a compact label and a ``members``
+    list; every other row keeps the exact shape it has always had, so values
+    added one at a time render exactly as before. See
+    :func:`_collapse_value_group`.
+
+    entities_file: the configured writable entities file path (as a string),
+    used only to set each node's ``declared_in_entities_file`` flag via
+    :func:`is_declared_in_entities_file` -- lets the GUI offer "refresh from
+    file" only where a re-read of that file can actually change the value.
     """
     source_parameters = source_parameters or {}
     hidden_values = hidden_values or {}
+    value_groups = value_groups or {}
     # One shape for every Parameter: its declared values, stringified.
     source_values: dict[str, list] = {
         name: [str(v) for v in p.values] for name, p in source_parameters.items()
@@ -1220,6 +1355,16 @@ def build_parameter_nodes(
             if v["value"] in source_set:
                 v["is_current_source_value"] = True
 
+        # Last, so the group sees final record counts, checked state and
+        # source badges and can fold them into its single row.
+        values = _collapse_value_group(
+            const_name, values, value_groups.get(const_name), source_set
+        )
+
+        param = source_parameters.get(const_name)
+        source_file = getattr(param, "source_file", None) if param is not None else None
+        source_line = getattr(param, "source_line", None) if param is not None else None
+
         nodes.append(
             {
                 "id": f"{PARAM_ID_PREFIX}{const_name}",
@@ -1228,6 +1373,11 @@ def build_parameter_nodes(
                 "data": {
                     "label": const_name,
                     "values": values,
+                    "source_file": source_file,
+                    "source_line": source_line,
+                    "declared_in_entities_file": is_declared_in_entities_file(
+                        source_file, entities_file
+                    ),
                 },
             }
         )
