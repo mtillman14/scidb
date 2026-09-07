@@ -48,11 +48,13 @@ from .column_selection import ColumnSelection
 from .parameter import Parameter
 from .database import configure_database, get_database, get_user_id
 from .discover import (
+    FUNCTION_ROLES,
     DiscoveryResult,
     ModuleError,
     ModuleExports,
     PackageResult,
     discover_module,
+    function_role,
     scan_package,
     scan_project,
 )
@@ -73,6 +75,15 @@ from .filters import raw_sql, schema_key
 # Batch execution (Layer 2 — DB-backed, no lineage)
 from .foreach import for_each
 from .foreach_config import ForEachConfig
+from .glue import (
+    GlueChainOrderError,
+    GlueError,
+    GlueLanguageMismatchError,
+    GlueRowsChangedError,
+    GlueSchemaKeysAlteredError,
+    GlueSpec,
+    GlueUnsupportedInputError,
+)
 from .lineage_save import save
 from .log import Log
 from .merge import Merge
@@ -108,6 +119,9 @@ __all__ = [
     "PackageResult",
     "ModuleExports",
     "ModuleError",
+    # Function role (process / plot / stat / glue) — one classifier, shared
+    "function_role",
+    "FUNCTION_ROLES",
     # Configuration
     "configure_database",
     "get_database",
@@ -141,6 +155,8 @@ __all__ = [
     "ForEachConfig",
     "PathInput",
     "PathOutput",
+    # Glue nodes (transient in-memory reshaping; never saved)
+    "GlueSpec",
     # Standalone / DataFrame support
     "Col",
     "set_schema",
@@ -162,4 +178,10 @@ __all__ = [
     "AmbiguousParamError",
     "DatabaseLockedError",
     "PipelineCycleError",
+    "GlueError",
+    "GlueRowsChangedError",
+    "GlueSchemaKeysAlteredError",
+    "GlueLanguageMismatchError",
+    "GlueUnsupportedInputError",
+    "GlueChainOrderError",
 ]

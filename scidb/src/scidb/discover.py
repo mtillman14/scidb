@@ -61,6 +61,52 @@ from .variable import BaseVariable
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Function role
+# ---------------------------------------------------------------------------
+# The name prefixes that mark a function's role, longest-match irrelevant
+# (they are disjoint). Checked on the *name*, which is what crosses the MATLAB
+# bridge unchanged — so a role needs no decorator (Python-only) and no classdef
+# (MATLAB-only).
+#
+# ``stat_`` is SINGULAR. ``stats_summary`` is an ordinary process function; the
+# sidebar may say "Stats", the prefix may not.
+_ROLE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("plot_", "plot"),
+    ("stat_", "stat"),
+    ("glue_", "glue"),
+)
+
+FunctionRole = str  # Literal["process", "plot", "stat", "glue"]
+
+# ``{role: prefix}`` for the prefixed roles. Exported for the one caller that
+# cannot use :func:`function_role` — a SQL filter over ``_invocation`` names,
+# which must not fetch every invocation just to classify it in Python.
+ROLE_PREFIX: dict[str, str] = {role: prefix for prefix, role in _ROLE_PREFIXES}
+
+# Every role, in the order a UI should present them. Exported so the GUI can
+# build its filter without holding a second copy of the vocabulary.
+FUNCTION_ROLES: tuple[str, ...] = ("process", "plot", "stat", "glue")
+
+
+def function_role(name: str) -> FunctionRole:
+    """Classify a function by its name prefix.
+
+    ``"process"`` (no recognized prefix) is the default bucket — the ordinary
+    pipeline step. ``"plot"``, ``"stat"`` and ``"glue"`` are the prefixed roles.
+
+    This is the single classifier for the whole stack. The prefixes already
+    drive real execution behaviour inside scidb (endpoint policy, draft/record
+    mode, artifact stamping), so the GUI must not own a second copy of the
+    strings — the same choke-point reasoning as the discovery consolidation.
+    A fifth role later touches this function and nothing else.
+    """
+    for prefix, role in _ROLE_PREFIXES:
+        if name.startswith(prefix):
+            return role
+    return "process"
+
+
 def is_parameter(obj: Any) -> bool:
     """True for a Parameter -- one value or many.
 
@@ -73,9 +119,18 @@ def is_parameter(obj: Any) -> bool:
 
 def is_path_input(obj: Any) -> bool:
     """True for a PathInput, or an EachOf whose every alternative is a
-    PathInput (the "alternate templates" convention)."""
+    PathInput (the "alternate templates" convention).
+
+    The ``obj.alternatives`` test is load-bearing, not a redundant guard:
+    ``all([])`` is True, so without it an EachOf with NO alternatives --
+    which is exactly what a ``Parameter`` declared with no value yet is --
+    would satisfy "every alternative is a PathInput" vacuously and register
+    as a PathInput.
+    """
     return isinstance(obj, PathInput) or (
-        isinstance(obj, EachOf) and all(isinstance(alt, PathInput) for alt in obj.alternatives)
+        isinstance(obj, EachOf)
+        and bool(obj.alternatives)
+        and all(isinstance(alt, PathInput) for alt in obj.alternatives)
     )
 
 
@@ -91,6 +146,20 @@ class ModuleExports:
     functions: list[Any] = field(default_factory=list)
     parameters: list[tuple[str, Parameter]] = field(default_factory=list)
     path_inputs: list[tuple[str, Any]] = field(default_factory=list)
+
+    def function_roles(self) -> dict[str, FunctionRole]:
+        """``{function_name: role}`` for this module's functions.
+
+        Stated here so consumers (the GUI sidebar's role filter) never
+        re-derive a role from a name — the prefix strings belong to
+        :func:`function_role` alone.
+        """
+        return {
+            getattr(fn, "__name__", repr(fn)): function_role(
+                getattr(fn, "__name__", "")
+            )
+            for fn in self.functions
+        }
 
     @property
     def is_empty(self) -> bool:

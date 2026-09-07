@@ -39,6 +39,16 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
 %                       render to their PathOutput path, stat_ results are
 %                       printed, but NOTHING is recorded. Pass true to save
 %                       records with full lineage (+ artifact stamping).
+%       glue          - struct: input name -> a NAMED glue_ function handle
+%                       (or a cell array of them, applied in order) that
+%                       reshapes that input's loaded table in memory before
+%                       fn sees it. The result is never saved; only a
+%                       provenance node is recorded, so editing a glue body
+%                       still invalidates downstream results. A glue node may
+%                       change the column space but NOT the row set. Glue
+%                       runs in the language of the run, so a MATLAB pipeline
+%                       needs MATLAB glue. See
+%                       docs/claude/free-code-glue-nodes.md.
 %       share_limits  - struct: input name -> string array of schema keys to
 %                       hold fixed; each group's [min max] is appended as a
 %                       trailing positional arg (declare `<input>_limits`
@@ -86,10 +96,12 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     for p = 1:numel(input_names_eo)
         name = input_names_eo{p};
         if isa(inputs.(name), 'scifor.EachOf')
+            scifor.require_alternatives(inputs.(name), 'input', name);
             each_of_axes{end+1} = {'input', name, inputs.(name).alternatives}; %#ok<AGROW>
         end
     end
     if isa(where_filter, 'scifor.EachOf')
+        scifor.require_alternatives(where_filter, 'where');
         each_of_axes{end+1} = {'where', '', where_filter.alternatives}; %#ok<AGROW>
     end
 
@@ -241,6 +253,11 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     % Reuses the marshalled py objects above; registration must have zero
     % side effects, so this runs BEFORE prepare (no loads, no DB writes).
     % Dry-run always stays eager (preview intent beats deferral).
+    % Glue chains are normalized ahead of registration too: glue names are
+    % part of the call-site identity, so a step registered without them would
+    % be a different call site than the same step run eagerly.
+    [glue_handles, py_glue] = build_glue_chains(opts.glue, inputs);
+
     if ~dry_run
         target_pipe = [];
         if isa(opts.pipeline, 'scidb.Pipeline')
@@ -263,7 +280,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
                        'finalized', logical(opts.finalized), ...
                        'skip_computed', logical(opts.skip_computed), ...
                        'schema_keys', py_schema_keys, ...
-                       'schema_filter', py_schema_filter)));
+                       'schema_filter', py_schema_filter, ...
+                       'glue', py_glue)));
             target_pipe.store_step(step_index, fn, inputs, outputs, opts);
             scidb.Log.info(['pipeline_step_registered (MATLAB): %s -> ' ...
                 'pipeline %s (deferred)'], fn_name, target_pipe.name);
@@ -276,6 +294,10 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
     end
 
     % --- Call #1: Python prepare ---
+    % glue_handles / py_glue were built above (before pipeline registration,
+    % which needs the same chain identity). Python hashes each body into the
+    % consumer's identity here; the bodies themselves run below, after
+    % prepare returns — a .m function cannot execute inside prepare.
     prep_t0 = tic;
     prep = py.scimatlab.bridge.for_each_prepare( ...
         fn_name, fn_hash, py_inputs_spec, py_output_classes, py_meta, ...
@@ -287,7 +309,8 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
                'skip_computed', logical(opts.skip_computed), ...
                'finalized', logical(opts.finalized), ...
                'schema_keys', py_schema_keys, ...
-               'schema_filter', py_schema_filter));
+               'schema_filter', py_schema_filter, ...
+               'glue', py_glue));
     scidb.Log.info('for_each_prepare returned in %.3fs', toc(prep_t0));
 
     % Dry-run: Python ran the scifor.for_each(dry_run=true) call itself
@@ -404,6 +427,18 @@ function result_tbl = for_each(fn, inputs, outputs, varargin)
         scifor_inputs.(k) = coerce_meta_columns( ...
             scifor_inputs.(k), meta_original_classes);
     end
+
+    % --- Glue fusion (MATLAB side). Python already routed the consumer's
+    %     provenance through virtual glue records during prepare; what is
+    %     left is running the bodies. This is the one part of the pre-loop
+    %     work MATLAB owns, because a .m function cannot execute inside
+    %     Python's prepare step.
+    %
+    %     Same contract as scidb.glue: __-prefixed bookkeeping columns are
+    %     hidden and re-attached, the row set must not change, and
+    %     schema-key columns must come back value-identical. ---
+    scifor_inputs = apply_matlab_glue( ...
+        scifor_inputs, prep{'glue_chains'}, glue_handles);
 
     % --- Convert extended_metadata_iterables to scifor name-value pairs ---
     py_meta_iters = prep{'extended_metadata_iterables'};
@@ -1317,6 +1352,248 @@ function spec = describe_input_for_python(val)
 end
 
 
+function [handles, py_glue] = build_glue_chains(glue_opt, inputs)
+%BUILD_GLUE_CHAINS  Normalize the glue= option for MATLAB and for Python.
+%
+%   Returns HANDLES, a struct mapping each glued input name to a cell array
+%   of function handles (applied in order), and PY_GLUE, the matching Python
+%   dict of {name, source_text, per_schema_key} entries.
+%
+%   Python needs the SOURCE TEXT, not the handle: the glue's content hash is
+%   what the virtual record id — and therefore the consuming function's
+%   invocation identity — is derived from. Without it an edited glue body
+%   would leave every downstream record green and stale.
+
+    handles = struct();
+    py_glue = py.dict();
+    if isempty(glue_opt) || ~isstruct(glue_opt)
+        return;
+    end
+
+    params = fieldnames(glue_opt);
+    for pi = 1:numel(params)
+        param = params{pi};
+        entry = glue_opt.(param);
+        if isa(entry, 'function_handle')
+            entry = {entry};
+        elseif ~iscell(entry)
+            error('scidb:glue:badChain', ...
+                ['glue.%s must be a function handle or a cell array of ' ...
+                 'function handles; got %s.'], param, class(entry));
+        end
+        if isempty(entry)
+            continue;
+        end
+        if ~isfield(inputs, param)
+            scidb.Log.warn(['[glue] ''%s'': chain declared but there is no ' ...
+                'such input on this call — glue not applied'], param);
+            continue;
+        end
+
+        chain_list = py.list();
+        for ci = 1:numel(entry)
+            h = entry{ci};
+            if ~isa(h, 'function_handle')
+                error('scidb:glue:badChain', ...
+                    'glue.%s element %d is a %s, not a function handle.', ...
+                    param, ci, class(h));
+            end
+            name = func2str(h);
+            if startsWith(name, '@')
+                error('scidb:glue:badChain', ...
+                    ['glue.%s element %d is an anonymous function. A glue ' ...
+                     'node must be a NAMED function in its own file, so it ' ...
+                     'can be hashed, exported and shown in the graph.'], ...
+                    param, ci);
+            end
+            src = read_function_source(name);
+            chain_list.append(py.dict(pyargs( ...
+                'name', name, ...
+                'source_text', src, ...
+                'source_file', which(name), ...
+                'per_schema_key', false)));
+        end
+        py_glue{param} = chain_list;
+        handles.(param) = entry;
+        scidb.Log.info('[glue] ''%s'': chain = [%s]', param, ...
+            strjoin(cellfun(@func2str, entry, 'UniformOutput', false), ', '));
+    end
+end
+
+
+function src = read_function_source(name)
+%READ_FUNCTION_SOURCE  Full .m source of a named function, for hashing.
+%   Falls back to the bare name when the file cannot be read, so a glue node
+%   still has a stable (if coarse) identity rather than failing the run.
+    src = name;
+    try
+        path = which(name);
+        if ~isempty(path) && exist(path, 'file') == 2
+            src = fileread(path);
+        else
+            scidb.Log.warn(['[glue] could not locate source for ''%s'' on the ' ...
+                'MATLAB path; hashing its name only, so edits to its body ' ...
+                'will NOT invalidate downstream results.'], name);
+        end
+    catch err
+        scidb.Log.warn('[glue] could not read source for ''%s'': %s', name, err.message);
+    end
+end
+
+
+function scifor_inputs = apply_matlab_glue(scifor_inputs, py_chains, handles)
+%APPLY_MATLAB_GLUE  Run the glue bodies on the loaded tables, in order.
+%
+%   Applied between prepare and the loop, on the tables MATLAB has already
+%   rebuilt from for_each_describe_loaded_input. Enforces the same contract
+%   scidb.glue enforces on the Python path:
+%
+%     * ``__``-prefixed columns are hidden from the glue and re-attached
+%       afterwards — internal bookkeeping the user must never think about;
+%     * the ROW SET must not change (columns may change freely);
+%     * schema-key columns must come back value-identical, because they
+%       drive the consuming function's per-combo slicing.
+
+    if isempty(fieldnames(handles))
+        return;
+    end
+
+    try
+        chain_params = cell(py.list(py_chains.keys()));
+    catch
+        chain_params = {};
+    end
+
+    schema_keys = scifor.get_schema();
+
+    for pi = 1:numel(chain_params)
+        param = char(chain_params{pi});
+        if ~isfield(handles, param) || ~isfield(scifor_inputs, param)
+            continue;
+        end
+        for ci = 1:numel(handles.(param))
+            h = handles.(param){ci};
+            scifor_inputs.(param) = apply_one_glue( ...
+                scifor_inputs.(param), h, param, schema_keys);
+        end
+    end
+end
+
+
+function value = apply_one_glue(value, h, param, schema_keys)
+%APPLY_ONE_GLUE  One glue node against one loaded input value.
+    name = func2str(h);
+
+    % Wrappers (scifor.Fixed / scifor.ColumnSelection) carry the table on
+    % .data — glue sees the table, never the wrapper.
+    wrapper = [];
+    tbl = value;
+    if isobject(value) && isprop(value, 'data') && istable(value.data)
+        wrapper = value;
+        tbl = value.data;
+    end
+
+    if ~istable(tbl)
+        % A scalar / array / struct: nothing to preserve, just apply.
+        t0 = tic;
+        out = h(tbl);
+        scidb.Log.debug('[glue] ''%s'': applied %s (non-table) in %.3fs', ...
+            param, name, toc(t0));
+        if ~isempty(wrapper)
+            wrapper.data = out;
+            value = wrapper;
+        else
+            value = out;
+        end
+        return;
+    end
+
+    all_cols = string(tbl.Properties.VariableNames);
+    % Both spellings of an internal column. Python's are ``__``-prefixed, but
+    % the bridge renames every one to ``x__`` on the way over because MATLAB
+    % struct fields cannot start with an underscore (see
+    % scimatlab.bridge._sanitize_rid_key). Matching only ``__`` here would
+    % hand the record-id discriminator to the glue as an ordinary column —
+    % where dropping or reordering it silently severs per-row provenance.
+    hidden_mask = startsWith(all_cols, "__") | startsWith(all_cols, "x__");
+    hidden = tbl(:, hidden_mask);
+    visible = tbl(:, ~hidden_mask);
+
+    present_keys = string.empty;
+    before = {};
+    for si = 1:numel(schema_keys)
+        key = string(schema_keys{si});
+        if ismember(key, string(visible.Properties.VariableNames))
+            present_keys(end+1) = key; %#ok<AGROW>
+            before{end+1} = visible.(char(key)); %#ok<AGROW>
+        end
+    end
+    n_before = height(visible);
+
+    t0 = tic;
+    out = h(visible);
+    elapsed = toc(t0);
+
+    if ~istable(out)
+        error('scidb:glue:rowsChanged', ...
+            ['glue ''%s'' on parameter ''%s'' was given a %d-row table and ' ...
+             'returned a %s. A glue node may change the column space but not ' ...
+             'the row set — use a function node with a saved output for ' ...
+             'anything that reduces rows.'], name, param, n_before, class(out));
+    end
+    if height(out) ~= n_before
+        error('scidb:glue:rowsChanged', ...
+            ['glue ''%s'' on parameter ''%s'' changed the row set: %d row(s) ' ...
+             'in, %d row(s) out. Filtering, aggregating and exploding must be ' ...
+             'an ordinary function node with a saved output.'], ...
+            name, param, n_before, height(out));
+    end
+
+    for si = 1:numel(present_keys)
+        key = char(present_keys(si));
+        if ~ismember(string(key), string(out.Properties.VariableNames))
+            error('scidb:glue:schemaKeysAltered', ...
+                ['glue ''%s'' on parameter ''%s'' dropped schema-key column ' ...
+                 '''%s''. Schema-key columns are visible to glue so it can ' ...
+                 'group by them, but they drive per-combo slicing and must ' ...
+                 'come back unchanged.'], name, param, key);
+        end
+        if ~isequal(out.(key), before{si})
+            error('scidb:glue:schemaKeysAltered', ...
+                ['glue ''%s'' on parameter ''%s'' altered schema-key column ' ...
+                 '''%s''. Schema values are matched as strings during ' ...
+                 'per-combo slicing, so even a type change makes every combo ' ...
+                 'filter miss.'], name, param, key);
+        end
+    end
+
+    % Re-attach the hidden bookkeeping columns by row position (safe exactly
+    % because the row set is preserved). A glue that invented a __-prefixed
+    % column loses to scidb's own.
+    if width(hidden) > 0
+        collisions = intersect(string(out.Properties.VariableNames), ...
+                               string(hidden.Properties.VariableNames));
+        if ~isempty(collisions)
+            scidb.Log.warn(['[glue] ''%s'': %s produced internal column(s) %s ' ...
+                '— overwritten by scidb''s own bookkeeping'], ...
+                param, name, strjoin(cellstr(collisions), ', '));
+            out(:, cellstr(collisions)) = [];
+        end
+        out = [out hidden];
+    end
+
+    scidb.Log.debug('[glue] ''%s'': applied %s (%d -> %d cols) in %.3fs', ...
+        param, name, width(visible), width(out) - width(hidden), elapsed);
+
+    if ~isempty(wrapper)
+        wrapper.data = out;
+        value = wrapper;
+    else
+        value = out;
+    end
+end
+
+
 function [meta_args, opts] = split_options(varargin)
 %SPLIT_OPTIONS  Separate known option flags from metadata name-value pairs.
     opts.dry_run = false;
@@ -1331,6 +1608,11 @@ function [meta_args, opts] = split_options(varargin)
     opts.share_limits = struct();
     opts.schema_keys = string.empty;
     opts.schema_filter = struct();
+    % Glue chains: struct mapping an INPUT name to a function handle, or a
+    % cell array of handles applied in order, reshaping that input's loaded
+    % table in memory before fn sees it. Never saved. See
+    % docs/claude/free-code-glue-nodes.md.
+    opts.glue = struct();
     opts.fn_name_override = '';
     opts.fn_hash_override = '';
     % Deferred pipeline registration: '' = ambient (register into the
@@ -1344,7 +1626,7 @@ function [meta_args, opts] = split_options(varargin)
     reserved_opts = ["dryrun", "save", "preload", "astable", "db", ...
                      "parallel", "distribute", "where", "introspect", ...
                      "skipcomputed", "finalized", "sharelimits", ...
-                     "schemakeys", "schemafilter", ...
+                     "schemakeys", "schemafilter", "glue", ...
                      "fnname", "fnhash", "pipeline"];
 
     meta_args = {};
@@ -1414,6 +1696,11 @@ function [meta_args, opts] = split_options(varargin)
                     % auto-resolution (or constraining a non-iterated key
                     % via where=). See Python scidb.for_each's schema_filter.
                     opts.schema_filter = varargin{i+1};
+                    i = i + 2; continue;
+                case "glue"
+                    % struct: input name -> glue function handle, or a cell
+                    % array of handles applied in order.
+                    opts.glue = varargin{i+1};
                     i = i + 2; continue;
                 case "pipeline"
                     opts.pipeline = varargin{i+1};

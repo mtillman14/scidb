@@ -26,7 +26,7 @@ from collections.abc import Callable
 from contextlib import redirect_stdout
 from io import StringIO
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from scidb.database import DatabaseManager
 
@@ -437,9 +437,16 @@ def _run_in_thread(
                 # params — shared with the pipeline-compiler path so this
                 # logic (including PathInput construction) lives in one
                 # place. See execution_service.build_run_inputs.
-                from scistack_gui.services.execution_service import build_run_inputs
+                from scistack_gui.services.execution_service import (
+                    build_run_glue,
+                    build_run_inputs,
+                )
 
                 inputs = build_run_inputs(v, function_name)
+                # Glue is a property of this step's input binding, resolved
+                # right beside the inputs it reshapes — never a step, never a
+                # run of its own.
+                glue_arg = build_run_glue(v, function_name) or None
                 logger.debug(
                     "[run_thread] Built inputs for %d param(s): %s (run_id=%s)",
                     len(inputs),
@@ -567,6 +574,7 @@ def _run_in_thread(
                         as_table=opt_as_table,
                         where=where_arg,
                         skip_computed=False,
+                        glue=glue_arg,
                         _progress_fn=_progress_fn,
                         _cancel_check=_is_cancelled,
                         schema_filter=schema_filter,
@@ -731,7 +739,39 @@ def _run_in_thread(
             }
         )
         logger.debug("[run_thread] Emitting dag_updated message (run_id=%s)", run_id)
-        push_message({"type": "dag_updated"})
+        _notify_records_changed()
+
+
+def _notify_records_changed() -> None:
+    """Announce that a run has finished and may have written records.
+
+    Two things have to happen together, which is why they are one call:
+
+    1. the canvas re-fetches the DAG (``dag_updated``);
+    2. Plot Studio drops its cached frames.
+
+    ``ScidbSource`` caches whole variable frames, so skipping (2) leaves the
+    plot panel serving PRE-RUN data — a figure that silently disagrees with the
+    database it claims to show. The invalidation RPC existed and was wired end
+    to end, but nothing ever called it; this is that missing call, put on the
+    backend so the web GUI and the VS Code extension cannot drift (CLAUDE.md
+    NOTE 3).
+
+    Takes no database handle deliberately. The cache is keyed by file path, and
+    the MATLAB run threads have released their connection to the sidecar by the
+    time they get here — so there is nothing to pass, and nothing that needs
+    reopening just to drop a cache entry.
+    """
+    from scistack_gui.db import get_db_path
+    from scistack_gui.services import plot_service
+
+    try:
+        plot_service.invalidate(get_db_path())
+    except Exception:
+        # A cache we failed to drop is a stale figure, not a failed run: the
+        # user's data is already written. Never let this bury the run result.
+        logger.exception("[run] could not invalidate the plot source cache")
+    push_message({"type": "dag_updated"})
 
 
 def _build_where(where_filters: list[WhereFilterSpec] | None):
@@ -867,6 +907,32 @@ def route_matlab_single_run(
     return {"run_id": run_id, "language": "matlab"}
 
 
+def _refuse_glue_node(node_id: "str | None", function_name: str, db) -> "str | None":
+    """A message if this run targets a glue node, else ``None``.
+
+    Matched on the node id first (the canvas always sends one) and on the
+    ``glue_`` name second, so a run request assembled without a node id is
+    refused too.
+    """
+    from scidb import function_role
+    from scistack_gui import pipeline_store
+    from scistack_gui.domain.edge_resolver import GLUE_NODE_TYPE
+    from scistack_gui.domain.graph_builder import strip_placement
+
+    is_glue = function_role(function_name or "") == "glue"
+    if not is_glue and node_id:
+        nodes = pipeline_store.get_manual_nodes(db)
+        meta = nodes.get(node_id) or nodes.get(strip_placement(node_id)) or {}
+        is_glue = meta.get("type") == GLUE_NODE_TYPE
+    if not is_glue:
+        return None
+    return (
+        f"'{function_name}' is a glue node, which is never run on its own. It "
+        f"reshapes an input in memory as part of the run of whichever function "
+        f"consumes it — run that function instead."
+    )
+
+
 @router.post("/run")
 def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
     logger.info("[api/run] POST /api/run - Validating request")
@@ -884,6 +950,16 @@ def start_run(req: RunRequest, db: DatabaseManager = Depends(get_db)):
         len(req.where_filters) if req.where_filters else 0,
         req.language,
     )
+
+    # A glue node is not a step (D5): it is transient by construction, so
+    # there is nothing for a standalone run to produce. Refusing here is the
+    # point — compiling an empty pipeline instead would report a *successful*
+    # run that did nothing, the documented succeeds-while-doing-no-work
+    # failure mode. See docs/claude/free-code-glue-nodes.md §5.
+    glue_error = _refuse_glue_node(req.node_id, req.function_name, db)
+    if glue_error is not None:
+        logger.info("[api/run] refused: %s", glue_error)
+        raise HTTPException(status_code=400, detail=glue_error)
 
     run_id = req.run_id or str(uuid.uuid4())[:8]
     logger.info("[api/run] Generated run_id: %s", run_id)
@@ -1080,7 +1156,7 @@ def _run_pipeline_in_thread(
                 "no_data_combos": no_data_combos,
             }
         )
-        push_message({"type": "dag_updated"})
+        _notify_records_changed()
 
 
 def _run_matlab_pipeline_in_thread(
@@ -1204,7 +1280,7 @@ def _run_matlab_pipeline_in_thread(
                 "force_cancelled": was_force,
             }
         )
-        push_message({"type": "dag_updated"})
+        _notify_records_changed()
 
 
 def _run_matlab_command_in_thread(
@@ -1332,7 +1408,7 @@ def _drive_matlab_in_thread(
                 "force_cancelled": was_force,
             }
         )
-        push_message({"type": "dag_updated"})
+        _notify_records_changed()
 
 
 def _drive_sidecar(matlab_sidecar, command: str, emit) -> bool:

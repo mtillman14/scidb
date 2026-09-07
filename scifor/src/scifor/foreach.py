@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from .colname import ColName
 from .column_selection import ColumnSelection
-from .each_of import EachOf
+from .each_of import EachOf, require_alternatives
 from .fixed import Fixed
 from .merge import Merge
 from .pathinput import PathInput
@@ -175,8 +175,10 @@ def for_each(
     each_of_axes = []
     for param, val in inputs.items():
         if isinstance(val, EachOf):
+            require_alternatives(val, kind="input", param=param)
             each_of_axes.append(("input", param, val.alternatives))
     if isinstance(where, EachOf):
+        require_alternatives(where, kind="where")
         each_of_axes.append(("where", None, where.alternatives))
 
     if each_of_axes:

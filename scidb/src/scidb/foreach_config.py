@@ -26,6 +26,37 @@ def _compute_fn_hash(fn: Callable) -> str:
     return compute_function_hash(fn, truncate=16)
 
 
+def function_hash_for(fn) -> str:
+    """The hash the SAVE path recorded in ``_invocation.function_hash`` for ``fn``.
+
+    Read-side counterpart to whatever wrote ``__fn_hash``. Every staleness
+    question ("has this function changed since it produced that record?") is a
+    comparison against a *stored* hash, so it has to reproduce the stored
+    recipe rather than invent its own — that mismatch is a permanent false
+    "changed", which reads as a node that can never go green.
+
+    Two recipes exist:
+
+    - **An explicit ``source_hash``** on the function object wins. A MATLAB
+      function reaches Python as a ``scimatlab.MatlabLineageFcn`` whose
+      ``.fcn`` is a bare name-holder with no source at all, so AST-hashing it
+      returns a constant with no relationship to the ``.m`` file. MATLAB
+      computes the real digest itself and the bridge stores it verbatim; this
+      is that same value. Duck-typed on purpose — scidb does not import
+      scimatlab.
+    - **Otherwise the AST hash**, unwrapping ``.fcn`` exactly as before so a
+      lineage wrapper hashes the function it wraps.
+
+    Deliberately NOT used by ``ForEachConfig.to_version_keys``: that path has
+    always hashed the object it was handed without the ``.fcn`` unwrap, and
+    changing it would silently alter the hashes stored for existing databases.
+    """
+    explicit = getattr(fn, "source_hash", None)
+    if explicit:
+        return str(explicit)
+    return _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
+
+
 # The canonical for_each call-site identity is captured by exactly these
 # version_keys fields (see ForEachConfig.to_version_keys()).  Anything else
 # in a saved version_keys dict — direct constants unpacked as top-level
@@ -41,12 +72,20 @@ def _compute_fn_hash(fn: Callable) -> str:
 # the where_clause string itself is display-only (§10 where= redesign), so two
 # call sites differing only by where= share a call_id. (``to_version_keys`` still
 # emits ``__where`` because for_each writes it to ``_run.where_clause`` for display.)
+#
+# ``__glue`` (the glue node NAMES per param) IS included, following the same
+# split: a different glue chain is a different call site, while an edit to a
+# glue body is a new version at the same call site — so ``__glue_hashes`` is
+# excluded exactly as ``__fn_hash`` is. (An edited body still invalidates
+# downstream results, but through the provenance graph, not here: see
+# docs/claude/free-code-glue-nodes.md §2.)
 _CALL_ID_INCLUDED_KEYS = (
     "__fn",
     "__inputs",
     "__constants",
     "__distribute",
     "__as_table",
+    "__glue",
 )
 
 
@@ -87,12 +126,15 @@ class ForEachConfig:
         where=None,
         distribute: bool = False,
         as_table=None,
+        glue: "dict[str, list] | None" = None,
     ):
         self.fn = fn
         self.inputs = inputs
         self.where = where
         self.distribute = distribute
         self.as_table = as_table
+        # {param: [GlueSpec, ...]} — normalized glue chains (see scidb.glue).
+        self.glue = glue or {}
 
     def to_version_keys(self) -> dict:
         """Return dict of config keys to merge into save_metadata.
@@ -133,6 +175,17 @@ class ForEachConfig:
                 keys["__as_table"] = sorted(self.as_table)
             elif self.as_table is True:
                 keys["__as_table"] = True
+        if self.glue:
+            # Split exactly like __fn / __fn_hash: the glue NAMES are call-site
+            # identity (a different chain is a different wiring), the glue
+            # HASHES are version identity (an edit is a new version at the same
+            # site). See _CALL_ID_INCLUDED_KEYS.
+            from .glue import chain_hashes, chain_names
+
+            keys["__glue"] = {p: chain_names(c) for p, c in sorted(self.glue.items())}
+            keys["__glue_hashes"] = {
+                p: chain_hashes(c) for p, c in sorted(self.glue.items())
+            }
         return keys
 
     def to_call_id(self) -> str:

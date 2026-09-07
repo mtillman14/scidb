@@ -545,6 +545,55 @@ def _h_create_parameter(params):
     return create_parameter(params["name"], params.get("values"))
 
 
+def _h_list_glue(params):
+    from scistack_gui.services import glue_service
+
+    return {"nodes": glue_service.list_glue_nodes()}
+
+
+def _h_get_glue(params):
+    from scistack_gui.services import glue_service
+
+    return glue_service.read_glue_source(params["name"])
+
+
+def _h_get_glue_columns(params):
+    from scistack_gui.services import glue_service
+
+    variable_type = params.get("variable_type") or ""
+    if not variable_type:
+        return {
+            "ok": False,
+            "error": (
+                "This glue node is not wired to a variable yet, so there are "
+                "no columns to show."
+            ),
+        }
+    return glue_service.input_columns(variable_type)
+
+
+def _h_create_glue(params):
+    from scistack_gui.services import glue_service
+
+    return glue_service.create_glue_node(
+        params["name"],
+        param=params.get("param", "value"),
+        language=params.get("language", "python"),
+    )
+
+
+def _h_save_glue(params):
+    from scistack_gui.services import glue_service
+
+    return glue_service.update_glue_source(params["name"], params["source"])
+
+
+def _h_delete_glue(params):
+    from scistack_gui.services import glue_service
+
+    return glue_service.delete_glue_node(params["name"])
+
+
 def _h_update_parameter(params):
     from scistack_gui.services.layout_service import update_parameter
 
@@ -902,6 +951,96 @@ def _h_restart_matlab_engine(params):
     return restart_matlab_engine()
 
 
+# --- Plot Studio (docs/claude/plotting-library-design.md) ---
+# These call the same service functions as the HTTP routes in api/plot.py, so
+# the browser GUI and the extension can't drift. They deliberately reuse the
+# ONE DatabaseManager the server already holds: a second DuckDB connection
+# would reintroduce the write-lock contention the MATLAB run-ownership work
+# resolved (docs/claude/matlab-run-database-ownership.md).
+
+
+def _h_plot_describe(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import describe
+
+    return describe(
+        get_db(),
+        params.get("variable"),
+        refresh=bool(params.get("refresh")),
+        csv_path=params.get("csv_path"),
+    )
+
+
+def _h_plot_capabilities(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import capabilities_for
+
+    return capabilities_for(
+        get_db(), params["spec"], csv_path=params.get("csv_path")
+    )
+
+
+def _h_plot_resolve(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import resolve_figures
+
+    return resolve_figures(
+        get_db(),
+        params["spec"],
+        max_points=params.get("max_points"),
+        csv_path=params.get("csv_path"),
+    )
+
+
+def _h_plot_export(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import export_code
+
+    return export_code(
+        get_db(),
+        params["spec"],
+        function_name=params.get("function_name"),
+        output_variable=params.get("output_variable"),
+        path_template=params.get("path_template"),
+        finalized=params.get("finalized", True),
+        csv_path=params.get("csv_path"),
+    )
+
+
+def _h_plot_add_to_pipeline(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import add_to_pipeline
+
+    return add_to_pipeline(
+        get_db(),
+        params["spec"],
+        function_name=params.get("function_name"),
+        output_variable=params.get("output_variable"),
+        path_template=params.get("path_template"),
+        finalized=params.get("finalized", True),
+    )
+
+
+def _h_plot_save_figure(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import save_figure
+
+    return save_figure(
+        get_db(),
+        params["spec"],
+        params["path"],
+        dpi=params.get("dpi", 200),
+        csv_path=params.get("csv_path"),
+    )
+
+
+def _h_plot_invalidate(params):
+    from scistack_gui.db import get_db
+    from scistack_gui.services.plot_service import invalidate
+
+    return invalidate(get_db())
+
+
 # ---------------------------------------------------------------------------
 # Method dispatch table
 # ---------------------------------------------------------------------------
@@ -939,6 +1078,14 @@ METHODS = {
     "set_parameter_group_checked": _h_set_parameter_group_checked,
     "list_hidden_parameter_values": _h_list_hidden_parameter_values,
     "create_parameter": _h_create_parameter,
+    # Glue nodes. Deliberately no "run_glue": a glue node is never
+    # independently executable (docs/claude/free-code-glue-nodes.md §5).
+    "list_glue": _h_list_glue,
+    "get_glue": _h_get_glue,
+    "get_glue_columns": _h_get_glue_columns,
+    "create_glue": _h_create_glue,
+    "save_glue": _h_save_glue,
+    "delete_glue": _h_delete_glue,
     "update_parameter": _h_update_parameter,
     "delete_parameter": _h_delete_parameter,
     "refresh_parameter_source": _h_refresh_parameter_source,
@@ -992,6 +1139,13 @@ METHODS = {
     "start_matlab_sidecar_run": _h_start_matlab_sidecar_run,
     "get_matlab_engine_status": _h_get_matlab_engine_status,
     "restart_matlab_engine": _h_restart_matlab_engine,
+    "plot_describe": _h_plot_describe,
+    "plot_capabilities": _h_plot_capabilities,
+    "plot_resolve": _h_plot_resolve,
+    "plot_export": _h_plot_export,
+    "plot_add_to_pipeline": _h_plot_add_to_pipeline,
+    "plot_save_figure": _h_plot_save_figure,
+    "plot_invalidate": _h_plot_invalidate,
 }
 
 

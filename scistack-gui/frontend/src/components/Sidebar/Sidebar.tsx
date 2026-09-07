@@ -18,6 +18,7 @@ import { useMemo } from 'react'
 import { useStore } from '@xyflow/react'
 import EditTab from './EditTab'
 import FunctionSettingsPanel from './FunctionSettingsPanel'
+import GlueSettingsPanel from './GlueSettingsPanel'
 import type { SchemaFilter, RunOptions, WhereFilter } from './FunctionSettingsPanel'
 import ParameterSettingsPanel from './ParameterSettingsPanel'
 import VariableSettingsPanel from './VariableSettingsPanel'
@@ -46,6 +47,15 @@ interface ParameterNodeData {
 
 function isFunctionNode(node: Node | null): node is Node & { data: FnNodeData } {
   return node?.type === 'functionNode'
+}
+
+interface GlueNodeData {
+  label: string
+  input_params?: Record<string, string>
+}
+
+function isGlueNode(node: Node | null): node is Node & { data: GlueNodeData } {
+  return node?.type === 'glueNode'
 }
 
 function isParameterNode(node: Node | null): node is Node & { data: ParameterNodeData } {
@@ -92,7 +102,7 @@ export default function Sidebar() {
   const nodes = useStore(s => s.nodes)
   const edges = useStore(s => s.edges)
 
-  const hasNodeSelection = isFunctionNode(selectedNode) || isParameterNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)
+  const hasNodeSelection = isFunctionNode(selectedNode) || isGlueNode(selectedNode) || isParameterNode(selectedNode) || isVariableNode(selectedNode) || isPathInputNode(selectedNode) || isPipelineNode(selectedNode)
 
   // Compute variant combinations from constant nodes and multi-wired variable inputs
   // connected to the selected function node.
@@ -188,6 +198,19 @@ export default function Sidebar() {
             schemaLevel={(selectedNode.data as FnNodeData).schemaLevel ?? null}
             whereFilters={(selectedNode.data as FnNodeData).whereFilters ?? []}
             runOptions={(selectedNode.data as FnNodeData).runOptions ?? { dry_run: false, save: true, distribute: false, as_table: false }}
+          />
+        )}
+        {isGlueNode(selectedNode) && (
+          <GlueSettingsPanel
+            // Remount per node: the panel seeds a draft buffer from the
+            // file, so reusing the instance would carry one node's
+            // half-typed body onto another.
+            key={selectedNode.id}
+            label={(selectedNode.data as GlueNodeData).label}
+            wiredType={
+              Object.values((selectedNode.data as GlueNodeData).input_params ?? {})
+                .find(t => !!t)
+            }
           />
         )}
         {isParameterNode(selectedNode) && (

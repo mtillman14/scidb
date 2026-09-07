@@ -2171,6 +2171,18 @@ def build_manual_node(
         extra = {"values": pending_vals}
     elif meta["type"] == "pathInputNode":
         extra = {"template": "", "root_folder": None, "alternate_templates": []}
+    elif meta["type"] == "glueNode":
+        # A glue node is a functionNode VARIANT: same in__{param} / out__
+        # handle contract, so edges resolve with no new branch. What it does
+        # NOT have is a run state — it is transient by construction, so a
+        # badge would describe nothing and a red one would be a lie (D5).
+        extra = {
+            "input_params": resolved_input_params or {},
+            "output_types": [],
+            "per_schema_key": False,
+        }
+        if fn_label in matlab_functions:
+            extra["language"] = "matlab"
     elif meta["type"] == "functionNode":
         extra = {
             "input_params": resolved_input_params or {},

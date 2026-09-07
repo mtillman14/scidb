@@ -28,6 +28,7 @@ The format::
     WINDOW_SECONDS   = [10, 20, 30]            # three values (fan-out)
     SUBJECT_IDS      = ["01", "02"]            # stays string, never 1/2
     CONFIG           = { fld1 = 1, fld2 = 2 }  # the dict IS the value
+    CUTOFF_HZ        = []                      # declared, not yet valued
 
     [path_inputs]
     EMG_FILE = "{subject}/{session}_emg.csv"
@@ -38,7 +39,10 @@ unambiguous:
 
 - **An array is always the alternative list.** ``[10, 20, 30]`` is three
   Parameter values; a Parameter whose single value is genuinely a list
-  nests it as ``[[1, 2, 3]]``.
+  nests it as ``[[1, 2, 3]]``. The EMPTY array is a Parameter declared but
+  not yet given a value -- legal here, refused at ``for_each`` expansion
+  (see ``parameter.py``); it is what the GUI writes for a new Parameter,
+  which used to be a placeholder ``0`` indistinguishable from a real value.
 - **An inline table means the value under ``[parameters]``, and the field
   set under ``[path_inputs]``.** A PathInput has no dict-shaped value, so
   a table there is unambiguously ``{template, root_folder}``.
@@ -324,12 +328,12 @@ def _load_parameters(data: dict, result: EntitiesFile) -> None:
             continue
         # An array is the alternative list; everything else -- including an
         # inline table -- is one value as-is.
+        #
+        # An EMPTY array is not an error: `NAME = []` is a Parameter that has
+        # been declared but not yet given a value, which is what the GUI's
+        # "New parameter" form writes (it collects a name and nothing else).
+        # It is refused at for_each expansion, not here -- see parameter.py.
         values = list(raw) if isinstance(raw, list) else [raw]
-        if not values:
-            result.errors.append(
-                EntityError(name, line, "a Parameter needs at least one value")
-            )
-            continue
         param = Parameter(*values)
         param.source_file = str(result.path)
         param.source_line = line

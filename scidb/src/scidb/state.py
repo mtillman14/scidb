@@ -121,17 +121,18 @@ def _check_via_graph(
       (only ``fn`` itself is passed in). The GUI DAG walk handles that, or the
       user re-runs the changed ancestor (creating a new record_id that cascades).
     """
-    from scidb.foreach_config import _compute_fn_hash
+    from scidb.foreach_config import function_hash_for
 
-    # Function's own code changed since the output was saved? (Python only.)
-    # The graph stores ``function_hash`` = compute_function_hash(fn, 16) (the
-    # ``__fn_hash`` the save path writes), so compare against the same recipe.
-    # Trust the hash only for plain Python functions: a MATLAB handle brings its
-    # own ``.hash`` from a different hashing pipeline, so a mismatch there is not
-    # reliable evidence of a code change (see .claude/defer-function-hash-staleness.md).
+    # Function's own code changed since the output was saved?
+    # The graph stores ``function_hash`` = the ``__fn_hash`` the save path
+    # wrote, so compare against the same recipe (``function_hash_for``).
+    # ``trusts_hash`` still excludes objects carrying their own ``.hash`` from a
+    # different pipeline; a ``MatlabLineageFcn`` now also exposes ``source_hash``,
+    # which IS the stored recipe, so its comparison is meaningful even though
+    # this branch does not act on it (see .claude/defer-function-hash-staleness.md).
     trusts_hash = not hasattr(fn, "hash")
     stored_hash = sig.get("function_hash")
-    current_hash = _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
+    current_hash = function_hash_for(fn)
     if stored_hash is not None and stored_hash != current_hash:
         if trusts_hash:
             logger.debug(
@@ -190,6 +191,13 @@ def _has_superseded_ancestor(
         for inp in var_inputs:
             used_rid = inp.get("record_id")
             if not used_rid:
+                continue
+            if inp.get("glue_chain"):
+                # A virtual glue record is never "re-saved": it has no
+                # _record_save row, so both latest-lookups below would return
+                # None and read as superseded. Its own supersession is the
+                # supersession of the record it wraps — keep walking.
+                queue.append((used_rid, depth + 1))
                 continue
             current_latest = db.get_latest_record_id_for_variant(used_rid)
             if current_latest != used_rid:
@@ -343,6 +351,7 @@ def check_node_state(
     inputs: dict | None = None,
     db=None,
     call_id: str | None = None,
+    glue: dict | None = None,
 ) -> dict:
     """Aggregate run state across all known combos for a pipeline function.
 
@@ -368,6 +377,12 @@ def check_node_state(
             be reused across multiple call sites without their states
             blurring together.  When omitted, behaves as the union across
             all call sites.
+        glue: Optional ``{param: [GlueSpec, ...]}`` glue chains attached to
+            this call (same value passed to ``for_each``).  Only affects the
+            never-run fallback prediction built from ``inputs``: a glued param
+            binds to a virtual glue record, so predicting from the raw records
+            would report the node red forever.  Configs recovered from the
+            graph already carry their glue.
 
     Returns:
         A dict with keys:
@@ -410,17 +425,22 @@ def check_node_state(
     # — invocation_id alone is config-specific, but the EXPECTED-set union
     # across configs is not: without the scope, one call site's partial run
     # reddens every other call site of the same function.
-    from scidb.foreach_config import _compute_fn_hash
+    from scidb.foreach_config import function_hash_for
 
     from . import provenance_query
 
-    fn_hash = _compute_fn_hash(fn.fcn if hasattr(fn, "fcn") else fn)
+    # Must reproduce the hash the save path STORED — see function_hash_for.
+    # This used to AST-hash `fn.fcn` unconditionally, which for a MATLAB
+    # function is a bare name-holder: the resulting hash matched nothing ever
+    # written, so every MATLAB node with variable inputs was permanently red.
+    fn_hash = function_hash_for(fn)
     expected = provenance_query.expected_invocations_for_function(
         db,
         fn_name,
         fn_hash,
         inputs_fallback=inputs,
         call_id=call_id,
+        glue_fallback=glue,
     )
     present = provenance_query.present_invocation_schema_pairs(
         db._duck,
@@ -451,13 +471,28 @@ def check_node_state(
     else:
         overall = "red"
 
-    logger.debug(
-        "node %s: %s (up_to_date=%d, missing=%d)",
-        fn_name,
-        overall,
-        counts["up_to_date"],
-        counts["missing"],
-    )
+    # "Red" has several causes that look identical from outside — never run,
+    # partially run, an input re-saved, or the body edited. Say which, at INFO,
+    # because the edited-body case is new and otherwise indistinguishable from
+    # "this node has simply never worked".
+    reason = ""
+    if overall == "red":
+        prior = provenance_query.function_versions_recorded(db._duck, fn_name)
+        if not combo_results and prior and fn_hash not in prior:
+            reason = (
+                f" — the function's source has changed since it last ran "
+                f"(now {fn_hash[:12]}, recorded {[h[:12] for h in sorted(prior)]}); "
+                f"re-run to bring it up to date"
+            )
+        elif not combo_results:
+            reason = " — nothing expected yet (never run, or no input data)"
+        else:
+            reason = f" — {counts['missing']} expected invocation(s) not present"
+        logger.info("node %s: red%s", fn_name, reason)
+    else:
+        logger.debug(
+            "node %s: green (up_to_date=%d)", fn_name, counts["up_to_date"]
+        )
 
     return {
         "state": overall,

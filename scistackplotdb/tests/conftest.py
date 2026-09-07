@@ -1,0 +1,101 @@
+"""
+A small real scidb database.
+
+Zero-padded subject IDs are deliberate: they are the ordering trap the design
+doc calls out, and they only bite against a real database where the keys are
+strings by project rule.
+"""
+
+from __future__ import annotations
+
+import matplotlib
+
+matplotlib.use("Agg")  # tests must never open a window
+
+import numpy as np
+import pytest
+from scidb import BaseVariable, configure_database
+from scidb.database import _local
+
+SCHEMA = ["subject", "session", "trial"]
+SUBJECTS = [f"{n:02d}" for n in range(1, 4)]
+SESSIONS = ["pre", "post"]
+TRIALS = ["1", "2"]
+
+
+class StepLength(BaseVariable):
+    """Scalar, trial level."""
+
+    schema_version = 1
+
+
+class Signal(BaseVariable):
+    """1-D array, trial level."""
+
+    schema_version = 1
+
+
+class Mass(BaseVariable):
+    """Scalar, subject level — the broadcast-join case."""
+
+    schema_version = 1
+
+
+class Emg(BaseVariable):
+    """Dict-valued: one column per muscle (scidb multi_column mode)."""
+
+    schema_version = 1
+
+
+class Scaled(BaseVariable):
+    """Produced by a pipeline step, so it can carry branch params."""
+
+    schema_version = 1
+
+
+class StepLengthFigure(BaseVariable):
+    """Endpoint output: the figure's path."""
+
+    schema_version = 1
+
+
+@pytest.fixture
+def db(tmp_path):
+    database = configure_database(tmp_path / "plots.duckdb", SCHEMA)
+    yield database
+    database.close()
+    if hasattr(_local, "database"):
+        delattr(_local, "database")
+
+
+@pytest.fixture
+def seeded(db):
+    """Trial-level scalars and signals, plus subject-level mass."""
+    rng = np.random.default_rng(0)
+    for subject in SUBJECTS:
+        Mass.save(70.0 + int(subject), subject=subject)
+        for session in SESSIONS:
+            for trial in TRIALS:
+                StepLength.save(
+                    float(rng.normal(1.2, 0.1)),
+                    subject=subject,
+                    session=session,
+                    trial=trial,
+                )
+                Signal.save(
+                    rng.normal(0.0, 1.0, size=8),
+                    subject=subject,
+                    session=session,
+                    trial=trial,
+                )
+                Emg.save(
+                    {
+                        "RHAM": rng.normal(0.0, 1.0, size=8),
+                        "RTA": rng.normal(0.0, 1.0, size=8),
+                        "LMG": rng.normal(0.0, 1.0, size=8),
+                    },
+                    subject=subject,
+                    session=session,
+                    trial=trial,
+                )
+    return db

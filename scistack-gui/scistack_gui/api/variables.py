@@ -19,23 +19,42 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _format_variant_label(branch_params: dict) -> str:
+def _format_variant_label(
+    branch_params: dict,
+    fn_name: str | None = None,
+    fn_version: str | None = None,
+    is_latest: bool | None = None,
+) -> str:
     """
-    Produce a concise human-readable label from branch_params.
+    Produce a concise human-readable label for one variant.
 
     branch_params keys are namespaced as "fn_name.param" (for constants) or bare
     names (for dynamic discriminators). Strip the function prefix when all keys
     share the same function, so the display stays compact.
-    """
-    if not branch_params:
-        return "(raw)"
 
-    # Collect key=value pairs, stripping common fn prefix for readability.
+    ``fn_version`` is scidb's function-version discriminator — set only when the
+    variable type actually holds records produced by more than one version of its
+    function's source (see ``provenance_query.variant_identity_batch``). When it
+    is set the label MUST say so: those records are otherwise indistinguishable,
+    and showing "(raw)" twice is what sent a user plotting the wrong data. The
+    function name is spelled out alongside it because "v2" on its own does not
+    tell you *what* changed.
+    """
     parts = []
     for k, v in sorted(branch_params.items()):
         short_k = k.split(".")[-1] if "." in k else k
         parts.append(f"{short_k}={v}")
-    return ", ".join(parts)
+    label = ", ".join(parts)
+
+    if fn_version:
+        version = f"{fn_name} {fn_version}" if fn_name else fn_version
+        if is_latest:
+            version += " (latest)"
+        # Constants first — they are the variant the user configured. The code
+        # version is the one they did not, so it reads as the qualifier it is.
+        label = f"{label} · {version}" if label else version
+
+    return label or "(raw)"
 
 
 @router.get("/variables/{variable_name}/records")
@@ -92,15 +111,19 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
         raise HTTPException(status_code=404, detail=str(exc))
 
     record_ids = [row[0] for row in rows]
-    from scidb.provenance_query import branch_params_batch
+    from scidb.provenance_query import variant_identity_batch
 
-    bp_by_record = branch_params_batch(db._duck, record_ids)
+    # Not branch_params_batch: two records produced by different versions of the
+    # same function have IDENTICAL branch params, so grouping on those alone
+    # collapsed them into one "(raw)" variant and hid the difference entirely.
+    ident_by_record = variant_identity_batch(db._duck, record_ids)
 
     records = []
     for row in rows:
         record_id = row[0]
         schema_vals = dict(zip(schema_keys, row[1:], strict=False))
-        bp = bp_by_record.get(record_id, {})
+        ident = ident_by_record.get(record_id, {})
+        bp = ident.get("branch_params", {})
         records.append(
             {
                 **{
@@ -108,23 +131,68 @@ def get_variable_records(variable_name: str, db: DatabaseManager = Depends(get_d
                     for k in schema_keys
                 },
                 "branch_params": bp,
-                "variant_label": _format_variant_label(bp),
+                "fn_name": ident.get("fn_name"),
+                "fn_hash": ident.get("fn_hash"),
+                "fn_version": ident.get("fn_version"),
+                "is_latest": ident.get("is_latest"),
+                "saved_at": ident.get("saved_at"),
+                "variant_label": _format_variant_label(
+                    bp,
+                    ident.get("fn_name"),
+                    ident.get("fn_version"),
+                    ident.get("is_latest"),
+                ),
             }
         )
 
-    # Build variant summary: group by branch_params JSON (canonical sort).
-    variant_map: dict[str, dict] = {}
+    # Build the variant summary: group by branch_params JSON *and* producing
+    # function hash. The hash is what separates two runs of an edited function —
+    # without it they merge into a single row whose count is the sum of both.
+    variant_map: dict[tuple, dict] = {}
     for rec in records:
-        key = json.dumps(rec["branch_params"], sort_keys=True)
+        key = (json.dumps(rec["branch_params"], sort_keys=True), rec["fn_hash"])
         if key not in variant_map:
             variant_map[key] = {
-                "label": rec["variant_label"],
                 "branch_params": rec["branch_params"],
+                "fn_name": rec["fn_name"],
+                "fn_hash": rec["fn_hash"],
+                "fn_version": rec["fn_version"],
+                "is_latest": rec["is_latest"],
                 "record_count": 0,
             }
         variant_map[key]["record_count"] += 1
+        # is_latest is resolved per schema location, so one version can be the
+        # latest at some locations and not others. For the summary row, "latest
+        # somewhere" is the useful reading — it means re-running would not
+        # replace all of these records.
+        if rec["is_latest"]:
+            variant_map[key]["is_latest"] = True
 
+    # Label AFTER aggregating, not from the first record in the group: the
+    # is_latest above can flip to True partway through, and a row whose label
+    # omits "(latest)" while its is_latest says True is exactly the kind of
+    # quiet inconsistency this whole change exists to remove.
     variants = list(variant_map.values())
+    for v in variants:
+        v["label"] = _format_variant_label(
+            v["branch_params"], v["fn_name"], v["fn_version"], v["is_latest"]
+        )
+
+    # Latest versions first — but only reorder when code versions are actually
+    # in play. Sorting unconditionally would also reshuffle a variable holding
+    # both raw and function-produced records (is_latest None vs True), which has
+    # nothing to do with this feature.
+    if any(v["fn_version"] for v in variants):
+        variants.sort(key=lambda v: not v["is_latest"])
+
+    if len(variants) > 1:
+        logger.info(
+            "get_variable_records(%s): %d record(s) in %d variant(s) — %s",
+            variable_name,
+            len(records),
+            len(variants),
+            [f"{v['label']} x{v['record_count']}" for v in variants],
+        )
 
     return {
         "schema_keys": schema_keys,

@@ -7,7 +7,10 @@
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": ["Data Science", "Visualization"],
+  "categories": [
+    "Data Science",
+    "Visualization"
+  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
@@ -19,6 +22,14 @@
       {
         "command": "scistack.restartPython",
         "title": "SciStack: Restart Python Process"
+      },
+      {
+        "command": "scistack.plotVariable",
+        "title": "SciStack: Plot Variable\u2026"
+      },
+      {
+        "command": "scistack.plotCsv",
+        "title": "SciStack: Plot CSV File"
       }
     ],
     "configuration": {
@@ -50,6 +61,15 @@
           "description": "Max time (ms) to wait for the server's response to a single request before failing it. A backstop against a lost response wedging the UI forever, not a work limit: long operations report progress through notifications rather than holding a request open. Set to 0 to disable."
         }
       }
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "scistack.plotCsv",
+          "when": "resourceExtname == .csv",
+          "group": "scistack@1"
+        }
+      ]
     }
   },
   "scripts": {

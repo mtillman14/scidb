@@ -106,10 +106,12 @@ function varargout = for_each(fn, inputs, varargin)
     for p = 1:numel(input_names_eo)
         name = input_names_eo{p};
         if isa(inputs.(name), 'scifor.EachOf')
+            scifor.require_alternatives(inputs.(name), 'input', name);
             each_of_axes{end+1} = {'input', name, inputs.(name).alternatives}; %#ok<AGROW>
         end
     end
     if isa(where_filter, 'scifor.EachOf')
+        scifor.require_alternatives(where_filter, 'where');
         each_of_axes{end+1} = {'where', '', where_filter.alternatives}; %#ok<AGROW>
     end
 

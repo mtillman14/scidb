@@ -276,6 +276,25 @@ def client_with_variable_file(client, tmp_path):
 
 
 @pytest.fixture
+def glue_project(client, tmp_path):
+    """``client``, plus a config-mode project so glue nodes have somewhere
+    to be written.
+
+    Glue is the GUI's SECOND writable surface (``glue_dir``, beside
+    ``entities_file``); ``glue_service`` auto-creates and registers it on the
+    first write, exactly as ``target_file_service`` does for the entities
+    file. That auto-create needs a loose-script project — a config-less
+    single-file setup has no scistack.toml to record the directory in.
+    """
+    from scistack_gui import registry as _reg
+    from scistack_gui.config import load_config
+
+    (tmp_path / "scistack.toml").write_text("modules = []\n")
+    _reg.load_from_config(load_config(None, tmp_path / "test.duckdb"))
+    yield tmp_path
+
+
+@pytest.fixture
 def bp_node_id(populated_db):
     """The composite ``fn__bandpass_filter__{wiring_id}`` ID for the seeded
     bandpass node.  Canvas nodes group call sites by WIRING (fn + loadable

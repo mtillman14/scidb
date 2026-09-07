@@ -373,6 +373,64 @@ class TestValueProperty:
 
 
 # ---------------------------------------------------------------------------
+# No values at all — declared, not yet valued
+# ---------------------------------------------------------------------------
+class TestNoValues:
+    """A Parameter may hold zero values. That is what the GUI's "New
+    parameter" form produces (it collects a name and nothing else), and it
+    used to be papered over with a placeholder 0 written into source, which
+    is indistinguishable from a real value once written."""
+
+    def test_constructs_with_no_values(self):
+        p = Parameter()
+        assert p.values == []
+        assert p.alternatives == []
+
+    def test_description_still_captured(self):
+        p = Parameter(description="filled in later")
+        assert p.description == "filled in later"
+
+    def test_repr_is_valid_syntax(self):
+        # Not "Parameter(, description='')" -- the empty case used to fall
+        # out of an f-string with a hardcoded comma.
+        assert repr(Parameter()) == "Parameter(description='')"
+
+    def test_value_says_there_is_none_yet(self):
+        with pytest.raises(TypeError, match="has none yet"):
+            Parameter().value
+
+    @pytest.mark.parametrize("op", [int, float, bool, abs])
+    def test_conversions_raise(self, op):
+        with pytest.raises(TypeError, match="has none yet"):
+            op(Parameter())
+
+    def test_hasattr_is_false_and_does_not_raise_typeerror(self):
+        """scidb.foreach._is_loadable probes with hasattr(spec, "load"),
+        which swallows AttributeError and NOTHING else -- a TypeError here
+        would take down every for_each carrying an unvalued Parameter."""
+        assert hasattr(Parameter(), "load") is False
+
+    def test_is_not_mistaken_for_a_path_input(self):
+        """is_path_input asks whether EVERY alternative is a PathInput, and
+        all([]) is True -- so without an explicit non-empty check an unvalued
+        Parameter registers as a PathInput."""
+        from scidb.discover import is_parameter, is_path_input
+
+        assert is_parameter(Parameter()) is True
+        assert is_path_input(Parameter()) is False
+
+    def test_expanding_one_raises_naming_the_input(self):
+        from scifor import require_alternatives
+
+        with pytest.raises(ValueError, match="no alternatives") as excinfo:
+            require_alternatives(Parameter(), kind="input", param="window_seconds")
+        # The class name comes from type(), so the message says Parameter
+        # without scifor knowing that class exists.
+        assert "Parameter" in str(excinfo.value)
+        assert "'window_seconds'" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # Slots: reject arbitrary attributes, allow slot attributes
 # ---------------------------------------------------------------------------
 class TestAttributeAssignment:

@@ -54,6 +54,8 @@ LAYERS = (
     "scilineage",
     "scistack",
     "scistack_gui",
+    "scistackplot",
+    "scistackplotdb",
     "matlab",
 )
 

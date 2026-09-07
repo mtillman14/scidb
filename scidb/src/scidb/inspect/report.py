@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..discover import ROLE_PREFIX, function_role
 from ..log import Log
 
 # Embedded images above this size fall back to file links (keeps index.html
@@ -103,9 +104,17 @@ def collect_report(
     # outputs have a NULL schema_id and MUST still appear (the same trap the
     # skip gate hit in stage 2).
     schema_cols = "".join(f', s."{k}"' for k in schema_keys)
+    # Prefixes come from the shared role table, not literals — the report is
+    # the endpoint (plot/stat) surface, and a fifth role must not silently
+    # start or stop appearing here.
+    endpoint_like = " OR ".join(
+        "inv.function_name LIKE '"
+        + ROLE_PREFIX[role].replace("_", "\\_")
+        + "%' ESCAPE '\\'"
+        for role in ("plot", "stat")
+    )
     conds = [
-        "(inv.function_name LIKE 'plot\\_%' ESCAPE '\\' "
-        "OR inv.function_name LIKE 'stat\\_%' ESCAPE '\\')",
+        f"({endpoint_like})",
         "COALESCE(r.excluded, FALSE) = FALSE",
     ]
     params: list = []
@@ -180,7 +189,7 @@ def collect_report(
         value = values.get(rid)
         bp = bp_map.get(rid, {}) or {}
         ts_str = str(ts) if ts is not None else None
-        if fn_name.startswith("plot_"):
+        if function_role(fn_name) == "plot":
             apath = str(value) if value is not None else ""
             exists = bool(apath) and Path(apath).is_file()
             stamp_ok = None

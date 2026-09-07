@@ -29,8 +29,35 @@ classdef TestParameter < matlab.unittest.TestCase
             testCase.verifyEqual(s.alternatives, {42});
         end
 
-        function test_requires_at_least_one_value(testCase)
-            testCase.verifyError(@() scidb.Parameter(), 'scidb:Parameter:NoValues');
+        function test_constructs_with_no_values(testCase)
+            % Declared but not yet valued -- what the GUI's "New parameter"
+            % form produces. It used to be papered over with a placeholder 0
+            % written into source, indistinguishable from a real value.
+            p = scidb.Parameter();
+            testCase.verifyEqual(p.values, {});
+            testCase.verifyTrue(isa(p, 'scifor.EachOf'));
+        end
+
+        function test_no_values_keeps_its_description(testCase)
+            p = scidb.Parameter('description', 'filled in later');
+            testCase.verifyEqual(p.description, 'filled in later');
+            testCase.verifyEqual(p.values, {});
+        end
+
+        function test_value_says_there_is_none_yet(testCase)
+            testCase.verifyError(@() scidb.Parameter().value, ...
+                'scidb:Parameter:NoValue');
+        end
+
+        function test_expanding_a_value_less_parameter_errors(testCase)
+            % The failure this replaces was SILENT: a zero-length axis makes
+            % the cartesian product empty, so for_each iterated zero times,
+            % wrote no records and returned as though it had worked.
+            fn = @(window_seconds) window_seconds * 2;
+            testCase.verifyError( ...
+                @() scifor.for_each(fn, ...
+                    struct('window_seconds', scidb.Parameter())), ...
+                'scifor:EachOf:NoAlternatives');
         end
 
         function test_description_defaults_and_is_captured(testCase)

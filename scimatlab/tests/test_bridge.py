@@ -66,6 +66,52 @@ class TestMatlabLineageFcn:
         expected = sha256(f"{source_hash}-False".encode()).hexdigest()
         assert t.hash == expected
 
+    def test_source_hash_is_kept_verbatim(self):
+        """`.hash` is a DERIVED digest and is not what the save path stores.
+
+        `_invocation.function_hash` holds the bare .m source digest, so the
+        read side needs that value unchanged to compare against it.
+        """
+        source_hash = sha256(b"function y = f(x)\ny = x;\n").hexdigest()
+        t = MatlabLineageFcn(source_hash, "f")
+
+        assert t.source_hash == source_hash
+        assert t.hash != source_hash  # derived, deliberately different
+
+    def test_function_hash_for_returns_the_stored_digest(self):
+        """The 6a defect, pinned.
+
+        `check_node_state` used to AST-hash `fn.fcn` — a bare name-holder with
+        no source — producing a constant unrelated to the .m file. It therefore
+        matched nothing ever written, so every MATLAB function with variable
+        inputs predicted invocation ids that could never be present and the
+        node was permanently red.
+        """
+        from scidb.foreach_config import _compute_fn_hash, function_hash_for
+
+        source_hash = sha256(b"function y = f(x)\ny = x;\n").hexdigest()
+        t = MatlabLineageFcn(source_hash, "f")
+
+        assert function_hash_for(t) == source_hash
+        assert function_hash_for(t) != _compute_fn_hash(t.fcn)
+
+    def test_editing_the_m_file_changes_the_read_side_hash(self):
+        from scidb.foreach_config import function_hash_for
+
+        before = MatlabLineageFcn(sha256(b"y = x;").hexdigest(), "f")
+        after = MatlabLineageFcn(sha256(b"y = x * 2;").hexdigest(), "f")
+
+        assert function_hash_for(before) != function_hash_for(after)
+
+    def test_plain_python_functions_are_unaffected(self):
+        """No source_hash attribute → the AST recipe, exactly as before."""
+        from scidb.foreach_config import _compute_fn_hash, function_hash_for
+
+        def some_fn(x):
+            return x + 1
+
+        assert function_hash_for(some_fn) == _compute_fn_hash(some_fn)
+
 
 # ---------------------------------------------------------------------------
 # Variable registration tests

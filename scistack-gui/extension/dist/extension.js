@@ -34,8 +34,8 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var path3 = __toESM(require("path"));
-var vscode4 = __toESM(require("vscode"));
+var path4 = __toESM(require("path"));
+var vscode5 = __toESM(require("vscode"));
 
 // src/pythonProcess.ts
 var import_child_process = require("child_process");
@@ -488,6 +488,41 @@ var DagPanel = class {
           }
           return;
         }
+        if (method === "open_plot_panel") {
+          try {
+            await vscode3.commands.executeCommand(
+              "scistack.openPlotPanel",
+              msg.params ?? {}
+            );
+            this.panel.webview.postMessage({ id: msg.id, result: { ok: true } });
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) }
+            });
+          }
+          return;
+        }
+        if (method === "pick_save_path") {
+          try {
+            const params = msg.params ?? {};
+            const folder = vscode3.workspace.workspaceFolders?.[0]?.uri;
+            const uri = await vscode3.window.showSaveDialog({
+              defaultUri: folder ? vscode3.Uri.joinPath(folder, params.defaultName ?? "figure.png") : void 0,
+              filters: { Images: ["png", "svg", "pdf"] }
+            });
+            this.panel.webview.postMessage({
+              id: msg.id,
+              result: { path: uri?.fsPath ?? null }
+            });
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) }
+            });
+          }
+          return;
+        }
         if (method === "reveal_in_editor") {
           try {
             const params = msg.params ?? {};
@@ -574,6 +609,15 @@ var DagPanel = class {
       for (const cb of this.disposeCallbacks)
         cb();
     }, null, this.disposables);
+  }
+  /**
+   * Which editor group the pipeline canvas lives in. The Plot Studio opens in
+   * the SAME group so it becomes a full-width sibling tab rather than a split;
+   * reading it from the panel (instead of assuming ViewColumn.One) keeps that
+   * true after the user drags the pipeline tab elsewhere.
+   */
+  get viewColumn() {
+    return this.panel.viewColumn;
   }
   /**
    * Open a file in an editor column beside the DAG panel and reveal the given line.
@@ -976,6 +1020,167 @@ function getNonce() {
   return text;
 }
 
+// src/plotPanel.ts
+var path3 = __toESM(require("path"));
+var vscode4 = __toESM(require("vscode"));
+var PlotPanel = class _PlotPanel {
+  constructor(context, pythonProcess2, outputChannel2, target, column) {
+    this.context = context;
+    this.pythonProcess = pythonProcess2;
+    this.outputChannel = outputChannel2;
+    this.target = target;
+    this.disposables = [];
+    this.panel = vscode4.window.createWebviewPanel(
+      "scistack.plot",
+      this.title(),
+      // The pipeline's own group: a sibling tab at full width, not a split.
+      { viewColumn: column, preserveFocus: false },
+      {
+        enableScripts: true,
+        // Plot state (spec, role assignments) is expensive to rebuild and has
+        // no persistence of its own, so keep the webview alive when the tab is
+        // in the background.
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode4.Uri.file(path3.join(context.extensionPath, "dist", "webview"))
+        ]
+      }
+    );
+    this.panel.webview.html = this.getHtml();
+    this.panel.webview.onDidReceiveMessage(
+      async (msg) => {
+        const method = msg.method;
+        if (method === "pick_save_path") {
+          try {
+            const params = msg.params ?? {};
+            const folder = vscode4.workspace.workspaceFolders?.[0]?.uri;
+            const uri = await vscode4.window.showSaveDialog({
+              defaultUri: folder ? vscode4.Uri.joinPath(folder, params.defaultName ?? "figure.png") : void 0,
+              filters: { Images: ["png", "svg", "pdf"] }
+            });
+            this.panel.webview.postMessage({
+              id: msg.id,
+              result: { path: uri?.fsPath ?? null }
+            });
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) }
+            });
+          }
+          return;
+        }
+        try {
+          const result = await this.pythonProcess.request(
+            method,
+            msg.params ?? {}
+          );
+          this.panel.webview.postMessage({ id: msg.id, result });
+        } catch (err) {
+          this.outputChannel.appendLine(`plot panel: ${method} failed \u2014 ${err}`);
+          this.panel.webview.postMessage({
+            id: msg.id,
+            error: { message: String(err) }
+          });
+        }
+      },
+      void 0,
+      this.disposables
+    );
+    this.panel.onDidDispose(() => this.dispose(), void 0, this.disposables);
+  }
+  static show(context, pythonProcess2, outputChannel2, target, options = {}) {
+    if (!options.newTab && _PlotPanel.current) {
+      _PlotPanel.current.retarget(target);
+      return _PlotPanel.current;
+    }
+    const panel = new _PlotPanel(
+      context,
+      pythonProcess2,
+      outputChannel2,
+      target,
+      options.column ?? vscode4.ViewColumn.One
+    );
+    if (!options.newTab)
+      _PlotPanel.current = panel;
+    return panel;
+  }
+  /** Point the open panel at a different variable or file. */
+  retarget(target) {
+    this.target = target;
+    this.panel.title = this.title();
+    this.panel.reveal(this.panel.viewColumn, false);
+    this.panel.webview.postMessage({
+      method: "open_plot_studio",
+      params: { variable: target.variable, csv_path: target.csvPath }
+    });
+  }
+  title() {
+    if (this.target.csvPath)
+      return `Plot \u2014 ${path3.basename(this.target.csvPath)}`;
+    return this.target.variable ? `Plot \u2014 ${this.target.variable}` : "Plot";
+  }
+  dispose() {
+    if (_PlotPanel.current === this)
+      _PlotPanel.current = void 0;
+    while (this.disposables.length)
+      this.disposables.pop()?.dispose();
+  }
+  getHtml() {
+    const webviewDir = path3.join(this.context.extensionPath, "dist", "webview");
+    const webview = this.panel.webview;
+    const scriptUri = webview.asWebviewUri(
+      vscode4.Uri.file(path3.join(webviewDir, "index.js"))
+    );
+    const styleUri = webview.asWebviewUri(
+      vscode4.Uri.file(path3.join(webviewDir, "index.css"))
+    );
+    const nonce = getNonce2();
+    const target = JSON.stringify({
+      view: "plot",
+      variable: this.target.variable ?? null,
+      csvPath: this.target.csvPath ?? null
+    });
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none';
+                 style-src ${webview.cspSource} 'unsafe-inline';
+                 script-src 'nonce-${nonce}';
+                 img-src ${webview.cspSource} data:;
+                 font-src ${webview.cspSource};" />
+  <link rel="stylesheet" href="${styleUri}" />
+  <title>${this.title()}</title>
+  <style>
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script nonce="${nonce}">window.__SCISTACK_VIEW__ = ${target};</script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+</html>`;
+  }
+};
+function getNonce2() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let text = "";
+  for (let i = 0; i < 32; i++) {
+    text += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return text;
+}
+
 // src/startupDiagnostics.ts
 var import_child_process2 = require("child_process");
 var REQUIRED_MODULES = ["scistack_gui", "scidb", "scifor", "duckdb"];
@@ -1174,11 +1379,11 @@ var dbWatcherDebounce = null;
 var lastStartArgs = null;
 var warnedNoWorkspaceFolder = false;
 function activate(context) {
-  outputChannel = vscode4.window.createOutputChannel("SciStack");
-  const openPipeline = vscode4.commands.registerCommand(
+  outputChannel = vscode5.window.createOutputChannel("SciStack");
+  const openPipeline = vscode5.commands.registerCommand(
     "scistack.openPipeline",
     async () => {
-      const dbChoice = await vscode4.window.showQuickPick(
+      const dbChoice = await vscode5.window.showQuickPick(
         ["Open existing database", "Create new database"],
         { placeHolder: "SciStack: Open or create a .duckdb file?" }
       );
@@ -1187,30 +1392,30 @@ function activate(context) {
       let dbPath;
       let schemaKeys;
       if (dbChoice === "Open existing database") {
-        const dbUris = await vscode4.window.showOpenDialog({
+        const dbUris = await vscode5.window.showOpenDialog({
           canSelectFiles: true,
           canSelectFolders: false,
           canSelectMany: false,
           filters: { "DuckDB Database": ["duckdb"] },
           title: "Select SciStack Database",
-          defaultUri: vscode4.workspace.workspaceFolders?.[0]?.uri
+          defaultUri: vscode5.workspace.workspaceFolders?.[0]?.uri
         });
         if (!dbUris || dbUris.length === 0)
           return;
         dbPath = dbUris[0].fsPath;
       } else {
-        const folderUris = await vscode4.window.showOpenDialog({
+        const folderUris = await vscode5.window.showOpenDialog({
           canSelectFiles: false,
           canSelectFolders: true,
           canSelectMany: false,
           title: "Select folder for new SciStack database",
           openLabel: "Select Folder",
-          defaultUri: vscode4.workspace.workspaceFolders?.[0]?.uri
+          defaultUri: vscode5.workspace.workspaceFolders?.[0]?.uri
         });
         if (!folderUris || folderUris.length === 0)
           return;
         const folderPath = folderUris[0].fsPath;
-        const nameInput = await vscode4.window.showInputBox({
+        const nameInput = await vscode5.window.showInputBox({
           prompt: "Database filename",
           placeHolder: "e.g. my_pipeline.duckdb",
           validateInput: (v) => {
@@ -1226,8 +1431,8 @@ function activate(context) {
         if (!nameInput)
           return;
         const fileName = nameInput.trim().endsWith(".duckdb") ? nameInput.trim() : `${nameInput.trim()}.duckdb`;
-        dbPath = path3.join(folderPath, fileName);
-        const keysInput = await vscode4.window.showInputBox({
+        dbPath = path4.join(folderPath, fileName);
+        const keysInput = await vscode5.window.showInputBox({
           prompt: "Schema keys (comma-separated, top-down)",
           placeHolder: "e.g. subject, session",
           validateInput: (v) => {
@@ -1242,11 +1447,11 @@ function activate(context) {
       await startPipeline(context, dbPath, schemaKeys);
     }
   );
-  const restartPython = vscode4.commands.registerCommand(
+  const restartPython = vscode5.commands.registerCommand(
     "scistack.restartPython",
     async () => {
       if (!lastStartArgs) {
-        vscode4.window.showWarningMessage(
+        vscode5.window.showWarningMessage(
           'SciStack: No pipeline has been opened yet \u2014 run "SciStack: Open Pipeline" first.'
         );
         return;
@@ -1259,13 +1464,64 @@ function activate(context) {
           // Don't re-pass schemaKeys: the DB already exists on restart.
           void 0
         );
-        vscode4.window.showInformationMessage("SciStack: Python process restarted.");
+        vscode5.window.showInformationMessage("SciStack: Python process restarted.");
       } catch (err) {
-        vscode4.window.showErrorMessage(`SciStack: Restart failed \u2014 ${err}`);
+        vscode5.window.showErrorMessage(`SciStack: Restart failed \u2014 ${err}`);
       }
     }
   );
-  context.subscriptions.push(openPipeline, restartPython, outputChannel);
+  const openPlotPanel = vscode5.commands.registerCommand(
+    "scistack.openPlotPanel",
+    (target = {}) => {
+      if (!pythonProcess) {
+        vscode5.window.showWarningMessage(
+          "SciStack: Open a pipeline first \u2014 plotting needs the server process."
+        );
+        return;
+      }
+      PlotPanel.show(context, pythonProcess, outputChannel, target, {
+        // Same editor group as the pipeline canvas, so the plot is a
+        // full-width tab beside "SciStack Pipeline" in the tab bar.
+        column: dagPanel?.viewColumn ?? vscode5.ViewColumn.One
+      });
+    }
+  );
+  const plotVariable = vscode5.commands.registerCommand(
+    "scistack.plotVariable",
+    async () => {
+      const variable = await vscode5.window.showInputBox({
+        prompt: "Variable type to plot",
+        placeHolder: "e.g. StepLength"
+      });
+      if (!variable)
+        return;
+      await vscode5.commands.executeCommand("scistack.openPlotPanel", {
+        variable: variable.trim()
+      });
+    }
+  );
+  const plotCsv = vscode5.commands.registerCommand(
+    "scistack.plotCsv",
+    async (uri) => {
+      const target = uri?.fsPath ?? (await vscode5.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { "CSV files": ["csv"] }
+      }))?.[0]?.fsPath;
+      if (!target)
+        return;
+      await vscode5.commands.executeCommand("scistack.openPlotPanel", {
+        csvPath: target
+      });
+    }
+  );
+  context.subscriptions.push(
+    openPipeline,
+    restartPython,
+    openPlotPanel,
+    plotVariable,
+    plotCsv,
+    outputChannel
+  );
 }
 async function startPipeline(context, dbPath, schemaKeys) {
   lastStartArgs = {
@@ -1279,7 +1535,7 @@ async function startPipeline(context, dbPath, schemaKeys) {
   }
   const interpreter = await resolvePythonPath();
   if (!interpreter) {
-    vscode4.window.showErrorMessage(
+    vscode5.window.showErrorMessage(
       "SciStack: Could not find a Python interpreter. Install the Python extension or set scistack.pythonPath in settings."
     );
     return;
@@ -1295,7 +1551,7 @@ async function startPipeline(context, dbPath, schemaKeys) {
     outputChannel.appendLine(`  Schema keys: [${schemaKeys.join(", ")}] (new DB)`);
   pythonProcess = new PythonProcess(pythonPath, dbPath, outputChannel, schemaKeys);
   try {
-    const cfg = vscode4.workspace.getConfiguration("scistack");
+    const cfg = vscode5.workspace.getConfiguration("scistack");
     const startupTimeoutMs = cfg.get("startupTimeoutMs", 6e4);
     const readyParams = await pythonProcess.waitForReady(startupTimeoutMs);
     outputChannel.appendLine(
@@ -1333,8 +1589,8 @@ async function startPipeline(context, dbPath, schemaKeys) {
     }
   });
   setupDbWatcher(dbPath);
-  const statusItem = vscode4.window.createStatusBarItem(
-    vscode4.StatusBarAlignment.Left,
+  const statusItem = vscode5.window.createStatusBarItem(
+    vscode5.StatusBarAlignment.Left,
     100
   );
   statusItem.text = `$(database) SciStack: ${dbPath.split("/").pop()}`;
@@ -1342,7 +1598,7 @@ async function startPipeline(context, dbPath, schemaKeys) {
   statusItem.show();
 }
 function workspaceFolderPath() {
-  return vscode4.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return vscode5.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 function warnIfNoWorkspaceFolder() {
   if (workspaceFolderPath())
@@ -1351,7 +1607,7 @@ function warnIfNoWorkspaceFolder() {
   outputChannel.appendLine(message);
   if (!warnedNoWorkspaceFolder) {
     warnedNoWorkspaceFolder = true;
-    vscode4.window.showWarningMessage(message);
+    vscode5.window.showWarningMessage(message);
   }
 }
 async function reportStartupFailure(failed, interpreterSource, err) {
@@ -1386,7 +1642,7 @@ var ACTION_LABELS = {
 };
 async function showDiagnosisMessage(diagnosis) {
   const labels = diagnosis.actions.map((a) => ACTION_LABELS[a]);
-  const picked = await vscode4.window.showErrorMessage(diagnosis.message, ...labels);
+  const picked = await vscode5.window.showErrorMessage(diagnosis.message, ...labels);
   if (!picked)
     return;
   const action = diagnosis.actions.find((a) => ACTION_LABELS[a] === picked);
@@ -1395,18 +1651,18 @@ async function showDiagnosisMessage(diagnosis) {
       outputChannel.show(true);
       break;
     case "selectInterpreter":
-      await vscode4.commands.executeCommand("python.setInterpreter");
+      await vscode5.commands.executeCommand("python.setInterpreter");
       break;
     case "openSettings":
-      await vscode4.commands.executeCommand(
+      await vscode5.commands.executeCommand(
         "workbench.action.openSettings",
         "scistack.pythonPath"
       );
       break;
     case "copyInstallCommand":
       if (diagnosis.installCommand) {
-        await vscode4.env.clipboard.writeText(diagnosis.installCommand);
-        vscode4.window.showInformationMessage(
+        await vscode5.env.clipboard.writeText(diagnosis.installCommand);
+        vscode5.window.showInformationMessage(
           `SciStack: copied to clipboard \u2014 ${diagnosis.installCommand}`
         );
       }
@@ -1414,11 +1670,11 @@ async function showDiagnosisMessage(diagnosis) {
   }
 }
 async function resolvePythonPath() {
-  const config = vscode4.workspace.getConfiguration("scistack");
+  const config = vscode5.workspace.getConfiguration("scistack");
   const configured = config.get("pythonPath");
   if (configured)
     return { path: configured, source: "scistack.pythonPath setting" };
-  const pythonExt = vscode4.extensions.getExtension("ms-python.python");
+  const pythonExt = vscode5.extensions.getExtension("ms-python.python");
   if (pythonExt) {
     if (!pythonExt.isActive)
       await pythonExt.activate();
@@ -1451,10 +1707,10 @@ function setupDbWatcher(dbPath) {
     clearTimeout(dbWatcherDebounce);
     dbWatcherDebounce = null;
   }
-  const dbDir = path3.dirname(dbPath);
-  const dbBase = path3.basename(dbPath);
-  const pattern = new vscode4.RelativePattern(dbDir, dbBase + "*");
-  dbWatcher = vscode4.workspace.createFileSystemWatcher(pattern);
+  const dbDir = path4.dirname(dbPath);
+  const dbBase = path4.basename(dbPath);
+  const pattern = new vscode5.RelativePattern(dbDir, dbBase + "*");
+  dbWatcher = vscode5.workspace.createFileSystemWatcher(pattern);
   const onDbChange = () => {
     if (dbWatcherDebounce) {
       clearTimeout(dbWatcherDebounce);

@@ -213,10 +213,11 @@ Both can be used together. If the same package appears via both `packages` and a
 
 - **Empty `scistack.toml`**: Valid. Parses as `{}`, uses all defaults.
 - **`pyproject.toml` without `[tool.scistack]`**: Valid. Uses all defaults. (This was previously a `ValueError` but was fixed to be more forgiving — many projects have a `pyproject.toml` for packaging but haven't added `[tool.scistack]` yet.)
-- **No config file at all**: `FileNotFoundError`. The VS Code extension detects this before starting the server and offers to create a `scistack.toml`.
+- **No config file at all**: not an error. `load_config` falls back to folder-scan discovery rooted at the project root (`_folder_scan_config`), and `services.project_init_service.ensure_project_files` creates a `scistack.toml` + entities file at open/create time. This is server-side for both front ends; the VS Code extension used to pre-check and prompt for it in `projectInit.ts`, which was removed along with the "How should SciStack discover your pipeline code?" picker.
 - **Both files in the same directory**: `pyproject.toml` is used; `scistack.toml` is ignored.
 
 ## Implementation
 
 - **Parser**: `scistack_gui/config.py` — `load_config()`, `resolve_project_root()`, `locate_config_at()`, `_extract_scistack_section()`
-- **VS Code pre-check**: `extension/src/projectInit.ts` — `checkProjectConfig()`, `promptForMissingConfig()`
+- **Config/entities-file creation**: `scistack_gui/services/project_init_service.py` — `ensure_project_files()`, called from `bootstrap.open_or_create_project()`
+- **VS Code server argv**: `extension/src/serverArgs.ts` — `buildServerArgs()`; never passes `--module`/`--project`, so the project root is always `--project-root` (the workspace folder)

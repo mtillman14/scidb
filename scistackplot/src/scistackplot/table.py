@@ -1,0 +1,258 @@
+"""
+``LongTable`` — a long-format DataFrame plus the column roles a plot needs.
+
+Every source (CSV, DataFrame, scidb) hands the rest of the package one of
+these. It answers three questions the raw DataFrame cannot: which columns are
+*factors* (categorical things you can slice by), which are *measures* (the
+numbers being plotted), and — critically — **what order each factor's levels
+go in**.
+
+That last one is not cosmetic. Schema keys like ``"01"`` are strings by project
+rule, and pandas' default lexicographic ordering renders them as
+``"1", "10", "2"`` on a categorical axis: visibly wrong, and wrong in a way
+that looks like a data problem rather than a plotting problem. Sources that
+know better (scidb knows its declared ``schema_key_types``) supply
+``level_order`` explicitly; everything else falls back to the natural-sort
+heuristic below.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Iterable
+
+import pandas as pd
+
+from .shape import Shape, classify_column
+
+_NUM_CHUNK = re.compile(r"(\d+)")
+
+
+def natural_sort_key(value: Any) -> tuple:
+    """
+    Sort key that orders embedded digit runs numerically.
+
+    ``"1", "2", "10"`` and ``"s01", "s02", "s10"`` both come out right, while
+    non-numeric values still sort stably. Digit runs compare as (0, int) and
+    text as (1, str) so the two never compare against each other.
+    """
+    text = "" if value is None else str(value)
+    parts: list[tuple[int, Any]] = []
+    for chunk in _NUM_CHUNK.split(text):
+        if not chunk:
+            continue
+        if chunk.isdigit():
+            parts.append((0, int(chunk)))
+        else:
+            parts.append((1, chunk))
+    return tuple(parts)
+
+
+@dataclass
+class FactorInfo:
+    name: str
+    levels: list[Any]
+    #: True when this factor came from pipeline branch params rather than the
+    #: dataset schema. The GUI marks these; pooling them needs a deliberate
+    #: ``VariantPolicy.POOL``.
+    is_variant: bool = False
+    #: True when this factor's levels are the measure's own FIELDS (the keys of
+    #: a dict/struct variable, melted into long format) rather than an
+    #: experimental condition. Defaults to one subplot per level, because the
+    #: fields of a struct are parallel quantities — 13 muscles overplotted on
+    #: one axis is not a figure anyone wanted.
+    is_field: bool = False
+    label: str | None = None
+
+    @property
+    def display(self) -> str:
+        return self.label or self.name
+
+
+@dataclass
+class MeasureInfo:
+    name: str
+    shape: Shape
+    label: str | None = None
+    #: For 1-D measures whose arrays have already been exploded into rows.
+    exploded: bool = False
+
+    @property
+    def display(self) -> str:
+        return self.label or self.name
+
+
+@dataclass
+class LongTable:
+    """A long-format table with declared column roles."""
+
+    frame: pd.DataFrame
+    factors: list[FactorInfo] = field(default_factory=list)
+    measures: list[MeasureInfo] = field(default_factory=list)
+    #: Within-observation axis for 1-D data (time, frame, percent). Present as
+    #: a column only after the measure has been exploded.
+    index_column: str | None = None
+    name: str | None = None
+    #: A ``PlotSpec.pinned_variant`` mapping the SOURCE recommends, or None if
+    #: it has no opinion. Sources that can tell which rows are current say so
+    #: here, and ``default_spec`` opens on it; the user is free to clear it.
+    #:
+    #: The point is to keep "which rows are current" with the layer that knows
+    #: — a scidb variable whose function was edited holds records from both the
+    #: old and the new code, and only scidb can say which is which. A CSV has
+    #: no such notion and leaves this None.
+    default_pin: dict[str, Any] | None = None
+
+    # ---- lookups ---------------------------------------------------------
+
+    @property
+    def factor_names(self) -> list[str]:
+        return [f.name for f in self.factors]
+
+    @property
+    def measure_names(self) -> list[str]:
+        return [m.name for m in self.measures]
+
+    def factor(self, name: str) -> FactorInfo:
+        for f in self.factors:
+            if f.name == name:
+                return f
+        raise KeyError(f"No factor named {name!r}. Factors: {self.factor_names}")
+
+    def measure(self, name: str) -> MeasureInfo:
+        for m in self.measures:
+            if m.name == name:
+                return m
+        raise KeyError(f"No measure named {name!r}. Measures: {self.measure_names}")
+
+    def has_factor(self, name: str) -> bool:
+        return any(f.name == name for f in self.factors)
+
+    def shape_of(self, measure: str) -> Shape:
+        return self.measure(measure).shape
+
+    @property
+    def variant_factors(self) -> list[FactorInfo]:
+        return [f for f in self.factors if f.is_variant]
+
+    @property
+    def field_factors(self) -> list[FactorInfo]:
+        return [f for f in self.factors if f.is_field]
+
+    # ---- construction ----------------------------------------------------
+
+    @classmethod
+    def from_frame(
+        cls,
+        frame: pd.DataFrame,
+        *,
+        factors: Iterable[str] | None = None,
+        measures: Iterable[str] | None = None,
+        level_order: dict[str, list[Any]] | None = None,
+        variant_factors: Iterable[str] = (),
+        field_factors: Iterable[str] = (),
+        index_column: str | None = None,
+        name: str | None = None,
+        default_pin: dict[str, Any] | None = None,
+    ) -> "LongTable":
+        """
+        Build a LongTable, inferring column roles when they aren't given.
+
+        Inference mirrors the R proof of concept's ``getFactorColNames``, but
+        on shape rather than on R's ``is.factor``: a column that classifies as
+        SCALAR or SERIES_1D is a measure, anything else is a factor. Callers
+        that know better (every scidb-backed caller does) should pass explicit
+        lists — inference is for the standalone CSV path.
+        """
+        level_order = dict(level_order or {})
+        variant_set = set(variant_factors)
+        field_set = set(field_factors)
+
+        if factors is None or measures is None:
+            inferred_measures: list[str] = []
+            inferred_factors: list[str] = []
+            for column in frame.columns:
+                if column == index_column:
+                    continue
+                shape = classify_column(frame[column])
+                if shape in (Shape.SCALAR, Shape.SERIES_1D, Shape.MATRIX_2D):
+                    inferred_measures.append(column)
+                else:
+                    inferred_factors.append(column)
+            factors = list(factors) if factors is not None else inferred_factors
+            measures = list(measures) if measures is not None else inferred_measures
+
+        factor_infos = []
+        for column in factors:
+            if column in level_order:
+                levels = list(level_order[column])
+            else:
+                levels = sorted(
+                    frame[column].dropna().unique().tolist(), key=natural_sort_key
+                )
+            factor_infos.append(
+                FactorInfo(
+                    name=column,
+                    levels=levels,
+                    is_variant=column in variant_set,
+                    is_field=column in field_set,
+                )
+            )
+
+        measure_infos = [
+            MeasureInfo(name=column, shape=classify_column(frame[column]))
+            for column in measures
+        ]
+
+        return cls(
+            frame=frame,
+            factors=factor_infos,
+            measures=measure_infos,
+            index_column=index_column,
+            name=name,
+            # A pin naming a column that isn't here would filter every row away
+            # on the first render — drop it rather than produce an empty figure.
+            default_pin={
+                key: value
+                for key, value in (default_pin or {}).items()
+                if key in frame.columns
+            }
+            or None,
+        )
+
+    def describe(self) -> dict:
+        """JSON-serializable summary — what the GUI needs to build its controls."""
+        return {
+            "name": self.name,
+            "row_count": int(len(self.frame)),
+            "index_column": self.index_column,
+            "factors": [
+                {
+                    "name": f.name,
+                    "display": f.display,
+                    "levels": [_jsonable(v) for v in f.levels],
+                    "level_count": len(f.levels),
+                    "is_variant": f.is_variant,
+                    "is_field": f.is_field,
+                }
+                for f in self.factors
+            ],
+            "measures": [
+                {
+                    "name": m.name,
+                    "display": m.display,
+                    "shape": str(m.shape),
+                    "exploded": m.exploded,
+                    "plottable": m.shape
+                    in (Shape.SCALAR, Shape.SERIES_1D, Shape.MATRIX_2D),
+                }
+                for m in self.measures
+            ],
+        }
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)

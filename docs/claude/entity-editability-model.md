@@ -95,14 +95,38 @@ path resolves arbitrarily.
 
 ## Parameters: one class, one node type
 
-**`scidb.Parameter` is the only configuration-value construct.** It holds
-one or more values; the count is the only thing that varies:
+**`scidb.Parameter` is the only configuration-value construct.** The value
+count is the only thing that varies, and it may be zero:
 
 ```python
 SAMPLING_RATE_HZ = scidb.Parameter(1000, description="Recording rate")
 WINDOW_SECONDS   = scidb.Parameter(10, 20, 30)
 THRESHOLDS       = scidb.Parameter(*range(10, 60, 10))   # plain varargs
+CUTOFF_HZ        = scidb.Parameter()                     # not yet valued
 ```
+
+**A Parameter with no values is a legal, declared state** — legal at rest
+(source, entities file, registry, canvas), refused at execution. It is what
+the "New parameter" form creates, since that form collects only a name, and
+what removing the last value in `ParameterSettingsPanel` leaves behind. The
+GUI used to scaffold a placeholder `0` instead; once written, that is
+indistinguishable from a value the user chose, so it showed as a checked
+value on the node, fed `for_each`, and got stamped into any records produced
+before the user noticed.
+
+Refusal lives at `for_each` expansion (`scifor.require_alternatives`, called
+by all four expansion sites: `scifor`/`scidb` × Python/MATLAB), not at
+construction. Two reasons. It is where the harm is: the Cartesian product
+over a zero-length axis is empty, so an unvalued Parameter bound to a
+function makes `for_each` iterate zero times, write no records, and return
+as though it had succeeded. And it is the only place MATLAB can put it — a
+superclass constructor call may not sit in a conditional branch, so
+`+scidb/Parameter.m` has exactly one `obj@scifor.EachOf(args{:})` call and
+`args` is empty for a value-less Parameter. `EachOf` therefore accepts zero
+alternatives in both languages. The GUI refuses it earlier still, in
+`execution_service.build_run_inputs`, so the message can name the declared
+Parameter the user sees on the canvas rather than the signature parameter it
+feeds.
 
 `EditTab.tsx`'s category strip is five, not six: Submodules, Functions,
 Variables, **Parameters**, Path Inputs.
@@ -128,6 +152,42 @@ the stack** — one registry (`registry._parameters`), one scanner
 (`_scan_module_parameters`), one node builder (`build_parameter_nodes`), one
 service (`parameter_service`), one route family (`/api/parameters`), one
 node component (`ParameterNode.tsx`).
+
+### Generated value sets
+
+`ParameterSettingsPanel`'s **Generate** section writes a whole list at once
+("Replace values"), as against **Add value**, which appends one. Generated
+sets render as a *single* compact row — `0:2:20 — 11 values` — with one
+checkbox, in both the sidebar list and the canvas node. Values added one at
+a time keep their per-value rows exactly as before.
+
+Three things make that work, and each was a deliberate choice:
+
+- **The button is the signal.** "Replace values" sends a `group`
+  (`{kind, spec}`) alongside the same flat value list every other edit
+  sends; "Add value" does not. Nothing infers generated-ness from the values
+  themselves, so a hand-typed `10, 20, 30` is never collapsed.
+- **The grouping is GUI state, not source.** It lives in
+  `_pipeline_parameter_value_groups` (one row per Parameter), never in the
+  declaration. Source stays a flat list of values in all three languages, so
+  `render_parameter` / `render_parameter_value` / `render_matlab_parameter`,
+  `version_keys` and MATLAB parity are all untouched by the feature. Per
+  CLAUDE.md NOTE 3: grouping is a display concern, so it lives in the GUI
+  layer.
+- **Source still decides which values exist.** `build_parameter_nodes`
+  checks the recorded members against the declaration on every read; if any
+  member has left source (a hand edit, or the panel's `×`), the group is
+  stale and every value renders individually. A stale group can never mask a
+  value that is really declared.
+
+The compact label is rendered backend-side
+(`graph_builder.render_value_group_label`) and shipped in the node's `data`,
+because `ParameterSettingsPanel` receives the node's `values` as a prop — so
+the canvas and the sidebar show the identical string by construction rather
+than by two frontend implementations agreeing. The one checkbox hides or
+unhides every member through the batched
+`pipeline_store.hide_parameter_values` / `unhide_parameter_values`, and a set
+reads as unchecked as soon as *any* member is hidden (no tri-state).
 
 ## Edit semantics, by kind
 

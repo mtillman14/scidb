@@ -1,0 +1,175 @@
+"""
+Generated code must actually run.
+
+The export path emits literal seaborn/matplotlib source rather than a call back
+into this package, so the only meaningful test is to execute it and check that
+it returns a Figure — a generated snippet that doesn't run is worse than no
+export at all.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from scistackplot import (
+    PlotKind,
+    PlotSpec,
+    Role,
+    extract_spec,
+    generate_plot_function,
+    generate_script,
+)
+from scistackplot.spec import Aggregation, ErrorBand, Filter, Statistic
+
+pytest.importorskip("seaborn")
+matplotlib = pytest.importorskip("matplotlib")
+
+
+def _run(source: str, frame, function_name: str):
+    namespace: dict = {}
+    exec(compile(source, "<generated>", "exec"), namespace)  # noqa: S102
+    return namespace[function_name](frame.copy(), "figure.png")
+
+
+def test_generated_box_plot_runs(scalar_table, scalar_frame):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+    )
+    source = generate_plot_function(spec, scalar_table)
+
+    assert source.startswith("def plot_steplength(df, filename):")
+    figure = _run(source, scalar_frame, "plot_steplength")
+    assert figure.axes
+    matplotlib.pyplot.close(figure)
+
+
+def test_generated_code_uses_seaborn_not_this_package(scalar_table):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+    )
+    source = generate_plot_function(spec, scalar_table)
+
+    assert "sns.catplot" in source
+    assert "scistackplot.render" not in source
+    assert "import scistackplot" not in source
+
+
+def test_generated_band_plot_runs(series_table, series_frame):
+    spec = PlotSpec(
+        measures=["Signal"],
+        roles={"session": Role.COLOR, "subject": Role.FREE, "trial": Role.FREE},
+        kind=PlotKind.BAND,
+        aggregate=Aggregation(statistic=Statistic.MEAN, error=ErrorBand.SD),
+    )
+    source = generate_plot_function(spec, series_table)
+
+    assert "df.explode" in source
+    assert 'errorbar="sd"' in source
+    figure = _run(source, series_frame, "plot_signal")
+    assert figure.axes
+    matplotlib.pyplot.close(figure)
+
+
+def test_generated_aggregate_emits_a_groupby(scalar_table, scalar_frame):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.AGGREGATE},
+        kind=PlotKind.SCATTER,
+    )
+    source = generate_plot_function(spec, scalar_table)
+
+    assert "# average over trial" in source
+    assert ".groupby(" in source
+    figure = _run(source, scalar_frame, "plot_steplength")
+    matplotlib.pyplot.close(figure)
+
+
+def test_generated_filters_are_applied(scalar_table, scalar_frame):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "trial": Role.FREE, "session": Role.FREE},
+        kind=PlotKind.BOX,
+        filters=[Filter(column="session", include=["pre"])],
+    )
+    source = generate_plot_function(spec, scalar_table)
+
+    assert "isin(['pre'])" in source
+    figure = _run(source, scalar_frame, "plot_steplength")
+    matplotlib.pyplot.close(figure)
+
+
+def test_iterate_factors_are_documented_as_foreach_keys(scalar_table):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.ITERATE, "session": Role.X, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+    )
+    source = generate_plot_function(spec, scalar_table)
+    assert "One figure per subject" in source
+    assert "for_each iteration keys" in source
+
+
+def test_embedded_spec_round_trips_out_of_generated_source(scalar_table):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+    )
+    source = generate_plot_function(spec, scalar_table)
+    assert extract_spec(source) == spec
+
+
+def test_extract_spec_returns_none_for_handwritten_code():
+    assert extract_spec("def plot_x(df, filename):\n    return None\n") is None
+
+
+def test_generated_script_is_runnable_source(scalar_table):
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BOX,
+    )
+    script = generate_script(spec, scalar_table)
+
+    compile(script, "<generated>", "exec")  # syntax must be valid
+    assert 'if __name__ == "__main__":' in script
+
+
+def test_generated_heatmap_runs():
+    import numpy as np
+    import pandas as pd
+
+    from scistackplot import LongTable
+
+    frame = pd.DataFrame(
+        {"subject": ["01", "02"], "Map": [np.zeros((4, 5)), np.ones((4, 5))]}
+    )
+    table = LongTable.from_frame(frame, factors=["subject"], measures=["Map"])
+    spec = PlotSpec(
+        measures=["Map"], roles={"subject": Role.FREE}, kind=PlotKind.HEATMAP
+    )
+
+    figure = _run(generate_plot_function(spec, table), frame, "plot_map")
+    assert figure.axes
+    matplotlib.pyplot.close(figure)
+
+
+def test_generated_code_melts_struct_fields(struct_table):
+    """
+    The endpoint receives one column per field, so the generated function has
+    to melt exactly as ScidbSource.get_table does — otherwise the exported
+    figure is not the previewed figure.
+    """
+    from scistackplot import default_spec
+
+    spec = default_spec(struct_table, "RawEMG")
+    source = generate_plot_function(spec, struct_table)
+
+    assert "df.melt(" in source
+    assert "'RHAM'" in source
+    assert "var_name='ColName'" in source
+    assert "col='ColName'" in source or 'col="ColName"' in source

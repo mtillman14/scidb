@@ -19,9 +19,10 @@ if TYPE_CHECKING:
     import pandas as pd
 
 import scifor as _scifor
-from scifor import ColName, ColumnSelection, EachOf, Fixed, Merge
+from scifor import ColName, ColumnSelection, EachOf, Fixed, Merge, require_alternatives
 from scifor import for_each as _scifor_for_each
 
+from . import glue as _glue
 from .across_variants import AcrossVariants
 from .filters import Filter
 from .foreach_config import ForEachConfig
@@ -193,6 +194,17 @@ class _ForEachState:
     # stored one column per key. scifor rebuilds the mapping per combo; see
     # _resolve_mapping_inputs.
     mapping_inputs: Any = None  # dict | None
+    # {param_name: [GlueSpec]} the caller attached to this call, and the
+    # subset that must run post-slice rather than on the bulk loaded table
+    # (the D4 per-schema-key opt-in, plus whole-table glue on a per-combo
+    # input). See scidb.glue.
+    glue_chains: Any = None  # dict[str, list[GlueSpec]] | None
+    per_combo_glue: Any = None  # dict[str, list[GlueSpec]] | None
+    # {param: (chain_hash, input_set_signature, {source_rid: virtual_rid})}.
+    # The provenance half: the consumer's bindings already point at the virtual
+    # rids (fuse_glue rewrote __record_id), and the save path writes the
+    # matching _record/_invocation/edge rows from this.
+    glue_virtual: Any = None  # dict | None
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +229,7 @@ def for_each(
     schema_keys: "list[str] | None" = None,
     share_limits: "dict[str, list[str]] | None" = None,
     finalized: bool = False,
+    glue: "dict[str, Any] | None" = None,
     pipeline: Any = _PIPELINE_UNSET,
     _inject_combo_metadata: bool = False,
     _pre_combo_hook: "Callable[[dict], bool] | None" = None,
@@ -287,6 +300,12 @@ def for_each(
                     stored JSON. Recording requires a re-run of the endpoint
                     (drafts leave no record to promote). Warned and ignored
                     for non-endpoint functions.
+        glue: Optional ``{param_name: GlueSpec | callable | [GlueSpec, ...]}``.
+                    Free-code "glue" nodes applied in memory to that
+                    parameter's loaded input before ``fn`` sees it, and never
+                    saved. A glue node may change the column space but not the
+                    row set; see ``scidb.glue`` and
+                    ``docs/claude/free-code-glue-nodes.md``.
         _inject_combo_metadata: If True, inject current-combo metadata keys
                     as extra kwargs to fn (used by scihist for generates_file).
         pipeline: Deferred-registration control. Omitted (default): if a
@@ -342,6 +361,7 @@ def for_each(
                 "schema_keys": schema_keys,
                 "share_limits": share_limits,
                 "finalized": finalized,
+                "glue": glue,
                 "_inject_combo_metadata": _inject_combo_metadata,
                 "_pre_combo_hook": _pre_combo_hook,
                 "_progress_fn": _progress_fn,
@@ -419,8 +439,10 @@ def for_each(
     each_of_axes = []
     for param, val in inputs.items():
         if isinstance(val, EachOf):
+            require_alternatives(val, kind="input", param=param)
             each_of_axes.append(("input", param, val.alternatives))
     if isinstance(where, EachOf):
+        require_alternatives(where, kind="where")
         each_of_axes.append(("where", None, where.alternatives))
 
     if each_of_axes:
@@ -550,6 +572,7 @@ def for_each(
             db=db,
             distribute=distribute,
             where=where,
+            glue=glue,
             _pre_combo_hook=_pre_combo_hook,
             _cancel_check=_cancel_check,
             metadata_iterables=metadata_iterables,
@@ -589,7 +612,8 @@ def for_each(
         if isinstance(v, (PerComboLoader, PerComboLoaderMerge))
     }
     _has_variable_inputs = any(_is_loadable(v) for v in inputs.values())
-    if _per_combo or _inject_combo_metadata or _has_variable_inputs:
+    _per_combo_glue = state.per_combo_glue or {}
+    if _per_combo or _inject_combo_metadata or _has_variable_inputs or _per_combo_glue:
         wrap_reasons = []
         if _per_combo:
             wrap_reasons.append(f"{len(_per_combo)} PerComboLoader input(s)")
@@ -597,6 +621,8 @@ def for_each(
             wrap_reasons.append("generates_file metadata injection")
         if _has_variable_inputs:
             wrap_reasons.append("variable input normalization")
+        if _per_combo_glue:
+            wrap_reasons.append(f"{len(_per_combo_glue)} per-combo glue chain(s)")
         Log.debug(f"wrapping function for {', '.join(wrap_reasons)}")
         _ordered_combos = state.full_combos
         _call_idx = [0]
@@ -619,6 +645,7 @@ def for_each(
                     _fn_params = set()
 
         _path_extra = state.path_extra_keys or set()
+        _ordered_schema_keys = list(state.current_schema_keys or [])
 
         def fn(**kwargs):  # noqa: F811 — intentional rebind
             idx = _call_idx[0]
@@ -652,6 +679,18 @@ def for_each(
                 resolved = _normalize_variable_inputs(
                     resolved, current_combo, inputs, _loaded_inputs_ref
                 )
+
+            # Per-schema-key glue (the D4 opt-in) runs here, on the
+            # already-sliced value, immediately before fn sees it — the same
+            # code as the bulk site, a different hook.
+            for _gp, _gchain in _per_combo_glue.items():
+                if _gp in resolved:
+                    resolved[_gp] = _glue.apply_glue_chain(
+                        resolved[_gp],
+                        _gchain,
+                        param=_gp,
+                        schema_keys=_ordered_schema_keys,
+                    )
 
             if _inject_combo_metadata and _fn_params is not None:
                 # Only inject metadata keys that the function signature accepts
@@ -1268,7 +1307,13 @@ def _build_skip_hook(
                 return _recompute(combo_str, f"no stored input {param}")
             stored_rid, stored_sel = stored
             if str(stored_rid) != str(rid_val):
-                return _recompute(combo_str, f"input {param} changed")
+                # Naming both rids is what makes an edited *glue* diagnosable:
+                # the binding moves because the glue's virtual record id moved,
+                # and this is the line that proves the edit propagated.
+                return _recompute(
+                    combo_str,
+                    f"binding '{param}' changed ({stored_rid} -> {rid_val})",
+                )
             if (stored_sel or None) != (selectors.get(param) or None):
                 return _recompute(combo_str, f"selector for {param} changed")
 
@@ -1324,13 +1369,31 @@ def _for_each_prepare(
     _pre_combo_hook,
     _cancel_check,
     metadata_iterables: dict,
+    glue: "dict[str, Any] | None" = None,
+    glue_language: str = "python",
 ) -> "_ForEachState | None":
     """Run scidb.for_each's pre-loop work (Steps 2-15).
 
     On ``dry_run=True`` runs the dry-run shortcut (Step 7) and returns
     ``None`` to signal the caller to stop. Otherwise returns the prepared
     state object the loop and save phases consume.
+
+    ``glue_language`` names the language the *run* executes in. Chains
+    authored in another language are refused (a glue node executes in the
+    language of the run); in a MATLAB run the whole chain is carried through
+    on the returned state for ``+scidb/for_each.m`` to apply, because a ``.m``
+    function cannot execute inside this prepare step.
     """
+    # --- Glue chains: normalized and validated up front so a malformed chain
+    #     fails before any data is loaded (and before the dry-run shortcut,
+    #     which must display the same call the real run would make). ---
+    glue_chains = _glue.normalize_glue(glue)
+    if glue_chains:
+        _glue.check_run_language(glue_chains, glue_language)
+        _glue.refuse_pathinput_glue(inputs, glue_chains)
+        _glue.log_chains(glue_chains)
+    else:
+        Log.debug("[glue] no glue chains on this call")
 
     # Track which keys the user passed with explicit (non-empty) values.
     # Keys passed as an empty sequence ([], (), empty numpy array) are
@@ -1658,6 +1721,7 @@ def _for_each_prepare(
         where=where,
         distribute=distribute,
         as_table=as_table,
+        glue=glue_chains,
     )
     config_keys = config.to_version_keys()
     call_id = config.to_call_id()
@@ -1756,6 +1820,33 @@ def _for_each_prepare(
         f"loaded {df_count} DataFrame input(s), {len(loaded_inputs) - df_count} other(s)"
     )
     mapping_inputs = _resolve_mapping_inputs(inputs, loaded_inputs, db)
+
+    # --- Glue fusion: reshape the bulk loaded table in memory, before Step 11
+    #     renames __record_id → __rid_{param}. Placed here on purpose: the
+    #     table already carries schema-key columns (so per-combo slicing is
+    #     untouched) and provenance bookkeeping has not started yet. MATLAB
+    #     runs delegate all of this to for_each_prepare too, so Python glue
+    #     would apply there identically — which is exactly why glue is
+    #     required to match the run's language. ---
+    glue_fusion = _glue.GlueFusion()
+    if glue_chains:
+        with Log.step(f"apply_glue({fn_name})"):
+            # MATLAB glue bodies run in +scidb/for_each.m, after prepare
+            # returns and before the loop — but the *identity* half (the
+            # virtual glue records) is computed here either way, so the two
+            # languages share one provenance recipe.
+            if glue_language != "python":
+                Log.info(
+                    f"[glue] {len(glue_chains)} chain(s) deferred to the "
+                    f"{glue_language} side; identity recorded here"
+                )
+            glue_fusion = _glue.fuse_glue(
+                loaded_inputs,
+                glue_chains,
+                schema_keys=list(_scifor.get_schema() or []),
+                apply_bulk=(glue_language == "python"),
+            )
+    per_combo_glue = glue_fusion.per_combo
 
     # --- Step 11: Variant tracking: build rid→bp mapping and __rid_{param} discriminator columns ---
     from itertools import product as _iproduct
@@ -2692,6 +2783,9 @@ def _for_each_prepare(
         path_extra_keys=_path_placeholder_names or None,
         skip_computed_count=_skip_computed_count,
         mapping_inputs=mapping_inputs or None,
+        glue_chains=glue_chains or None,
+        per_combo_glue=per_combo_glue or None,
+        glue_virtual=glue_fusion.virtual or None,
     )
 
 
@@ -2755,6 +2849,15 @@ def _for_each_save_resolved(
                 Log.debug(
                     f"computed {len(fixed_rids_for_save)} Fixed input rid(s) for graph: {list(fixed_rids_for_save.keys())}"
                 )
+        # A Fixed input's rid is looked up from the DB, not read off the loaded
+        # frame, so it bypasses the __record_id rewrite fuse_glue performed.
+        # Route it through the same virtual map or the graph edge would point at
+        # the raw record while the combo carries the virtual one — a binding
+        # mismatch that makes skip_computed recompute on every run.
+        if fixed_rids_for_save and state.glue_virtual:
+            fixed_rids_for_save = _remap_fixed_rids_through_glue(
+                fixed_rids_for_save, state.glue_virtual
+            )
 
         # Per-param identity selectors (ColumnSelection columns, etc.) for the
         # bipartite graph edges. Computed once from the inputs spec.
@@ -2778,6 +2881,8 @@ def _for_each_save_resolved(
             generates_file=generates_file,
             endpoint_kind=endpoint_kind,
             stamp_param_names=[rc[len("__rid_") :] for rc in (state.rid_keys or [])],
+            glue_virtual=state.glue_virtual,
+            glue_chains=state.glue_chains,
         )
         save_elapsed = time.perf_counter() - save_t0
         Log.debug(
@@ -2797,6 +2902,28 @@ def _for_each_save_resolved(
         _stamp_draft_endpoint_artifacts(endpoint_kind, result_tbl, state, db)
 
     return result_tbl
+
+
+def _remap_fixed_rids_through_glue(fixed_rids: dict, glue_virtual: dict) -> dict:
+    """Rewrite Fixed-input rids to their virtual glue rids where a chain applies.
+
+    ``fixed_rids`` is keyed either by param name or by ``__rid_{param}``; both
+    spellings are handled because ``_row_bindings`` accepts both.
+    """
+    out = dict(fixed_rids)
+    for key, rid in fixed_rids.items():
+        param = key[len("__rid_") :] if key.startswith("__rid_") else key
+        entry = glue_virtual.get(param)
+        if not entry or rid is None:
+            continue
+        _chain_hash, _sig, mapping = entry
+        mapped = mapping.get(str(rid))
+        if mapped:
+            out[key] = mapped
+            Log.debug(
+                f"[glue] '{param}': Fixed input rid {rid} -> virtual {mapped}"
+            )
+    return out
 
 
 def _normalize_variable_inputs(
@@ -3700,14 +3827,15 @@ def _endpoint_kind(fn_name: str) -> "str | None":
 
     Side-effect-free subset of :func:`_endpoint_policy` for callers that
     need classification without the contract checks (Pipeline.endpoints()).
+
+    Delegates to the one shared classifier (``scidb.discover.function_role``)
+    so the prefix strings live in exactly one place; "endpoint" is just the
+    plot/stat subset of the four roles.
     """
-    return (
-        "plot"
-        if fn_name.startswith("plot_")
-        else "stat"
-        if fn_name.startswith("stat_")
-        else None
-    )
+    from .discover import function_role
+
+    role = function_role(fn_name)
+    return role if role in ("plot", "stat") else None
 
 
 def _endpoint_policy(fn_name: str, inputs: dict, finalized: bool, as_table):
@@ -4562,6 +4690,8 @@ def _save_results(
     generates_file: bool = False,
     endpoint_kind: "str | None" = None,
     stamp_param_names: "list | None" = None,
+    glue_virtual: "dict | None" = None,
+    glue_chains: "dict | None" = None,
 ) -> None:
     """Save results from the result table to output variable types using batch operations.
 
@@ -5117,6 +5247,8 @@ def _save_results(
                 function_name=fn_name,
                 where_clause=where_clause,
                 user_id=get_user_id(),
+                glue_virtual=glue_virtual,
+                glue_chains=glue_chains,
             )
             Log.info(
                 f"[provenance] recorded run_id={run_id} for {len(graph_records)} "

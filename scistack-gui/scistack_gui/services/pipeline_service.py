@@ -217,11 +217,22 @@ def get_registry() -> dict:
         logger.info("matlab_functions with name/file mismatch: %s", matlab_mismatched)
     if load_errors:
         logger.warning("get_registry: %d discovery load error(s): %s", len(load_errors), load_errors)
+    all_fns = sorted(set(registry._functions) | set(library_fns))
+    # Role (process / plot / stat / glue) comes from scidb, never re-derived
+    # here or in the frontend: the prefixes already drive execution behaviour
+    # inside scidb, so a second copy of the strings would drift (CLAUDE.md
+    # NOTE 3 — the sidebar's role DROPDOWN is display and lives in the GUI;
+    # what a role IS is scidb's).
+    from scidb import function_role
+
     return {
-        "functions": sorted(set(registry._functions) | set(library_fns)),
+        "functions": all_fns,
         "variables": sorted(BaseVariable._all_subclasses.keys()),
         "matlab_functions": matlab_fns,
         "matlab_functions_mismatched": matlab_mismatched,
+        "function_roles": {
+            name: function_role(name) for name in [*all_fns, *matlab_fns]
+        },
         "load_errors": load_errors,
     }
 

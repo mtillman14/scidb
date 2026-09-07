@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 import logging
 from itertools import product
+from pathlib import Path
 
 from scistack_gui.domain.graph_builder import PARAM_ID_PREFIX as _PARAM_PREFIX
 
@@ -253,7 +254,15 @@ def _inferred_targets(resolved, inferred_constants: dict[str, list]) -> list[dic
     # ``input_types`` rides along as the display/wire view of the variable
     # bindings (run metadata, node params); ``bindings`` is the source of
     # truth every identity and execution path reads.
-    base = {"bindings": resolved.bindings, "input_types": resolved.input_types}
+    #
+    # ``glue_chains`` is a property of the target's INPUT BINDING, never a
+    # step of its own — a glue node has no run button and no run state, and
+    # ``build_backend_pipeline`` must never emit a StepSpec for one (D5).
+    base = {
+        "bindings": resolved.bindings,
+        "input_types": resolved.input_types,
+        "glue_chains": dict(resolved.glue_chains),
+    }
     if not inferred_constants:
         return [
             {**base, "output_type": out, "constants": {}}
@@ -1049,6 +1058,89 @@ def build_run_inputs(target: dict, function_name: str, db=None) -> dict:
     return inputs
 
 
+def build_run_glue(target: dict, function_name: str) -> dict:
+    """The for_each ``glue=`` dict for a derived target, or ``{}``.
+
+    ``{param: [scidb.glue.GlueSpec, ...]}`` — resolved from the target's
+    ``glue_chains`` (glue node names, in application order) against the
+    registry, exactly as ``build_run_inputs`` resolves a PathInput or
+    Parameter binding by declared name.
+
+    Glue is a property of the consuming step's input binding, never a step
+    of its own: this function is called *alongside* ``build_run_inputs`` for
+    one function node, and never for a glue node (which has no run path at
+    all — see ``api/run.py``). A MATLAB glue node crosses as source text so
+    ``+scidb/for_each.m`` can run the body while Python still hashes it into
+    the consumer's identity.
+    """
+    from scidb.glue import GlueSpec
+    from scistack_gui import registry
+
+    chains = target.get("glue_chains") or {}
+    if not chains:
+        return {}
+
+    matlab_names, matlab_source = _matlab_glue_sources()
+
+    out: dict[str, list] = {}
+    for param, names in chains.items():
+        specs = []
+        for name in names:
+            if name in matlab_names:
+                specs.append(
+                    GlueSpec(
+                        name=name,
+                        language="matlab",
+                        source_text=matlab_source(name),
+                    )
+                )
+                continue
+            fn = registry.lookup_function(name)
+            if fn is None:
+                logger.warning(
+                    "[execution] '%s': parameter '%s' is wired through glue "
+                    "'%s', which is no longer discovered in source — the run "
+                    "would silently reshape nothing, so the chain is dropped",
+                    function_name,
+                    param,
+                    name,
+                )
+                specs = []
+                break
+            specs.append(GlueSpec(name=name, fn=fn))
+        if specs:
+            out[param] = specs
+            logger.info(
+                "[execution] '%s': input '%s' passes through glue [%s]",
+                function_name,
+                param,
+                ", ".join(s.name for s in specs),
+            )
+    return out
+
+
+def _matlab_glue_sources():
+    """``(names, source_text_fn)`` for MATLAB-declared glue functions."""
+    try:
+        from scistack_gui import matlab_registry as _mr
+
+        names = set(_mr.get_all_function_names())
+
+        def _source(name: str) -> str:
+            fn = _mr.get_matlab_function(name)
+            path = getattr(fn, "path", None)
+            if path:
+                try:
+                    return Path(path).read_text(encoding="utf-8")
+                except OSError:
+                    pass
+            return name
+
+        return names, _source
+    except Exception:
+        return set(), (lambda name: name)
+
+
 def _scope_function_node_ids(db, pipeline_id: str) -> list[tuple[str, str]]:
     """Distinct (node_id, function_label) pairs whose nodes live in
     ``pipeline_id`` — manual function nodes by pipeline_id, DB-derived
@@ -1260,7 +1352,18 @@ def build_backend_pipeline(db, pipeline_id: str, _built: dict | None = None):
                     exc,
                 )
                 continue
-            for_each(fn, inputs, [output_cls], db=db, pipeline=pipe, **schema_iterables)
+            # Glue rides on the step's INPUT BINDING (glue=), never as a step
+            # of its own — a glue node feeding nothing is simply never
+            # executed, and a glue node on the canvas adds no StepSpec here.
+            for_each(
+                fn,
+                inputs,
+                [output_cls],
+                db=db,
+                pipeline=pipe,
+                glue=build_run_glue(target, fn_label) or None,
+                **schema_iterables,
+            )
 
     for use in pipeline_store.get_pipeline_uses(db, pipeline_id):
         child = build_backend_pipeline(db, use["child_pipeline_id"], _built)

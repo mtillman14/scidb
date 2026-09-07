@@ -7,18 +7,32 @@
  */
 
 import { useEffect, useState } from 'react'
-import { callBackend } from '../../api'
+import { callBackend, isVSCodeMode } from '../../api'
 import VariablePlot from './VariablePlot'
+import PlotStudio from '../PlotStudio/PlotStudio'
 
 interface VariantSummary {
   label: string
   branch_params: Record<string, unknown>
   record_count: number
+  /* Set only when this variable's records came from more than one version of
+     its function's source — see docs/claude/function-version-variants.md. */
+  fn_name: string | null
+  fn_hash: string | null
+  fn_version: string | null
+  is_latest: boolean | null
 }
 
 interface RecordRow {
-  [key: string]: string | null
+  /* Schema key values are strings; the provenance fields below are not, so the
+     index signature has to admit them too. */
+  [key: string]: string | boolean | null
   variant_label: string
+  fn_name: string | null
+  fn_hash: string | null
+  fn_version: string | null
+  is_latest: boolean | null
+  saved_at: string | null
 }
 
 interface VariableRecordsResponse {
@@ -34,6 +48,11 @@ interface Props {
 export default function VariableSettingsPanel({ label }: Props) {
   const [data, setData] = useState<VariableRecordsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [studioOpen, setStudioOpen] = useState(false)
+
+  // The backend sets fn_version only when the type genuinely holds more than
+  // one source version, so this doubles as "is the distinction worth showing".
+  const hasVersions = (data?.variants ?? []).some(v => v.fn_version)
 
   useEffect(() => {
     setData(null)
@@ -55,6 +74,23 @@ export default function VariableSettingsPanel({ label }: Props) {
           <section style={styles.section}>
             <div style={styles.sectionTitle}>Plot</div>
             <VariablePlot label={label} />
+            {/* The quick plot above answers "what does this look like?".
+                The studio is for building a figure worth keeping. */}
+            <button
+              type="button"
+              style={styles.openStudio}
+              onClick={() => {
+                // Own tab in VS Code (the canvas stays visible), modal in a browser.
+                if (isVSCodeMode) {
+                  callBackend('open_plot_panel', { variable: label })
+                    .catch(() => setStudioOpen(true))
+                } else {
+                  setStudioOpen(true)
+                }
+              }}
+            >
+              Open Plot Studio →
+            </button>
           </section>
 
           {/* Variant summary */}
@@ -63,26 +99,55 @@ export default function VariableSettingsPanel({ label }: Props) {
             {data.variants.length === 0 ? (
               <div style={styles.empty}>No records.</div>
             ) : (
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Variant</th>
-                    <th style={{ ...styles.th, textAlign: 'right' }}>Records</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.variants.map((v, i) => (
-                    <tr key={i} style={styles.row}>
-                      <td style={styles.td}>
-                        <span style={styles.pill}>{v.label}</span>
-                      </td>
-                      <td style={{ ...styles.td, textAlign: 'right', color: '#888' }}>
-                        {v.record_count}
-                      </td>
+              <>
+                {hasVersions && (
+                  /* Two records can be identical in every visible way and still
+                     have come from different code. Say so outright — this is the
+                     case that silently plotted the wrong data. */
+                  <div style={styles.versionNote}>
+                    This variable holds records produced by more than one version
+                    of its function's source.
+                  </div>
+                )}
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Variant</th>
+                      {hasVersions && <th style={styles.th}>Code</th>}
+                      <th style={{ ...styles.th, textAlign: 'right' }}>Records</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.variants.map((v, i) => (
+                      <tr key={i} style={styles.row}>
+                        <td style={styles.td}>
+                          <span style={styles.pill}>{v.label}</span>
+                        </td>
+                        {hasVersions && (
+                          <td style={styles.td} title={v.fn_hash ?? undefined}>
+                            {v.fn_version ? (
+                              <span
+                                style={{
+                                  ...styles.pill,
+                                  ...(v.is_latest ? styles.latestPill : styles.stalePill),
+                                }}
+                              >
+                                {v.fn_version}
+                                {v.is_latest ? ' · latest' : ''}
+                              </span>
+                            ) : (
+                              <span style={{ color: '#666' }}>—</span>
+                            )}
+                          </td>
+                        )}
+                        <td style={{ ...styles.td, textAlign: 'right', color: '#888' }}>
+                          {v.record_count}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
             )}
           </section>
 
@@ -124,11 +189,26 @@ export default function VariableSettingsPanel({ label }: Props) {
           )}
         </>
       )}
+
+      {studioOpen && (
+        <PlotStudio variable={label} onClose={() => setStudioOpen(false)} />
+      )}
     </div>
   )
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  openStudio: {
+    marginTop: 6,
+    width: '100%',
+    padding: '4px 8px',
+    background: '#22223a',
+    color: '#b2ded9',
+    border: '1px solid #3a3a5a',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontSize: 11,
+  },
   root: {
     padding: '12px',
     color: '#ccc',
@@ -196,5 +276,24 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontSize: 11,
     color: '#b2ded9',
+  },
+  // Green/amber rather than green/red: an older code version is not an error,
+  // it is history that happens not to be current.
+  latestPill: {
+    background: '#14331f',
+    color: '#7fd39b',
+  },
+  stalePill: {
+    background: '#33290f',
+    color: '#d9b45f',
+  },
+  versionNote: {
+    marginBottom: 6,
+    padding: '5px 7px',
+    borderLeft: '2px solid #d9b45f',
+    background: '#221c0c',
+    color: '#d9c48f',
+    fontSize: 11,
+    lineHeight: 1.4,
   },
 }

@@ -104,9 +104,11 @@ class TestEachOfClass:
         eo = EachOf(1, 2, 3)
         assert eo.alternatives == [1, 2, 3]
 
-    def test_empty_raises(self):
-        with pytest.raises(ValueError, match="at least one"):
-            EachOf()
+    def test_empty_constructs(self):
+        """An empty EachOf is a placeholder (a Parameter with no value yet),
+        legal to build and refused at for_each expansion instead -- see
+        scifor.require_alternatives."""
+        assert EachOf().alternatives == []
 
     def test_repr_constants(self):
         eo = EachOf(0.05, 0.01)

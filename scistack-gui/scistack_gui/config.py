@@ -34,6 +34,11 @@ else:
 
 logger = logging.getLogger(__name__)
 
+# Default location of the glue-node directory, relative to the project root.
+# Sits beside ``src/scistack_entities.toml`` (scidb's DEFAULT_ENTITIES_RELPATH)
+# because both are GUI-owned write targets, not user modules.
+DEFAULT_GLUE_RELPATH = "src/scistack_glue"
+
 
 def _normalize(p) -> Path:
     """Return *p* as an absolute, normalized :class:`Path` without following
@@ -153,6 +158,20 @@ class SciStackConfig:
     outside the designated entities file
     (docs/claude/entity-editability-model.md). Its format is owned by
     ``scidb.entities``."""
+
+    glue_dir: Path | None = None
+    """Directory GUI-created **glue nodes** are written into (default
+    ``src/scistack_glue/``, one ``.py``/``.m`` file per node).
+
+    This **widens the GUI's writable surface** from ``entities_file`` alone to
+    ``entities_file + glue_dir`` — a deliberate amendment to
+    ``docs/claude/entity-editability-model.md``'s confinement rule, not an
+    oversight. The spirit is preserved: still one designated, GUI-owned
+    location; still never a user's hand-written module. A ``glue_`` function
+    found anywhere else is discovered and usable, but read-only.
+
+    The file is persistence, not a place the user navigates to — glue is
+    written and edited through the GUI's code panel (D1a)."""
 
     variable_file: Path | None = None
     """A ``.py`` file of entity declarations, **read-only**.
@@ -373,6 +392,32 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
     else:
         logger.debug("[config] No entities_file configured")
 
+    # --- glue_dir (the second writable surface: one file per glue node) ---
+    logger.info("[config] Processing glue_dir")
+    glue_dir: Path | None = None
+    raw_gd = section.get("glue_dir")
+    if raw_gd is not None:
+        glue_dir = _normalize(project_root / raw_gd)
+        logger.info("[config] glue_dir set to: %s", glue_dir)
+        # Folded into modules so glue nodes are found by ordinary discovery —
+        # they are real functions in real files, and get no new discovery path.
+        # A hand-written config never maintains this, so load_config does.
+        if glue_dir.is_dir():
+            found = [
+                p for p in _walk_source_files(glue_dir, ".py") if not _is_test_file(p)
+            ]
+            new_files = [
+                p for p in found if not any(_same_path(p, m) for m in modules)
+            ]
+            modules.extend(new_files)
+            logger.info(
+                "[config] glue_dir contributed %d module file(s) (%d already covered)",
+                len(new_files),
+                len(found) - len(new_files),
+            )
+    else:
+        logger.debug("[config] No glue_dir configured")
+
     # --- variable_file (legacy .py declarations, read-only) ---
     logger.info("[config] Processing variable_file")
     variable_file: Path | None = None
@@ -535,6 +580,7 @@ def load_config(project_path: Path | None, db_path: Path) -> SciStackConfig:
         project_root=project_root,
         modules=modules,
         entities_file=entities_file,
+        glue_dir=glue_dir,
         variable_file=variable_file,
         packages=packages,
         auto_discover=auto_discover,
@@ -577,6 +623,9 @@ def _log_declaration_surfaces(config) -> None:
     are enumerated explicitly, including the ones nothing configured.
     """
     lines: list[str] = []
+
+    if config.glue_dir is not None:
+        lines.append(f"  writable  {config.glue_dir}  (glue nodes, one file each)")
 
     if config.entities_file is not None:
         lines.append(f"  writable  {config.entities_file}  (TOML, GUI writes here)")
@@ -970,6 +1019,7 @@ def _render_scistack_toml(
     *,
     modules: list,
     entities_file=None,
+    glue_dir=None,
     variable_file=None,
     packages: list,
     auto_discover: bool,
@@ -996,6 +1046,8 @@ def _render_scistack_toml(
     ]
     if entities_file is not None:
         lines.append(f"entities_file = {_toml_str(str(entities_file))}")
+    if glue_dir is not None:
+        lines.append(f"glue_dir = {_toml_str(str(glue_dir))}")
     if variable_file is not None:
         lines.append(f"variable_file = {_toml_str(str(variable_file))}")
     if packages:
@@ -1164,6 +1216,7 @@ def add_path(db_path: Path, new_path: Path) -> Path:
     content = _render_scistack_toml(
         modules=raw_modules,
         entities_file=section.get("entities_file"),
+        glue_dir=section.get("glue_dir"),
         variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
@@ -1220,6 +1273,7 @@ def remove_path(db_path: Path, path_to_remove: Path) -> Path:
     content = _render_scistack_toml(
         modules=raw_modules,
         entities_file=section.get("entities_file"),
+        glue_dir=section.get("glue_dir"),
         variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
@@ -1372,6 +1426,7 @@ def set_entities_file(
     content = _render_scistack_toml(
         modules=raw_modules,
         entities_file=entities_file_for_toml,
+        glue_dir=section.get("glue_dir"),
         variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),
@@ -1389,6 +1444,89 @@ def set_entities_file(
         entities_file_for_toml,
     )
     return entities_file
+
+
+def set_glue_dir(db_path: Path, dir_path: "Path | str | None" = None) -> Path:
+    """Set (or auto-create) the glue-node directory and write the key into
+    scistack.toml. Returns the resolved directory.
+
+    The mirror of :func:`set_entities_file` for the *second* writable surface
+    (see ``SciStackConfig.glue_dir``). Same rules: loose-script projects only,
+    relative paths resolve against :func:`resolve_project_root`, an existing
+    directory is left alone.
+
+    Defaults to ``<project_root>/src/scistack_glue/``. The directory is
+    created empty — a glue node is one file per node, written by the GUI's
+    code panel, and there is no package ``__init__`` to scaffold because
+    discovery walks the directory for ``.py``/``.m`` files rather than
+    importing it as a package.
+    """
+    logger.info("[config] set_glue_dir: db_path=%s, dir_path=%s", db_path, dir_path)
+    project_root = resolve_project_root(None, db_path)
+    toml_path = locate_config_at(project_root)
+    _reject_packaged_project(toml_path)
+
+    is_first_write = toml_path is None
+    if is_first_write:
+        target_path = project_root / "scistack.toml"
+        section: dict = {}
+        logger.info("[config] set_glue_dir: no config found, will create %s", target_path)
+    else:
+        target_path = toml_path
+        section = _load_raw_scistack_section(toml_path)
+
+    raw_modules = list(section.get("modules", []))
+    matlab_section = dict(section.get("matlab", {}))
+    raw_sources = list(matlab_section.get("sources", []))
+
+    if is_first_write:
+        for seed in _first_write_seed_roots(db_path, project_root):
+            raw_modules.append(seed)
+            raw_sources.append(seed)
+            logger.info("[config] set_glue_dir: seeding new scistack.toml with %s", seed)
+
+    if dir_path is not None:
+        raw_target = Path(dir_path)
+        glue_dir = (
+            _normalize(raw_target)
+            if raw_target.is_absolute()
+            else _normalize(project_root / raw_target)
+        )
+    else:
+        glue_dir = _normalize(project_root / DEFAULT_GLUE_RELPATH)
+
+    if not glue_dir.exists():
+        glue_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("[config] set_glue_dir: created directory %s", glue_dir)
+    else:
+        logger.info("[config] set_glue_dir: %s already exists", glue_dir)
+
+    try:
+        glue_dir_for_toml: "Path | str" = glue_dir.relative_to(project_root)
+    except ValueError:
+        glue_dir_for_toml = glue_dir
+
+    content = _render_scistack_toml(
+        modules=raw_modules,
+        entities_file=section.get("entities_file"),
+        glue_dir=glue_dir_for_toml,
+        variable_file=section.get("variable_file"),
+        packages=list(section.get("packages", [])),
+        auto_discover=section.get("auto_discover", True),
+        matlab_functions=list(matlab_section.get("functions", [])),
+        matlab_variables=list(matlab_section.get("variables", [])),
+        matlab_sources=raw_sources,
+        matlab_variable_dir=matlab_section.get("variable_dir"),
+        matlab_entities_file=matlab_section.get("entities_file"),
+    )
+    target_path.write_text(content)
+    logger.info(
+        "[config] set_glue_dir: wrote %s (glue_dir=%s, toml value=%s)",
+        target_path,
+        glue_dir,
+        glue_dir_for_toml,
+    )
+    return glue_dir
 
 
 def clear_entities_file(db_path: Path) -> Path:
@@ -1417,6 +1555,7 @@ def clear_entities_file(db_path: Path) -> Path:
     content = _render_scistack_toml(
         modules=list(section.get("modules", [])),
         entities_file=None,
+        glue_dir=section.get("glue_dir"),
         variable_file=section.get("variable_file"),
         packages=list(section.get("packages", [])),
         auto_discover=section.get("auto_discover", True),

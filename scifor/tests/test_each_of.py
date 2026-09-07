@@ -19,9 +19,36 @@ def make_df(subjects=(1, 2)):
     return pd.DataFrame({"subject": list(subjects), "value": [float(s) for s in subjects]})
 
 
-def test_each_of_requires_at_least_one_alternative():
-    with pytest.raises(ValueError, match="at least one alternative"):
-        EachOf()
+def test_empty_each_of_constructs():
+    """Construction is legal -- it is what a scidb.Parameter with no value
+    yet is, and MATLAB cannot conditionally skip the superclass call that
+    would otherwise have to refuse it. Expansion is where it is refused."""
+    assert EachOf().alternatives == []
+
+
+def test_expanding_an_empty_axis_raises_and_names_the_input():
+    """The failure this replaces was SILENT: the cartesian product over a
+    zero-length axis is empty, so for_each iterated zero times, wrote no
+    records and returned as though it had worked."""
+    set_schema(["subject"])
+    with pytest.raises(ValueError, match="no alternatives") as excinfo:
+        for_each(
+            lambda value: value,
+            inputs={"value": EachOf()},
+            subject=[1, 2],
+        )
+    assert "'value'" in str(excinfo.value)
+
+
+def test_expanding_an_empty_where_axis_raises():
+    set_schema(["subject"])
+    with pytest.raises(ValueError, match="where="):
+        for_each(
+            lambda value: value,
+            inputs={"value": make_df((1, 2))},
+            where=EachOf(),
+            subject=[1, 2],
+        )
 
 
 def test_single_alternative_behaves_like_passing_it_directly():

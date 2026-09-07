@@ -109,9 +109,11 @@ Launch:
 scistack-gui experiment.duckdb --module pipeline.py
 ```
 
-Or in VS Code, select "Select a single pipeline module (.py)".
-
 Everything you want the GUI to see must be defined in (or imported by) that one `.py` file.
+
+Single-file mode is CLI-only. The VS Code extension has no equivalent: it
+always opens the workspace folder as the project and auto-discovers code
+from it (see §4).
 
 ---
 
@@ -135,17 +137,26 @@ this section.
 4. Type **schema keys**, comma-separated, ordered top-down (e.g.
    `subject, session, trial`). This is the schema definition step -- it's
    validated to require at least one key before you can continue.
-5. Choose how the GUI should discover your pipeline code:
-   - **"Select a project (pyproject.toml)"** -- if the folder has no
-     `pyproject.toml`/`scistack.toml`, you're offered to auto-generate a
-     minimal `scistack.toml` (commented-out `modules`/`packages`/
-     `entities_file`/MATLAB options) which opens in the editor for you to
-     fill in.
-   - **"Select a single pipeline module (.py)"** -- single-file mode.
-   - **"No module"** -- create the database and schema now, wire up code
-     later. The server starts with an empty registry; you can still browse
-     the (empty) DAG and, in project mode with an `entities_file` configured,
-     create Variables from the GUI itself.
+That's the whole wizard. **There is no step asking how SciStack should
+discover your pipeline code.** There used to be one -- a "How should SciStack
+discover your pipeline code?" QuickPick offering project / single-module /
+no-module -- and it was removed, along with its `projectInit.ts` "create a
+scistack.toml?" prompt, because every branch is now handled automatically:
+
+- The project is the **workspace folder you have open**, passed as
+  `--project-root` and resolved by `config.resolve_project_root` (rule 2).
+- Code under it is discovered by `bootstrap.open_or_create_project`'s
+  auto-discovery branch: a `pyproject.toml`/`scistack.toml` at the root if
+  there is one, otherwise a folder scan for `.py`/`.m` files.
+- A missing config file is created server-side by
+  `services.project_init_service.ensure_project_files`, for the browser
+  frontend as well as the extension.
+
+The one case the picker covered that nothing else does is having **no folder
+open in the VS Code window** -- discovery then has no project root to work
+from. `extension.ts`'s `warnIfNoWorkspaceFolder` says so explicitly (Output
+channel every start, toast once per session) rather than leaving an
+unexplained empty canvas.
 
 ### What happens under the hood
 
@@ -153,10 +164,13 @@ The extension spawns the same JSON-RPC backend the rest of the GUI talks to,
 passing the schema keys on the command line:
 
 ```
-python -m scistack_gui.server --db <path> --schema-keys "subject,session,trial" [--project <path> | --module <path>]
+python -m scistack_gui.server --db <path> --schema-keys "subject,session,trial" [--project-root <workspace folder>]
 ```
 
-(`extension/src/pythonProcess.ts`, `PythonProcess` constructor.) Because the
+(argv built by `extension/src/serverArgs.ts`'s `buildServerArgs`, spawned by
+`extension/src/pythonProcess.ts`. `--module`/`--project` remain CLI-only
+flags; the extension never passes them, and `serverArgs.test.ts` locks that
+in.) Because the
 `.duckdb` file doesn't exist yet, `scistack_gui/server.py`'s `main()` treats
 this as a creation request: it calls `create_db(db_path, schema_keys)`
 (`scistack_gui/db.py`), which calls `scidb.configure_database(db_path,
@@ -794,10 +808,12 @@ scistack-gui my_study.duckdb
 ### From VS Code
 
 1. Install the SciStack VS Code extension.
-2. Open a folder containing your project.
-3. Use the command palette or the extension's UI to select either:
-   - "Select a project (pyproject.toml)" -- project mode
-   - "Select a single pipeline module (.py)" -- single-file mode
+2. **Open the folder containing your project** -- this is what the extension
+   treats as the project root, and it is the only thing that decides which
+   code gets discovered.
+3. Run **`SciStack: Open Pipeline`** from the command palette and open (or
+   create) the `.duckdb` file. Code discovery is automatic; there is no
+   project-vs-module prompt. See §4.
 
 ---
 

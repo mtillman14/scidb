@@ -1,0 +1,165 @@
+"""
+scistackplot — spec-driven plotting for long-format scientific data.
+
+Standalone: point it at a CSV or a DataFrame and it works, with no database
+and no configuration. Compatible: the object it is built around, ``PlotSpec``,
+is exactly what the body of a scidb ``plot_`` endpoint needs, so an interactive
+exploration can be frozen into a lineage-tracked pipeline step.
+
+Typical standalone use::
+
+    import pandas as pd
+    from scistackplot import DataFrameSource, PlotSpec, Role, PlotKind, render
+
+    source = DataFrameSource(pd.read_csv("gait.csv"))
+    spec = PlotSpec(
+        measures=["StepLength"],
+        roles={"session": Role.X, "limb": Role.COLOR, "subject": Role.FREE},
+        kind=PlotKind.BOX,
+    )
+    figure = render(source, spec)
+
+Typical pipeline use (as a scidb endpoint body)::
+
+    def plot_step_length(df, filename):
+        return render(df, spec)     # framework saves + closes the Figure
+
+See ``docs/claude/plotting-library-design.md`` for the architecture.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .capability import available_plots, capabilities, default_plot, why_unavailable
+from .codegen import (
+    default_function_name,
+    extract_spec,
+    generate_plot_function,
+    generate_script,
+)
+from .reduce import MAX_TRANSPORT_POINTS, resolve
+from .render import render_matplotlib, render_plotly
+from .resolved import Encoding, Labels, Panel, ResolvedPlot
+from .roles import RoleError, complete_roles, default_roles, default_spec, validate
+from .shape import Shape, classify_column, classify_value, is_plottable
+from .sources import BaseSource, CsvSource, DataFrameSource, DataSource
+from .spec import (
+    Aggregation,
+    ErrorBand,
+    FacetOptions,
+    Filter,
+    MatchOp,
+    Matcher,
+    PlotKind,
+    PlotSpec,
+    Role,
+    Statistic,
+    StyleOptions,
+    VariantPolicy,
+)
+from .table import FactorInfo, LongTable, MeasureInfo, natural_sort_key
+
+__all__ = [
+    # spec
+    "PlotSpec",
+    "Role",
+    "PlotKind",
+    "Statistic",
+    "ErrorBand",
+    "Aggregation",
+    "FacetOptions",
+    "Matcher",
+    "MatchOp",
+    "StyleOptions",
+    "Filter",
+    "VariantPolicy",
+    # data
+    "LongTable",
+    "FactorInfo",
+    "MeasureInfo",
+    "Shape",
+    "classify_value",
+    "classify_column",
+    "is_plottable",
+    "natural_sort_key",
+    # sources
+    "DataSource",
+    "BaseSource",
+    "CsvSource",
+    "DataFrameSource",
+    # policy
+    "available_plots",
+    "default_plot",
+    "why_unavailable",
+    "capabilities",
+    "default_roles",
+    "default_spec",
+    "complete_roles",
+    "validate",
+    "RoleError",
+    # resolution + rendering
+    "resolve",
+    "ResolvedPlot",
+    "Panel",
+    "Encoding",
+    "Labels",
+    "render",
+    "render_all",
+    "render_matplotlib",
+    "render_plotly",
+    "MAX_TRANSPORT_POINTS",
+    # export
+    "generate_plot_function",
+    "generate_script",
+    "default_function_name",
+    "extract_spec",
+]
+
+__version__ = "0.1.0"
+
+
+def as_table(data: Any) -> LongTable:
+    """
+    Coerce whatever the caller has into a :class:`LongTable`.
+
+    Accepts a LongTable, a DataSource, or a plain DataFrame — the last being
+    what a scidb ``plot_`` endpoint receives, so ``render(df, spec)`` just works
+    inside a pipeline step.
+    """
+    if isinstance(data, LongTable):
+        return data
+    if hasattr(data, "describe") and hasattr(data, "get_table"):  # DataSource
+        # A scidb source needs to be told which variable to load; a flat source
+        # already holds one table. default_measure() answers both.
+        measure = getattr(data, "default_measure", lambda: None)()
+        return data.get_table([measure] if measure else [])
+    return LongTable.from_frame(data)
+
+
+def render(data: Any, spec: PlotSpec, *, backend: str = "matplotlib"):
+    """
+    Resolve and render a single figure.
+
+    Raises if the spec fans out into several figures — in a pipeline that
+    fan-out belongs to ``for_each``'s iteration keys, not to one endpoint call,
+    and silently returning only the first figure would hide the mistake.
+    Use :func:`render_all` when you deliberately want the whole set.
+    """
+    figures = render_all(data, spec, backend=backend)
+    if len(figures) > 1:
+        raise ValueError(
+            f"This spec produces {len(figures)} figures (iterating over "
+            f"{', '.join(spec.iterate_factors)}). Inside a pipeline, pass those "
+            f"as for_each iteration keys instead of Role.ITERATE; outside one, "
+            f"call render_all()."
+        )
+    return figures[0]
+
+
+def render_all(data: Any, spec: PlotSpec, *, backend: str = "matplotlib") -> list:
+    """Resolve and render every figure in the fan-out."""
+    table = as_table(data)
+    resolved = resolve(spec, table)
+    renderer = render_plotly if backend == "plotly" else render_matplotlib
+    return [renderer(item) for item in resolved]

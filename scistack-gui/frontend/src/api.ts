@@ -93,6 +93,7 @@ const COALESCABLE_METHODS = new Set([
   'get_hidden_edges',
   'get_hidden_pipelines',
   'get_variables_list',
+  'list_glue',
   'list_pipelines',
   'list_hypotheses',
 ]);
@@ -171,6 +172,15 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     set_parameter_group_checked: { path: (p) => `/api/parameters/${encodeURIComponent(p.name as string)}/group_checked`, method: 'POST', body: true },
     list_hidden_parameter_values: { path: '/api/parameters/hidden_values' },
     create_parameter:       { path: '/api/parameters', method: 'POST', body: true },
+    // Glue nodes (docs/claude/free-code-glue-nodes.md). There is deliberately
+    // NO run endpoint: a glue node executes only as part of the run of
+    // whichever function consumes it.
+    list_glue:              { path: '/api/glue' },
+    get_glue:               { path: (p) => `/api/glue/${encodeURIComponent(p.name as string)}` },
+    get_glue_columns:       { path: (p) => `/api/glue/${encodeURIComponent(p.name as string)}/columns?variable_type=${encodeURIComponent((p.variable_type as string) ?? '')}` },
+    create_glue:            { path: '/api/glue', method: 'POST', body: true },
+    save_glue:              { path: '/api/glue', method: 'PUT', body: true },
+    delete_glue:            { path: (p) => `/api/glue/${encodeURIComponent(p.name as string)}`, method: 'DELETE' },
     // Entity edits write straight to source (docs/claude/entity-editability-model.md).
     // Params match the JSON-RPC handlers field-for-field so callBackend behaves
     // identically over both transports — a mismatch here is invisible in the
@@ -224,6 +234,15 @@ async function callFetch(method: string, params: Record<string, unknown>): Promi
     // Endpoint presentation (plot_/stat_ artifacts, report)
     get_endpoint_artifacts: { path: (p) => `/api/endpoints/${encodeURIComponent(p.fn_name as string)}/artifacts` },
     write_report:           { path: '/api/report', method: 'POST' },
+    // Plot Studio (docs/claude/plotting-library-design.md). All POST + body:
+    // a spec is a nested object, not something to squeeze into a query string.
+    plot_describe:          { path: '/api/plot/describe', method: 'POST', body: true },
+    plot_capabilities:      { path: '/api/plot/capabilities', method: 'POST', body: true },
+    plot_resolve:           { path: '/api/plot/resolve', method: 'POST', body: true },
+    plot_export:            { path: '/api/plot/export', method: 'POST', body: true },
+    plot_add_to_pipeline:   { path: '/api/plot/add-to-pipeline', method: 'POST', body: true },
+    plot_save_figure:       { path: '/api/plot/save', method: 'POST', body: true },
+    plot_invalidate:        { path: '/api/plot/invalidate', method: 'POST' },
   };
 
   const route = routes[method];

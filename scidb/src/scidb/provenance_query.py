@@ -16,9 +16,19 @@ import ast
 import logging
 
 from .database import _from_schema_str
-from .provenance import CONSTANT_TYPE, PATHINPUT_TYPE, SAVE_FUNCTION_NAME
+from .provenance import (
+    CONSTANT_TYPE,
+    GLUE_TYPE,
+    PATHINPUT_TYPE,
+    SAVE_FUNCTION_NAME,
+)
 
 logger = logging.getLogger(__name__)
+
+# How a glue chain's node names are joined into ``_invocation.function_name``
+# (``glue_a > glue_b``). One separator, defined once, so the writer in
+# provenance_save and the reader below cannot drift.
+GLUE_NAME_SEPARATOR = " > "
 
 
 def _safe_literal(value_repr):
@@ -266,12 +276,337 @@ def branch_params_batch(duck, record_ids, max_depth: int = 20) -> dict:
     return out
 
 
+def saved_at_batch(duck, record_ids) -> dict:
+    """``{record_id: latest_save_timestamp}`` from ``_record_save``.
+
+    ``_record_save`` is the only per-save recency source: ``_record`` is written
+    ``ON CONFLICT DO NOTHING``, so its ``created_at`` freezes at first save. A
+    record can have several save events; the newest is its recency. Records with
+    no save row are absent from the map.
+    """
+    ids = list(dict.fromkeys(record_ids))
+    if not ids:
+        return {}
+    rows = _chunked_in(
+        duck,
+        "SELECT record_id, MAX(timestamp) FROM _record_save "
+        "WHERE record_id IN ({ph}) GROUP BY record_id",
+        ids,
+    )
+    return {rid: ts for rid, ts in rows}
+
+
+def producing_function_versions_batch(duck, record_ids) -> dict:
+    """``{record_id: {"fn_name", "fn_hash", "saved_at"}}`` for records produced by
+    a **real** function call.
+
+    Absent from the map (i.e. "has no function version") are:
+
+    - raw/manual records — no producing invocation at all;
+    - records whose producing invocation is the synthetic ``__save__`` anchor for
+      direct-save kwargs (``function_hash`` is ``""`` there — see
+      ``provenance.SAVE_FUNCTION_NAME``, which every function-enumerating query
+      is required to exclude).
+
+    Both read as "(raw)" downstream, which is what they are.
+    """
+    ids = list(dict.fromkeys(record_ids))
+    if not ids:
+        return {}
+    inv_map = producing_invocation_batch(duck, ids)
+    saved = saved_at_batch(duck, ids)
+    out: dict = {}
+    for rid in ids:
+        inv = inv_map.get(rid)
+        if inv is None:
+            continue
+        _inv_id, fn_name, fn_hash = inv
+        if fn_name == SAVE_FUNCTION_NAME or not fn_hash:
+            continue
+        out[rid] = {
+            "fn_name": fn_name,
+            "fn_hash": fn_hash,
+            "saved_at": saved.get(rid),
+        }
+    return out
+
+
+def _order_versions(records, versions) -> tuple[dict, list, str | None]:
+    """Group ``records`` by producing ``function_hash`` and order the versions →
+    ``(by_hash, ordered_hashes, latest_hash)``.
+
+    Called at two different scopes on purpose: over a whole variable type (to
+    number the ordinals coherently) and over one schema location (to resolve
+    which version is latest *there*). See :func:`variant_identity_batch`.
+
+    Ordinals order by each version's **earliest** save so they stay stable as new
+    versions appear (a third version appends ``v3`` rather than renumbering the
+    first two under the user). The **latest** version is instead the one holding
+    the most recently saved record — normally the same as last-by-ordinal, but
+    deliberately not when an older version is re-run on purpose: whatever was
+    written most recently is what "latest" should mean.
+
+    ``fn_hash`` breaks ties deterministically when two saves share a timestamp
+    (``_record_save.timestamp`` is a string with finite resolution, and a batch
+    save writes many rows within it).
+    """
+    by_hash: dict = {}
+    for rid in records:
+        info = versions.get(rid)
+        if info is not None:
+            by_hash.setdefault(info["fn_hash"], []).append(rid)
+    if not by_hash:
+        return {}, [], None
+
+    def _saved_at(rid: str) -> str:
+        return (versions.get(rid) or {}).get("saved_at") or ""
+
+    latest_hash = max(
+        by_hash, key=lambda h: (max(_saved_at(r) for r in by_hash[h]), h)
+    )
+    ordered = sorted(by_hash, key=lambda h: (min(_saved_at(r) for r in by_hash[h]), h))
+    return by_hash, ordered, latest_hash
+
+
+def variant_identity_batch(duck, record_ids, max_depth: int = 20) -> dict:
+    """What distinguishes each record from the others **at its own location** —
+    ``{record_id: {branch_params, fn_name, fn_hash, fn_version, is_latest,
+    saved_at}}``.
+
+    This is the *display* discriminator, and it is deliberately NOT the same
+    thing as the supersession keys used by ``load`` and node state
+    (``_producing_variant_key``, ``database._find_record``'s latest-collapse).
+    Those answer "does this new record replace that old one?" — and a re-run
+    after a function-body edit correctly answers *yes*, which is why downstream
+    consumers see only the newest. This answers the different question the UI
+    has to ask: "these records coexist on screen — what do I call each one?"
+    Two records that the supersession key calls identical still need distinct
+    names, or the UI shows the same label twice and a plot overplots two
+    function versions as if they were replicates. See
+    ``docs/claude/function-version-variants.md``.
+
+    Fields:
+
+    ``branch_params``
+        Exactly :func:`branch_params_batch` — upstream constants. Unchanged.
+    ``fn_name`` / ``fn_hash``
+        The producing function and the hash of the source that produced it, or
+        ``None`` for raw records (see
+        :func:`producing_function_versions_batch`).
+    ``fn_version``
+        A stable ordinal — ``"v1"``, ``"v2"``, … — over the distinct producing
+        ``function_hash`` values of this record's **variable type**. **``None``
+        unless the type actually holds more than one version**, so the ordinary
+        single-version case keeps today's clean labels and nothing existing
+        changes appearance. Ordered by each version's *earliest* save, so a new
+        version appends ``v3`` rather than renumbering ``v1``/``v2`` under the
+        user.
+    ``is_latest``
+        Whether this record's version is the most recently written one **at its
+        own schema location**. A property of the version, not the record: two
+        records of the same version (a plain re-save) are both latest, which is
+        what pinning wants — pin a version, keep all of its rows. ``None`` for
+        raw records.
+    ``saved_at``
+        The record's newest ``_record_save`` timestamp.
+
+    **The two scopes differ on purpose.** Ordinals are numbered per *type*
+    because Plot Studio turns them into one factor column spanning every
+    location at once, and per-location numbering would let a single hash be
+    ``v1`` at one subject and ``v2`` at another — an incoherent column and a
+    wrong figure. ``is_latest`` is resolved per *location* because pinning "the
+    latest" must keep each location's own newest version, or a subject never
+    re-run under the newest code silently disappears from the figure.
+
+    Both are computed over **every** non-excluded record of the relevant type,
+    not just over ``record_ids``, so a caller asking about a subset gets the same
+    labels as one asking about everything.
+    """
+    seeds = list(dict.fromkeys(record_ids))
+    if not seeds:
+        return {}
+
+    # --- locations of the requested records ---
+    loc_rows = _chunked_in(
+        duck,
+        "SELECT record_id, type, schema_id FROM _record WHERE record_id IN ({ph})",
+        seeds,
+    )
+    loc_of: dict = {rid: (vtype, sid) for rid, vtype, sid in loc_rows}
+    locations = set(loc_of.values())
+
+    # --- every non-excluded record sharing those locations ---
+    # Queried by type (few) then filtered to the requested locations in Python;
+    # a pairwise (type, schema_id) IN-list is awkward to chunk and buys nothing,
+    # since the display callers already load a whole type's records anyway.
+    types = sorted({vtype for vtype, _sid in locations})
+    peer_rows = _chunked_in(
+        duck,
+        "SELECT record_id, type, schema_id FROM _record "
+        "WHERE type IN ({ph}) AND COALESCE(excluded, FALSE) = FALSE",
+        types,
+    )
+    peers: dict = {}  # requested location -> [record_id, ...]
+    by_type: dict = {}  # type -> [record_id, ...] (every location of that type)
+    for rid, vtype, sid in peer_rows:
+        by_type.setdefault(vtype, []).append(rid)
+        loc = (vtype, sid)
+        if loc in locations:
+            peers.setdefault(loc, []).append(rid)
+    # A requested record that is itself excluded won't come back above; keep it
+    # so the caller always gets an entry for what it asked about.
+    for rid, loc in loc_of.items():
+        bucket = peers.setdefault(loc, [])
+        if rid not in bucket:
+            bucket.append(rid)
+
+    all_rids = list(
+        dict.fromkeys(
+            [rid for bucket in by_type.values() for rid in bucket]
+            + [rid for bucket in peers.values() for rid in bucket]
+        )
+    )
+    versions = producing_function_versions_batch(duck, all_rids)
+
+    # --- version ordinals: numbered once per TYPE ---
+    # Deliberately type-wide rather than per schema location. The ordinal is a
+    # LABEL, and Plot Studio turns it into a factor column spanning every
+    # location in one frame; numbering per location would let one hash be "v1"
+    # at subject=1 and "v2" at subject=2, making that column incoherent and the
+    # resulting figure wrong. Computed over every non-excluded record of the
+    # type — not just the requested ones — so a subset request labels the same
+    # way a full one does.
+    fn_version_of: dict = {}  # record_id -> "vN"
+    ambiguous: list = []  # types holding more than one function version
+    for vtype, bucket in by_type.items():
+        by_hash, ordered, _latest = _order_versions(bucket, versions)
+        if len(ordered) < 2:
+            continue
+        ambiguous.append((vtype, ordered))
+        for ordinal, fn_hash in enumerate(ordered, start=1):
+            for rid in by_hash[fn_hash]:
+                fn_version_of[rid] = f"v{ordinal}"
+
+    # --- is_latest: resolved per LOCATION ---
+    # Deliberately NOT type-wide, unlike the ordinals above. Pinning "the
+    # latest" has to keep each location's own newest version, or a subject that
+    # was never re-run under the newest code silently vanishes from the figure.
+    is_latest_of: dict = {}  # record_id -> bool
+    for bucket in peers.values():
+        by_hash, _ordered, latest_hash = _order_versions(bucket, versions)
+        for fn_hash, rids in by_hash.items():
+            for rid in rids:
+                is_latest_of[rid] = fn_hash == latest_hash
+
+    # One summary line per call, not one per type: this runs on every
+    # variable-panel open. The detail that matters is which types became
+    # ambiguous and what produced them, so a sample is spelled out.
+    if ambiguous:
+        sample = "; ".join(
+            "{} [{}]".format(
+                vtype,
+                " ".join(f"v{i}={h[:12]}" for i, h in enumerate(ordered, start=1)),
+            )
+            for vtype, ordered in ambiguous[:3]
+        )
+        logger.info(
+            "variant_identity: %d type(s) hold >1 function version — their "
+            "records are distinguishable only by the code that produced them: "
+            "%s%s",
+            len(ambiguous),
+            sample,
+            f" (+{len(ambiguous) - 3} more)" if len(ambiguous) > 3 else "",
+        )
+
+    # --- assemble, for the requested records only ---
+    # saved_at comes from its own lookup, not from `versions`: a raw record has
+    # no function version but still has a save time, and the UI sorts on it.
+    # `all_rids` is a superset of `seeds`, so one lookup serves both.
+    bp_map = branch_params_batch(duck, seeds, max_depth)
+    saved = saved_at_batch(duck, all_rids)
+    out: dict = {}
+    for rid in seeds:
+        info = versions.get(rid) or {}
+        out[rid] = {
+            "branch_params": bp_map.get(rid, {}),
+            "fn_name": info.get("fn_name"),
+            "fn_hash": info.get("fn_hash"),
+            "fn_version": fn_version_of.get(rid),
+            "is_latest": is_latest_of.get(rid),
+            "saved_at": saved.get(rid),
+        }
+    return out
+
+
+def glue_source(duck, virtual_record_id: str) -> dict | None:
+    """Resolve a virtual glue record to what it reshapes.
+
+    Returns ``{record_id, variable_type, chain_names, chain_hash}`` — the real
+    upstream record, its type, the glue node names in application order and the
+    chain's content hash — or ``None`` if ``virtual_record_id`` is not a glue
+    record (or its producing invocation is missing).
+
+    This is the one place the extra hop is *undone*. Read paths that care about
+    which variable *type* feeds a parameter (config variants, pipeline
+    structure, expected-invocation prediction) go through here, so glue never
+    leaks into them as a pseudo variable type named ``__glue__``.
+    """
+    rows = duck._fetchall(
+        "SELECT ii.input_record_id, inv.function_name, inv.function_hash, r.type "
+        "FROM _invocation_output io "
+        "JOIN _invocation inv ON inv.invocation_id = io.invocation_id "
+        "JOIN _invocation_input ii ON ii.invocation_id = io.invocation_id "
+        "LEFT JOIN _record r ON r.record_id = ii.input_record_id "
+        "WHERE io.output_record_id = ? "
+        "ORDER BY ii.input_record_id LIMIT 1",
+        [virtual_record_id],
+    )
+    if not rows:
+        return None
+    src_rid, fn_name, fn_hash, src_type = rows[0]
+    return {
+        "record_id": src_rid,
+        "variable_type": src_type,
+        "chain_names": (fn_name or "").split(GLUE_NAME_SEPARATOR),
+        "chain_hash": fn_hash or "",
+    }
+
+
+def glue_invocation_ids(duck) -> set:
+    """Every invocation that produced a virtual glue record.
+
+    A glue hop is **not a pipeline step** (D5): it has no run button, no node
+    state and no place in the compiled pipeline. Queries that enumerate
+    pipeline steps or function variants must skip these, the same way they
+    already skip synthetic ``__save__`` invocations. Identified by their output
+    record's type rather than by ``function_name``, which is the user's glue
+    name and could collide with a real function.
+    """
+    return {
+        row[0]
+        for row in duck._fetchall(
+            "SELECT DISTINCT io.invocation_id FROM _invocation_output io "
+            "JOIN _record r ON r.record_id = io.output_record_id "
+            "WHERE r.type = ?",
+            [GLUE_TYPE],
+        )
+    }
+
+
 def invocation_inputs(duck, invocation_id: str):
     """Split an invocation's input edges into variable inputs and constants.
 
     Returns ``(var_inputs, constants)`` where ``var_inputs`` is a list of
     ``{record_id, param_name, variable_type}`` (sorted by param) and
     ``constants`` is ``{param_name: typed_value}``.
+
+    A param fed through a glue chain has a **virtual glue record** on its edge
+    (see ``docs/claude/free-code-glue-nodes.md`` §2). ``record_id`` stays the
+    virtual rid — that is the real edge, and the one traversals must follow —
+    but ``variable_type`` reports the *source* variable's type, plus
+    ``glue_chain`` / ``glue_source_record_id``. Callers that ask "which type
+    feeds this param?" therefore keep working unchanged, and callers that care
+    about the glue can see it.
     """
     rows = duck._fetchall(
         "SELECT ii.param_name, ii.input_record_id, r.type, c.value_repr "
@@ -288,6 +623,18 @@ def invocation_inputs(duck, invocation_id: str):
             continue  # PathInput spec — not a variable nor a sweep constant
         if rtype == CONSTANT_TYPE:
             constants[param_name] = _safe_literal(value_repr)
+        elif rtype == GLUE_TYPE:
+            src = glue_source(duck, in_rid)
+            var_inputs.append(
+                {
+                    "record_id": in_rid,
+                    "param_name": param_name,
+                    "variable_type": (src or {}).get("variable_type") or GLUE_TYPE,
+                    "glue_chain": (src or {}).get("chain_names") or [],
+                    "glue_chain_hash": (src or {}).get("chain_hash") or "",
+                    "glue_source_record_id": (src or {}).get("record_id"),
+                }
+            )
         else:
             var_inputs.append(
                 {
@@ -554,7 +901,10 @@ def pipeline_structure(duck) -> list[dict]:
     )
     seen: set = set()
     results: list = []
+    glue_invs = glue_invocation_ids(duck)
     for inv_id, fn_name, fn_hash in inv_rows:
+        if inv_id in glue_invs:
+            continue  # a glue hop is not a pipeline step (D5)
         out_types = [
             r[0]
             for r in duck._fetchall(
@@ -564,17 +914,11 @@ def pipeline_structure(duck) -> list[dict]:
                 [inv_id],
             )
         ]
-        in_types = tuple(
-            sorted(
-                r[0]
-                for r in duck._fetchall(
-                    "SELECT r.type FROM _invocation_input ii "
-                    "JOIN _record r ON r.record_id = ii.input_record_id "
-                    "WHERE ii.invocation_id = ? AND r.type NOT IN (?, ?)",
-                    [inv_id, CONSTANT_TYPE, PATHINPUT_TYPE],
-                )
-            )
-        )
+        # Via invocation_inputs (not a raw type join) so a param fed through a
+        # glue chain reports its SOURCE variable type — the structure describes
+        # how variable types flow, and glue is not a variable type.
+        _var_inputs, _consts = invocation_inputs(duck, inv_id)
+        in_types = tuple(sorted(i["variable_type"] for i in _var_inputs))
         for out_type in out_types:
             key = (fn_name, fn_hash, out_type, in_types)
             if key in seen:
@@ -680,7 +1024,10 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
         [fn_name],
     )
     configs: dict = {}
+    glue_invs = glue_invocation_ids(duck)
     for inv_id, as_table, distribute in inv_rows:
+        if inv_id in glue_invs:
+            continue  # a glue hop is not a pipeline step (D5)
         var_inputs, constants = invocation_inputs(duck, inv_id)
         # selectors per param from the edges
         sel_rows = duck._fetchall(
@@ -690,6 +1037,14 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
         )
         selectors = dict(sel_rows)
         input_types = {i["param_name"]: i["variable_type"] for i in var_inputs}
+        # Glue chains fed into this param, recovered from the virtual record's
+        # producing invocation. Part of the config key: two call sites differing
+        # only by their glue are different wirings.
+        glue_chains = {
+            i["param_name"]: (i["glue_chain_hash"], tuple(i["glue_chain"]))
+            for i in var_inputs
+            if i.get("glue_chain")
+        }
         path_inputs = invocation_path_inputs(duck, inv_id)
         at = sorted(as_table) if as_table else []
         key = (
@@ -697,6 +1052,7 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
             tuple(sorted(selectors.items())),
             tuple(sorted((k, repr(v)) for k, v in constants.items())),
             tuple(sorted(path_inputs.items())),
+            tuple(sorted(glue_chains.items())),
             tuple(at),
             bool(distribute),
         )
@@ -706,6 +1062,7 @@ def function_variant_configs(duck, fn_name: str) -> list[dict]:
                 "selectors": selectors,
                 "constants": constants,
                 "path_inputs": path_inputs,
+                "glue_chains": glue_chains,
                 "as_table": at,
                 "distribute": bool(distribute),
                 "invocation_ids": set(),
@@ -734,6 +1091,13 @@ def config_call_id(fn_name: str, cfg: dict) -> str:
         vk["__distribute"] = True
     if cfg.get("as_table"):
         vk["__as_table"] = cfg["as_table"]
+    # Glue NAMES (not hashes) are call-site identity — the same split the
+    # forward ForEachConfig.to_version_keys makes, so this reverse path keeps
+    # matching to_call_id for a glued call.
+    if cfg.get("glue_chains"):
+        vk["__glue"] = {
+            param: list(names) for param, (_h, names) in cfg["glue_chains"].items()
+        }
     return call_id_from_version_keys(vk)
 
 
@@ -762,14 +1126,22 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
 
     groups: dict = {}  # group_key -> info dict
     group_records: dict = {}  # group_key -> set(output_record_id)
+    glue_invs = glue_invocation_ids(duck)
 
     for inv_id, fn_name, as_table, distribute in inv_rows:
+        if inv_id in glue_invs:
+            continue  # a glue hop is not a pipeline step (D5)
         var_inputs, constants = invocation_inputs(duck, inv_id)
         input_types = {i["param_name"]: i["variable_type"] for i in var_inputs}
         # PathInput specs ride in input_types as their to_key() JSON string —
         # preserves the legacy contract (get_aggregated_variants parses them) and
         # call_id parity (forward to_call_id includes them in __inputs).
         input_types.update(invocation_path_inputs(duck, inv_id))
+        glue_names = {
+            i["param_name"]: list(i["glue_chain"])
+            for i in var_inputs
+            if i.get("glue_chain")
+        }
         at = sorted(as_table) if as_table else []
 
         # NB: where= is NOT part of config-variant identity. A where= filter's
@@ -792,6 +1164,7 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
                 fn_name,
                 tuple(sorted(input_types.items())),
                 tuple(sorted((k, repr(v)) for k, v in constants.items())),
+                tuple(sorted((k, tuple(v)) for k, v in glue_names.items())),
                 output_num,
                 tuple(at),
                 bool(distribute),
@@ -805,12 +1178,18 @@ def pipeline_variants(duck, output_type: str | None = None) -> list[dict]:
                     vk["__distribute"] = True
                 if at:
                     vk["__as_table"] = at
+                if glue_names:
+                    vk["__glue"] = glue_names
                 groups[gkey] = {
                     "function_name": fn_name,
                     "output_type": out_type,
                     "call_id": call_id_from_version_keys(vk),
                     "input_types": input_types,
                     "constants": constants,
+                    # {param: [glue node name, ...]} — the reshaping this call
+                    # site interposed on its inputs. Part of the variant so a
+                    # GUI target derived from history re-runs WITH its glue.
+                    "glue_chains": glue_names,
                     "output_num": output_num,
                 }
                 group_records[gkey] = set()
@@ -875,6 +1254,54 @@ def _current_records_by_schema(duck, variable_name: str) -> dict:
     return out
 
 
+def _glue_virtualize(
+    per_param: dict, cfg: dict
+) -> dict:
+    """Rewrite predicted source rids to virtual glue rids, per glued param.
+
+    The save path routes a glued param's binding through a virtual record
+    (``scidb.glue.fuse_glue``), so a prediction built from the raw records
+    would compute a *different* ``invocation_id`` and report every node red.
+    Both sides derive the id from :func:`scidb.glue.virtual_rid_map`, so they
+    agree as long as they see the same input rid set.
+
+    That set is the one caveat: prediction enumerates the source variable's
+    **current** records, while the run saw whatever it actually loaded. A run
+    narrowed by ``where=`` or ``schema_filter`` therefore has a different
+    ``input_set_signature`` and its node reads as needing a re-run. That is a
+    *conservative* failure (falsely red, never falsely green), and the two
+    signatures are logged below so it is diagnosable rather than mysterious.
+    """
+    from .glue import input_set_signature
+    from .provenance import compute_glue_record_id
+
+    glue_chains = cfg.get("glue_chains") or {}
+    if not glue_chains:
+        return per_param
+
+    out = dict(per_param)
+    for param, (chain_h, _names) in glue_chains.items():
+        by_schema = per_param.get(param)
+        if not by_schema:
+            continue
+        all_rids = [rid for rids in by_schema.values() for rid in rids]
+        # The chain's *hash* is stored on the glue invocation, so reuse it
+        # rather than re-hashing bodies this process may not have imported.
+        sig = input_set_signature(all_rids)
+        out[param] = {
+            sid: [compute_glue_record_id(chain_h, rid, sig) for rid in rids]
+            for sid, rids in by_schema.items()
+        }
+        logger.debug(
+            "glue prediction: param=%s chain_hash=%s input_set=%s over %d record(s)",
+            param,
+            chain_h,
+            sig,
+            len(all_rids),
+        )
+    return out
+
+
 def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> None:
     """Add expected ``(invocation_id, schema_id)`` pairs for one config × current
     input data into ``into``. Cross-products each input param's current records at
@@ -894,6 +1321,9 @@ def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> Non
         param: _current_records_by_schema(duck, vtype)
         for param, vtype in input_types.items()
     }
+    # Glued params bind to a virtual record, not the raw one — predict the
+    # same id the save path wrote.
+    per_param = _glue_virtualize(per_param, cfg)
     common_schema = (
         set.intersection(*[set(m.keys()) for m in per_param.values()])
         if per_param
@@ -914,7 +1344,7 @@ def _predict_config_invocations(duck, fn_hash: str, cfg: dict, into: set) -> Non
             into.add((inv_id, sid))
 
 
-def config_from_inputs(inputs: dict) -> dict:
+def config_from_inputs(inputs: dict, glue: dict | None = None) -> dict:
     """Build a variant config (same shape as :func:`function_variant_configs`
     entries) from a for_each-style ``inputs`` dict — used to predict expected
     invocations for a function that has never run yet.
@@ -923,6 +1353,10 @@ def config_from_inputs(inputs: dict) -> dict:
     specs become input_types (by class name), ColumnSelection contributes a
     selector, PathInput/PathOutput/ColName are excluded, everything else is a
     constant. ``as_table``/``distribute`` aren't expressible here → defaults.
+
+    ``glue`` (the same value passed to ``for_each``) is normalized into the
+    ``glue_chains`` shape ``function_variant_configs`` produces, so a glued
+    never-run node predicts the virtual rids the first run will actually write.
     """
     from scifor import ColName, ColumnSelection, Fixed
 
@@ -954,16 +1388,25 @@ def config_from_inputs(inputs: dict) -> dict:
                 input_types[name] = vt.__name__
         else:
             constants[name] = spec
+    from .glue import chain_hash, chain_names, normalize_glue
+
+    glue_chains = {
+        param: (chain_hash(chain), tuple(chain_names(chain)))
+        for param, chain in normalize_glue(glue).items()
+    }
     return {
         "input_types": input_types,
         "selectors": compute_input_selectors(inputs),
         "constants": constants,
+        "glue_chains": glue_chains,
         "as_table": [],
         "distribute": False,
     }
 
 
-def realized_inputless_invocations(duck, fn_name: str) -> set:
+def realized_inputless_invocations(
+    duck, fn_name: str, fn_hash: str | None = None
+) -> set:
     """``{(invocation_id, schema_id)}`` for invocations of ``fn_name`` that have
     **no variable inputs** (only constants, or nothing) — i.e. PathInput-only
     loaders and similar source nodes.
@@ -974,14 +1417,36 @@ def realized_inputless_invocations(duck, fn_name: str) -> set:
     still reads green — there is no live source for the combos that *should*
     exist but were never produced).
 
+    ``fn_hash`` restricts the result to invocations produced by that version of
+    the function's source. **This is what makes an inputless loader notice a
+    body edit.** Without it the realized set is whatever exists under any
+    historical version, so expected ≡ present unconditionally and the node
+    reports green forever however the code changes — the one route by which a
+    function could be edited and leave its node still claiming to be current.
+    A function *with* variable inputs has always been covered, because
+    ``_predict_config_invocations`` folds the hash into ``invocation_id``; this
+    closes the same loop for the case that never reaches prediction.
+
+    Passing None keeps the old any-version behaviour, which is what the
+    PathInput discovery check wants (``realized_inputless_schema_ids`` asks
+    "where has this loader produced output", not "under which code").
+
     Pure structural read from the graph — no invocation_id recomputation, so no
     predicted-vs-realized drift.
     """
     out: set = set()
-    for (inv_id,) in duck._fetchall(
-        "SELECT invocation_id FROM _invocation WHERE function_name = ?",
-        [fn_name],
-    ):
+    if fn_hash is None:
+        rows = duck._fetchall(
+            "SELECT invocation_id FROM _invocation WHERE function_name = ?",
+            [fn_name],
+        )
+    else:
+        rows = duck._fetchall(
+            "SELECT invocation_id FROM _invocation "
+            "WHERE function_name = ? AND function_hash = ?",
+            [fn_name, fn_hash],
+        )
+    for (inv_id,) in rows:
         has_var_input = duck._fetchall(
             "SELECT 1 FROM _invocation_input ii "
             "JOIN _record r ON r.record_id = ii.input_record_id "
@@ -998,6 +1463,23 @@ def realized_inputless_invocations(duck, fn_name: str) -> set:
         ):
             out.add((inv_id, sid))
     return out
+
+
+def function_versions_recorded(duck, fn_name: str) -> set:
+    """Every distinct ``function_hash`` ever recorded for ``fn_name``.
+
+    Diagnostic only: lets a red node say "the source changed since this last
+    ran" instead of leaving the user to guess between that, never-run, and
+    partially-run — which all look identical from outside.
+    """
+    return {
+        row[0]
+        for row in duck._fetchall(
+            "SELECT DISTINCT function_hash FROM _invocation WHERE function_name = ?",
+            [fn_name],
+        )
+        if row[0]
+    }
 
 
 def realized_inputless_schema_ids(duck, fn_name: str, const_rids: dict) -> set:
@@ -1034,6 +1516,7 @@ def expected_invocations_for_function(
     fn_hash: str,
     inputs_fallback: dict | None = None,
     call_id: str | None = None,
+    glue_fallback: dict | None = None,
 ) -> set:
     """Expected ``{(invocation_id, schema_id)}`` pairs for ``fn_name`` (§9c).
 
@@ -1058,10 +1541,12 @@ def expected_invocations_for_function(
     is the completeness signal — see :func:`present_invocation_schema_pairs`.
 
     Note: a zero-input function (e.g. a PathInput-only loader) has no input data
-    to enumerate, so it contributes only the invocations it has already realized.
-    Such a node therefore reports **green** (run, even partially) or **red**
-    (never run) — there is no live source for the set of combos it *should*
-    produce, so un-run combos cannot be detected.
+    to enumerate, so it contributes only the invocations it has already realized
+    **under the current ``fn_hash``**. Such a node therefore reports **green**
+    (run, even partially, with the code as it stands) or **red** (never run, or
+    run only by a since-edited version) — there is still no live source for the
+    set of combos it *should* produce, so un-run combos cannot be detected, but
+    an edited body now correctly reads as needs-run.
     """
     duck = db._duck
     expected: set = set()
@@ -1081,8 +1566,13 @@ def expected_invocations_for_function(
             set().union(*[c["invocation_ids"] for c in configs]) if configs else set()
         )
 
-    # (a) realized inputless invocations (PathInput-only loaders, etc.)
-    realized = realized_inputless_invocations(duck, fn_name)
+    # (a) realized inputless invocations (PathInput-only loaders, etc.),
+    # restricted to the CURRENT version of the function's source. An edited body
+    # empties this set, so every previously-realized combo drops out of
+    # `expected`, the node reports needs-run, and re-running refills it under
+    # the new hash. Without the restriction a PathInput-only loader could never
+    # go red however much its code changed.
+    realized = realized_inputless_invocations(duck, fn_name, fn_hash)
     if call_id is not None:
         realized = {(i, s) for i, s in realized if i in scoped_inv_ids}
     expected |= realized
@@ -1094,7 +1584,7 @@ def expected_invocations_for_function(
     # (c) live prediction from the declared inputs (never-run fallback) —
     # under call_id scoping, only when the declared config IS that call site.
     if inputs_fallback:
-        fallback_cfg = config_from_inputs(inputs_fallback)
+        fallback_cfg = config_from_inputs(inputs_fallback, glue=glue_fallback)
         if call_id is None or config_call_id(fn_name, fallback_cfg) == call_id:
             _predict_config_invocations(duck, fn_hash, fallback_cfg, expected)
 

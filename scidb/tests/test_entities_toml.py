@@ -62,6 +62,30 @@ class TestLoad:
         # this is what makes the type usable for save/load.
         assert BaseVariable._all_subclasses["StepLength"] is cls
 
+    def test_empty_array_is_a_parameter_with_no_values(self, tmp_path):
+        """`NAME = []` is declared-but-not-yet-valued, not a broken entry.
+        It is what the GUI writes for a new Parameter, which used to be a
+        placeholder 0 indistinguishable from a real declared value."""
+        path = write(tmp_path, """
+            [parameters]
+            CUTOFF_HZ = []
+        """)
+        result = entities.load(path)
+
+        assert result.errors == []
+        param = result.parameters["CUTOFF_HZ"]
+        assert isinstance(param, Parameter)
+        assert param.values == []
+
+    def test_empty_parameter_round_trips(self, tmp_path):
+        rendered = entities.render_parameter_value([])
+        assert rendered == "[]"
+        path = write(tmp_path, f"""
+            [parameters]
+            CUTOFF_HZ = {rendered}
+        """)
+        assert entities.load(path).parameters["CUTOFF_HZ"].values == []
+
     def test_variable_class_keeps_metaclass_behaviour(self, tmp_path):
         """Built through VariableMeta, so class-level comparison still
         builds a filter rather than returning a bool."""

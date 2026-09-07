@@ -37,6 +37,8 @@ import ParameterNode, { type ParameterNodeData } from './ParameterNode'
 import PathInputNode from './PathInputNode'
 import PipelineNode, { type PipelineNodeData } from './PipelineNode'
 import RunsDock from '../RunsDock'
+import GlueNode from './GlueNode'
+import PlotStudio from '../PlotStudio/PlotStudio'
 import { SourceLocationDialog } from '../SourceLocationDialog'
 import type { SourceLocation } from '../SourceLocationDialog'
 import { formatLocation } from '../Sidebar/useSourceEdit'
@@ -54,6 +56,10 @@ import { useClipboard } from '../../context/ClipboardContext'
 const nodeTypes = {
   variableNode: VariableNode,
   functionNode: FunctionNode,
+  // A glue node is a function-node variant (same in__/out__ handles), given
+  // its own component only so it can render inert: no Run button, no state
+  // badge. See GlueNode.tsx.
+  glueNode: GlueNode,
   parameterNode: ParameterNode,
   pathInputNode: PathInputNode,
   pipelineNode: PipelineNode,
@@ -122,6 +128,8 @@ export default function PipelineDAG() {
   const pendingCreateRef = useRef<Map<string, Promise<unknown>>>(new Map())
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  // Browser-mode fallback only: in the extension the studio is its own tab.
+  const [plotTarget, setPlotTarget] = useState<{ variable: string; csvPath?: string } | null>(null)
   const [sourceLoc, setSourceLoc] = useState<SourceLocation | null>(null)
   const [runFinalized, setRunFinalized] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -221,6 +229,18 @@ export default function PipelineDAG() {
     if (msg.type === 'dag_updated' || msg.method === 'dag_updated') fetchPipeline()
   }, [fetchPipeline]))
 
+  // In VS Code the studio is its own editor tab, so the canvas stays visible
+  // beside it; a plain browser has no tabs, so it falls back to the modal.
+  const openPlot = useCallback((variable: string) => {
+    if (isVSCodeMode) {
+      callBackend('open_plot_panel', { variable }).catch(() =>
+        setPlotTarget({ variable })
+      )
+    } else {
+      setPlotTarget({ variable })
+    }
+  }, [])
+
   // Re-center nodes queued by onDrop once React Flow has measured their
   // rendered size (fit-content width/height isn't known until then).
   useEffect(() => {
@@ -253,7 +273,7 @@ export default function PipelineDAG() {
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     setContextMenu(null)
-    if (node.type === 'functionNode' || node.type === 'parameterNode' || node.type === 'variableNode' || node.type === 'pathInputNode' || node.type === 'pipelineNode') {
+    if (node.type === 'functionNode' || node.type === 'glueNode' || node.type === 'parameterNode' || node.type === 'variableNode' || node.type === 'pathInputNode' || node.type === 'pipelineNode') {
       setSelectedNode(node)
       setSidebarSelectedItem(null)
     } else {
@@ -378,7 +398,6 @@ export default function PipelineDAG() {
   // when its declaration location is known (see ParameterNodeData).
   const onNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
     if (node.type !== 'functionNode' && node.type !== 'variableNode' && node.type !== 'parameterNode') return
-    if (node.type === 'variableNode' && currentScope === 'main') return
     e.preventDefault()
     // Menu coordinates are relative to the canvas wrapper (position: relative).
     const bounds = wrapperRef.current?.getBoundingClientRect()
@@ -404,8 +423,12 @@ export default function PipelineDAG() {
       // Produced wins over consumed — see ContextMenuState.portDirection.
       const isProduced = edges.some(ed => ed.target === node.id)
       const isConsumed = edges.some(ed => ed.source === node.id)
-      const portDirection = isProduced ? 'output' : isConsumed ? 'input' : undefined
-      if (!portDirection) return  // isolated node — nothing to hide/show
+      // Port hiding only means something inside a nested scope, and an
+      // isolated node has no port to hide either. The menu still opens in
+      // both cases — "Plot" applies to any variable node that has records.
+      const portDirection = currentScope === 'main'
+        ? undefined
+        : isProduced ? 'output' : isConsumed ? 'input' : undefined
       setContextMenu({
         ...base,
         nodeType: 'variableNode',
@@ -846,17 +869,33 @@ export default function PipelineDAG() {
       {contextMenu && contextMenu.nodeType === 'variableNode' && (() => {
         const varType = contextMenu.varType ?? ''
         const direction = contextMenu.portDirection
-        if (!varType || !direction) return null
+        if (!varType) return null
         return (
           <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
-            <button style={styles.contextMenuItem} onClick={() => handleTogglePort(direction)} type="button">
-              {hiddenPorts[direction].includes(varType)
-                ? `◎ Show as ${direction} port`
-                : `⊘ Hide as ${direction} port`}
+            <button
+              style={styles.contextMenuItem}
+              onClick={() => { openPlot(varType); setContextMenu(null) }}
+              type="button"
+            >
+              📈 Plot
             </button>
+            {direction && (
+              <button style={styles.contextMenuItem} onClick={() => handleTogglePort(direction)} type="button">
+                {hiddenPorts[direction].includes(varType)
+                  ? `◎ Show as ${direction} port`
+                  : `⊘ Hide as ${direction} port`}
+              </button>
+            )}
           </div>
         )
       })()}
+      {plotTarget && (
+        <PlotStudio
+          variable={plotTarget.variable}
+          csvPath={plotTarget.csvPath}
+          onClose={() => setPlotTarget(null)}
+        />
+      )}
       {contextMenu && contextMenu.nodeType === 'parameterNode' && contextMenu.paramSourceFile && (
         <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
           {contextMenu.paramDeclaredInEntitiesFile && (

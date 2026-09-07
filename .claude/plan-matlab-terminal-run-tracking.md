@@ -176,3 +176,33 @@ report completion.
 Suggested order: Stage 1 now if the 5 s waits are irritating in practice;
 Stage 2 when the false "done" actually costs something — e.g. the first
 time a MATLAB run fails and the GUI shows it as green.
+
+## Interim fix (2026-09-03) — connection-gate heuristic
+
+P2 first bit the user in its most visible form: the *very first* Run click
+on a MATLAB node in a session only opens the MATLAB terminal (starting the
+connection) — MATLAB hasn't executed a line — yet `handleMatlabRun`
+reported it as a successful run.
+
+Rather than build Stage 2 immediately, shipped a narrower, GUI-only heuristic
+that fixes this specific cold-start case without touching MATLAB:
+
+- `matlabConnectionGate.ts` (new, vscode-free, unit-tested) —
+  `needsMatlabConnectionPrompt(extensionAvailable, terminalAlreadyOpen)`.
+- `matlabTerminal.ts` — new `isMatlabTerminalOpen()`, checks
+  `vscode.window.terminals` for a `MATLAB`-named terminal.
+- `dagPanel.ts` — new `gateOnMatlabConnection()`, called at the top of both
+  `handleMatlabRun` and `handleMatlabPipelineRun`, before `beginMatlabRun`.
+  When gated: prompts "Connect now?", optionally calls
+  `matlab.openCommandWindow` alone (no script sent), and resolves the click
+  as `run_done { success: false, cancelled: true }` — the existing
+  `cancelled` status in `RunLogContext.tsx`, distinct from both success and
+  error, so it doesn't read as a successful *or* a failed run.
+
+**What this does not fix** (still needs Stage 2): a real run dispatched
+after MATLAB is already connected that then fails, or a click sent to a
+terminal that exists but whose MATLAB process is still mid-startup — both
+still synthesize `success: true` on dispatch. `isMatlabTerminalOpen()` is a
+heuristic (terminal object exists), not a true readiness signal — the
+MathWorks extension has no public API for that. Revisit Stage 2 the next
+time a real run's failure shows green.

@@ -978,7 +978,25 @@ def _build_graph(db: DatabaseManager, pipeline_id: str = "main") -> dict:
         resolved_input_params = None
         resolved_output_types = None
         manual_fn_state = None
-        if meta["type"] == "functionNode":
+        if meta["type"] == "glueNode":
+            # Handles only. A glue node has no run state to compute (D5) and
+            # no output type to resolve — its output is fused into whatever
+            # consumes it and is never saved, so a glue node feeding nothing
+            # renders inert rather than red.
+            fn_label = meta["label"]
+            resolved_input_params = {
+                p: "" for p in _fn_params_from_registry(fn_label)
+            }
+            glue_resolved = resolve_function_edges(
+                fn_node_ids={node_id},
+                manual_edges=manual_edges_list,
+                manual_nodes=manual_nodes,
+                existing_node_labels=existing_node_labels,
+            )
+            for p, ts in glue_resolved.input_types.items():
+                if ts:
+                    resolved_input_params[p] = ts[0]
+        elif meta["type"] == "functionNode":
             fn_label = meta["label"]
             sig_params = _fn_params_from_registry(fn_label)
             resolved = resolve_function_edges(

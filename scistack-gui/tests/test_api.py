@@ -803,6 +803,96 @@ class TestVariableRecordsEndpoint:
         assert data["records"] == []
         assert data["variants"] == []
 
+    def test_single_version_carries_no_code_discriminator(self, client):
+        """The ordinary case must look exactly as it did before this feature."""
+        r = client.get("/api/variables/FilteredSignal/records")
+        data = r.json()
+        assert all(rec["fn_version"] is None for rec in data["records"])
+        assert all(v["fn_version"] is None for v in data["variants"])
+        assert all(rec["fn_name"] == "bandpass_filter" for rec in data["records"])
+
+
+class TestVariableRecordsFunctionVersions:
+    """An edited function body must be visible in the records/variants payload.
+
+    Before this, two records produced by different versions of one function had
+    identical branch params, so they collapsed into a single "(raw)"-style
+    variant whose count silently summed both — the reported bug.
+    """
+
+    @staticmethod
+    def _run_edited_body(populated_db):
+        """Re-run the seeded pipeline with a DIFFERENT body under the same name.
+
+        ``__name__`` is what lands in ``_invocation.function_name``, while
+        ``function_hash`` is an AST hash of the source — so this models "the
+        user edited the function and hit Run".
+        """
+
+        def bandpass_filter_v2(signal, low_hz):
+            return np.asarray(signal, dtype=float) * float(low_hz) + 1.0
+
+        bandpass_filter_v2.__name__ = "bandpass_filter"
+        for_each(
+            bandpass_filter_v2,
+            inputs={"signal": RawSignal, "low_hz": 20},
+            outputs=[FilteredSignal],
+            subject=[1, 2],
+            session=["pre", "post"],
+        )
+
+    def test_two_versions_do_not_collapse_into_one_variant(self, client, populated_db):
+        before = client.get("/api/variables/FilteredSignal/records").json()
+        assert len(before["variants"]) == 1
+
+        self._run_edited_body(populated_db)
+
+        after = client.get("/api/variables/FilteredSignal/records").json()
+        assert len(after["records"]) == 8, "4 combos x 2 code versions"
+        assert len(after["variants"]) == 2, (
+            "the two code versions must be separate variant rows, not one row "
+            "of count 8"
+        )
+        assert {v["record_count"] for v in after["variants"]} == {4}
+
+    def test_labels_name_the_function_and_version(self, client, populated_db):
+        self._run_edited_body(populated_db)
+        data = client.get("/api/variables/FilteredSignal/records").json()
+
+        labels = [v["label"] for v in data["variants"]]
+        assert all("bandpass_filter" in label for label in labels)
+        assert any("v1" in label for label in labels)
+        assert any("v2" in label for label in labels)
+        # The constant the user configured still leads the label.
+        assert all(label.startswith("low_hz=20") for label in labels)
+        assert sum("(latest)" in label for label in labels) == 1
+
+    def test_latest_variant_is_listed_first(self, client, populated_db):
+        self._run_edited_body(populated_db)
+        data = client.get("/api/variables/FilteredSignal/records").json()
+
+        assert data["variants"][0]["is_latest"] is True
+        assert data["variants"][0]["fn_version"] == "v2"
+
+    def test_variants_are_separated_by_function_hash(self, client, populated_db):
+        self._run_edited_body(populated_db)
+        data = client.get("/api/variables/FilteredSignal/records").json()
+
+        hashes = {v["fn_hash"] for v in data["variants"]}
+        assert len(hashes) == 2 and None not in hashes
+        # Same branch params on both — the hash is the ONLY thing separating
+        # them, which is exactly why grouping on branch params alone failed.
+        assert len({str(v["branch_params"]) for v in data["variants"]}) == 1
+
+    def test_records_carry_their_own_version(self, client, populated_db):
+        self._run_edited_body(populated_db)
+        data = client.get("/api/variables/FilteredSignal/records").json()
+
+        versions = {rec["fn_version"] for rec in data["records"]}
+        assert versions == {"v1", "v2"}
+        assert sum(1 for rec in data["records"] if rec["is_latest"]) == 4
+        assert all(rec["saved_at"] for rec in data["records"])
+
 
 # ---------------------------------------------------------------------------
 # Wiring mutations broadcast dag_updated

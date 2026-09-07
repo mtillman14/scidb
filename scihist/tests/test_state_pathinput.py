@@ -268,3 +268,129 @@ class TestCheckPathInputNodeState:
         )
         assert green["state"] == "green"
         assert green["counts"]["missing"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Function-body edits (Stage 6)
+#
+# A PathInput-only loader used to be exempt from code-change detection
+# entirely: its expected set came from `realized_inputless_invocations`, which
+# read the graph structurally with no reference to fn_hash, so expected was
+# identically present and the node reported green however the body changed.
+# A function WITH variable inputs never had this hole — `fn_hash` is folded
+# into `invocation_id` by the prediction path, which inputless configs skip.
+# ---------------------------------------------------------------------------
+
+
+@scistack
+def _import_edited(filepath):
+    """Same loader, different body — models the user editing and saving."""
+    with open(filepath) as fh:
+        return float(fh.read().strip()) * 2
+
+
+# `__fn` comes from __name__ while function_hash is an AST hash of the source,
+# so this is one function with two versions, not two functions.
+_import_edited.__name__ = "import_from_file"
+
+
+class TestBodyEditRedensAPathInputLoader:
+    def _run(self, fn, db, tmp_path):
+        for_each(
+            fn,
+            inputs={"filepath": _path_input(tmp_path)},
+            outputs=[PathInputOutput],
+            subject=["1", "2"],
+            trial=["A", "B"],
+            db=db,
+        )
+
+    def test_green_before_the_edit(self, db, tmp_path):
+        _write_combo_files(tmp_path, _GRID)
+        self._run(import_from_file, db, tmp_path)
+
+        assert check_node_state(import_from_file, [PathInputOutput], db=db)["state"] == "green"
+
+    def test_red_after_the_edit(self, db, tmp_path):
+        """The reported bug: edit the body, and the node stayed green."""
+        _write_combo_files(tmp_path, _GRID)
+        self._run(import_from_file, db, tmp_path)
+
+        result = check_node_state(_import_edited, [PathInputOutput], db=db)
+        assert result["state"] == "red"
+        assert result["counts"]["up_to_date"] == 0
+
+    def test_green_again_after_re_running_the_edited_body(self, db, tmp_path):
+        """And it must not get STUCK red — re-running is the way out."""
+        _write_combo_files(tmp_path, _GRID)
+        self._run(import_from_file, db, tmp_path)
+        assert check_node_state(_import_edited, [PathInputOutput], db=db)["state"] == "red"
+
+        self._run(_import_edited, db, tmp_path)
+
+        result = check_node_state(_import_edited, [PathInputOutput], db=db)
+        assert result["state"] == "green"
+        assert result["counts"]["up_to_date"] == 4
+
+    def test_two_historical_hashes_do_not_confuse_the_current_one(self, db, tmp_path):
+        """≥2 historical hashes for one combo — the case that made the OLD
+        equality-based staleness check misfire, and the reason that check was
+        abandoned. Selection here is by exact hash, not by "any recorded row",
+        so old versions coexisting is simply history."""
+        _write_combo_files(tmp_path, _GRID)
+        self._run(import_from_file, db, tmp_path)
+        self._run(_import_edited, db, tmp_path)
+
+        from scidb.provenance_query import function_versions_recorded
+
+        assert len(function_versions_recorded(db._duck, "import_from_file")) == 2
+
+        # Whichever version you ask about, you get ITS answer — both are green
+        # here because both have actually run over the whole grid.
+        for fn in (import_from_file, _import_edited):
+            result = check_node_state(fn, [PathInputOutput], db=db)
+            assert result["state"] == "green"
+            assert result["counts"]["up_to_date"] == 4
+
+    def test_reverting_the_edit_restores_green(self, db, tmp_path):
+        """A hash is an identity, not a timestamp: going back to code that has
+        already run is up to date, not stale."""
+        _write_combo_files(tmp_path, _GRID)
+        self._run(import_from_file, db, tmp_path)
+
+        assert check_node_state(_import_edited, [PathInputOutput], db=db)["state"] == "red"
+        assert check_node_state(import_from_file, [PathInputOutput], db=db)["state"] == "green"
+
+    def test_call_id_scoping_still_narrows_to_the_current_version(self, db, tmp_path):
+        """The GUI always passes call_id, so the fix has to hold there too.
+
+        `function_variant_configs` dedupes configs *fn-hash-independently*, so
+        one call site's `invocation_ids` span BOTH versions — the hash filter
+        is what narrows within the site. If the two ever stopped composing,
+        the GUI would silently keep reporting green.
+        """
+        from scidb.foreach_config import ForEachConfig, function_hash_for
+        from scifor import PathInput  # noqa: F401 — used via _path_input
+
+        _write_combo_files(tmp_path, _GRID)
+        self._run(import_from_file, db, tmp_path)
+
+        call_id = ForEachConfig(
+            import_from_file, {"filepath": _path_input(tmp_path)}
+        ).to_call_id()
+
+        assert (
+            check_node_state(
+                import_from_file, [PathInputOutput], db=db, call_id=call_id
+            )["state"]
+            == "green"
+        )
+        # Same call site, edited body → needs re-running.
+        assert (
+            check_node_state(
+                _import_edited, [PathInputOutput], db=db, call_id=call_id
+            )["state"]
+            == "red"
+        )
+        # ...and the two versions really are one call site, not two.
+        assert function_hash_for(import_from_file) != function_hash_for(_import_edited)

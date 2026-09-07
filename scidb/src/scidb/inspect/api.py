@@ -24,8 +24,10 @@ if TYPE_CHECKING:
     from ..database import DatabaseManager
 
 # Internal (non-variable) entity types in _record, excluded from user-facing
-# record counts everywhere.
-_INTERNAL_RECORD_TYPES = ("__constant__", "__pathinput__")
+# record counts everywhere. ``__glue__`` is a virtual provenance node for a
+# glue chain's never-saved output — it has no data, no _record_save row and
+# nothing loadable, so counting it would inflate every record total.
+_INTERNAL_RECORD_TYPES = ("__constant__", "__pathinput__", "__glue__")
 _NOT_INTERNAL_SQL = (
     "type NOT IN (" + ", ".join(f"'{t}'" for t in _INTERNAL_RECORD_TYPES) + ")"
 )

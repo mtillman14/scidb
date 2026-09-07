@@ -29,6 +29,16 @@ export class DagPanel {
    */
   readonly matlabRuns = new MatlabRunTracker();
 
+  /**
+   * Which editor group the pipeline canvas lives in. The Plot Studio opens in
+   * the SAME group so it becomes a full-width sibling tab rather than a split;
+   * reading it from the panel (instead of assuming ViewColumn.One) keeps that
+   * true after the user drags the pipeline tab elsewhere.
+   */
+  get viewColumn(): vscode.ViewColumn | undefined {
+    return this.panel.viewColumn;
+  }
+
   constructor(
     private context: vscode.ExtensionContext,
     private pythonProcess: PythonProcess,
@@ -58,6 +68,48 @@ export class DagPanel {
           try {
             await vscode.commands.executeCommand('scistack.restartPython');
             this.panel.webview.postMessage({ id: msg.id, result: { ok: true } });
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) },
+            });
+          }
+          return;
+        }
+        if (method === 'open_plot_panel') {
+          // The DAG's right-click ▸ Plot. Opening a tab is a host-side act;
+          // the webview cannot create one, and the modal it used to show made
+          // the canvas unreachable while a figure was open.
+          try {
+            await vscode.commands.executeCommand(
+              'scistack.openPlotPanel',
+              (msg.params ?? {}) as Record<string, unknown>,
+            );
+            this.panel.webview.postMessage({ id: msg.id, result: { ok: true } });
+          } catch (err) {
+            this.panel.webview.postMessage({
+              id: msg.id,
+              error: { message: String(err) },
+            });
+          }
+          return;
+        }
+        if (method === 'pick_save_path') {
+          // Only the host can show a file dialog; a webview cannot save a file
+          // at all, which is why plotly's own camera button fails here.
+          try {
+            const params = (msg.params ?? {}) as { defaultName?: string };
+            const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+            const uri = await vscode.window.showSaveDialog({
+              defaultUri: folder
+                ? vscode.Uri.joinPath(folder, params.defaultName ?? 'figure.png')
+                : undefined,
+              filters: { Images: ['png', 'svg', 'pdf'] },
+            });
+            this.panel.webview.postMessage({
+              id: msg.id,
+              result: { path: uri?.fsPath ?? null },
+            });
           } catch (err) {
             this.panel.webview.postMessage({
               id: msg.id,

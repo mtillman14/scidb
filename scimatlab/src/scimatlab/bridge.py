@@ -72,6 +72,13 @@ class MatlabLineageFcn:
     ):
         self.fcn = _FunctionProxy(function_name)
         self.unpack_output = unpack_output
+        #: The digest of the .m source, EXACTLY as the save path stored it in
+        #: ``_invocation.function_hash`` (MATLAB's ``scidb.internal.hash_function``
+        #: → ``compute_matlab_function_hash``). Read-side hash lookups must use
+        #: this: ``fcn`` is a bare name-holder with no source, so AST-hashing it
+        #: yields a constant unrelated to the .m file and every comparison
+        #: against a stored hash fails. See ``foreach_config.function_hash_for``.
+        self.source_hash: str = source_hash
         string_repr = f"{source_hash}{STRING_REPR_DELIMITER}{unpack_output}"
         self.hash: str = sha256(string_repr.encode()).hexdigest()
 
@@ -79,6 +86,43 @@ class MatlabLineageFcn:
 # ---------------------------------------------------------------------------
 # Helper functions called from MATLAB
 # ---------------------------------------------------------------------------
+
+
+def _reconstruct_glue_chains(glue):
+    """MATLAB glue structs → ``{param: [GlueSpec]}``.
+
+    Each entry is ``{name, source_text, per_schema_key}``. There is no
+    callable: a ``.m`` function cannot execute inside Python's prepare step,
+    so MATLAB runs the bodies itself in ``+scidb/for_each.m``. Python needs
+    only the *source text*, which is what the glue's content hash — and so the
+    virtual record id the consumer binds to — is derived from.
+
+    Returns ``{}`` for None / empty, so callers can pass it through unguarded.
+    """
+    if glue is None or isinstance(glue, type(None)) or not glue:
+        return {}
+
+    from scidb.glue import GlueSpec
+
+    chains: dict = {}
+    for param, entries in dict(glue).items():
+        specs = []
+        for entry in list(entries):
+            spec = dict(entry)
+            specs.append(
+                GlueSpec(
+                    name=str(spec.get("name", "glue")),
+                    language="matlab",
+                    source_text=str(spec.get("source_text", "")),
+                    source_file=(
+                        str(spec["source_file"]) if spec.get("source_file") else None
+                    ),
+                    per_schema_key=bool(spec.get("per_schema_key", False)),
+                )
+            )
+        if specs:
+            chains[str(param)] = specs
+    return chains
 
 
 def _reconstruct_input_for_keys(spec):
@@ -414,6 +458,7 @@ def for_each_prepare(
     finalized: bool = False,
     schema_keys=None,
     schema_filter=None,
+    glue=None,
 ):
     """Bridge entry: run scidb.for_each's prepare phase in Python.
 
@@ -466,6 +511,17 @@ def for_each_prepare(
         Python path): drafts suppress the save phase in ``for_each_save``;
         stat_ functions default ``as_table`` on. MATLAB does its own fn
         wrapping using the returned ``endpoint_kind``/``path_param``.
+    glue : dict or None
+        ``{param_name: [{name, source_text, per_schema_key}, ...]}`` — the
+        glue chains wired to this call. **A glue node executes in the language
+        of the run**, so on this path every chain is MATLAB and its bodies run
+        in ``+scidb/for_each.m``, after prepare returns and before the loop (a
+        ``.m`` function cannot execute inside Python's prepare step). What
+        happens here is the *identity* half: each chain's virtual glue records
+        are computed and the consumer's bindings routed through them, exactly
+        as on the Python path, so one provenance recipe serves both languages.
+        The returned ``glue_chains`` entry tells MATLAB which params to apply
+        which nodes to.
 
     Returns
     -------
@@ -486,6 +542,10 @@ def for_each_prepare(
                                        full_combos; ``{ColName}`` tokens are
                                        left in the strings for MATLAB's
                                        for_columns loop to substitute
+        glue_chains : dict           — {param: [{name, per_schema_key}]} the
+                                       MATLAB side must apply, in order, to
+                                       that param's loaded table before the
+                                       loop. Empty when no glue is wired.
 
     Raises
     ------
@@ -563,6 +623,11 @@ def for_each_prepare(
         _endpoint_policy(str(fn_name), inputs, bool(finalized), as_table_arg)
     )
 
+    # Glue chains: MATLAB structs → GlueSpec, language "matlab". Bodies stay
+    # unexecuted here (a .m function cannot run in Python); only their source
+    # hashes matter to prepare, which is all identity needs.
+    glue_arg = _reconstruct_glue_chains(glue)
+
     # Where: accept None or a Filter object. (Empty string sometimes
     # arrives from MATLAB when no filter was supplied; treat it as None.)
     where_arg = where if where not in ("", None) else None
@@ -627,6 +692,8 @@ def for_each_prepare(
                 _pre_combo_hook=None,
                 _cancel_check=None,
                 metadata_iterables=meta,
+                glue=glue_arg,
+                glue_language="matlab",
             )
         except Exception:
             raise
@@ -692,6 +759,8 @@ def for_each_prepare(
         _pre_combo_hook=pre_combo_hook,
         _cancel_check=None,
         metadata_iterables=meta,
+        glue=glue_arg,
+        glue_language="matlab",
     )
 
     if state is None:
@@ -863,6 +932,17 @@ def for_each_prepare(
         # spread columns reach the user function as a 1xN table and every
         # field access yields a 1x1 cell. See scidb._resolve_mapping_inputs.
         "mapping_inputs": {k: list(v) for k, v in (state.mapping_inputs or {}).items()},
+        # {param: [{name, per_schema_key}]} — the glue nodes MATLAB must apply
+        # to that param's table, in order, between prepare and the loop. The
+        # provenance side is already done (state.glue_virtual); this is purely
+        # "which bodies to call".
+        "glue_chains": {
+            param: [
+                {"name": s.name, "per_schema_key": bool(s.per_schema_key)}
+                for s in chain
+            ]
+            for param, chain in (state.glue_chains or {}).items()
+        },
     }
 
 
@@ -2296,10 +2376,16 @@ def pipeline_register_step(
     skip_computed: bool = False,
     schema_keys=None,
     schema_filter=None,
+    glue=None,
 ) -> int:
     """Register one MATLAB for_each call as a deferred step; returns the
     step's index in the pipeline's own step list (MATLAB stores the fn
-    handle + raw call args under this index)."""
+    handle + raw call args under this index).
+
+    ``glue`` rides along so the registered step's identity matches the eager
+    call's: glue names contribute to the call_id, so a step registered
+    without them would be a different call site than the same step run
+    directly."""
     pipe = _pipeline_cache[int(handle)]
     inputs = {
         name: _reconstruct_input_for_keys(spec)
@@ -2328,6 +2414,7 @@ def pipeline_register_step(
             "skip_computed": bool(skip_computed),
             "schema_keys": schema_keys_arg,
             "schema_filter": schema_filter_arg,
+            "glue": _reconstruct_glue_chains(glue) or None,
             "__matlab__": True,
             "__matlab_fn_hash__": fn_hash,
         },

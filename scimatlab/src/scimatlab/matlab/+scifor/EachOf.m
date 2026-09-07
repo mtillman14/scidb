@@ -12,6 +12,16 @@ classdef EachOf
 %   With a single alternative, behaves identically to passing that value
 %   directly.
 %
+%   An EachOf may be constructed with NO alternatives. That is a
+%   placeholder, not a runnable axis -- it is what a scidb.Parameter
+%   declared but not yet given a value looks like from here (a Parameter IS
+%   an EachOf). It has to be legal at construction: a MATLAB superclass
+%   constructor call cannot sit in a conditional branch, so
+%   +scidb/Parameter.m has exactly one obj@scifor.EachOf(args{:}) call and
+%   args is empty for a value-less Parameter. Refusing it belongs at
+%   EXPANSION instead -- see scifor.require_alternatives, which every
+%   for_each calls before building the cartesian product.
+%
 %   Mirrors Python's scifor.EachOf (scifor/src/scifor/each_of.py) — see
 %   docs/claude/each-of-variant-expansion.md.
 %
@@ -32,10 +42,6 @@ classdef EachOf
         %
         %   E = scifor.EachOf(ALT1, ALT2, ...)
 
-            if isempty(varargin)
-                error('scifor:EachOf', ...
-                    'EachOf requires at least one alternative.');
-            end
             obj.alternatives = varargin;
         end
 

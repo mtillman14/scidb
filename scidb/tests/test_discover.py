@@ -119,6 +119,18 @@ class TestSharedPredicates:
 
         assert not is_path_input(EachOf(1, 2, 3))
 
+    def test_empty_each_of_is_not_a_path_input(self):
+        """all([]) is True, so "every alternative is a PathInput" is
+        satisfied vacuously by an EachOf with none -- which is exactly what
+        a Parameter declared with no value yet is. Without the explicit
+        non-empty check it registers as a PathInput."""
+        from scidb import EachOf, Parameter
+        from scidb.discover import is_parameter, is_path_input
+
+        assert not is_path_input(EachOf())
+        assert not is_path_input(Parameter())
+        assert is_parameter(Parameter())
+
 
 class TestDiscoverModule:
     def test_finds_base_variable_subclass(self, project_factory):

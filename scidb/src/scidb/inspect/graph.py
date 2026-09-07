@@ -182,14 +182,17 @@ def _node_states(db, fn_names, fn_registry=None) -> dict[str, dict]:
     the state command to say *which* combos need running).
     """
     from .. import provenance_query
-    from ..foreach_config import _compute_fn_hash
+    from ..foreach_config import function_hash_for
 
     stored = _stored_function_hashes(db._duck)
     states: dict[str, dict] = {}
     for fn_name in fn_names:
         fn_obj = (fn_registry or {}).get(fn_name)
         if fn_obj is not None:
-            fn_hash = _compute_fn_hash(fn_obj.fcn if hasattr(fn_obj, "fcn") else fn_obj)
+            # Same recipe the save path stored — see function_hash_for. A MATLAB
+            # handle carries its .m digest explicitly; AST-hashing its `.fcn`
+            # name-holder would match nothing ever written.
+            fn_hash = function_hash_for(fn_obj)
             basis = "live_fn"
         elif fn_name in stored:
             fn_hash = stored[fn_name]
@@ -237,7 +240,7 @@ def _node_states(db, fn_names, fn_registry=None) -> dict[str, dict]:
 def _variable_record_counts(duck) -> dict[str, int]:
     rows = duck._fetchall(
         "SELECT type, COUNT(*) FROM _record "
-        "WHERE type NOT IN ('__constant__', '__pathinput__') "
+        "WHERE type NOT IN ('__constant__', '__pathinput__', '__glue__') "
         "AND NOT COALESCE(excluded, FALSE) "
         "GROUP BY type"
     )

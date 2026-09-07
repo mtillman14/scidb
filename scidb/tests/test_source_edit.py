@@ -153,6 +153,17 @@ def test_render_parameter_single_value():
     assert render_parameter(["a"]) == "scidb.Parameter('a', description='')"
 
 
+def test_render_parameter_no_values():
+    """A Parameter declared but not yet valued. The empty case has to build
+    the argument list rather than interpolate a fixed comma, or it renders as
+    the unparseable `scidb.Parameter(, description='')`."""
+    assert render_parameter([]) == "scidb.Parameter(description='')"
+    assert (
+        render_parameter([], "filled in later")
+        == "scidb.Parameter(description='filled in later')"
+    )
+
+
 def test_render_parameter_many_values():
     """One constructor whatever the count -- adding a value is adding an
     argument, never a change of form (D6)."""

@@ -108,6 +108,40 @@ def test_attach_log_file_is_idempotent(tmp_path):
         real_log.set_path(None)
 
 
+def test_setup_phase_timings_reach_the_file(tmp_path):
+    """Connection setup must be timed, and timed INTO the log file.
+
+    A MATLAB run pays the whole of configure_database on every invocation —
+    the generated script closes the database at the end to hand the write
+    lock back to the GUI, so nothing is carried over. Attributing that cost
+    (DuckDB open vs. the idempotent DDL re-run against a network share)
+    needs the phase breakdown, and needs it in the file rather than on
+    stderr: MATLAB is usually the FIRST scidb caller in its process, so
+    without the early attach these lines are written before any sink exists
+    and are lost exactly when they are wanted.
+    """
+    real_log.set_path(None)
+    db_path = tmp_path / "timing.duckdb"
+
+    db = scidb.configure_database(str(db_path), ["subject"])
+    try:
+        log_text = (tmp_path / "scidb.log").read_text(encoding="utf-8")
+    finally:
+        db.close()
+        real_log.set_path(None)
+
+    # Both levels of the breakdown, at the default (INFO) level: the outer
+    # call and the connection construction inside it.
+    assert "[timing] configure_database:" in log_text
+    assert "[timing] DatabaseManager.__init__:" in log_text
+    # The INFO summary carries its phases inline, so the expensive step is
+    # named without needing DEBUG.
+    assert "database_manager=" in log_text
+    assert "register_types=" in log_text
+    assert "duck_open=" in log_text
+    assert "ensure_provenance_tables=" in log_text
+
+
 def test_configure_database_keeps_an_already_attached_sink(tmp_path):
     """The early-attached file keeps receiving records after DB setup."""
     from scidb.log import attach_log_file

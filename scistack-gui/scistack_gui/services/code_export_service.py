@@ -142,6 +142,50 @@ def _py_dict_literal(d: dict) -> str:
     return "{" + ", ".join(parts) + "}"
 
 
+def _glue_comments(glue: "dict | None", comment_prefix: str) -> list[str]:
+    """One comment line per glued parameter, above the step it belongs to.
+
+    Glue appears **inline with the consuming step, never as a step of its
+    own** — it has no saved output and is not a node in the compiled
+    pipeline. The comment makes that visible in the exported script: the
+    reader sees which reshaping happens on the way into this call, without
+    a phantom ``for_each`` that produces nothing.
+    """
+    if not glue:
+        return []
+    out = []
+    for param in sorted(glue):
+        names = ", ".join(getattr(s, "name", str(s)) for s in glue[param])
+        out.append(
+            f"{comment_prefix} '{param}' is reshaped in memory by {names} "
+            f"(glue: not saved, fused into this call)"
+        )
+    return out
+
+
+def _py_glue_literal(glue: "dict | None") -> str:
+    """``{'emg': [glue_drop_baseline]}`` — bare function names.
+
+    The glue functions come into scope through the header's
+    ``from <module> import *``, exactly as the pipeline functions do: a glue
+    node is an ordinary named function in an ordinary file.
+
+    Note what is NOT emitted: a bare ``df = glue_x(df)`` statement before the
+    call. There is no ``df`` in scope at that point — the table only exists
+    inside ``for_each``'s load step — so such a script would neither run nor
+    reproduce the records it was exported from, which is the contract the
+    export exists to keep. ``glue=`` is the faithful spelling of the same
+    fusion.
+    """
+    if not glue:
+        return ""
+    parts = [
+        f"{param!r}: [" + ", ".join(getattr(s, "name", str(s)) for s in chain) + "]"
+        for param, chain in sorted(glue.items())
+    ]
+    return "{" + ", ".join(parts) + "}"
+
+
 def _py_header(db) -> str:
     from scistack_gui import registry
 
@@ -203,12 +247,17 @@ def _generate_python_script(db, pipeline_id: str, pipeline_ids: list) -> tuple[s
         inputs_src = _py_dict_literal(spec.inputs)
         outputs_src = "[" + ", ".join(output_names) + "]"
         iterables_src = _py_dict_literal(spec.metadata_iterables)
+        glue_src = _py_glue_literal(spec.options.get("glue"))
         lines.append(f"# {fn_name} -> {', '.join(output_names)}")
-        lines.append(
-            f"for_each({fn_name}, {inputs_src}, {outputs_src}, "
-            f"**{iterables_src})" if spec.metadata_iterables
-            else f"for_each({fn_name}, {inputs_src}, {outputs_src})"
-        )
+        for comment in _glue_comments(spec.options.get("glue"), "#"):
+            lines.append(comment)
+        call = f"for_each({fn_name}, {inputs_src}, {outputs_src}"
+        if glue_src:
+            call += f", glue={glue_src}"
+        if spec.metadata_iterables:
+            call += f", **{iterables_src}"
+        call += ")"
+        lines.append(call)
         lines.append("")
 
     skip_lines, warnings = _skip_comments(db, pipeline_id, "#")
@@ -252,6 +301,24 @@ def _matlab_struct(inputs: dict) -> str:
     if not inputs:
         return "struct()"
     parts = [f"'{k}', {_matlab_literal(v)}" for k, v in inputs.items()]
+    return "struct(" + ", ".join(parts) + ")"
+
+
+def _matlab_glue_struct(glue: "dict | None") -> str:
+    """``struct('emg', {{@glue_drop_baseline}})`` — handles, applied in order.
+
+    The doubled braces are not a typo: ``struct('f', {c})`` with a cell value
+    would build a struct ARRAY, one element per cell entry, so a two-node
+    chain would silently become two structs. Wrapping once more makes the
+    field hold the cell itself, which is what ``+scidb/for_each.m``'s glue
+    option expects.
+    """
+    if not glue:
+        return ""
+    parts = []
+    for param, chain in sorted(glue.items()):
+        handles = ", ".join(f"@{getattr(s, 'name', str(s))}" for s in chain)
+        parts.append(f"'{param}', {{{{{handles}}}}}")
     return "struct(" + ", ".join(parts) + ")"
 
 
@@ -382,7 +449,10 @@ def _topo_sort_targets(steps: list) -> list:
 
 def _generate_matlab_script(db, pipeline_id: str, pipeline_ids: list) -> tuple[str, list[str]]:
     from scistack_gui import registry
-    from scistack_gui.services.execution_service import build_run_inputs
+    from scistack_gui.services.execution_service import (
+        build_run_glue,
+        build_run_inputs,
+    )
 
     steps = _matlab_steps(db, pipeline_ids)
     order = _topo_sort_targets(steps)
@@ -396,14 +466,20 @@ def _generate_matlab_script(db, pipeline_id: str, pipeline_ids: list) -> tuple[s
     for i in order:
         fn_label, target = steps[i]
         inputs = build_run_inputs(target, fn_label, db)
+        glue = build_run_glue(target, fn_label)
         output_cls = registry.get_variable_class(target["output_type"])
         inputs_src = _matlab_struct(inputs)
         outputs_src = "{" + _matlab_literal(output_cls) + "}"
         call = f"scidb.for_each(@{fn_label}, {inputs_src}, {outputs_src}"
+        glue_src = _matlab_glue_struct(glue)
+        if glue_src:
+            call += f", 'glue', {glue_src}"
         if iter_args:
             call += f", {iter_args}"
         call += ");"
         lines.append(f"% {fn_label} -> {target['output_type']}")
+        for comment in _glue_comments(glue, "%"):
+            lines.append(comment)
         lines.append(call)
         lines.append("")
 

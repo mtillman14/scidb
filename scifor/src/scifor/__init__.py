@@ -40,7 +40,7 @@ from .discovery import (
     sibling_import_dirs,
     walk_package,
 )
-from .each_of import EachOf
+from .each_of import EachOf, require_alternatives
 from .filters import Col, ColFilter, CompoundFilter, NotFilter
 from .fixed import Fixed
 from .foreach import ColumnFunctionError, ForColumnsError, NoDataError, for_each
@@ -72,6 +72,7 @@ __all__ = [
     "ColumnSelection",
     "ColName",
     "EachOf",
+    "require_alternatives",
     "PathInput",
     "PathOutput",
     # Rootless-PathInput resolution base

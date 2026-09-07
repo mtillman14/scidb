@@ -341,6 +341,8 @@ def record_run(
     function_name: str,
     where_clause: str | None,
     user_id: str | None,
+    glue_virtual: dict | None = None,
+    glue_chains: dict | None = None,
 ) -> str | None:
     """Write the bipartite graph for ``graph_records`` plus a fresh ``_run`` row.
 
@@ -349,6 +351,12 @@ def record_run(
     Idempotent for the graph (``ON CONFLICT DO NOTHING``); the ``_run`` /
     ``_run_invocation`` rows are always appended so the audit log captures this
     execution even when it reproduced existing invocations.
+
+    ``glue_virtual`` / ``glue_chains`` add the glue hop: the consumer's
+    bindings already point at virtual glue rids (``scidb.glue.fuse_glue``
+    rewrote ``__record_id`` before Step 11), so the matching virtual ``_record``
+    rows and their producing ``_invocation``s are written here. See
+    :func:`_write_glue_nodes`.
     """
     if not graph_records:
         return None
@@ -553,6 +561,21 @@ def record_run(
 
     timings["2_assemble_loop"] = time.perf_counter() - _t_assemble
 
+    # Virtual glue nodes: the data is not saved, but the provenance node is.
+    _t_glue = time.perf_counter()
+    _write_glue_nodes(
+        duck,
+        created_at,
+        glue_virtual or {},
+        glue_chains or {},
+        entity_rows,
+        invocation_rows,
+        input_edges,
+        run_output_edges,
+        run_inv_ids,
+    )
+    timings["2b_glue_nodes"] = time.perf_counter() - _t_glue
+
     run_id = generate_run_id()
     # constant_rows holds two kinds of input record: real constants and
     # PathInput specs (both are non-variable inputs, stored the same way and
@@ -602,6 +625,98 @@ def record_run(
     for phase, elapsed in timings.items():
         Log.debug(f"  record_run {phase:30s} {elapsed:.3f}s")
     return run_id
+
+
+def _write_glue_nodes(
+    duck,
+    created_at: str,
+    glue_virtual: dict,
+    glue_chains: dict,
+    entity_rows: dict,
+    invocation_rows: dict,
+    input_edges: dict,
+    run_output_edges: dict,
+    run_inv_ids: set,
+) -> None:
+    """Add the virtual glue records + their invocations and edges.
+
+    **The data is not saved, but the provenance node is.** For each input
+    record flowing through a glue chain this writes:
+
+    * one ``_record`` row, ``type = '__glue__'``, same ``schema_id`` as the
+      record it reshapes — and *no* ``_record_save`` row and no data-table row,
+      so it is never loadable, never "latest", and never in ``scidb report``;
+    * one ``_invocation`` whose ``function_name`` is the chain (``glue_a >
+      glue_b``) and whose ``function_hash`` is the chain hash;
+    * its input edge (real record → glue) and output edge (glue → virtual).
+
+    The consuming function's edges already point at the virtual rid, so
+    ``invocation_id``, ``skip_computed`` staleness, ``upstream_provenance``'s
+    BFS and node state all traverse **one extra hop with no special-casing**,
+    and the pipeline reads honestly as ``RawEMG → glue_drop_baseline →
+    analyze_emg``.
+
+    Cost is ~4 metadata rows per (glue chain, input record) and zero data bytes.
+    """
+    if not glue_virtual:
+        return
+
+    from .log import Log
+    from .provenance import (
+        GLUE_INPUT_PARAM,
+        GLUE_TYPE,
+        compute_glue_invocation_id,
+    )
+    from .provenance_query import GLUE_NAME_SEPARATOR
+
+    # schema_id of each source record — the virtual record sits at the same
+    # schema location, so upstream_provenance and node state line up.
+    source_rids = sorted(
+        {src for _ch, _sig, mapping in glue_virtual.values() for src in mapping}
+    )
+    schema_by_rid: dict[str, Any] = {}
+    if source_rids:
+        placeholders = ", ".join(["?"] * len(source_rids))
+        for rid, sid in duck._fetchall(
+            f"SELECT record_id, schema_id FROM _record "
+            f"WHERE record_id IN ({placeholders})",
+            source_rids,
+        ):
+            schema_by_rid[rid] = sid
+
+    n_records = 0
+    for param, (chain_h, set_sig, mapping) in sorted(glue_virtual.items()):
+        chain = glue_chains.get(param) or []
+        display = (
+            GLUE_NAME_SEPARATOR.join(getattr(s, "name", "glue") for s in chain)
+            or "glue"
+        )
+        for src_rid, virt_rid in sorted(mapping.items()):
+            inv_id = compute_glue_invocation_id(chain_h, src_rid, set_sig)
+            entity_rows.setdefault(
+                virt_rid,
+                (
+                    virt_rid,
+                    created_at,
+                    GLUE_TYPE,
+                    schema_by_rid.get(src_rid),
+                    None,
+                    None,
+                    False,
+                ),
+            )
+            invocation_rows.setdefault(
+                inv_id, (inv_id, display, chain_h, None, False)
+            )
+            input_edges.setdefault((inv_id, GLUE_INPUT_PARAM, src_rid), None)
+            run_output_edges.setdefault((inv_id, 0), virt_rid)
+            run_inv_ids.add(inv_id)
+            n_records += 1
+
+    Log.debug(
+        f"[glue] wrote {n_records} virtual record(s) across "
+        f"{len(glue_virtual)} glued param(s)"
+    )
 
 
 def _commit_graph(

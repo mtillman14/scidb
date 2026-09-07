@@ -516,30 +516,49 @@ def configure_database(
     Returns:
         The DatabaseManager instance
     """
-    db = DatabaseManager(
-        dataset_db_path,
-        dataset_schema_keys=dataset_schema_keys,
-        dataset_schema_key_types=schema_key_types,
-    )
-    for cls in BaseVariable._all_subclasses.values():
-        db.register(cls)
-    db.set_current_db()
-
-    # Propagate schema keys to scifor so that DataFrame detection and
-    # distribute=True work identically in DB-backed and standalone modes.
-    try:
-        import scifor
-
-        scifor.set_schema(list(dataset_schema_keys))
-    except ImportError:
-        pass
-
     # Set log file path next to the database file (a no-op if a caller —
     # e.g. the GUI server, which attaches before its startup discovery pass
     # — already pointed the sink here).
+    #
+    # Attached BEFORE the connection is built, not after: a MATLAB host calls
+    # this as its first scidb entry point, so anything logged during
+    # construction — including the phase timings below and any DDL failure —
+    # would otherwise land on stderr only and be missing from the very log
+    # file being set up.
     from .log import Log, attach_log_file
 
     attach_log_file(dataset_db_path)
+
+    # Phase timing: a MATLAB run pays this cost on every invocation (the
+    # script must close the database at the end to hand the write lock back
+    # to the GUI, so nothing is reused), and it was measured at ~170ms
+    # against a database on a network share. The breakdown says whether that
+    # is the DuckDB open itself or the idempotent CREATE TABLE IF NOT EXISTS
+    # round trips re-run each time.
+    with Log.timer(
+        "configure_database", extra=Path(dataset_db_path).name
+    ) as timer:
+        with timer.phase("database_manager"):
+            db = DatabaseManager(
+                dataset_db_path,
+                dataset_schema_keys=dataset_schema_keys,
+                dataset_schema_key_types=schema_key_types,
+            )
+        with timer.phase("register_types"):
+            for cls in BaseVariable._all_subclasses.values():
+                db.register(cls)
+        db.set_current_db()
+
+        # Propagate schema keys to scifor so that DataFrame detection and
+        # distribute=True work identically in DB-backed and standalone modes.
+        with timer.phase("scifor_set_schema"):
+            try:
+                import scifor
+
+                scifor.set_schema(list(dataset_schema_keys))
+            except ImportError:
+                pass
+
     # Run-context header: makes every log file self-describing (which
     # versions produced it) when debugging an archived log or a colleague's.
     Log.info(
@@ -649,21 +668,34 @@ class DatabaseManager:
         self.read_only = bool(read_only)
         self._registered_types: dict[str, type[BaseVariable]] = {}
 
-        # Initialize SciDuck backend for data storage and lineage (all in DuckDB)
-        self._duck = SciDuck(
-            self.dataset_db_path,
-            dataset_schema=dataset_schema_keys,
-            read_only=self.read_only,
-        )
+        # Initialize SciDuck backend for data storage and lineage (all in
+        # DuckDB). Timed per phase: this runs on every MATLAB invocation (see
+        # configure_database), and "opening the file" and "re-running the
+        # idempotent DDL" have very different fixes when the database lives on
+        # a network share.
+        with Log.timer(
+            "DatabaseManager.__init__", extra=self.dataset_db_path.name
+        ) as timer:
+            with timer.phase("duck_open"):
+                self._duck = SciDuck(
+                    self.dataset_db_path,
+                    dataset_schema=dataset_schema_keys,
+                    read_only=self.read_only,
+                )
 
-        # Create metadata tables for type registration (in DuckDB).
-        # Skipped on read-only connections: the tables must already exist, and
-        # DuckDB rejects DDL (even CREATE TABLE IF NOT EXISTS) in read-only mode.
-        if not self.read_only:
-            self._ensure_meta_tables()
-            self._ensure_record_save_table()
-            self._ensure_schema_overrides_table()
-            self._ensure_provenance_tables()
+            # Create metadata tables for type registration (in DuckDB).
+            # Skipped on read-only connections: the tables must already exist,
+            # and DuckDB rejects DDL (even CREATE TABLE IF NOT EXISTS) in
+            # read-only mode.
+            if not self.read_only:
+                with timer.phase("ensure_meta_tables"):
+                    self._ensure_meta_tables()
+                with timer.phase("ensure_record_save_table"):
+                    self._ensure_record_save_table()
+                with timer.phase("ensure_schema_overrides_table"):
+                    self._ensure_schema_overrides_table()
+                with timer.phase("ensure_provenance_tables"):
+                    self._ensure_provenance_tables()
 
         self._closed = False  # Track connection open/closed state
         self._inspector = None  # lazy scidb.inspect.Inspector (see .inspect)

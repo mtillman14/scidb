@@ -1548,3 +1548,110 @@ def test_normalize_still_preserves_the_alias_spelling(tmp_path):
 
     assert _normalize(alias / "x.py") == alias / "x.py"
     assert _normalize(alias / "x.py") != _normalize(real / "x.py")
+
+
+# ---------------------------------------------------------------------------
+# glue_dir — the second writable surface
+# ---------------------------------------------------------------------------
+def test_glue_dir_round_trips_through_add_path(tmp_path):
+    """The documented trap: a new key silently dropped on the next Paths save.
+
+    Every _render_scistack_toml call site must thread glue_dir through, exactly
+    as they must for entities_file."""
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('modules = []\nglue_dir = "src/scistack_glue"\n')
+
+    shared_repo = tmp_path / "shared_repo"
+    shared_repo.mkdir()
+    add_path(db_path, shared_repo)
+
+    assert _read_raw_section(toml_file)["glue_dir"] == "src/scistack_glue"
+
+
+def test_glue_dir_survives_remove_path(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    toml_file = tmp_path / "scistack.toml"
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    toml_file.write_text(
+        f'modules = ["{_normalize(gone).as_posix()}"]\nglue_dir = "src/scistack_glue"\n'
+    )
+
+    remove_path(db_path, gone)
+
+    assert _read_raw_section(toml_file)["glue_dir"] == "src/scistack_glue"
+
+
+def test_glue_dir_survives_set_and_clear_entities_file(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    toml_file = tmp_path / "scistack.toml"
+    toml_file.write_text('modules = []\nglue_dir = "src/scistack_glue"\n')
+
+    set_entities_file(db_path)
+    assert _read_raw_section(toml_file)["glue_dir"] == "src/scistack_glue"
+
+    clear_entities_file(db_path)
+    assert _read_raw_section(toml_file)["glue_dir"] == "src/scistack_glue"
+
+
+def test_set_glue_dir_creates_the_directory_and_writes_the_key(tmp_path):
+    from scistack_gui.config import DEFAULT_GLUE_RELPATH, set_glue_dir
+
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+
+    glue_dir = set_glue_dir(db_path)
+
+    assert glue_dir == _normalize(tmp_path / DEFAULT_GLUE_RELPATH)
+    assert glue_dir.is_dir()
+    data = _read_raw_section(tmp_path / "scistack.toml")
+    assert Path(data["glue_dir"]).as_posix() == DEFAULT_GLUE_RELPATH
+
+
+def test_set_glue_dir_leaves_an_existing_directory_alone(tmp_path):
+    from scistack_gui.config import set_glue_dir
+
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    existing = tmp_path / "glue"
+    existing.mkdir()
+    (existing / "glue_keep.py").write_text("def glue_keep(x):\n    return x\n")
+
+    set_glue_dir(db_path, "glue")
+
+    assert (existing / "glue_keep.py").exists()
+
+
+def test_glue_dir_files_are_discovered_as_modules(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    glue = tmp_path / "src" / "scistack_glue"
+    glue.mkdir(parents=True)
+    (glue / "glue_drop_baseline.py").write_text(
+        "def glue_drop_baseline(emg):\n    return emg\n"
+    )
+    (tmp_path / "scistack.toml").write_text('modules = []\nglue_dir = "src/scistack_glue"\n')
+
+    config = load_config(None, db_path)
+
+    assert config.glue_dir == _normalize(glue)
+    assert [p.name for p in config.modules] == ["glue_drop_baseline.py"]
+
+
+def test_glue_dir_files_are_not_duplicated_when_also_in_modules(tmp_path):
+    db_path = tmp_path / "proj.duckdb"
+    db_path.write_text("")
+    glue = tmp_path / "src" / "scistack_glue"
+    glue.mkdir(parents=True)
+    (glue / "glue_x.py").write_text("def glue_x(v):\n    return v\n")
+    (tmp_path / "scistack.toml").write_text(
+        'modules = ["src/scistack_glue"]\nglue_dir = "src/scistack_glue"\n'
+    )
+
+    config = load_config(None, db_path)
+
+    assert [p.name for p in config.modules] == ["glue_x.py"]

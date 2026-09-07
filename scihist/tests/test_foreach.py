@@ -1807,8 +1807,16 @@ class TestForEachReturnValue:
         assert list(result["MockOutput"]) == [123, 123]
         assert len(MockOutput.saved_data) == 0
 
-    def test_flatten_mode_dataframe_outputs(self):
-        """When fn returns DataFrames, metadata is replicated per row."""
+    def test_multi_row_dataframe_is_one_record_per_combination(self):
+        """A multi-row DataFrame with nothing to address its rows by stays whole.
+
+        A record's address is its schema keys. These rows carry no schema key
+        the combination doesn't already pin, so spreading them would file N
+        records at ONE address, distinguishable only by their contents — the
+        bug ``_spread_decision`` exists to prevent (a 322-row CSV became 322
+        records at a single subject/session). The whole table becomes the
+        value of one record per combination instead.
+        """
 
         def process(x):
             return pd.DataFrame({"val": [10.0, 20.0, 30.0]})
@@ -1820,20 +1828,44 @@ class TestForEachReturnValue:
             subject=[1, 2],
         )
 
-        # 2 subjects * 3 rows each = 6 total rows
-        assert len(result) == 6
+        # One row per subject, not one per DataFrame row.
+        assert len(result) == 2
         assert "subject" in result.columns
-        assert "val" in result.columns
-        # Subject 1 rows
-        s1 = result[result["subject"] == 1]
-        assert len(s1) == 3
-        np.testing.assert_array_equal(s1["val"].values, [10.0, 20.0, 30.0])
-        # Subject 2 rows
-        s2 = result[result["subject"] == 2]
-        assert len(s2) == 3
+        assert list(result["subject"]) == [1, 2]
+        # The table is the VALUE, so its own columns are not result columns.
+        assert "val" not in result.columns
+        assert "MockOutput" in result.columns
+        for value in result["MockOutput"]:
+            assert isinstance(value, pd.DataFrame)
+            np.testing.assert_array_equal(value["val"].values, [10.0, 20.0, 30.0])
 
-    def test_flatten_mode_multiple_df_outputs(self):
-        """Multiple DataFrame outputs are concatenated horizontally per combination."""
+    def test_single_row_dataframe_still_spreads(self):
+        """The other side of the rule: one row cannot multiply anything.
+
+        With at most one row there is no risk of several records landing on
+        one address, so the wide row becomes the result table's columns. This
+        is the ``for_columns`` shape and every ``distribute`` piece.
+        """
+
+        def process(x):
+            return pd.DataFrame({"val": [10.0], "other": [1.0]})
+
+        result = for_each(
+            process,
+            inputs={"x": MockVariableA},
+            outputs=[MockOutput],
+            subject=[1, 2],
+        )
+
+        assert len(result) == 2
+        assert "subject" in result.columns
+        # Spread: the DataFrame's own columns are inline, not nested.
+        assert "val" in result.columns
+        assert "other" in result.columns
+        np.testing.assert_array_equal(result["val"].values, [10.0, 10.0])
+
+    def test_multiple_multi_row_df_outputs_stay_whole(self):
+        """Same rule with several outputs: one record per combination each."""
 
         def process(x):
             df_a = pd.DataFrame({"col_a": [1.0, 2.0]})
@@ -1847,11 +1879,20 @@ class TestForEachReturnValue:
             subject=[1],
         )
 
-        # 1 subject * 2 rows = 2 rows, with both output columns inline
-        assert len(result) == 2
+        # One row for the single combination; each output is its own column
+        # holding its whole table.
+        assert len(result) == 1
         assert "subject" in result.columns
-        assert "col_a" in result.columns
-        assert "col_b" in result.columns
+        assert "col_a" not in result.columns
+        assert "col_b" not in result.columns
+        assert isinstance(result["MockOutput"].iloc[0], pd.DataFrame)
+        assert isinstance(result["MockOutputB"].iloc[0], pd.DataFrame)
+        np.testing.assert_array_equal(
+            result["MockOutput"].iloc[0]["col_a"].values, [1.0, 2.0]
+        )
+        np.testing.assert_array_equal(
+            result["MockOutputB"].iloc[0]["col_b"].values, [10.0, 20.0]
+        )
 
     def test_return_does_not_affect_saves(self):
         """Returning data should not change what gets saved."""

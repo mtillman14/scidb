@@ -30,6 +30,18 @@ classdef Parameter < scifor.EachOf
 %
 %   Use .values to get the value list in ordinary MATLAB code.
 %
+%   A Parameter may hold NO values at all:
+%
+%       window_seconds = scidb.Parameter();   % declared, not yet valued
+%
+%   That is the state the GUI's "New parameter" form produces -- it collects
+%   a name and nothing else -- and it used to be papered over by scaffolding
+%   a placeholder 0 into source, indistinguishable from a real value once
+%   written. It is legal at rest and an error at execution:
+%   scifor.require_alternatives refuses an empty axis at for_each expansion,
+%   because a zero-length axis would iterate zero times and write nothing
+%   while appearing to succeed.
+%
 %   Mirrors Python's scidb.Parameter (scidb/src/scidb/parameter.py). See
 %   docs/claude/entity-editability-model.md.
 
@@ -57,11 +69,12 @@ classdef Parameter < scifor.EachOf
                 args = args(1:end-2);
             end
 
-            if isempty(args)
-                error('scidb:Parameter:NoValues', ...
-                    'scidb.Parameter requires at least one value.');
-            end
-
+            % args may be EMPTY: a Parameter declared but not yet given a
+            % value is a legal state (see the class help). Note the single
+            % unconditional superclass call -- MATLAB does not allow one
+            % inside a conditional branch, which is why scifor.EachOf has to
+            % accept zero alternatives rather than Parameter special-casing
+            % the empty construction here.
             obj@scifor.EachOf(args{:});
             obj.description = desc;
         end
@@ -77,6 +90,13 @@ classdef Parameter < scifor.EachOf
         %   Errors for a multi-valued Parameter rather than silently
         %   returning the first -- picking one arbitrarily is how a fan-out
         %   quietly becomes a single run.
+            if isempty(obj.alternatives)
+                % Distinct from the "too many" case: nothing was declared
+                % yet, so pointing at .values points at an empty cell.
+                error('scidb:Parameter:NoValue', ...
+                    ['value needs a value, and this Parameter has none yet ' ...
+                     '-- give it at least one value.']);
+            end
             if numel(obj.alternatives) ~= 1
                 error('scidb:Parameter:NotSingleValued', ...
                     ['value is only defined for a single-valued Parameter; ' ...

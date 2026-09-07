@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { PythonProcess } from './pythonProcess';
 import { DagPanel } from './dagPanel';
+import { PlotPanel, PlotTarget } from './plotPanel';
 import {
   diagnoseStartupFailure,
   probeInterpreter,
@@ -134,7 +135,72 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
-  context.subscriptions.push(openPipeline, restartPython, outputChannel);
+  // --- Plot Studio -------------------------------------------------------
+  // The studio is its own editor tab (see plotPanel.ts) so the pipeline canvas
+  // stays visible beside it. Every entry point — the DAG's right-click, the
+  // sidebar button, these commands — funnels through `scistack.openPlotPanel`,
+  // so there is exactly one place that decides how a plot tab is opened.
+
+  const openPlotPanel = vscode.commands.registerCommand(
+    'scistack.openPlotPanel',
+    (target: PlotTarget = {}) => {
+      if (!pythonProcess) {
+        vscode.window.showWarningMessage(
+          'SciStack: Open a pipeline first — plotting needs the server process.'
+        );
+        return;
+      }
+      PlotPanel.show(context, pythonProcess, outputChannel, target, {
+        // Same editor group as the pipeline canvas, so the plot is a
+        // full-width tab beside "SciStack Pipeline" in the tab bar.
+        column: dagPanel?.viewColumn ?? vscode.ViewColumn.One,
+      });
+    }
+  );
+
+  const plotVariable = vscode.commands.registerCommand(
+    'scistack.plotVariable',
+    async () => {
+      const variable = await vscode.window.showInputBox({
+        prompt: 'Variable type to plot',
+        placeHolder: 'e.g. StepLength',
+      });
+      if (!variable) return;
+      await vscode.commands.executeCommand('scistack.openPlotPanel', {
+        variable: variable.trim(),
+      });
+    }
+  );
+
+  // Right-click a .csv in the Explorer. This deliberately needs NO project and
+  // NO database: it routes to scistackplot's CsvSource, which is the same
+  // DataSource protocol the scidb path implements.
+  const plotCsv = vscode.commands.registerCommand(
+    'scistack.plotCsv',
+    async (uri?: vscode.Uri) => {
+      const target =
+        uri?.fsPath ??
+        (
+          await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            filters: { 'CSV files': ['csv'] },
+          })
+        )?.[0]?.fsPath;
+      if (!target) return;
+      await vscode.commands.executeCommand('scistack.openPlotPanel', {
+        csvPath: target,
+      });
+    }
+  );
+
+  context.subscriptions.push(
+    openPipeline,
+    restartPython,
+    openPlotPanel,
+    plotVariable,
+    plotCsv,
+    outputChannel
+  );
 }
 
 async function startPipeline(

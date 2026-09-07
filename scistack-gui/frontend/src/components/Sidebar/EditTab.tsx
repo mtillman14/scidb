@@ -39,8 +39,37 @@ interface Registry {
   variables: string[]
   matlab_functions?: string[]
   matlab_functions_mismatched?: string[]
+  /**
+   * {function name -> 'process' | 'plot' | 'stat' | 'glue'} from
+   * scidb.discover.function_role. The classifier deliberately lives in
+   * scidb — the prefixes already drive execution behaviour there, so the GUI
+   * must not hold a second copy of the strings (CLAUDE.md NOTE 3). The
+   * dropdown below is pure display and belongs here; what a role IS does not.
+   */
+  function_roles?: Record<string, FunctionRole>
   load_errors?: LoadError[]
 }
+
+type FunctionRole = 'process' | 'plot' | 'stat' | 'glue'
+
+/**
+ * Roles in presentation order, plus the "All" escape hatch.
+ *
+ * Defaulting to Process is a behaviour change from the old
+ * show-everything list, so each option carries a COUNT: nothing becomes
+ * invisible, only collapsed. Without counts a user with existing plot_
+ * functions would simply see them vanish.
+ */
+const ROLE_FILTERS: { id: FunctionRole | 'all'; label: string }[] = [
+  { id: 'process', label: 'Process' },
+  { id: 'plot', label: 'Plots' },
+  { id: 'stat', label: 'Stats' },
+  { id: 'glue', label: 'Glue' },
+  { id: 'all', label: 'All' },
+]
+
+/** Per-project persistence for the last role selection (see write_note). */
+const ROLE_NOTE_KEY = 'ui:function_role'
 
 interface PipelineInfo {
   pipeline_id: string
@@ -84,6 +113,10 @@ export default function EditTab() {
   }
 
   const [registry, setRegistry] = useState<Registry>({ functions: [], variables: [] })
+  // Which function role the Functions list is filtered to. Defaults to
+  // Process — the ordinary pipeline step — so a project that accumulates
+  // dozens of one-line glue reshapers doesn't drown its real steps.
+  const [roleFilter, setRoleFilter] = useState<FunctionRole | 'all'>('process')
   // discoveryError is the request itself failing (network/RPC error) — a
   // real problem, shown here as a banner. registry.load_errors (some
   // module/file failing to import server-side) is NOT shown here: in
@@ -113,6 +146,16 @@ export default function EditTab() {
   const [varError, setVarError] = useState('')
   const [varSubmitting, setVarSubmitting] = useState(false)
   const varInputRef = useRef<HTMLInputElement>(null)
+
+  // New glue node: a name and a language, nothing else. The body is the
+  // two-line minimum that parses; the user writes the real thing in the
+  // node's code panel.
+  const [addingGlue, setAddingGlue] = useState(false)
+  const [glueLang, setGlueLang] = useState<'python' | 'matlab'>('python')
+  const [glueDraft, setGlueDraft] = useState('')
+  const [glueError, setGlueError] = useState('')
+  const [glueSubmitting, setGlueSubmitting] = useState(false)
+  const glueInputRef = useRef<HTMLInputElement>(null)
 
   // Manual built-in/library function reference (numpy.mean, a MATLAB
   // builtin, ...) — distinct from auto-discovered functions above.
@@ -148,6 +191,26 @@ export default function EditTab() {
       .then(d => setNotes(d as Record<string, string>))
       .catch(console.error)
   }, [])
+
+  // Remember the last role per project (same scoping precedent as the
+  // scoped hidden state): a glue-heavy session shouldn't re-filter itself on
+  // every panel open. First open of a project defaults to Process.
+  useEffect(() => {
+    callBackend('get_notes')
+      .then(d => {
+        const saved = (d as Record<string, string>)[ROLE_NOTE_KEY]
+        if (saved && ROLE_FILTERS.some(r => r.id === saved)) {
+          setRoleFilter(saved as FunctionRole | 'all')
+        }
+      })
+      .catch(() => { /* no saved preference is the normal first-open case */ })
+  }, [])
+
+  const selectRole = (role: FunctionRole | 'all') => {
+    setRoleFilter(role)
+    setSelectedItem(null)
+    callBackend('set_note', { key: ROLE_NOTE_KEY, text: role }).catch(console.error)
+  }
 
   function fetchRegistry() {
     callBackend('get_registry')
@@ -331,6 +394,39 @@ export default function EditTab() {
       .finally(() => setBuiltinSubmitting(false))
   }
 
+  const commitGlueDraft = () => {
+    if (glueSubmitting) return
+    const name = glueDraft.trim()
+    if (!name) {
+      setGlueDraft('')
+      setAddingGlue(false)
+      setGlueError('')
+      return
+    }
+    setGlueSubmitting(true)
+    callBackend('create_glue', { name, language: glueLang })
+      .then(data => {
+        const d = data as { ok?: boolean; error?: string }
+        if (d.ok) {
+          setGlueDraft('')
+          setAddingGlue(false)
+          setGlueError('')
+          // Creating a function of a given role SELECTS that role, so a
+          // just-created node is never filtered out of view.
+          selectRole('glue')
+          fetchRegistry()
+        } else {
+          setGlueError(d.error || 'Failed')
+          glueInputRef.current?.focus()
+        }
+      })
+      .catch(() => {
+        setGlueError('Request failed')
+        glueInputRef.current?.focus()
+      })
+      .finally(() => setGlueSubmitting(false))
+  }
+
   const commitPiDraft = () => {
     if (piSubmitting) return
     const name = piDraft.trim()
@@ -416,7 +512,7 @@ export default function EditTab() {
 
   const onDragStart = (
     e: React.DragEvent,
-    nodeType: 'functionNode' | 'variableNode' | 'parameterNode' | 'pathInputNode',
+    nodeType: 'functionNode' | 'glueNode' | 'variableNode' | 'parameterNode' | 'pathInputNode',
     label: string,
   ) => {
     e.dataTransfer.setData(
@@ -608,29 +704,118 @@ export default function EditTab() {
         {activeTab === 'function' && (
           <Section
             action={
-              <button
-                style={styles.addBtn}
-                onClick={() => setAddingBuiltin(true)}
-                title="Add a built-in/library function you didn't write yourself (e.g. numpy.mean, or a MATLAB command)"
-              >
-                +
-              </button>
+              // Two creations live under this category, and which one the +
+              // means depends on the role you're looking at: a glue node is a
+              // function with a role, not a separate kind of thing.
+              roleFilter === 'glue' ? (
+                <button
+                  style={styles.addBtn}
+                  onClick={() => setAddingGlue(true)}
+                  title="New glue node — free-form code that reshapes an input in memory, between a variable and the function consuming it"
+                >
+                  +
+                </button>
+              ) : (
+                <button
+                  style={styles.addBtn}
+                  onClick={() => setAddingBuiltin(true)}
+                  title="Add a built-in/library function you didn't write yourself (e.g. numpy.mean, or a MATLAB command)"
+                >
+                  +
+                </button>
+              )
             }
           >
-            {[...registry.functions, ...(registry.matlab_functions ?? [])].map(fn => {
-              const mismatch = registry.matlab_functions_mismatched?.includes(fn)
-              const displayLabel = mismatch ? `${fn} (function/file name mismatch)` : fn
+            {(() => {
+              const allFns = [...registry.functions, ...(registry.matlab_functions ?? [])]
+              const roles = registry.function_roles ?? {}
+              const roleOf = (fn: string): FunctionRole => roles[fn] ?? 'process'
+              const counts: Record<string, number> = { all: allFns.length }
+              for (const fn of allFns) {
+                counts[roleOf(fn)] = (counts[roleOf(fn)] ?? 0) + 1
+              }
+              const shown = roleFilter === 'all'
+                ? allFns
+                : allFns.filter(fn => roleOf(fn) === roleFilter)
               return (
-                <DragItem
-                  key={fn}
-                  label={displayLabel}
-                  color="#7b68ee"
-                  selected={selectedItem?.kind === 'function' && selectedItem.name === fn}
-                  onDragStart={e => onDragStart(e, 'functionNode', fn)}
-                  onClick={() => selectListItem('function', fn)}
-                />
+                <>
+                  <select
+                    style={styles.roleFilter}
+                    value={roleFilter}
+                    onChange={e => selectRole(e.target.value as FunctionRole | 'all')}
+                    title="Filter the list by function role. The canvas always shows whatever is wired."
+                  >
+                    {ROLE_FILTERS.map(r => (
+                      <option key={r.id} value={r.id}>
+                        {r.label} ({counts[r.id] ?? 0})
+                      </option>
+                    ))}
+                  </select>
+                  {shown.map(fn => {
+                    const mismatch = registry.matlab_functions_mismatched?.includes(fn)
+                    const displayLabel = mismatch ? `${fn} (function/file name mismatch)` : fn
+                    const isGlue = roleOf(fn) === 'glue'
+                    return (
+                      <DragItem
+                        key={fn}
+                        label={displayLabel}
+                        color={isGlue ? '#9ca3af' : '#7b68ee'}
+                        selected={selectedItem?.kind === 'function' && selectedItem.name === fn}
+                        onDragStart={e => onDragStart(e, isGlue ? 'glueNode' : 'functionNode', fn)}
+                        onClick={() => selectListItem('function', fn)}
+                      />
+                    )
+                  })}
+                  {shown.length === 0 && (
+                    <div style={styles.emptyRole}>
+                      No {ROLE_FILTERS.find(r => r.id === roleFilter)?.label.toLowerCase()} functions yet.
+                    </div>
+                  )}
+                </>
               )
-            })}
+            })()}
+            {addingGlue && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <select
+                    value={glueLang}
+                    onChange={e => {
+                      setGlueLang(e.target.value as 'python' | 'matlab')
+                      setGlueError('')
+                    }}
+                    style={{ fontSize: 12 }}
+                    title="Glue runs in the language of the run — a MATLAB pipeline needs MATLAB glue"
+                  >
+                    <option value="python">Python</option>
+                    <option value="matlab">MATLAB</option>
+                  </select>
+                  <input
+                    ref={glueInputRef}
+                    style={{ ...styles.draftInput, flex: 1 }}
+                    value={glueDraft}
+                    // The glue_ prefix is what makes it a glue node, so the
+                    // backend applies it rather than making the user
+                    // remember it.
+                    placeholder="drop_baseline"
+                    onChange={e => { setGlueDraft(e.target.value); setGlueError('') }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitGlueDraft()
+                      if (e.key === 'Escape') {
+                        setGlueDraft('')
+                        setAddingGlue(false)
+                        setGlueError('')
+                      }
+                    }}
+                  />
+                </div>
+                {glueSubmitting && (
+                  <div style={{ ...styles.errorText, color: '#999' }}>Creating…</div>
+                )}
+                {!glueSubmitting && glueError && (
+                  <div style={styles.errorText}>{glueError}</div>
+                )}
+              </div>
+            )}
             {addingBuiltin && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div style={{ display: 'flex', gap: 4 }}>
@@ -1058,6 +1243,18 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
     cursor: 'pointer',
     padding: '0 2px',
+  },
+  roleFilter: {
+    width: '100%',
+    marginBottom: 6,
+    fontSize: 12,
+    padding: '2px 4px',
+  },
+  emptyRole: {
+    color: '#999',
+    fontSize: 11,
+    fontStyle: 'italic',
+    padding: '4px 2px',
   },
   draftInput: {
     display: 'block',

@@ -24,6 +24,21 @@ byte-identical ``version_keys``/``call_id`` to passing a bare ``30``. That
 property is what lets adding a second value be *only* adding an argument,
 with no change of form, id, node or history.
 
+**A Parameter may hold no values at all**::
+
+    WINDOW_SECONDS = Parameter()   # declared, not yet valued
+
+That is the state the GUI's "New parameter" form produces -- it collects a
+name and nothing else -- and it used to be papered over by scaffolding a
+placeholder ``0`` into source, which is indistinguishable from a real value
+once written and gets stamped into records by any run started before the
+user notices. Declared-but-unvalued is a legitimate state and is now
+representable as one. It is legal at rest -- in source, in the entities
+file, in the registry, on the canvas -- and an error at execution:
+``scifor.require_alternatives`` refuses an empty axis at ``for_each``
+expansion, because a zero-length axis would otherwise iterate zero times and
+write nothing while appearing to succeed.
+
 Single-valued Parameters keep the transparent-proxy behaviour the old
 ``Constant`` had, so they read naturally at a call site::
 
@@ -49,6 +64,8 @@ class Parameter(EachOf):
     (``WINDOW = Parameter(10, 20)``) rather than constructing one inline at
     a call site -- an unnamed one has no identity for the GUI to show, the
     same rule that applied to ``Sweep`` before it.
+
+    Zero values is a legal, nameable state -- see the module docstring.
     """
 
     def __init__(self, *values: Any, description: str = "") -> None:
@@ -80,6 +97,13 @@ class Parameter(EachOf):
         return self._single("value")
 
     def _single(self, op: str) -> Any:
+        if not self.alternatives:
+            # Distinct from the "too many" case below: nothing was declared
+            # yet, so pointing at .values would be pointing at an empty list.
+            raise TypeError(
+                f"{op} needs a value, and this Parameter has none yet -- give "
+                f"it at least one value."
+            )
         if len(self.alternatives) != 1:
             raise TypeError(
                 f"{op} is only defined for a single-valued Parameter; this one "
@@ -89,8 +113,12 @@ class Parameter(EachOf):
         return self.alternatives[0]
 
     def __repr__(self) -> str:
-        items = ", ".join(repr(a) for a in self.alternatives)
-        return f"Parameter({items}, description={self.description!r})"
+        # Built as an argument list, not an f-string with a fixed comma: a
+        # value-less Parameter would otherwise repr as "Parameter(,
+        # description='')", which is not even valid syntax to paste back.
+        args = [repr(a) for a in self.alternatives]
+        args.append(f"description={self.description!r}")
+        return f"Parameter({', '.join(args)})"
 
     # ------------------------------------------------------------------
     # Transparent proxy — single-valued only (see module docstring)
@@ -107,6 +135,10 @@ class Parameter(EachOf):
         # foreach._is_loadable ends in hasattr(var_spec, "load") -- so a
         # TypeError here takes down every for_each carrying a multi-valued
         # Parameter.
+        if not self.alternatives:
+            raise AttributeError(
+                f"{name!r} is not available on a Parameter with no value yet"
+            )
         if len(self.alternatives) != 1:
             raise AttributeError(
                 f"{name!r} is not available on a {len(self.alternatives)}-value "

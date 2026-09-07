@@ -37,11 +37,15 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONSTANT_TYPE",
+    "GLUE_INPUT_PARAM",
+    "GLUE_TYPE",
     "PATHINPUT_TYPE",
     "PATHINPUT_VALUE_TYPE",
     "SAVE_FUNCTION_NAME",
     "compute_constant_record_id",
     "constant_record_id_from_hash",
+    "compute_glue_invocation_id",
+    "compute_glue_record_id",
     "compute_invocation_id",
     "compute_pathinput_record_id",
     "compute_save_invocation_id",
@@ -80,6 +84,25 @@ PATHINPUT_VALUE_TYPE = "PathInput"
 # (``_invocation.function_name``/``function_hash`` are NOT NULL, so we use a
 # sentinel string rather than NULL.)
 SAVE_FUNCTION_NAME = "__save__"
+
+# Sentinel ``type`` for a *virtual glue record* — the provenance node standing
+# in for a glue chain's in-memory, never-saved output (see
+# ``docs/claude/free-code-glue-nodes.md`` §2). It has the same ``schema_id`` as
+# the record it reshapes, but **no** ``_record_save`` row, no data-table row
+# and nothing loadable: the data is not saved, only the node is. That is what
+# lets an edited glue change the consumer's ``invocation_id`` — ``skip_computed``
+# compares bindings, and this is the binding that moves.
+#
+# Anything that enumerates real records must skip it. Most paths already do,
+# because they either filter on a concrete variable type or join ``_record_save``
+# (which a virtual record never has).
+GLUE_TYPE = "__glue__"
+
+# ``param_name`` on a glue invocation's single input edge. Fixed rather than
+# taken from the glue's own signature: parameter names never bind anything
+# (edges do), and a stable name keeps the id reproducible when the glue body is
+# reformatted.
+GLUE_INPUT_PARAM = "input"
 
 # All record_ids (variables, constants, outputs) are 16 hex chars so they join
 # uniformly across the bipartite graph. Matches scicanonicalhash.generate_record_id.
@@ -173,6 +196,54 @@ def compute_pathinput_record_id(spec: str) -> str:
     :data:`PATHINPUT_TYPE`). Keyed on the spec string (``PathInput.to_key()``),
     so the same template+root_folder maps to one record."""
     return _sha16(PATHINPUT_TYPE, f"spec:{spec}")
+
+
+def compute_glue_record_id(
+    chain_hash: str, input_record_id: str, input_set_signature: str
+) -> str:
+    """Content-addressed id for a *virtual glue record* (see :data:`GLUE_TYPE`).
+
+    A glue node's output is never saved, but its provenance node is: this id
+    stands in for the reshaped table so the consuming function's
+    ``invocation_id`` changes when the glue body changes. That is the whole
+    point — ``skip_computed`` compares *bindings*, never version_keys, so glue
+    that only entered version_keys would leave every downstream record green
+    and stale.
+
+    Three components, each load-bearing:
+
+    * ``chain_hash`` — the glue bodies, in order. An edit is a new record.
+    * ``input_record_id`` — the record being reshaped. One virtual record per
+      input record, so per-row provenance survives the hop.
+    * ``input_set_signature`` — :func:`scidb.glue.input_set_signature` over the
+      whole input rid set. A whole-table glue may legitimately read across
+      rows, so its result depends on the entire set; without this a *growing*
+      input set would not force a recompute (the same hole that was already
+      closed for aggregation ``skip_computed``).
+    """
+    return _sha16(
+        GLUE_TYPE,
+        f"chain:{chain_hash}",
+        f"input:{input_record_id}",
+        f"set:{input_set_signature}",
+    )
+
+
+def compute_glue_invocation_id(
+    chain_hash: str, input_record_id: str, input_set_signature: str
+) -> str:
+    """Activity id for the glue application that produced a virtual record.
+
+    Keyed on the same three components as :func:`compute_glue_record_id`, via
+    the ordinary :func:`compute_invocation_id` recipe so the glue hop is a
+    normal activity to every traversal that walks the graph.
+    """
+    return compute_invocation_id(
+        f"{chain_hash}:{input_set_signature}",
+        None,
+        False,
+        [(GLUE_INPUT_PARAM, input_record_id, None)],
+    )
 
 
 def compute_save_invocation_id(output_record_id: str) -> str:
