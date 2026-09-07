@@ -13,6 +13,7 @@ See ``docs/claude/plotting-library-design.md`` for the reasoning.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import Any
@@ -136,9 +137,26 @@ class Matcher:
 
     @property
     def display(self) -> str:
-        return self.label or self.value or str(self.op)
+        """Row/column header. An unset slot has no header, not the op's name."""
+        if self.is_blank:
+            return self.label or ""
+        return self.label or self.value
+
+    @property
+    def is_blank(self) -> bool:
+        """
+        An unset slot. The grid has a fixed number of row/column slots, so most
+        of them are empty most of the time, and an empty slot must mean
+        "whatever is left over, in order" — never "everything".
+        """
+        return not self.value
 
     def matches(self, text: str) -> bool:
+        if self.is_blank:
+            # Without this, CONTAINS "" matches every panel ('' in text) and the
+            # first blank slot swallows the whole grid; NOT_CONTAINS "" is the
+            # same bug inverted.
+            return False
         text = "" if text is None else str(text)
         needle = self.value
         if self.op is MatchOp.STARTS_WITH:
@@ -186,25 +204,38 @@ class Aggregation:
 @dataclass(frozen=True)
 class FacetOptions:
     """
-    How faceted panels are arranged.
+    How faceted panels are arranged: a grid of a known size, plus one ordering
+    rule per row and per column slot.
 
-    With no rules, panels flow in order and ``wrap`` sets the width. Supplying
-    ``rows`` and/or ``cols`` places each panel by matching its label, which is
-    what lets an EMG figure read as left/right x muscle instead of an arbitrary
-    4-wide flow.
+    ``n_rows``/``n_cols`` size the grid; setting either one computes the other
+    from the panel count (:func:`grid_shape_for`), so the user names a width and
+    the height follows. Each slot may then carry a :class:`Matcher` that claims
+    the panels whose label it matches, which is what lets an EMG figure read as
+    left/right x muscle group instead of an arbitrary 4-wide flow. Blank slots
+    take whatever is left over, in order.
     """
 
-    #: Wrap the panel flow into a grid this many columns wide (ignored when
-    #: explicit rules are given).
-    wrap: int | None = None
+    #: Grid size. None means "compute me from the other one and the panel count".
+    n_rows: int | None = None
+    n_cols: int | None = None
+    #: One entry per row / column slot; blank entries are unset (see Matcher.is_blank).
     rows: list[Matcher] = field(default_factory=list)
     cols: list[Matcher] = field(default_factory=list)
     share_x: bool = True
     share_y: bool = True
 
     @property
+    def row_rules(self) -> list[Matcher]:
+        """Row slots that actually claim panels."""
+        return [m for m in self.rows if not m.is_blank]
+
+    @property
+    def col_rules(self) -> list[Matcher]:
+        return [m for m in self.cols if not m.is_blank]
+
+    @property
     def has_rules(self) -> bool:
-        return bool(self.rows or self.cols)
+        return bool(self.row_rules or self.col_rules)
 
 
 @dataclass(frozen=True)
@@ -286,7 +317,8 @@ class PlotSpec:
             "error": str(self.aggregate.error),
         }
         raw["facet"] = {
-            "wrap": self.facet.wrap,
+            "n_rows": self.facet.n_rows,
+            "n_cols": self.facet.n_cols,
             "share_x": self.facet.share_x,
             "share_y": self.facet.share_y,
             "rows": [_matcher_to_dict(m) for m in self.facet.rows],
@@ -349,13 +381,46 @@ class PlotSpec:
         return cls.from_dict(tomllib.loads(text))
 
 
+def grid_shape_for(
+    n_panels: int, n_rows: int | None = None, n_cols: int | None = None
+) -> tuple[int, int]:
+    """
+    The subplot grid for ``n_panels`` panels, given whatever the user pinned.
+
+    One function, called from ``reduce`` and reported back to the GUI, so that
+    "I said 2 columns, where did 3 rows come from?" has exactly one answer.
+    Naming one dimension computes the other; naming neither falls back to a
+    roughly square grid at most 4 wide, and a handful of panels stay in a single
+    horizontal row.
+
+    Placement may still grow the result (see ``reduce._assign_grid``) rather than
+    let two panels share a cell.
+    """
+    count = max(1, int(n_panels))
+    rows = int(n_rows) if n_rows and n_rows > 0 else None
+    cols = int(n_cols) if n_cols and n_cols > 0 else None
+
+    if rows and cols:
+        return rows, cols
+    if cols:
+        return math.ceil(count / cols), cols
+    if rows:
+        return rows, math.ceil(count / rows)
+
+    # Neither pinned: a 13-field struct wants a grid, 3 muscles want one row.
+    auto_cols = min(4, math.ceil(math.sqrt(count))) if count > 3 else count
+    auto_cols = max(1, auto_cols)
+    return math.ceil(count / auto_cols), auto_cols
+
+
 def _matcher_to_dict(matcher: Matcher) -> dict:
     return {"op": str(matcher.op), "value": matcher.value, "label": matcher.label}
 
 
 def _facet_from_dict(raw: dict) -> FacetOptions:
     return FacetOptions(
-        wrap=raw.get("wrap"),
+        n_rows=raw.get("n_rows"),
+        n_cols=raw.get("n_cols"),
         rows=[_matcher_from_dict(m) for m in (raw.get("rows") or [])],
         cols=[_matcher_from_dict(m) for m in (raw.get("cols") or [])],
         share_x=raw.get("share_x", True),

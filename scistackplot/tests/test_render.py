@@ -179,7 +179,7 @@ def wrapped_grid(struct_table):
         measures=["RawEMG"],
         roles={"ColName": Role.FACET, "subject": Role.COLOR, "trial": Role.FREE},
         kind=PlotKind.BAND,
-        facet=FacetOptions(wrap=2),
+        facet=FacetOptions(n_cols=2),
     )
 
 
@@ -191,8 +191,14 @@ def test_panel_titles_show_the_value_not_the_key(struct_table, wrapped_grid):
 
 def test_plotly_ships_its_grid_shape(struct_table, wrapped_grid):
     payload = render_plotly(resolve(wrapped_grid, struct_table)[0])
-    # 3 panels wrapped 2 wide -> 2 rows, 2 columns.
-    assert payload["layout"]["meta"] == {"rows": 2, "cols": 2}
+    # 3 panels 2 wide -> 2 rows, 2 columns. The panel reads `rows`/`cols` back
+    # as the EFFECTIVE grid, which is how setting one dimension fills the other.
+    assert payload["layout"]["meta"] == {
+        "rows": 2,
+        "cols": 2,
+        "panels": 3,
+        "layout_notes": [],
+    }
 
 
 def test_plotly_ticklabels_only_where_nothing_is_below(struct_table, wrapped_grid):
@@ -248,7 +254,7 @@ def test_matplotlib_keeps_ticklabels_above_an_empty_cell(struct_table, wrapped_g
 # --- rule-defined facet layout ---------------------------------------------
 
 
-def _layout_spec(rows=(), cols=()):
+def _layout_spec(rows=(), cols=(), n_rows=None, n_cols=None):
     from scistackplot import FacetOptions
     from scistackplot.spec import MatchOp, Matcher
 
@@ -257,6 +263,8 @@ def _layout_spec(rows=(), cols=()):
         roles={"ColName": Role.FACET, "subject": Role.COLOR, "trial": Role.FREE},
         kind=PlotKind.BAND,
         facet=FacetOptions(
+            n_rows=n_rows,
+            n_cols=n_cols,
             rows=[Matcher(op=MatchOp(op), value=v) for op, v in rows],
             cols=[Matcher(op=MatchOp(op), value=v) for op, v in cols],
         ),
@@ -318,10 +326,242 @@ def test_an_invalid_regex_does_not_break_the_figure(struct_table):
 
 
 def test_rule_layout_survives_a_spec_round_trip(struct_table):
-    spec = _layout_spec(rows=[("starts_with", "R")], cols=[("ends_with", "MG")])
+    spec = _layout_spec(
+        rows=[("starts_with", "R")], cols=[("ends_with", "MG")], n_rows=2, n_cols=3
+    )
     restored = PlotSpec.from_json(spec.to_json())
     assert restored.facet.rows[0].value == "R"
     assert restored.facet.cols[0].op.value == "ends_with"
+    assert (restored.facet.n_rows, restored.facet.n_cols) == (2, 3)
+
+
+# --- grid size: name one dimension, the other follows ----------------------
+
+
+def test_naming_columns_computes_the_rows(bilateral_table):
+    """4 panels, 2 columns asked for -> 2 rows, nobody had to say so."""
+    resolved = resolve(_layout_spec(n_cols=2), bilateral_table)[0]
+    assert (resolved.grid_rows, resolved.grid_cols) == (2, 2)
+
+
+def test_naming_rows_computes_the_columns(bilateral_table):
+    resolved = resolve(_layout_spec(n_rows=1), bilateral_table)[0]
+    assert (resolved.grid_rows, resolved.grid_cols) == (1, 4)
+
+
+def test_an_odd_panel_count_rounds_up(struct_table):
+    """3 panels in 2 columns needs 2 rows, not 1.5."""
+    resolved = resolve(_layout_spec(n_cols=2), struct_table)[0]
+    assert (resolved.grid_rows, resolved.grid_cols) == (2, 2)
+
+
+def test_grid_shape_for_is_the_one_place_the_arithmetic_lives():
+    from scistackplot import grid_shape_for
+
+    assert grid_shape_for(4, None, 2) == (2, 2)
+    assert grid_shape_for(4, 1, None) == (1, 4)
+    assert grid_shape_for(13, None, 4) == (4, 4)
+    assert grid_shape_for(3) == (1, 3)          # a few panels stay one row
+    assert grid_shape_for(13) == (4, 4)         # a wide struct gets a grid
+    assert grid_shape_for(4, 2, 2) == (2, 2)    # both pinned: honoured as given
+
+
+# --- placement never overlaps ----------------------------------------------
+
+
+def _cells(resolved):
+    return [(p.grid_row, p.grid_col) for p in resolved.panels]
+
+
+@pytest.mark.parametrize(
+    "rows,cols,n_rows,n_cols",
+    [
+        ((), (), None, None),
+        ((), (), 3, 2),
+        ((("starts_with", "R"), ("starts_with", "L")), (), None, None),
+        ((), (("ends_with", "HAM"), ("ends_with", "TA")), None, None),
+        # Both rules match the same panel name — the collision case.
+        ((("contains", "A"),), (("contains", "A"),), None, None),
+        # A grid deliberately too small for the panels.
+        ((), (), 1, 1),
+    ],
+)
+def test_no_two_panels_ever_share_a_cell(struct_table, rows, cols, n_rows, n_cols):
+    """
+    The invariant behind the whole rewrite. Two panels in one cell means two
+    plotly axis pairs with an identical domain — traces drawn on top of each
+    other, which reads as bad data rather than as a layout bug.
+    """
+    resolved = resolve(
+        _layout_spec(rows=rows, cols=cols, n_rows=n_rows, n_cols=n_cols), struct_table
+    )[0]
+    cells = _cells(resolved)
+    assert len(set(cells)) == len(cells)
+    assert len(cells) == 3  # nothing dropped either
+
+
+def test_a_full_grid_grows_rather_than_overlapping(struct_table):
+    resolved = resolve(_layout_spec(n_rows=1, n_cols=1), struct_table)[0]
+    cells = _cells(resolved)
+    assert len(set(cells)) == 3
+    assert resolved.grid_rows * resolved.grid_cols >= 3
+    assert any("cell of its own" in note for note in resolved.layout_notes)
+
+
+def test_colliding_rules_report_the_move(struct_table):
+    """A panel that could not have its ruled cell must say so, not move quietly."""
+    resolved = resolve(
+        _layout_spec(rows=[("contains", "A")], cols=[("contains", "A")]), struct_table
+    )[0]
+    assert any("both match row" in note for note in resolved.layout_notes)
+    assert resolved.layout_notes == resolved.to_dict()["grid"]["layout_notes"]
+
+
+# --- the EMG arrangement, end to end ---------------------------------------
+
+
+def test_columns_by_side_then_a_row_by_group(bilateral_table):
+    """
+    The worked example: columns are L/R, row 1 is the HAM pair, and the rest
+    fall into row 2 in order — with only ONE row rule written.
+    """
+    spec = _layout_spec(
+        rows=[("contains", "HAM"), ("contains", "")],   # slot 2 left blank
+        cols=[("starts_with", "L"), ("starts_with", "R")],
+    )
+    resolved = resolve(spec, bilateral_table)[0]
+    placed = {p.title: (p.grid_row, p.grid_col) for p in resolved.panels}
+
+    assert placed == {
+        "LHAM": (0, 0),
+        "RHAM": (0, 1),
+        "LQUAD": (1, 0),
+        "RQUAD": (1, 1),
+    }
+    assert (resolved.grid_rows, resolved.grid_cols) == (2, 2)
+    assert resolved.layout_notes == []
+
+
+def test_shrinking_the_grid_ignores_leftover_slots(bilateral_table):
+    """
+    Rules written into rows that no longer exist must not grow the grid back.
+    They stay in the spec — widening it again restores them — but a pinned
+    N rows is what the user just asked for.
+    """
+    spec = _layout_spec(
+        rows=[("contains", "HAM"), ("contains", "QUAD")], cols=[], n_rows=1
+    )
+    resolved = resolve(spec, bilateral_table)[0]
+    assert resolved.grid_rows == 1
+    assert len(set(_cells(resolved))) == 4
+
+
+def test_a_blank_slot_claims_nothing(bilateral_table):
+    """
+    A blank rule must not swallow the grid. 'contains ""' is true of every
+    string, so an unset slot used to match the first panel it saw — with fixed
+    slots, most slots are blank most of the time.
+    """
+    from scistackplot.spec import MatchOp, Matcher
+
+    assert Matcher(op=MatchOp.CONTAINS, value="").matches("LHAM") is False
+    assert Matcher(op=MatchOp.NOT_CONTAINS, value="").matches("LHAM") is False
+
+    spec = _layout_spec(cols=[("contains", ""), ("starts_with", "R")])
+    resolved = resolve(spec, bilateral_table)[0]
+    placed = {p.title: (p.grid_row, p.grid_col) for p in resolved.panels}
+    # Column 1 is unset, so the R muscles still take column 2 and the L muscles
+    # fill what is left rather than everything piling into column 1.
+    assert placed["RHAM"][1] == 1
+    assert placed["RQUAD"][1] == 1
+
+
+# --- a grid of any height stays a grid --------------------------------------
+
+
+@pytest.mark.parametrize("n_rows", list(range(1, 21)))
+def test_plotly_cells_never_invert_or_overlap(n_rows):
+    """
+    The tall-grid bug: the gaps are a fraction of the FIGURE, so at a fixed
+    0.14 a 9-row grid spent more than its whole height on gaps, cell height went
+    negative, and every y domain ran backwards — panels inverted and overlapped.
+    """
+    from scistackplot.render.plotly_ import _cell
+
+    domains = []
+    for row in range(n_rows):
+        _, y0, _, height = _cell(row, 0, n_rows, 1)
+        assert height > 0, f"{n_rows} rows produced a cell of height {height}"
+        domains.append((y0, y0 + height))
+
+    domains.sort()
+    assert all(0.0 <= low < high <= 1.0 for low, high in domains)
+    for (_, upper), (lower, _) in zip(domains, domains[1:]):
+        assert lower >= upper, f"{n_rows} rows: cells overlap at {upper}/{lower}"
+
+
+@pytest.mark.parametrize("n_cols", list(range(1, 21)))
+def test_plotly_columns_never_invert_or_overlap(n_cols):
+    from scistackplot.render.plotly_ import _cell
+
+    domains = []
+    for col in range(n_cols):
+        x0, _, width, _ = _cell(0, col, 1, n_cols)
+        assert width > 0
+        domains.append((x0, x0 + width))
+
+    domains.sort()
+    assert all(0.0 <= low < high <= 1.0 for low, high in domains)
+    for (_, right), (left, _) in zip(domains, domains[1:]):
+        assert left >= right
+
+
+def test_a_tall_grid_still_renders_every_panel(bilateral_table):
+    """4 panels stacked in one column: four separate, upright cells."""
+    resolved = resolve(_layout_spec(n_cols=1), bilateral_table)[0]
+    layout = render_plotly(resolved)["layout"]
+
+    assert (resolved.grid_rows, resolved.grid_cols) == (4, 1)
+    domains = sorted(
+        layout[f"yaxis{slot or ''}"]["domain"] for slot in ("", 2, 3, 4)
+    )
+    for (_, upper), (lower, _) in zip(domains, domains[1:]):
+        assert lower >= upper
+
+
+# --- content orientation is stated, never inferred --------------------------
+
+
+def test_plotly_distributions_are_drawn_vertically(scalar_table):
+    """
+    plotly picks box/violin/bar orientation from which of x/y it recognises, so
+    the same figure could draw sideways on one dataset and upright on another.
+    """
+    for kind in (PlotKind.BOX, PlotKind.VIOLIN, PlotKind.BAR):
+        spec = PlotSpec(
+            measures=["StepLength"],
+            roles={"subject": Role.X, "session": Role.COLOR, "trial": Role.FREE},
+            kind=kind,
+        )
+        payload = render_plotly(resolve(spec, scalar_table)[0])
+        drawn = [t for t in payload["data"] if t["type"] in ("box", "violin", "bar")]
+        assert drawn, kind
+        assert all(t["orientation"] == "v" for t in drawn), kind
+
+
+def test_plotly_tick_labels_stay_upright(struct_table, wrapped_grid):
+    """Plotly rotates category labels once a facet cell is narrow; pin them."""
+    layout = render_plotly(resolve(wrapped_grid, struct_table)[0])["layout"]
+    x_axes = [value for key, value in layout.items() if key.startswith("xaxis")]
+    assert x_axes
+    assert all(axis["tickangle"] == 0 for axis in x_axes)
+
+
+def test_matplotlib_tick_labels_stay_upright(scalar_table, box_spec):
+    figure = render_matplotlib(resolve(box_spec, scalar_table)[0])
+    for ax in figure.axes:
+        assert all(label.get_rotation() == 0 for label in ax.get_xticklabels())
+    matplotlib.pyplot.close(figure)
 
 
 # --- one rule for tick labels and axis titles ------------------------------

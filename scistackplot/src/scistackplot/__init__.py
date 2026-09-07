@@ -57,6 +57,7 @@ from .spec import (
     Statistic,
     StyleOptions,
     VariantPolicy,
+    grid_shape_for,
 )
 from .table import FactorInfo, LongTable, MeasureInfo, natural_sort_key
 
@@ -69,6 +70,7 @@ __all__ = [
     "ErrorBand",
     "Aggregation",
     "FacetOptions",
+    "grid_shape_for",
     "Matcher",
     "MatchOp",
     "StyleOptions",

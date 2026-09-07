@@ -116,6 +116,32 @@ def wide_subject_table() -> LongTable:
 
 
 @pytest.fixture
+def bilateral_table() -> LongTable:
+    """
+    The layout case the grid controls exist for: left/right x muscle group.
+
+    Four fields whose names carry two independent facts (side and group), which
+    is why a facet grid is described by rules over the names rather than by two
+    separate factors — the data has only one factor here.
+    """
+    rng = np.random.default_rng(3)
+    rows = [
+        {"subject": subject, "trial": trial, "ColName": muscle,
+         "RawEMG": list(rng.normal(0.0, 1.0, size=6))}
+        for subject in SUBJECTS
+        for trial in TRIALS[:2]
+        for muscle in ["LHAM", "RHAM", "LQUAD", "RQUAD"]
+    ]
+    return LongTable.from_frame(
+        pd.DataFrame(rows),
+        factors=["subject", "trial", "ColName"],
+        measures=["RawEMG"],
+        field_factors=["ColName"],
+        name="RawEMG",
+    )
+
+
+@pytest.fixture
 def struct_table() -> LongTable:
     """
     A dict/struct variable, melted: one column of field names, one of values.

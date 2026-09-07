@@ -47,8 +47,16 @@ def render(resolved: ResolvedPlot) -> dict:
             "annotations": [],
             # The grid shape travels with the figure so the panel can size it:
             # 4 rows of subplots need more height than 1, and only the renderer
-            # knows how the panels were laid out.
-            "meta": {"rows": n_rows, "cols": n_cols},
+            # knows how the panels were laid out. The GUI also reads `rows`/
+            # `cols` back as the EFFECTIVE grid — that is how "I set 2 columns"
+            # shows the computed row count — and `layout_notes` is how a spilled
+            # panel gets told to the user instead of just being logged.
+            "meta": {
+                "rows": n_rows,
+                "cols": n_cols,
+                "panels": len(resolved.panels),
+                "layout_notes": list(resolved.layout_notes),
+            },
         }
         if resolved.labels.title:
             layout["title"] = {"text": resolved.labels.title}
@@ -176,6 +184,10 @@ def _panel_traces(
                 {
                     **base,
                     "type": "bar",
+                    # Stated, never inferred: plotly picks an orientation from
+                    # which of x/y it recognises, so a panel whose x came out
+                    # numeric could silently draw sideways.
+                    "orientation": "v",
                     "x": x_values,
                     "y": _values(subset[encoding.y]),
                     "marker": {"color": color},
@@ -187,6 +199,7 @@ def _panel_traces(
                 {
                     **base,
                     "type": "box" if kind is PlotKind.BOX else "violin",
+                    "orientation": "v",  # see the bar trace above
                     "x": x_values,
                     "y": _values(subset[encoding.y]),
                     "marker": {"color": color},
@@ -283,6 +296,11 @@ def _add_axes(
         "showticklabels": bottom,
         "title": {"text": resolved.labels.x if bottom else ""},
         "type": "log" if resolved.spec.style.log_x else "-",
+        # Upright, always. Plotly rotates category tick labels towards vertical
+        # once a cell is too narrow for them, so the same figure reads
+        # differently at two facet counts. Fixed at 0; automargin buys the room.
+        "tickangle": 0,
+        "automargin": True,
     }
     layout[y_key] = {
         "domain": [y0, y0 + cell_height],
@@ -304,13 +322,16 @@ def _add_axes(
 
 def _panel_title(text, row, col, n_rows, n_cols) -> dict:
     x0, y0, cell_width, cell_height = _cell(row, col, n_rows, n_cols)
+    _, y_gap = _gaps(n_rows, n_cols)
     return {
         "text": text,
         "showarrow": False,
         "xref": "paper",
         "yref": "paper",
         "x": x0 + cell_width / 2,
-        "y": min(1.0, y0 + cell_height + Y_GAP * 0.25),
+        # A quarter of the ACTUAL gap: a tall grid has less room here, and a
+        # title that ignored that sat inside the panel above.
+        "y": min(1.0, y0 + cell_height + y_gap * 0.25),
         "xanchor": "center",
         "yanchor": "bottom",
         "font": {"size": 11},
@@ -325,19 +346,41 @@ X_GAP = 0.05
 Y_GAP = 0.14
 
 
+def _gaps(n_rows: int, n_cols: int) -> tuple[float, float]:
+    """
+    Gap between cells, never more than half the figure in total.
+
+    One function so the cell domains and the panel titles agree about how much
+    room there is between two rows — a title placed with the nominal gap while
+    the cells used a smaller one lands inside the panel above it.
+    """
+    return (
+        min(X_GAP, 0.5 / (n_cols - 1)) if n_cols > 1 else 0.0,
+        min(Y_GAP, 0.5 / (n_rows - 1)) if n_rows > 1 else 0.0,
+    )
+
+
 def _cell(row, col, n_rows, n_cols) -> tuple[float, float, float, float]:
-    """(x0, y0, width, height) of one grid cell, in paper coordinates."""
-    y_gap = Y_GAP if n_rows > 1 else 0.0
-    x_gap = X_GAP if n_cols > 1 else 0.0
+    """
+    (x0, y0, width, height) of one grid cell, in paper coordinates.
+
+    The gaps are a fraction of the FIGURE, so they must be clamped against the
+    cell count: at a fixed Y_GAP of 0.14 a 9-row grid spends 1.12 of its 1.0 on
+    gaps, the cell height goes negative, and every panel's y domain runs
+    backwards — panels invert and overlap. Capping the total gap at half the
+    figure keeps every cell at least ``0.5 / n`` tall, and the extra rows are
+    absorbed by the figure's pixel height instead (the GUI sizes it from
+    ``layout.meta.rows``).
+    """
+    x_gap, y_gap = _gaps(n_rows, n_cols)
     cell_width = (1.0 - x_gap * (n_cols - 1)) / n_cols
     cell_height = (1.0 - y_gap * (n_rows - 1)) / n_rows
     # Plotly's y domain runs bottom-up; our rows run top-down.
-    return (
-        col * (cell_width + x_gap),
-        (n_rows - row - 1) * (cell_height + y_gap),
-        cell_width,
-        cell_height,
-    )
+    x0 = col * (cell_width + x_gap)
+    y0 = (n_rows - row - 1) * (cell_height + y_gap)
+    # The last cell's edge is 1.0 by construction, but only exactly so in real
+    # arithmetic; plotly rejects a domain above 1, so trim the float residue.
+    return x0, y0, min(cell_width, 1.0 - x0), min(cell_height, 1.0 - y0)
 
 
 def _values(series: pd.Series) -> list:

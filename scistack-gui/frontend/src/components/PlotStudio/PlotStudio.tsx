@@ -92,11 +92,29 @@ interface Matcher {
 }
 
 interface FacetOptions {
-  wrap?: number | null
+  /** Grid size. null/absent means "compute me from the other one and the panel count". */
+  n_rows?: number | null
+  n_cols?: number | null
+  /** One entry per row / column slot; a blank value is an unset slot. */
   rows?: Matcher[]
   cols?: Matcher[]
   share_x?: boolean
   share_y?: boolean
+}
+
+/**
+ * What the backend actually laid out, echoed back on every figure.
+ *
+ * The panel never computes a grid itself: `rows`/`cols` here are the EFFECTIVE
+ * numbers (so setting one of them visibly fills in the other), and
+ * `layout_notes` carries anything the layout had to do that the rules did not
+ * ask for — a panel spilled out of a claimed cell, a grid grown to fit.
+ */
+interface GridMeta {
+  rows?: number
+  cols?: number
+  panels?: number
+  layout_notes?: string[]
 }
 
 interface Spec {
@@ -255,33 +273,25 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
     setSpec(prev => (prev ? { ...prev, facet: { ...(prev.facet ?? {}), ...patch } } : prev))
   }, [])
 
-  const editRule = useCallback(
+  /**
+   * Edit the rule in one grid slot, padding the array out to reach it.
+   *
+   * The slots ARE the grid — there is no add/remove, because the number of rows
+   * and columns is the thing the user set. A slot left blank claims nothing and
+   * takes whatever is left over, in order (scistackplot's Matcher.is_blank).
+   */
+  const setRuleAt = useCallback(
     (axis: 'rows' | 'cols', index: number, patch: Partial<Matcher>) => {
       setSpec(prev => {
         if (!prev) return prev
         const rules = [...(prev.facet?.[axis] ?? [])]
+        while (rules.length <= index) rules.push({ op: 'contains', value: '' })
         rules[index] = { ...rules[index], ...patch }
         return { ...prev, facet: { ...(prev.facet ?? {}), [axis]: rules } }
       })
     },
     []
   )
-
-  const addRule = useCallback((axis: 'rows' | 'cols') => {
-    setSpec(prev => {
-      if (!prev) return prev
-      const rules = [...(prev.facet?.[axis] ?? []), { op: 'contains' as MatchOp, value: '' }]
-      return { ...prev, facet: { ...(prev.facet ?? {}), [axis]: rules } }
-    })
-  }, [])
-
-  const removeRule = useCallback((axis: 'rows' | 'cols', index: number) => {
-    setSpec(prev => {
-      if (!prev) return prev
-      const rules = (prev.facet?.[axis] ?? []).filter((_, i) => i !== index)
-      return { ...prev, facet: { ...(prev.facet ?? {}), [axis]: rules } }
-    })
-  }, [])
 
   const setVariantPolicy = useCallback((policy: string) => {
     setSpec(prev => (prev ? { ...prev, variant_policy: policy } : prev))
@@ -296,6 +306,14 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
   )
   const summarizing = spec?.kind === 'bar' || spec?.kind === 'band'
   const faceted = Object.values(spec?.roles ?? {}).includes('facet')
+
+  // The grid the backend actually built. Read back rather than recomputed: the
+  // "set one, the other follows" arithmetic is grid_shape_for's, in
+  // scistackplot, and a second copy of it here would be the thing that drifts.
+  const gridMeta = (figures[0]?.figure?.layout?.meta ?? {}) as GridMeta
+  const effRows = Math.max(1, gridMeta.rows ?? 1)
+  const effCols = Math.max(1, gridMeta.cols ?? 1)
+  const layoutNotes = gridMeta.layout_notes ?? []
 
   // --- export -------------------------------------------------------------
   const handleExport = useCallback(() => {
@@ -448,38 +466,43 @@ export default function PlotStudio({ variable, csvPath, embedded = false, onClos
           {faceted && (
             <Section title="Layout">
               <div style={styles.hint}>
-                Rules place each subplot by its name, so the same arrangement
-                can be reused on another variable.
+                Set rows or columns — the other follows from the number of
+                subplots. Then name what belongs in each one; blank takes
+                whatever is left, in order.
               </div>
-              <label style={styles.factorRow}>
-                <span style={styles.factorName}>Wrap at</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={spec?.facet?.wrap ?? ''}
-                  placeholder="auto"
-                  onChange={e =>
-                    setFacet({ wrap: e.target.value ? Number(e.target.value) : null })
-                  }
-                  style={{ ...styles.select, width: 60 }}
-                  disabled={Boolean(spec?.facet?.rows?.length || spec?.facet?.cols?.length)}
+              <div style={styles.gridSizeRow}>
+                <GridSizeInput
+                  label="N rows"
+                  value={spec?.facet?.n_rows ?? null}
+                  effective={effRows}
+                  onChange={n => setFacet({ n_rows: n })}
                 />
-              </label>
+                <GridSizeInput
+                  label="N columns"
+                  value={spec?.facet?.n_cols ?? null}
+                  effective={effCols}
+                  onChange={n => setFacet({ n_cols: n })}
+                />
+              </div>
 
-              <RuleList
+              <RuleSlots
                 title="Rows"
+                count={effRows}
                 rules={spec?.facet?.rows ?? []}
-                onAdd={() => addRule('rows')}
-                onEdit={(i, patch) => editRule('rows', i, patch)}
-                onRemove={i => removeRule('rows', i)}
+                onEdit={(i, patch) => setRuleAt('rows', i, patch)}
               />
-              <RuleList
+              <RuleSlots
                 title="Columns"
+                count={effCols}
                 rules={spec?.facet?.cols ?? []}
-                onAdd={() => addRule('cols')}
-                onEdit={(i, patch) => editRule('cols', i, patch)}
-                onRemove={i => removeRule('cols', i)}
+                onEdit={(i, patch) => setRuleAt('cols', i, patch)}
               />
+
+              {/* Never let the layout quietly disobey a rule: if a subplot had
+                  to move, or the grid had to grow, say which and why. */}
+              {layoutNotes.map((note, index) => (
+                <div key={index} style={styles.layoutNote}>{note}</div>
+              ))}
             </Section>
           )}
 
@@ -667,53 +690,88 @@ function Shell({
   )
 }
 
-interface RuleListProps {
-  title: string
-  rules: Matcher[]
-  onAdd: () => void
-  onEdit: (index: number, patch: Partial<Matcher>) => void
-  onRemove: (index: number) => void
+interface GridSizeInputProps {
+  label: string
+  /** What the user pinned, or null when this dimension is computed. */
+  value: number | null
+  /** What the backend laid out — shown as a placeholder while unpinned. */
+  effective: number
+  onChange: (value: number | null) => void
 }
 
 /**
- * One axis of the facet grid. Each rule claims the panels whose name it
- * matches; anything unmatched lands in a trailing "other" row/column rather
- * than disappearing.
+ * One dimension of the facet grid.
+ *
+ * An empty box is not "1", it is "you decide": the backend computes it from the
+ * other dimension and the subplot count, and the result shows through as the
+ * placeholder. That is what makes "I set 2 columns" answer "so, 3 rows".
  */
-function RuleList({ title, rules, onAdd, onEdit, onRemove }: RuleListProps) {
+function GridSizeInput({ label, value, effective, onChange }: GridSizeInputProps) {
+  return (
+    <label style={styles.gridSizeField}>
+      <span style={styles.gridSizeLabel}>{label}</span>
+      <input
+        type="number"
+        min={1}
+        value={value ?? ''}
+        placeholder={String(effective)}
+        onChange={e => onChange(e.target.value ? Number(e.target.value) : null)}
+        title={value === null ? `Computed: ${effective}. Type a number to pin it.` : 'Clear to compute automatically'}
+        style={{
+          ...styles.select,
+          width: 56,
+          ...(value === null ? styles.gridSizeAuto : null),
+        }}
+      />
+    </label>
+  )
+}
+
+interface RuleSlotsProps {
+  title: string
+  /** Number of slots = the grid dimension. Comes from the rendered layout. */
+  count: number
+  rules: Matcher[]
+  onEdit: (index: number, patch: Partial<Matcher>) => void
+}
+
+/**
+ * One axis of the facet grid, one editor per slot.
+ *
+ * Fixed length, not a list with +/- buttons: the grid already has a known
+ * number of rows and columns, so a rule is a property OF row 2, not an extra
+ * row. Each slot claims the panels whose name it matches; a blank slot takes
+ * whatever is left over, in order, and anything matching no slot at all lands
+ * in a trailing "other" row/column rather than disappearing.
+ */
+function RuleSlots({ title, count, rules, onEdit }: RuleSlotsProps) {
+  const singular = title.replace(/s$/, '')
   return (
     <div style={styles.ruleList}>
       <div style={styles.ruleTitle}>{title}</div>
-      {rules.map((rule, index) => (
-        <div key={index} style={styles.ruleRow}>
-          <select
-            value={rule.op}
-            onChange={e => onEdit(index, { op: e.target.value as MatchOp })}
-            style={{ ...styles.select, flex: '0 0 96px' }}
-          >
-            {MATCH_OPS.map(op => (
-              <option key={op.value} value={op.value}>{op.label}</option>
-            ))}
-          </select>
-          <input
-            value={rule.value}
-            onChange={e => onEdit(index, { value: e.target.value })}
-            placeholder="text"
-            style={{ ...styles.select, flex: 1, minWidth: 0 }}
-          />
-          <button
-            type="button"
-            style={styles.ruleRemove}
-            onClick={() => onRemove(index)}
-            title="Remove this rule"
-          >
-            ×
-          </button>
-        </div>
-      ))}
-      <button type="button" style={styles.ruleAdd} onClick={onAdd}>
-        + {title.toLowerCase().replace(/s$/, '')}
-      </button>
+      {Array.from({ length: count }, (_, index) => {
+        const rule = rules[index] ?? { op: 'contains' as MatchOp, value: '' }
+        return (
+          <div key={index} style={styles.ruleRow}>
+            <span style={styles.slotIndex}>{singular} {index + 1}</span>
+            <select
+              value={rule.op}
+              onChange={e => onEdit(index, { op: e.target.value as MatchOp })}
+              style={{ ...styles.select, flex: '0 0 88px' }}
+            >
+              {MATCH_OPS.map(op => (
+                <option key={op.value} value={op.value}>{op.label}</option>
+              ))}
+            </select>
+            <input
+              value={rule.value}
+              onChange={e => onEdit(index, { value: e.target.value })}
+              placeholder="anything"
+              style={{ ...styles.select, flex: 1, minWidth: 0 }}
+            />
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -766,14 +824,14 @@ const styles: Record<string, React.CSSProperties> = {
   ruleList: { marginTop: 6 },
   ruleTitle: { fontSize: 10, color: '#999', marginBottom: 3 },
   ruleRow: { display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 },
-  ruleRemove: {
-    background: 'transparent', border: 'none', color: '#777',
-    cursor: 'pointer', fontSize: 14, padding: '0 2px',
-  },
-  ruleAdd: {
-    background: 'transparent', border: '1px dashed #3a3a5a', color: '#888',
-    borderRadius: 4, cursor: 'pointer', fontSize: 10, padding: '2px 6px',
-    width: '100%',
+  slotIndex: { fontSize: 10, color: '#888', flex: '0 0 52px' },
+  gridSizeRow: { display: 'flex', gap: 8, marginBottom: 4 },
+  gridSizeField: { display: 'flex', alignItems: 'center', gap: 4 },
+  gridSizeLabel: { fontSize: 11, color: '#bbb' },
+  // An unpinned dimension reads as derived, not as something the user typed.
+  gridSizeAuto: { color: '#8a8aa8', fontStyle: 'italic' },
+  layoutNote: {
+    fontSize: 10, color: '#e0b050', marginTop: 6, lineHeight: 1.4,
   },
   headerButton: {
     background: '#22223a', color: '#ccc', border: '1px solid #3a3a5a',

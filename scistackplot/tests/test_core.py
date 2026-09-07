@@ -255,8 +255,10 @@ def test_field_factor_does_not_steal_the_colour_channel(struct_table):
 def test_default_spec_wraps_many_fields_into_a_grid(struct_table):
     spec = default_spec(struct_table, "RawEMG")
     assert spec.roles["ColName"] is Role.FACET
-    # 3 fields is a single row; the wrap only kicks in past 3.
-    assert spec.facet.wrap is None
+    # 3 fields stay in a single horizontal row.
+    assert spec.facet.n_cols == 3
+    # Only the width is pinned; the height follows the panel count.
+    assert spec.facet.n_rows is None
 
 
 def test_default_spec_wraps_a_wide_struct(struct_table):
@@ -277,7 +279,7 @@ def test_default_spec_wraps_a_wide_struct(struct_table):
         measures=["RawEMG"],
         field_factors=["ColName"],
     )
-    assert default_spec(table, "RawEMG").facet.wrap == 4
+    assert default_spec(table, "RawEMG").facet.n_cols == 4
 
 
 def test_field_factor_is_reported_to_the_gui(struct_table):

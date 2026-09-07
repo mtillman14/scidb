@@ -182,13 +182,13 @@ def validate(spec: PlotSpec, table: LongTable) -> None:
 def default_spec(table: LongTable, measure: str | None = None) -> PlotSpec:
     """
     The spec a table opens on: default roles, the matching default kind, and a
-    facet wrap wide enough for however many fields the measure has.
+    facet grid wide enough for however many fields the measure has.
 
     Lives here rather than in the GUI so the panel and a library caller open on
     the same figure (CLAUDE.md NOTE 3).
     """
     from .capability import default_plot
-    from .spec import FacetOptions, PlotKind, VariantPolicy
+    from .spec import FacetOptions, PlotKind, VariantPolicy, grid_shape_for
 
     measure = measure or (table.measure_names[0] if table.measures else None)
     if measure is None:
@@ -197,12 +197,15 @@ def default_spec(table: LongTable, measure: str | None = None) -> PlotSpec:
     roles = default_roles(table, measure)
     kind = default_plot(table.shape_of(measure), roles) or PlotKind.SCATTER
 
-    # A 13-muscle struct wants a grid, not a 13-wide strip of subplots.
-    facet_levels = max(
-        (len(f.levels) for f in table.factors if roles.get(f.name) is Role.FACET),
-        default=0,
+    # A 13-muscle struct wants a grid, not a 13-wide strip of subplots. The
+    # arithmetic lives in grid_shape_for so the panel, the renderer and this
+    # default cannot disagree about what "auto" means. Only the width is pinned:
+    # leaving n_rows open lets the height follow the panel count if the data
+    # gains a field.
+    facet_panels = math.prod(
+        [len(f.levels) for f in table.factors if roles.get(f.name) is Role.FACET] or [0]
     )
-    wrap = min(4, math.ceil(math.sqrt(facet_levels))) if facet_levels > 3 else None
+    _, n_cols = grid_shape_for(facet_panels) if facet_panels > 1 else (1, None)
 
     # When the source can say which rows are current, open on those. A scidb
     # variable whose function was edited holds records from both the old and
@@ -216,7 +219,7 @@ def default_spec(table: LongTable, measure: str | None = None) -> PlotSpec:
         measures=[measure],
         roles=roles,
         kind=kind,
-        facet=FacetOptions(wrap=wrap),
+        facet=FacetOptions(n_cols=n_cols),
         variant_policy=policy,
         pinned_variant=dict(table.default_pin) if table.default_pin else None,
     )

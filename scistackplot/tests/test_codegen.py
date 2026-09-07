@@ -173,3 +173,65 @@ def test_generated_code_melts_struct_fields(struct_table):
     assert "'RHAM'" in source
     assert "var_name='ColName'" in source
     assert "col='ColName'" in source or 'col="ColName"' in source
+
+
+def test_a_ruled_column_layout_is_exported_as_col_order(bilateral_table):
+    """
+    A one-axis rule layout IS expressible in seaborn — col_wrap plus col_order —
+    so the exported figure must reproduce the arrangement rather than fall back
+    to source order and warn about it.
+    """
+    from scistackplot import FacetOptions, PlotKind, PlotSpec, Role
+    from scistackplot.spec import MatchOp, Matcher
+
+    spec = PlotSpec(
+        measures=["RawEMG"],
+        roles={"ColName": Role.FACET, "subject": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BAND,
+        facet=FacetOptions(
+            n_cols=2,
+            cols=[
+                Matcher(op=MatchOp.CONTAINS, value="QUAD"),
+                Matcher(op=MatchOp.CONTAINS, value="HAM"),
+            ],
+        ),
+    )
+    source = generate_plot_function(spec, bilateral_table)
+
+    assert "col_wrap=2" in source
+    assert "col_order=" in source
+    # QUAD first, because that is the column the rules put it in.
+    order = source[source.index("col_order=") :]
+    assert order.index("QUAD") < order.index("HAM")
+    assert "seaborn cannot express" not in source
+
+
+def test_a_layout_with_holes_says_seaborn_cannot_express_it(struct_table):
+    """
+    Rules that leave an empty cell have no col_wrap equivalent — seaborn would
+    close the gap and shift every later panel. Say so instead of exporting a
+    figure that quietly differs from the preview.
+    """
+    from scistackplot import FacetOptions, PlotKind, PlotSpec, Role
+    from scistackplot.spec import MatchOp, Matcher
+
+    spec = PlotSpec(
+        measures=["RawEMG"],
+        roles={"ColName": Role.FACET, "subject": Role.COLOR, "trial": Role.FREE},
+        kind=PlotKind.BAND,
+        facet=FacetOptions(
+            # RHAM (0,0), RTA (0,1), LMG (1,2) — cell (1,0) stays empty.
+            rows=[
+                Matcher(op=MatchOp.STARTS_WITH, value="R"),
+                Matcher(op=MatchOp.STARTS_WITH, value="L"),
+            ],
+            cols=[
+                Matcher(op=MatchOp.ENDS_WITH, value="HAM"),
+                Matcher(op=MatchOp.ENDS_WITH, value="TA"),
+                Matcher(op=MatchOp.ENDS_WITH, value="MG"),
+            ],
+        ),
+    )
+    source = generate_plot_function(spec, struct_table)
+    assert "seaborn cannot express" in source
+    assert "col_order=" not in source

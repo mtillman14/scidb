@@ -56,8 +56,23 @@ def render(resolved: ResolvedPlot):
         used: set[tuple[int, int]] = set()
         for index, panel in enumerate(resolved.panels):
             row, col = panel_position(resolved, index)
-            row = min(row, n_rows - 1)
-            col = min(col, n_cols - 1)
+            if (row, col) in used or not (0 <= row < n_rows and 0 <= col < n_cols):
+                # reduce._assign_grid guarantees one panel per cell inside the
+                # reported grid. If that ever breaks, say so — the old silent
+                # clamp drew two panels onto one axes, which looks like bad data
+                # rather than a layout bug.
+                Log.warn(
+                    "panel %r wants cell (%d,%d) in a %dx%d grid, which is "
+                    "occupied or out of range — clamping",
+                    panel.title,
+                    row,
+                    col,
+                    n_rows,
+                    n_cols,
+                    layer=LAYER,
+                )
+            row = min(max(row, 0), n_rows - 1)
+            col = min(max(col, 0), n_cols - 1)
             ax = axes[row][col]
             used.add((row, col))
             _draw_panel(ax, panel.frame, resolved)
@@ -296,7 +311,11 @@ def _apply_axes_cosmetics(fig, axes, resolved: ResolvedPlot, n_rows, n_cols, use
             # param — so per-Text visibility silently reverts. This must also
             # come LAST, after every set_xticklabels above (here and in the
             # _draw_* helpers), so the rule wins rather than being overwritten.
+            # rotation=0 alongside it: panel content stays upright at every grid
+            # size, matching the plotly path's tickangle (a figure must not read
+            # differently just because it gained a facet).
             ax.tick_params(labelbottom=bottom, labelleft=leftmost)
+            ax.tick_params(axis="x", rotation=0)
 
 
 def _apply_legend(fig, resolved: ResolvedPlot) -> None:

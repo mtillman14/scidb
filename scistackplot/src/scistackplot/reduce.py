@@ -18,6 +18,7 @@ You can have either, both, or neither.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable
 
 import numpy as np
@@ -28,7 +29,16 @@ from .resolved import COLOR, SERIES, X, Y, Y_HIGH, Y_LOW, Z
 from .resolved import Encoding, Labels, Panel, ResolvedPlot
 from .roles import complete_roles, validate
 from .shape import Shape
-from .spec import ErrorBand, Matcher, PlotKind, PlotSpec, Role, Statistic, VariantPolicy
+from .spec import (
+    ErrorBand,
+    Matcher,
+    PlotKind,
+    PlotSpec,
+    Role,
+    Statistic,
+    VariantPolicy,
+    grid_shape_for,
+)
 from .table import LongTable, natural_sort_key
 
 LAYER = "scistackplot"
@@ -347,7 +357,9 @@ def _build_figure(
         )
         panels.append(Panel(frame=panel_frame, key=key))
 
-    n_rows, n_cols, row_labels, col_labels = _assign_grid(panels, spec.facet)
+    n_rows, n_cols, row_labels, col_labels, layout_notes = _assign_grid(
+        panels, spec.facet
+    )
 
     encoding = _encoding_for(spec.kind, color, shape)
     labels = _labels_for(spec, table, x_factor, color, index_column, figure_key)
@@ -369,6 +381,7 @@ def _build_figure(
         grid_cols=n_cols,
         row_labels=row_labels,
         col_labels=col_labels,
+        layout_notes=layout_notes,
         y_limits=y_limits,
         downsampled_from=original_rows if max_points and original_rows > max_points else None,
     )
@@ -580,89 +593,236 @@ def _level_order(
     return sorted(unique, key=lambda v: _level_rank(table, column, v))
 
 
-def _assign_grid(panels, facet) -> tuple[int, int, list[str], list[str]]:
+@dataclass(frozen=True)
+class GridPlan:
+    """Where each labelled panel sits, and how big the grid ended up."""
+
+    #: (row, col) per input label, in the same order.
+    cells: list[tuple[int, int]]
+    n_rows: int
+    n_cols: int
+    row_labels: list[str]
+    col_labels: list[str]
+    notes: list[str]
+
+    @property
+    def fills_row_major(self) -> bool:
+        """
+        True when the occupied cells are a gapless left-to-right, top-to-bottom
+        prefix of the grid — the panels may be in any ORDER, but there are no
+        holes. That is exactly the case seaborn's ``col_wrap`` + ``col_order``
+        can reproduce, so ``codegen`` asks before claiming the exported figure
+        matches the preview.
+        """
+        return sorted(self.cells) == [
+            divmod(index, self.n_cols) for index in range(len(self.cells))
+        ]
+
+    def labels_in_grid_order(self, labels: list[str]) -> list[str]:
+        """``labels`` re-ordered the way the grid reads: row by row."""
+        return [label for _, label in sorted(zip(self.cells, labels, strict=True))]
+
+
+def plan_layout(labels: list[str], facet) -> GridPlan:
+    """
+    Decide the facet grid from panel labels alone — no data involved.
+
+    Separate from :func:`_assign_grid` so the same placement can be replayed by
+    ``codegen`` (to emit a matching ``col_order``) and asserted in tests without
+    building frames. The rules below are the whole layout contract.
+
+    The grid is ``n_rows x n_cols`` (see ``spec.grid_shape_for``: naming one
+    dimension computes the other). Each row and column slot may carry a matcher
+    that claims the panels whose label it matches — which is what makes a layout
+    describable ("left column = names starting with L") and therefore reusable
+    across variables, rather than a hand-arrangement of one figure. Blank slots
+    take whatever is left over, in resolution order.
+
+    Two invariants, both of them things the user has been bitten by:
+
+    * **No cell is ever claimed twice.** Every placement goes through
+      ``occupied``; a panel whose ruled cell is taken spills to the next free
+      cell (growing the grid if it must) and says so in the returned notes.
+      Two panels in one cell means two plotly axis pairs with an identical
+      domain, i.e. traces drawn on top of each other.
+    * **Nothing is dropped.** A panel matching nothing is free to take any
+      remaining cell, and the grid grows a trailing "other" row/column if there
+      is none. Silently losing a muscle because a pattern had a typo is the
+      worst possible failure here.
+
+    """
+    if not labels:
+        return GridPlan(cells=[], n_rows=1, n_cols=1, row_labels=[], col_labels=[], notes=[])
+
+    # Slot POSITION is meaningful, so the blanks stay in the list: rules[1] is
+    # row 2 whether or not row 1 was filled in. Blank matchers never match (see
+    # Matcher.is_blank), so an unset slot claims nothing and simply receives
+    # whatever is still unplaced.
+    row_slots, col_slots = list(facet.rows), list(facet.cols)
+    notes: list[str] = []
+
+    n_rows, n_cols = grid_shape_for(len(labels), facet.n_rows, facet.n_cols)
+    # A pinned dimension wins over leftover slots: shrinking a 4-row grid to 2
+    # must not be undone by the two rules the user had already written into
+    # rows 3 and 4. They stay in the spec (re-widening brings them back) but
+    # they are not rows. An unpinned dimension does the opposite — it widens to
+    # hold every slot that was written.
+    if facet.n_rows:
+        row_slots = row_slots[:n_rows]
+    else:
+        n_rows = max(n_rows, len(row_slots))
+    if facet.n_cols:
+        col_slots = col_slots[:n_cols]
+    else:
+        n_cols = max(n_cols, len(col_slots))
+
+    has_row_rules = any(not m.is_blank for m in row_slots)
+    has_col_rules = any(not m.is_blank for m in col_slots)
+    row_slot = [_match_index(row_slots, label) for label in labels]
+    col_slot = [_match_index(col_slots, label) for label in labels]
+
+    occupied: dict[tuple[int, int], str] = {}
+    cells: list[tuple[int, int] | None] = [None] * len(labels)
+    spilled: list[int] = []
+
+    def claim(index: int, row: int, col: int) -> bool:
+        if (row, col) in occupied:
+            return False
+        occupied[(row, col)] = labels[index]
+        cells[index] = (row, col)
+        return True
+
+    # Pass A: both axes ruled — the panel has an exact address.
+    for index, (row, col) in enumerate(zip(row_slot, col_slot, strict=True)):
+        if row is None or col is None:
+            continue
+        if not claim(index, row, col):
+            spilled.append(index)
+            notes.append(
+                f"{labels[index]!r} and {occupied[(row, col)]!r} both match row "
+                f"{row + 1} and column {col + 1}; {labels[index]!r} was moved to "
+                f"the next free cell."
+            )
+
+    # Pass B: one axis ruled — first FREE cell along the other, so panels stack
+    # down a ruled column / flow across a ruled row without ever colliding.
+    for index, (row, col) in enumerate(zip(row_slot, col_slot, strict=True)):
+        if (row is None) == (col is None):
+            continue
+        if row is None:
+            free = next((r for r in range(n_rows) if (r, col) not in occupied), None)
+            placed = free is not None and claim(index, free, col)
+        else:
+            free = next((c for c in range(n_cols) if (row, c) not in occupied), None)
+            placed = free is not None and claim(index, row, free)
+        if not placed:
+            spilled.append(index)
+            axis = "column" if row is None else "row"
+            notes.append(
+                f"{labels[index]!r} matches a {axis} rule but that {axis} is "
+                f"full; it was moved to the next free cell."
+            )
+
+    # Pass C: unconstrained panels fill what is left, in resolution order. With
+    # no rules at all this is the plain wrapped flow.
+    free_cells = (
+        (r, c) for r in range(n_rows) for c in range(n_cols) if (r, c) not in occupied
+    )
+    for index, (row, col) in enumerate(zip(row_slot, col_slot, strict=True)):
+        if row is not None or col is not None:
+            continue
+        cell = next(free_cells, None)
+        if cell is None:
+            spilled.append(index)
+        else:
+            claim(index, *cell)
+
+    # Pass D: everything that could not take its own cell. The grid grows rather
+    # than letting two panels share one.
+    for index in spilled:
+        row, col = _first_free_cell(occupied, n_rows, n_cols)
+        if row >= n_rows:
+            n_rows = row + 1
+            notes.append(
+                f"The grid grew to {n_rows} rows so that {labels[index]!r} could "
+                f"have a cell of its own."
+            )
+        claim(index, row, col)
+
+    # Shrink a dimension the user did NOT pin down to what the panels actually
+    # used: "2 rows of muscles" should not leave a trailing empty column just
+    # because the starting estimate was wider. A pinned dimension is honoured
+    # as given — the user asked for that much room.
+    placed = [cell for cell in cells if cell is not None]
+    if facet.n_rows is None and placed:
+        n_rows = max(len(row_slots), max(row for row, _ in placed) + 1)
+    if facet.n_cols is None and placed:
+        n_cols = max(len(col_slots), max(col for _, col in placed) + 1)
+
+    # Anything past the declared slots holds panels no rule claimed. Label it,
+    # so a typo in a pattern shows up as an "other" column rather than as a
+    # muscle mysteriously sitting on the end.
+    row_labels = _rule_labels(row_slots)
+    col_labels = _rule_labels(col_slots)
+    if has_row_rules and n_rows > len(row_slots):
+        row_labels += ["other"] * (n_rows - len(row_slots))
+        notes.append("Some panels matched no row rule — see the 'other' row(s).")
+    if has_col_rules and n_cols > len(col_slots):
+        col_labels += ["other"] * (n_cols - len(col_slots))
+        notes.append("Some panels matched no column rule — see the 'other' column(s).")
+
+    return GridPlan(
+        # Every pass above ends by claiming a cell, so None is unreachable —
+        # but a panel with no cell would be a panel the renderer never draws.
+        cells=[(0, 0) if cell is None else cell for cell in cells],
+        n_rows=n_rows,
+        n_cols=n_cols,
+        row_labels=row_labels,
+        col_labels=col_labels,
+        notes=notes,
+    )
+
+
+def _assign_grid(panels, facet) -> tuple[int, int, list[str], list[str], list[str]]:
     """
     Place every panel in the grid, and report its shape.
 
-    Two modes. With no rules the panels simply flow in resolution order,
-    wrapping at ``facet.wrap``. With ``rows``/``cols`` matchers, each panel is
-    placed by testing its label against the rules — which is what makes a
-    layout describable ("left column = names starting with L") and therefore
-    reusable across variables, rather than a hand-arrangement of one figure.
+    Thin wrapper over :func:`plan_layout` — the placement decision is made from
+    panel labels alone so that ``codegen`` can replay it, and applied to the
+    Panel objects here.
 
-    A panel matching no rule goes to a trailing "other" row/column instead of
-    being dropped: silently losing a muscle because a pattern had a typo is the
-    worst possible failure here.
+    Returns ``(n_rows, n_cols, row_labels, col_labels, notes)``.
     """
-    if not panels:
-        return 1, 1, [], []
-
-    if not facet.has_rules:
-        return _flow_grid(panels, facet.wrap)
-
-    row_labels = _rule_labels(facet.rows)
-    col_labels = _rule_labels(facet.cols)
-    row_overflow = False
-    col_overflow = False
-
-    # Panels that share a cell (two rules matching the same label, or several
-    # panels in one rule with no rule on the other axis) stack along the free
-    # axis, so nothing is hidden underneath anything else.
-    used: dict[tuple[int, int], int] = {}
-    for panel in panels:
-        label = panel.title
-        row = _match_index(facet.rows, label)
-        col = _match_index(facet.cols, label)
-        if facet.rows and row is None:
-            row, row_overflow = len(facet.rows), True
-        if facet.cols and col is None:
-            col, col_overflow = len(facet.cols), True
-
-        if row is None:  # columns ruled, rows free: stack downwards
-            row = used.get((None, col), 0)  # type: ignore[arg-type]
-            used[(None, col)] = row + 1  # type: ignore[index]
-        elif col is None:  # rows ruled, columns free: flow rightwards
-            col = used.get((row, None), 0)  # type: ignore[arg-type]
-            used[(row, None)] = col + 1  # type: ignore[index]
-
+    plan = plan_layout([panel.title for panel in panels], facet)
+    for panel, (row, col) in zip(panels, plan.cells, strict=True):
         panel.grid_row, panel.grid_col = row, col
 
-    if row_overflow:
-        row_labels = row_labels + ["other"]
-        Log.warn(
-            "facet layout: some panels matched no row rule — see the 'other' row",
-            layer=LAYER,
-        )
-    if col_overflow:
-        col_labels = col_labels + ["other"]
-        Log.warn(
-            "facet layout: some panels matched no column rule — see the "
-            "'other' column",
-            layer=LAYER,
-        )
-
-    n_rows = max((p.grid_row for p in panels), default=0) + 1
-    n_cols = max((p.grid_col for p in panels), default=0) + 1
+    for note in plan.notes:
+        Log.warn("facet layout: %s", note, layer=LAYER)
     Log.debug(
-        "facet grid %dx%d from %d row rule(s), %d column rule(s)",
-        n_rows,
-        n_cols,
-        len(facet.rows),
-        len(facet.cols),
+        "facet grid %dx%d from %d row rule(s), %d column rule(s): %s",
+        plan.n_rows,
+        plan.n_cols,
+        len(facet.row_rules),
+        len(facet.col_rules),  # non-blank only: the rules the user actually wrote
+        ", ".join(f"{p.title or '?'}@({p.grid_row},{p.grid_col})" for p in panels),
         layer=LAYER,
     )
-    return n_rows, n_cols, row_labels, col_labels
+    return plan.n_rows, plan.n_cols, plan.row_labels, plan.col_labels, plan.notes
 
 
-def _flow_grid(panels, wrap: int | None) -> tuple[int, int, list[str], list[str]]:
-    """Panels in resolution order, wrapped to ``wrap`` columns."""
-    count = len(panels)
-    n_cols = min(count, wrap) if wrap and wrap > 0 else count
-    n_cols = max(1, n_cols)
-    for index, panel in enumerate(panels):
-        panel.grid_row, panel.grid_col = divmod(index, n_cols)
-    n_rows = max((p.grid_row for p in panels), default=0) + 1
-    return n_rows, n_cols, [], []
+def _first_free_cell(
+    occupied: dict[tuple[int, int], str], n_rows: int, n_cols: int
+) -> tuple[int, int]:
+    """
+    First unoccupied cell in row-major order, growing past the last row when the
+    grid is full — the caller widens the grid rather than overlap two panels.
+    """
+    for row in range(n_rows):
+        for col in range(n_cols):
+            if (row, col) not in occupied:
+                return row, col
+    return n_rows, 0
 
 
 def _match_index(rules: list[Matcher], label: str) -> int | None:

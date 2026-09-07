@@ -110,6 +110,11 @@ class ResolvedPlot:
     #: Headers for rule-defined rows/columns (empty when the panels just flow).
     row_labels: list[str] = field(default_factory=list)
     col_labels: list[str] = field(default_factory=list)
+    #: Human-readable notes about placement decisions the user did not ask for —
+    #: a panel that spilled out of its ruled cell, a grid that had to grow, a
+    #: panel that matched no rule. The layout never silently disobeys a rule;
+    #: it says what it did instead. Surfaced in the GUI's Layout section.
+    layout_notes: list[str] = field(default_factory=list)
     y_limits: tuple[float, float] | None = None
     #: Set when the data was reduced for transport (see reduce.MAX_TRANSPORT_POINTS).
     downsampled_from: int | None = None
@@ -151,6 +156,7 @@ class ResolvedPlot:
                 "cols": self.grid_cols,
                 "row_labels": list(self.row_labels),
                 "col_labels": list(self.col_labels),
+                "layout_notes": list(self.layout_notes),
             },
             "x_order": [_jsonable(v) for v in (self.x_order or [])] or None,
             "color_order": [_jsonable(v) for v in (self.color_order or [])] or None,
